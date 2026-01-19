@@ -1,0 +1,55 @@
+[package]
+name = "net-infinity-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core networking
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+tracing = "0.1"
+anyhow = "1.0"
+thiserror = "1.0"
+config = "0.13"
+
+# Cryptography
+ring = "0.16"
+x25519-dalek = "1.1"
+ed25519-dalek = "1.0"
+chacha20poly1305 = "0.10"
+
+# Network utilities
+socket2 = "0.5"
+
+# Virtual network interface
+pnet = "0.28"
+tun-tap = "0.1"
+
+# WireGuard
+boringtun = "0.3"
+
+# Tor integration
+arti = "0.1"
+tor-rtcompat = "0.1"
+
+# File transfer
+tokio-stream = "0.1"
+bytes = "1.0"
+crc32fast = "1.3"
+
+# DNS
+trust-dns-resolver = "0.22"
+trust-dns-server = "0.22"
+
+# NAT traversal
+stun = "0.1"
+turn = "0.1"
+
+# Performance
+flate2 = "1.0"
+lru = "0.12"
+
+# FFI
+flutter_rust_bridge = "1.80.0"
