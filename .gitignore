@@ -1,0 +1,34 @@
+# Ignore the reference directory
+reference/
+
+# Build artifacts
+build/
+DerivedData/
+**/DerivedData/
+*.xcworkspace
+xcuserdata/
+**/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+.swiftpm/
+**/.swiftpm/
+
+# Rust
+target/
+**/target/
+/target/
+
+# Android / Gradle
+.gradle/
+**/.gradle/
+android/**/build/
+android/local.properties
+.idea/
+**/.idea/
+*.iml
+
+# Node
+node_modules/
+
+# OS files
+.DS_Store
