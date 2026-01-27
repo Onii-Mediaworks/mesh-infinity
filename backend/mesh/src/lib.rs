@@ -5,6 +5,9 @@ pub mod wireguard;
 pub mod routing;
 pub mod peer;
 
-pub use wireguard::*;
-pub use routing::*;
-pub use peer::*;
+pub use peer::{PeerManager, TrustLevel as MeshTrustLevel, VerificationMethod};
+pub use routing::{
+    Endpoint as MeshEndpoint, PathInfo as MeshPathInfo, RouteInfo as MeshRouteInfo,
+    RoutingTable as MeshRoutingTable,
+};
+pub use wireguard::{WGConfig, WGPeer, WireGuardMesh};

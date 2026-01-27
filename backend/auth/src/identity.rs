@@ -1,8 +1,10 @@
 // Identity management
 use std::collections::HashMap;
-use net-infinity_core::core::PeerId;
-use net-infinity_core::error::Result;
-use ed25519_dalek::{Keypair, PublicKey};
+
+use ed25519_dalek::{Keypair, PublicKey, Signer, Verifier};
+use crate::core::core::PeerId;
+use crate::core::error::{NetInfinityError, Result};
+use rand_core::OsRng;
 
 pub struct IdentityManager {
     identities: HashMap<PeerId, Identity>,
@@ -26,7 +28,7 @@ impl IdentityManager {
     }
     
     pub fn generate_identity(&mut self, name: Option<String>) -> Result<PeerId> {
-        let mut rng = ring::rand::SystemRandom::new();
+        let mut rng = OsRng;
         let keypair = Keypair::generate(&mut rng);
         
         let peer_id = Self::derive_peer_id(&keypair.public);
@@ -54,7 +56,7 @@ impl IdentityManager {
             self.primary_identity = Some(*peer_id);
             Ok(())
         } else {
-            Err(net-infinity_core::error::NetInfinityError::AuthError(
+            Err(crate::core::error::NetInfinityError::AuthError(
                 "Identity not found".to_string()
             ))
         }
@@ -72,7 +74,7 @@ impl IdentityManager {
         if let Some(identity) = self.identities.get(peer_id) {
             Ok(identity.keypair.sign(message).to_bytes().to_vec())
         } else {
-            Err(net-infinity_core::error::NetInfinityError::AuthError(
+            Err(crate::core::error::NetInfinityError::AuthError(
                 "Identity not found".to_string()
             ))
         }
@@ -80,10 +82,13 @@ impl IdentityManager {
     
     pub fn verify(&self, peer_id: &PeerId, message: &[u8], signature: &[u8]) -> Result<bool> {
         if let Some(identity) = self.identities.get(peer_id) {
-            let signature = ed25519_dalek::Signature::from_bytes(signature.try_into()?);
+            let signature_bytes: [u8; 64] = signature.try_into().map_err(|_| {
+                NetInfinityError::AuthError("Invalid signature length".to_string())
+            })?;
+            let signature = ed25519_dalek::Signature::new(signature_bytes);
             Ok(identity.keypair.public.verify(message, &signature).is_ok())
         } else {
-            Err(net-infinity_core::error::NetInfinityError::AuthError(
+            Err(crate::core::error::NetInfinityError::AuthError(
                 "Identity not found".to_string()
             ))
         }

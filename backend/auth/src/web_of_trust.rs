@@ -1,8 +1,8 @@
 // Web of Trust implementation
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use net-infinity_core::core::{PeerId, TrustLevel};
-use net-infinity_core::error::Result;
+use crate::core::core::{PeerId, TrustLevel};
+use crate::core::error::{NetInfinityError, Result};
 use std::time::SystemTime;
 
 pub struct WebOfTrust {
@@ -64,6 +64,10 @@ impl WebOfTrust {
     
     pub fn verify_peer(&self, peer_id: &PeerId, trust_markers: &[TrustMarker]) -> TrustLevel {
         let graph = self.trust_graph.read().unwrap();
+
+        if peer_id == &self.my_identity.peer_id {
+            return TrustLevel::HighlyTrusted;
+        }
         
         // Direct trust
         if let Some(rel) = graph.get(peer_id) {
@@ -78,6 +82,38 @@ impl WebOfTrust {
         // Combined trust (highest of direct and propagated)
         propagated_trust
     }
+
+    pub fn add_peer(
+        &self,
+        peer_id: PeerId,
+        trust_level: TrustLevel,
+        method: VerificationMethod,
+    ) -> Result<()> {
+        let mut graph = self.trust_graph.write().unwrap();
+
+        match graph.get_mut(&peer_id) {
+            Some(rel) => {
+                rel.trust_level = trust_level;
+                rel.last_seen = SystemTime::now();
+                rel.verification_methods.push(method);
+            }
+            None => {
+                graph.insert(
+                    peer_id,
+                    TrustRelationship {
+                        peer_id,
+                        trust_level,
+                        verification_methods: vec![method],
+                        shared_secrets: Vec::new(),
+                        trust_endorsements: Vec::new(),
+                        last_seen: SystemTime::now(),
+                    },
+                );
+            }
+        }
+
+        Ok(())
+    }
     
     pub fn add_trust_endorsement(
         &self, 
@@ -85,6 +121,12 @@ impl WebOfTrust {
         target: &PeerId, 
         endorsement: TrustEndorsement
     ) -> Result<()> {
+        if endorser != &endorsement.endorser {
+            return Err(NetInfinityError::AuthError(
+                "Endorser mismatch for trust endorsement".to_string()
+            ));
+        }
+
         let mut graph = self.trust_graph.write().unwrap();
         
         if let Some(rel) = graph.get_mut(target) {
@@ -104,12 +146,13 @@ impl WebOfTrust {
         trust_markers: &[TrustMarker]
     ) -> TrustLevel {
         let graph = self.trust_graph.read().unwrap();
+        let min_trust = self.trust_propagation.min_trust_threshold;
         
         // Find all trusted peers that know about target
         let mut endorsing_peers = Vec::new();
         
         for (peer_id, rel) in graph.iter() {
-            if rel.trust_level >= TrustLevel::Trusted {
+            if rel.trust_level >= min_trust {
                 // Check if this peer has endorsed target
                 if self.peer_knows_about(peer_id, target, trust_markers) {
                     endorsing_peers.push((peer_id, rel.trust_level));
@@ -117,18 +160,26 @@ impl WebOfTrust {
             }
         }
         
+        let max_endorsers = self.trust_propagation.propagation_depth as usize;
+        if max_endorsers == 0 {
+            return TrustLevel::Untrusted;
+        }
+
+        endorsing_peers.sort_by_key(|(_, trust_level)| *trust_level as u8);
+        endorsing_peers.reverse();
+
         // Calculate weighted trust
-        let mut total_trust = 0;
-        let mut weight_sum = 0;
+        let mut total_trust: u32 = 0;
+        let mut weight_sum: u32 = 0;
         
-        for (peer_id, trust_level) in endorsing_peers {
+        for (_peer_id, trust_level) in endorsing_peers.into_iter().take(max_endorsers) {
             let weight = match trust_level {
                 TrustLevel::Trusted => 1,
                 TrustLevel::HighlyTrusted => 2,
                 _ => 0,
             };
             
-            total_trust += weight * trust_level as u8;
+            total_trust += u32::from(weight) * u32::from(trust_level as u8);
             weight_sum += weight;
         }
         

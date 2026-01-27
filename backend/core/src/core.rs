@@ -10,7 +10,7 @@ pub type MessageId = [u8; 32];
 pub type FileId = [u8; 32];
 
 // Transport types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TransportType {
     Tor = 1,
     I2P = 2,
@@ -78,6 +78,8 @@ pub struct MeshConfig {
     pub log_level: u8,
     pub enable_tor: bool,
     pub enable_clearnet: bool,
+    pub mesh_discovery: bool,
+    pub allow_relays: bool,
     pub enable_i2p: bool,
     pub enable_bluetooth: bool,
     pub wireguard_port: u16,
@@ -92,6 +94,8 @@ impl Default for MeshConfig {
             log_level: 2, // Info level
             enable_tor: true,
             enable_clearnet: true,
+            mesh_discovery: true,
+            allow_relays: true,
             enable_i2p: false,
             enable_bluetooth: false,
             wireguard_port: 51820,

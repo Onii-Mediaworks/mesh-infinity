@@ -1,8 +1,8 @@
 // Mesh routing implementation
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use net-infinity_core::core::PeerId;
-use net-infinity_core::error::Result;
+use crate::core::core::PeerId;
+use crate::core::error::Result;
 use std::time::{SystemTime, Duration};
 
 pub struct RoutingTable {
@@ -10,6 +10,7 @@ pub struct RoutingTable {
     path_cache: Arc<RwLock<HashMap<(PeerId, PeerId), Vec<PathInfo>>>>,
 }
 
+#[derive(Clone)]
 pub struct RouteInfo {
     pub primary_path: PathInfo,
     pub backup_paths: Vec<PathInfo>,
@@ -17,8 +18,9 @@ pub struct RouteInfo {
     pub quality_score: f32,
 }
 
+#[derive(Clone)]
 pub struct PathInfo {
-    pub transport: net-infinity_core::core::TransportType,
+    pub transport: crate::core::core::TransportType,
     pub endpoint: Endpoint,
     pub latency: Option<Duration>,
     pub reliability: f32,
@@ -26,6 +28,7 @@ pub struct PathInfo {
     pub cost: f32,
 }
 
+#[derive(Clone)]
 pub struct Endpoint {
     pub peer_id: PeerId,
     pub address: String, // Could be IP:port, Tor address, etc.
@@ -45,20 +48,33 @@ impl RoutingTable {
     }
     
     pub fn calculate_paths(
-        &self, 
-        source: &PeerId, 
+        &self,
+        source: &PeerId,
         target: &PeerId,
-        available_transports: &[net-infinity_core::core::TransportType]
+        available_transports: &[crate::core::core::TransportType],
     ) -> Vec<PathInfo> {
+        let cache_key = (*source, *target);
+        if let Some(paths) = self.path_cache.read().unwrap().get(&cache_key) {
+            return paths.clone();
+        }
+
         // Simple implementation - would use Dijkstra's algorithm in real version
         let mut paths = Vec::new();
-        
+
         // Check for direct connection
         if let Some(route) = self.get_best_route(target) {
             paths.push(route.primary_path);
             paths.extend(route.backup_paths);
         }
-        
+
+        if !available_transports.is_empty() {
+            paths.retain(|path| available_transports.contains(&path.transport));
+        }
+
+        if !paths.is_empty() {
+            self.path_cache.write().unwrap().insert(cache_key, paths.clone());
+        }
+
         paths
     }
     
@@ -74,7 +90,7 @@ impl RoutingTable {
             route.last_updated = SystemTime::now();
             Ok(())
         } else {
-            Err(net-infinity_core::error::NetInfinityError::PeerNotFound(
+            Err(crate::core::error::NetInfinityError::PeerNotFound(
                 format!("{:?}", peer_id)
             ))
         }

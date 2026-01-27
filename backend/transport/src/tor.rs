@@ -1,8 +1,7 @@
 // Tor transport implementation
-use net-infinity_core::core::{PeerInfo, TransportType, TransportQuality};
-use net-infinity_core::error::Result;
-use net-infinity_core::transport::traits::{Transport, Connection, Listener};
-use std::sync::Arc;
+use crate::core::core::{PeerInfo, TransportType, TransportQuality};
+use crate::core::error::Result;
+use crate::core::transport::traits::{Connection, Listener, Transport};
 use std::time::Duration;
 
 pub struct TorTransport {
@@ -41,7 +40,7 @@ impl Transport for TorTransport {
         true // Assume available for now
     }
     
-    fn measure_quality(&self, target: &PeerInfo) -> Result<TransportQuality> {
+    fn measure_quality(&self, _target: &PeerInfo) -> Result<TransportQuality> {
         Ok(TransportQuality {
             latency: Duration::from_millis(200),
             bandwidth: 1000000, // 1 Mbps
@@ -62,7 +61,7 @@ impl Connection for TorConnection {
         Ok(data.len())
     }
     
-    fn receive(&mut self, buffer: &mut [u8]) -> Result<usize> {
+    fn receive(&mut self, _buffer: &mut [u8]) -> Result<usize> {
         // Receive data from Tor connection
         Ok(0) // No data for now
     }
@@ -85,7 +84,7 @@ pub struct TorListener;
 impl Listener for TorListener {
     fn accept(&mut self) -> Result<Box<dyn Connection>> {
         // Accept incoming Tor connection
-        Err(net-infinity_core::error::NetInfinityError::OperationNotSupported)
+        Err(crate::core::error::NetInfinityError::OperationNotSupported)
     }
     
     fn close(&mut self) -> Result<()> {

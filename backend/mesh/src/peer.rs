@@ -1,8 +1,8 @@
 // Peer management for mesh network
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use net-infinity_core::core::{PeerId, PeerInfo, TransportType};
-use net-infinity_core::error::Result;
+use crate::core::core::{PeerId, PeerInfo, TransportType};
+use crate::core::error::Result;
 use std::time::SystemTime;
 
 pub struct PeerManager {
@@ -11,7 +11,7 @@ pub struct PeerManager {
 }
 
 pub struct TrustLevel {
-    pub level: net-infinity_core::core::TrustLevel,
+    pub level: crate::core::core::TrustLevel,
     pub last_updated: SystemTime,
     pub verification_method: VerificationMethod,
 }
@@ -60,7 +60,7 @@ impl PeerManager {
     pub fn update_trust_level(
         &self,
         peer_id: &PeerId,
-        trust_level: net-infinity_core::core::TrustLevel,
+        trust_level: crate::core::core::TrustLevel,
         method: VerificationMethod
     ) -> Result<()> {
         let mut trust_levels = self.trust_levels.lock().unwrap();
@@ -72,7 +72,7 @@ impl PeerManager {
         Ok(())
     }
     
-    pub fn get_trust_level(&self, peer_id: &PeerId) -> Option<net-infinity_core::core::TrustLevel> {
+    pub fn get_trust_level(&self, peer_id: &PeerId) -> Option<crate::core::core::TrustLevel> {
         let trust_levels = self.trust_levels.lock().unwrap();
         trust_levels.get(peer_id).map(|t| t.level)
     }
@@ -83,7 +83,7 @@ impl PeerManager {
             peer.available_transports = transports.to_vec();
             Ok(())
         } else {
-            Err(net-infinity_core::error::NetInfinityError::PeerNotFound(
+            Err(crate::core::error::NetInfinityError::PeerNotFound(
                 format!("{:?}", peer_id)
             ))
         }
