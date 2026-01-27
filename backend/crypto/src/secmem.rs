@@ -1,6 +1,7 @@
 // Secure memory management
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
+
+use rand_core::{OsRng, RngCore};
 
 pub struct SecureMemory {
     data: Vec<u8>,
@@ -35,13 +36,8 @@ impl SecureMemory {
 impl Drop for SecureMemory {
     fn drop(&mut self) {
         // Overwrite with random data multiple times
-        use ring::rand::SystemRandom;
-        let mut rng = SystemRandom::new();
-        
         for _ in 0..3 {
-            for byte in &mut self.data {
-                *byte = rng.next_u32() as u8;
-            }
+            OsRng.fill_bytes(&mut self.data);
         }
         
         // Final zero
@@ -83,7 +79,12 @@ impl SecureString {
     }
     
     pub fn into_secure_memory(self) -> SecureMemory {
-        self.inner
+        self.into_inner()
+    }
+
+    fn into_inner(mut self) -> SecureMemory {
+        let inner = std::mem::replace(&mut self.inner, SecureMemory::new(0));
+        inner
     }
 }
 

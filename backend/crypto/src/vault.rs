@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use argon2::{Algorithm, Argon2, Params as ArgonParams, Version};
 use base64::{engine::general_purpose, Engine as _};
 use bip39::{Language, Mnemonic};
-use chacha20poly1305::aead::{Aead, AeadCore, KeyInit};
-use chacha20poly1305::{Key, XChaCha20Poly1305};
+use chacha20poly1305::aead::{Aead, NewAead};
+use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ pub enum VaultError {
     #[error("base64 error: {0}")]
     Base64(#[from] base64::DecodeError),
     #[error("argon2 error: {0}")]
-    Argon2(#[from] argon2::Error),
+    Argon2(String),
     #[error("hkdf error")]
     Hkdf,
 }
@@ -133,9 +133,18 @@ pub struct FileHeader {
 
 pub struct Vault;
 
+impl From<argon2::Error> for VaultError {
+    fn from(error: argon2::Error) -> Self {
+        VaultError::Argon2(error.to_string())
+    }
+}
+
 impl Vault {
     pub fn generate_recovery_phrase() -> Mnemonic {
-        Mnemonic::generate_in(Language::English, 24)
+        let mut entropy = [0u8; 32];
+        OsRng.fill_bytes(&mut entropy);
+        Mnemonic::from_entropy_in(Language::English, &entropy)
+            .unwrap_or_else(|_| Mnemonic::from_entropy(&entropy).expect("valid entropy"))
     }
 
     pub fn wrap_with_password(key: &VaultKey, password: &str) -> Result<WrappedKeySlot, VaultError> {
@@ -185,13 +194,13 @@ impl Vault {
 
     pub fn encrypt_bytes(key: &VaultKey, plaintext: &[u8]) -> Result<EncryptedPayload, VaultError> {
         let cipher = XChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
-        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let nonce = random_xnonce();
         let ciphertext = cipher
             .encrypt(&nonce, plaintext)
             .map_err(|_| VaultError::CryptoError)?;
 
         Ok(EncryptedPayload {
-            nonce_b64: general_purpose::STANDARD.encode(nonce),
+            nonce_b64: general_purpose::STANDARD.encode(nonce.as_slice()),
             ciphertext_b64: general_purpose::STANDARD.encode(ciphertext),
         })
     }
@@ -201,7 +210,7 @@ impl Vault {
         let ciphertext = decode_b64(&payload.ciphertext_b64)?;
         let cipher = XChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
         cipher
-            .decrypt(nonce.as_slice().into(), ciphertext.as_slice())
+            .decrypt(XNonce::from_slice(&nonce), ciphertext.as_slice())
             .map_err(|_| VaultError::InvalidCiphertext)
     }
 
@@ -224,7 +233,7 @@ impl Vault {
             }
             let nonce = chunk_nonce(&header.nonce_base, index);
             let ciphertext = cipher
-                .encrypt(&nonce.into(), &buffer[..read])
+                .encrypt(XNonce::from_slice(&nonce), &buffer[..read])
                 .map_err(|_| VaultError::CryptoError)?;
             output.write_all(&(ciphertext.len() as u32).to_le_bytes())?;
             output.write_all(&ciphertext)?;
@@ -255,7 +264,7 @@ impl Vault {
             input.read_exact(&mut ciphertext)?;
             let nonce = chunk_nonce(&header.nonce_base, index);
             let plaintext = cipher
-                .decrypt(&nonce.into(), ciphertext.as_slice())
+                .decrypt(XNonce::from_slice(&nonce), ciphertext.as_slice())
                 .map_err(|_| VaultError::InvalidCiphertext)?;
             output.write_all(&plaintext)?;
             index = index.saturating_add(1);
@@ -307,7 +316,7 @@ fn derive_password_key(password: &str, salt: &[u8], params: &KdfParams) -> Resul
         params.memory_kib,
         params.iterations,
         params.parallelism,
-        Some(params.output_len),
+        Some(params.output_len as usize),
     )?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut output = [0u8; 32];
@@ -331,13 +340,13 @@ fn encrypt_key_slot(
     key: &VaultKey,
 ) -> Result<WrappedKeySlot, VaultError> {
     let cipher = XChaCha20Poly1305::new(Key::from_slice(derived_key));
-    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let nonce = random_xnonce();
     let ciphertext = cipher
         .encrypt(&nonce, key.as_bytes().as_slice())
         .map_err(|_| VaultError::CryptoError)?;
 
     Ok(WrappedKeySlot {
-        nonce_b64: general_purpose::STANDARD.encode(nonce),
+        nonce_b64: general_purpose::STANDARD.encode(nonce.as_slice()),
         salt_b64: general_purpose::STANDARD.encode(salt),
         ciphertext_b64: general_purpose::STANDARD.encode(ciphertext),
         kdf: params.clone(),
@@ -349,7 +358,7 @@ fn decrypt_key_slot(derived_key: &[u8; 32], slot: &WrappedKeySlot) -> Result<Vau
     let nonce = decode_b64(&slot.nonce_b64)?;
     let ciphertext = decode_b64(&slot.ciphertext_b64)?;
     let plaintext = cipher
-        .decrypt(nonce.as_slice().into(), ciphertext.as_slice())
+        .decrypt(XNonce::from_slice(&nonce), ciphertext.as_slice())
         .map_err(|_| VaultError::InvalidCiphertext)?;
     if plaintext.len() != 32 {
         return Err(VaultError::InvalidCiphertext);
@@ -411,6 +420,12 @@ fn chunk_nonce(base: &[u8; 24], index: u64) -> [u8; 24] {
     let mut nonce = *base;
     nonce[16..24].copy_from_slice(&index.to_le_bytes());
     nonce
+}
+
+fn random_xnonce() -> XNonce {
+    let mut bytes = [0u8; 24];
+    OsRng.fill_bytes(&mut bytes);
+    XNonce::from_slice(&bytes).clone()
 }
 
 fn random_bytes(len: usize) -> Vec<u8> {

@@ -1,9 +1,8 @@
 // Clearnet transport implementation
-use net-infinity_core::core::{PeerInfo, TransportType, TransportQuality};
-use net-infinity_core::error::Result;
-use net-infinity_core::transport::traits::{Transport, Connection, Listener};
-use std::net::{TcpStream, TcpListener, SocketAddr};
-use std::sync::Arc;
+use crate::core::core::{PeerInfo, TransportType, TransportQuality};
+use crate::core::error::Result;
+use crate::core::transport::traits::{Transport, Connection, Listener};
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 use std::io::{Read, Write};
 
@@ -21,7 +20,7 @@ impl Transport for ClearnetTransport {
     fn connect(&self, peer_info: &PeerInfo) -> Result<Box<dyn Connection>> {
         // Get peer endpoint
         let endpoint = peer_info.endpoint.ok_or(
-            net-infinity_core::error::NetInfinityError::TransportError(
+            crate::core::error::NetInfinityError::TransportError(
                 "Peer has no endpoint".to_string()
             )
         )?;
@@ -57,7 +56,7 @@ impl Transport for ClearnetTransport {
         true
     }
     
-    fn measure_quality(&self, target: &PeerInfo) -> Result<TransportQuality> {
+    fn measure_quality(&self, _target: &PeerInfo) -> Result<TransportQuality> {
         Ok(TransportQuality {
             latency: Duration::from_millis(50),
             bandwidth: 10000000, // 10 Mbps
@@ -108,7 +107,7 @@ impl Listener for ClearnetListener {
         let peer_info = PeerInfo {
             peer_id: [0; 32], // Would be negotiated
             public_key: [0; 32],
-            trust_level: net-infinity_core::core::TrustLevel::Untrusted,
+            trust_level: crate::core::core::TrustLevel::Untrusted,
             available_transports: vec![TransportType::Clearnet],
             last_seen: None,
             endpoint: Some(addr),

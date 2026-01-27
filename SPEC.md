@@ -1,14 +1,43 @@
 # SeasonCom Technical Specification
 
-## Swift iOS UI Implementation
+## UI Platform Direction (Updated)
 
-The NetInfinity iOS application is built using SwiftUI with a modern MVVM architecture, following the patterns established in the Android mobile UI while leveraging native iOS technologies.
+NetInfinity will use a **Flutter UI-only** layer for all supported platforms (Android, iOS, desktop) while keeping the Rust backend as the trusted security boundary. The UI does not implement cryptography, transport, or storage primitives; it only renders state and issues user-intent commands through a minimal FFI bridge.
+
+### Canonical UI
+
+- **Flutter** is the canonical UI across platforms.
+- **Slint** and **SwiftUI** are deprecated and retained only for parity checks or legacy reference.
+
+### Flutter ↔ Rust Boundary (Security Constraints)
+
+- The Rust core is the source of truth for identities, keys, transport, and storage.
+- Flutter is treated as **untrusted UI**; it must not hold secrets or perform cryptographic operations.
+- All FFI calls are **versioned, typed, and validated**. Do not expose low-level networking or crypto primitives to Dart.
+- Prefer **minimal, intent-based APIs** (e.g., "send_message", "create_room", "pair_peer") over raw configuration access.
+- No cloud services or vendor SDK dependencies (e.g., Google Play Services, Apple/Microsoft cloud APIs).
+
+### FFI Transport
+
+- Use `dart:ffi` to bind to the Rust FFI crate and keep platform channels thin.
+- Generated bindings must be stable and audited; schema validation is required for structured payloads.
+- FFI error codes are mapped to user-facing error models without leaking internal details.
+
+### Data Handling
+
+- Sensitive data (keys, peer secrets) stays in Rust memory using secure memory primitives.
+- Dart receives only redacted identifiers or display-safe metadata.
+- All inbound/outbound payloads crossing the FFI boundary must be size-checked and sanitized.
+
+## Flutter UI Implementation
+
+The NetInfinity application is built using Flutter with a modern MVVM architecture, following the patterns established in the Android mobile UI while leveraging native Flutter technologies.
 
 ### Architecture Overview
 
 ```mermaid
 graph TD
-    A[NetInfinityApp] --> B[AppState: ObservableObject]
+    A[NetInfinityApp] --> B[AppState: ChangeNotifier]
     A --> C[DependencyContainer]
     A --> D[NavigationManager]
     B --> E[AuthenticationState]
@@ -23,286 +52,380 @@ graph TD
 
 ### Main Application Entry Point
 
-```swift
-// NetInfinityApp.swift
-@main
-struct NetInfinityApp: App {
-    @StateObject private var appState = AppState()
-    @StateObject private var dependencyContainer = AppDependencyContainer()
-    
-    var body: some Scene {
-        WindowGroup {
-            RootView()
-                .environmentObject(appState)
-                .environmentObject(dependencyContainer)
-                .preferredColorScheme(appState.colorScheme)
-        }
-    }
+```dart
+// main.dart
+void main() {
+  runApp(const NetInfinityApp());
+}
+
+class NetInfinityApp extends StatelessWidget {
+  const NetInfinityApp({super.key});
+  
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'NetInfinity',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2C6EE2)),
+        useMaterial3: true,
+      ),
+      home: const ChatShell(),
+    );
+  }
 }
 ```
 
 ### State Management System
 
-```swift
-// AppState.swift
-final class AppState: ObservableObject {
-    @Published var authenticationState: AuthenticationState = .unknown
-    @Published var currentSession: Session?
-    @Published var colorScheme: ColorScheme = .light
-    @Published var isLoading = false
-    @Published var error: AppError?
-    
-    enum AuthenticationState {
-        case unknown, authenticated, notAuthenticated
-    }
+```dart
+// app_state.dart
+class AppState extends ChangeNotifier {
+  AuthenticationState _authenticationState = AuthenticationState.unknown;
+  Session? _currentSession;
+  ThemeMode _themeMode = ThemeMode.light;
+  bool _isLoading = false;
+  AppError? _error;
+  
+  AuthenticationState get authenticationState => _authenticationState;
+  Session? get currentSession => _currentSession;
+  ThemeMode get themeMode => _themeMode;
+  bool get isLoading => _isLoading;
+  AppError? get error => _error;
+  
+  void setAuthenticationState(AuthenticationState state) {
+    _authenticationState = state;
+    notifyListeners();
+  }
+  
+  void setCurrentSession(Session session) {
+    _currentSession = session;
+    notifyListeners();
+  }
+  
+  void setThemeMode(ThemeMode mode) {
+    _themeMode = mode;
+    notifyListeners();
+  }
+  
+  void setIsLoading(bool loading) {
+    _isLoading = loading;
+    notifyListeners();
+  }
+  
+  void setError(AppError error) {
+    _error = error;
+    notifyListeners();
+  }
+}
+
+enum AuthenticationState {
+  unknown,
+  authenticated,
+  notAuthenticated
 }
 ```
 
 ### Dependency Injection Framework
 
-```swift
-// DependencyContainer.swift
-protocol DependencyContainer {
-    var authenticationService: AuthenticationService { get }
-    var roomService: RoomService { get }
-    var messageService: MessageService { get }
-    var userService: UserService { get }
-    var mediaService: MediaService { get }
-    var notificationService: NotificationService { get }
-    var analyticsService: AnalyticsService { get }
+```dart
+// dependency_container.dart
+abstract class DependencyContainer {
+  AuthenticationService get authenticationService;
+  RoomService get roomService;
+  MessageService get messageService;
+  UserService get userService;
+  MediaService get mediaService;
+  NotificationService get notificationService;
+  AnalyticsService get analyticsService;
 }
 
-final class AppDependencyContainer: DependencyContainer {
-    let authenticationService: AuthenticationService
-    let roomService: RoomService
-    let messageService: MessageService
-    let userService: UserService
-    let mediaService: MediaService
-    let notificationService: NotificationService
-    let analyticsService: AnalyticsService
-    
-    init() {
-        let networkService = DefaultNetworkService()
-        let storageService = DefaultStorageService()
-        
-        self.authenticationService = DefaultAuthenticationService(
-            networkService: networkService,
-            storageService: storageService
-        )
-        
-        self.roomService = DefaultRoomService(
-            networkService: networkService,
-            storageService: storageService
-        )
-        
-        // Other services initialized similarly
-    }
+class AppDependencyContainer implements DependencyContainer {
+  final AuthenticationService authenticationService;
+  final RoomService roomService;
+  final MessageService messageService;
+  final UserService userService;
+  final MediaService mediaService;
+  final NotificationService notificationService;
+  final AnalyticsService analyticsService;
+  
+  AppDependencyContainer()
+      : authenticationService = DefaultAuthenticationService(),
+        roomService = DefaultRoomService(),
+        messageService = DefaultMessageService(),
+        userService = DefaultUserService(),
+        mediaService = DefaultMediaService(),
+        notificationService = DefaultNotificationService(),
+        analyticsService = DefaultAnalyticsService();
 }
 ```
 
 ### Navigation System
 
-```swift
-// NavigationManager.swift
-enum NavigationDestination: Hashable {
-    case login
-    case home
-    case room(roomId: String)
-    case roomDetails(roomId: String)
-    case userProfile(userId: String)
-    case settings
-    case mediaViewer(mediaId: String)
-    case search
-    case createRoom
-    case notifications
+```dart
+// navigation_manager.dart
+enum NavigationDestination {
+  login,
+  home,
+  room,
+  roomDetails,
+  userProfile,
+  settings,
+  mediaViewer,
+  search,
+  createRoom,
+  notifications
 }
 
-final class NavigationManager: ObservableObject {
-    @Published var path = NavigationPath()
-    @Published var presentedSheet: NavigationDestination?
-    @Published var fullScreenCover: NavigationDestination?
-    
-    func navigate(to destination: NavigationDestination) {
-        path.append(destination)
+class NavigationManager extends ChangeNotifier {
+  final List<NavigationDestination> _path = [];
+  NavigationDestination? _presentedSheet;
+  NavigationDestination? _fullScreenCover;
+  
+  List<NavigationDestination> get path => _path;
+  NavigationDestination? get presentedSheet => _presentedSheet;
+  NavigationDestination? get fullScreenCover => _fullScreenCover;
+  
+  void navigateTo(NavigationDestination destination) {
+    _path.add(destination);
+    notifyListeners();
+  }
+  
+  void navigateBack() {
+    if (_path.isNotEmpty) {
+      _path.removeLast();
+      notifyListeners();
     }
-    
-    func navigateBack() {
-        guard !path.isEmpty else { return }
-        path.removeLast()
-    }
-    
-    func navigateToRoot() {
-        path = NavigationPath()
-    }
+  }
+  
+  void navigateToRoot() {
+    _path.clear();
+    notifyListeners();
+  }
+  
+  void presentSheet(NavigationDestination destination) {
+    _presentedSheet = destination;
+    notifyListeners();
+  }
+  
+  void dismissSheet() {
+    _presentedSheet = null;
+    notifyListeners();
+  }
+  
+  void presentFullScreenCover(NavigationDestination destination) {
+    _fullScreenCover = destination;
+    notifyListeners();
+  }
+  
+  void dismissFullScreenCover() {
+    _fullScreenCover = null;
+    notifyListeners();
+  }
 }
 ```
 
 ### Root Navigation Flow
 
-```swift
-// RootView.swift
-struct RootView: View {
-    @EnvironmentObject var appState: AppState
-    @EnvironmentObject var navigationManager: NavigationManager
+```dart
+// root_view.dart
+class RootView extends StatelessWidget {
+  const RootView({super.key});
+  
+  @override
+  Widget build(BuildContext context) {
+    final appState = Provider.of<AppState>(context);
+    final navigationManager = Provider.of<NavigationManager>(context);
     
-    var body: some View {
-        Group {
-            switch appState.authenticationState {
-            case .unknown:
-                SplashScreenView()
-                    .onAppear {
-                        checkAuthenticationState()
-                    }
-            case .authenticated:
-                MainTabView()
-                    .environmentObject(navigationManager)
-            case .notAuthenticated:
-                AuthenticationView()
-                    .environmentObject(navigationManager)
-            }
-        }
-        .withSheetNavigation()
-        .withFullScreenCoverNavigation()
-    }
+    return Scaffold(
+      body: Builder(
+        builder: (context) {
+          switch (appState.authenticationState) {
+            case AuthenticationState.unknown:
+              return const SplashScreenView();
+            case AuthenticationState.authenticated:
+              return MainTabView(navigationManager: navigationManager);
+            case AuthenticationState.notAuthenticated:
+              return AuthenticationView(navigationManager: navigationManager);
+          }
+        },
+      ),
+    );
+  }
 }
 ```
 
 ### Main UI Components
 
 **Room List View**
-```swift
-struct RoomListView: View {
-    @StateObject private var viewModel = RoomListViewModel()
-    @EnvironmentObject var navigationManager: NavigationManager
-    
-    var body: some View {
-        List(viewModel.rooms) { room in
-            RoomRowView(room: room)
-                .onTapGesture {
-                    navigationManager.navigate(to: .room(roomId: room.id))
-                }
-        }
-        .refreshable {
-            await viewModel.loadRooms()
-        }
-    }
+```dart
+class RoomListView extends StatefulWidget {
+  const RoomListView({super.key});
+  
+  @override
+  State<RoomListView> createState() => _RoomListViewState();
+}
+
+class _RoomListViewState extends State<RoomListView> {
+  final RoomListViewModel viewModel = RoomListViewModel();
+  final NavigationManager navigationManager = NavigationManager();
+  
+  @override
+  void initState() {
+    super.initState();
+    viewModel.loadRooms();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      itemCount: viewModel.rooms.length,
+      itemBuilder: (context, index) {
+        final room = viewModel.rooms[index];
+        return RoomRowView(
+          room: room,
+          onTap: () => navigationManager.navigateTo(NavigationDestination.room(roomId: room.id)),
+        );
+      },
+    );
+  }
 }
 ```
 
 **Message Composer**
-```swift
-struct MessageComposerView: View {
-    @State private var messageText = ""
-    @State private var isAttachmentSheetPresented = false
-    
-    let onSendMessage: (String) -> Void
-    let onAttachment: () -> Void
-    
-    var body: some View {
-        HStack {
-            TextField("Type a message...", text: $messageText)
-                .textFieldStyle(PlainTextFieldStyle())
-                .padding(.horizontal, 12)
-                .background(Color(.systemGray6))
-                .cornerRadius(20)
-            
-            Button(action: {
-                if !messageText.isEmpty {
-                    onSendMessage(messageText)
-                    messageText = ""
-                } else {
-                    isAttachmentSheetPresented = true
-                }
-            }) {
-                Image(systemName: messageText.isEmpty ? "plus.circle.fill" : "paperplane.fill")
-                    .font(.title2)
+```dart
+class MessageComposerView extends StatefulWidget {
+  final Function(String) onSendMessage;
+  final Function() onAttachment;
+  
+  const MessageComposerView({
+    super.key,
+    required this.onSendMessage,
+    required this.onAttachment,
+  });
+  
+  @override
+  State<MessageComposerView> createState() => _MessageComposerViewState();
+}
+
+class _MessageComposerViewState extends State<MessageComposerView> {
+  final TextEditingController _controller = TextEditingController();
+  
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            decoration: InputDecoration(
+              hintText: 'Type a message...',
+              filled: true,
+              fillColor: Colors.grey[200],
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(20),
+                borderSide: BorderSide.none,
+              ),
+            ),
+            onSubmitted: (text) {
+              if (text.isNotEmpty) {
+                widget.onSendMessage(text);
+                _controller.clear();
+              }
+            },
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.attach_file),
+          onPressed: widget.onAttachment,
+        ),
+        IconButton(
+          icon: const Icon(Icons.send),
+          onPressed: () {
+            if (_controller.text.isNotEmpty) {
+              widget.onSendMessage(_controller.text);
+              _controller.clear();
             }
-            .foregroundColor(.blue)
-        }
-        .padding()
-        .sheet(isPresented: $isAttachmentSheetPresented) {
-            AttachmentPickerView(onSelect: onAttachment)
-        }
-    }
+          },
+        ),
+      ],
+    );
+  }
 }
 ```
 
 ### ViewModel Architecture
 
-```swift
-final class RoomListViewModel: ObservableObject {
-    @Published var rooms: [Room] = []
-    @Published var isLoading = false
+```dart
+class RoomListViewModel extends ChangeNotifier {
+  List<Room> _rooms = [];
+  bool _isLoading = false;
+  final RoomService roomService;
+  
+  List<Room> get rooms => _rooms;
+  bool get isLoading => _isLoading;
+  
+  RoomListViewModel({RoomService? roomService})
+      : roomService = roomService ?? ServiceLocator.shared.roomService;
+  
+  Future<void> loadRooms() async {
+    _isLoading = true;
+    notifyListeners();
     
-    private let roomService: RoomService
-    
-    init(roomService: RoomService = ServiceLocator.shared.roomService) {
-        self.roomService = roomService
+    try {
+      _rooms = await roomService.getRooms();
+    } catch (e) {
+      // Handle error
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
-    
-    @MainActor
-    func loadRooms() async {
-        isLoading = true
-        defer { isLoading = false }
-        
-        do {
-            rooms = try await roomService.getRooms()
-        } catch {
-            // Handle error
-        }
-    }
+  }
 }
 ```
 
 ### Error Handling System
 
-```swift
-enum AppError: Error, Identifiable {
-    case authenticationFailed
-    case networkError(Error)
-    case invalidSession
-    case unknownError
-    
-    var id: String {
-        switch self {
-        case .authenticationFailed: return "authenticationFailed"
-        case .networkError: return "networkError"
-        case .invalidSession: return "invalidSession"
-        case .unknownError: return "unknownError"
-        }
+```dart
+enum AppErrorType {
+  authenticationFailed,
+  networkError,
+  invalidSession,
+  unknownError
+}
+
+class AppError {
+  final AppErrorType type;
+  final String message;
+  final dynamic error;
+  
+  AppError(this.type, this.message, [this.error]);
+  
+  String get title {
+    switch (type) {
+      case AppErrorType.authenticationFailed:
+        return 'Authentication Failed';
+      case AppErrorType.networkError:
+        return 'Network Error';
+      case AppErrorType.invalidSession:
+        return 'Invalid Session';
+      case AppErrorType.unknownError:
+        return 'Error';
     }
-    
-    var title: String {
-        switch self {
-        case .authenticationFailed: return "Authentication Failed"
-        case .networkError: return "Network Error"
-        case .invalidSession: return "Invalid Session"
-        case .unknownError: return "Error"
-        }
-    }
-    
-    var message: String {
-        switch self {
-        case .authenticationFailed: return "Failed to authenticate. Please try again."
-        case .networkError(let error): return "Network error: \(error.localizedDescription)"
-        case .invalidSession: return "Your session has expired. Please log in again."
-        case .unknownError: return "An unknown error occurred. Please try again."
-        }
-    }
+  }
 }
 ```
 
 ### Performance Considerations
 
-- **State Management**: Uses `@Published` properties with Combine framework for reactive updates
-- **Navigation**: Implements SwiftUI's `NavigationPath` for efficient state-based navigation
-- **Memory**: Uses `@StateObject` for proper view model lifecycle management
+- **State Management**: Uses `ChangeNotifier` with `Provider` for reactive updates
+- **Navigation**: Implements Flutter's `Navigator` for efficient state-based navigation
+- **Memory**: Uses `StatefulWidget` for proper widget lifecycle management
 - **Concurrency**: Leverages `async/await` for all network operations
 - **UI Updates**: Implements lazy loading and pagination for large datasets
 
 ### Security Considerations
 
-- **Data Protection**: Uses Keychain for secure credential storage
+- **Data Protection**: Uses Flutter Secure Storage for secure credential storage
 - **Network Security**: Implements TLS pinning for all network requests
 - **Authentication**: Uses biometric authentication for sensitive operations
 - **Session Management**: Implements secure session persistence with encryption
@@ -310,17 +433,17 @@ enum AppError: Error, Identifiable {
 ### Testing Strategy
 
 - **Unit Tests**: Comprehensive testing for view models and services
-- **UI Tests**: Integration tests for critical user flows
-- **Snapshot Tests**: Visual regression testing for UI components
+- **Widget Tests**: Integration tests for critical user flows
+- **Integration Tests**: Visual regression testing for UI components
 - **Performance Tests**: Memory and CPU usage monitoring
 
 ### Internationalization and Accessibility
 
-- **Localization**: Full support for multiple languages using `NSLocalizedString`
-- **Accessibility**: Comprehensive VoiceOver support and dynamic type
+- **Localization**: Full support for multiple languages using Flutter's localization
+- **Accessibility**: Comprehensive screen reader support and dynamic type
 - **Dark Mode**: Full support for light/dark mode with custom themes
 
-This Swift UI implementation provides a native iOS experience while maintaining the architectural patterns and user experience of the Android version, leveraging modern SwiftUI technologies and design principles.
+This Flutter UI implementation provides a native experience across all platforms while maintaining the architectural patterns and user experience of the Android version, leveraging modern Flutter technologies and design principles.
 
 ## Core System Architecture
 
@@ -1001,6 +1124,21 @@ slint-build = "1.0"
 
 [build]
 # Enable Slint build integration
+```
+
+```toml
+# app/Cargo.toml
+[package]
+name = "net-infinity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+net-infinity-ui = { path = "../ui" }
+
+[[bin]]
+name = "net-infinity"
+path = "src/main.rs"
 ```
 
 ```rust

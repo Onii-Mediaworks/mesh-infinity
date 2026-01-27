@@ -28,9 +28,23 @@ impl TransportManager {
     pub fn initialize_transports(&mut self) -> Result<()> {
         for (transport_type, factory) in &self.factories {
             let transport = factory.create_transport();
-            self.transports.insert(*transport_type, transport);
+            self.transports
+                .insert(*transport_type, Arc::from(transport));
         }
         Ok(())
+    }
+
+    pub fn track_connection(&self, peer_id: &str, connection: Box<dyn Connection>) {
+        let mut active = self.active_connections.lock().unwrap();
+        active
+            .entry(peer_id.to_string())
+            .or_default()
+            .push(connection);
+    }
+
+    pub fn active_connection_count(&self, peer_id: &str) -> usize {
+        let active = self.active_connections.lock().unwrap();
+        active.get(peer_id).map(|list| list.len()).unwrap_or(0)
     }
     
     pub async fn get_best_connection(

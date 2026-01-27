@@ -1,9 +1,7 @@
 // Virtual network interface implementation
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
-use pnet::datalink::{self, NetworkInterface};
 use tun_tap::{Iface, Mode};
-use std::io::{Read, Write};
 use crate::error::Result;
 
 pub struct VirtualInterface {
@@ -36,14 +34,17 @@ impl VirtualInterface {
     }
     
     pub fn read_packet(&self, buffer: &mut [u8]) -> Result<usize> {
-        let mut device = self.device.lock().unwrap();
-        let bytes_read = device.read(buffer)?;
+        let device = self.device.lock().unwrap();
+        let bytes_read = device.recv(buffer)?;
+        if !self.packet_filter.filter_packet(&buffer[..bytes_read]) {
+            return Ok(0);
+        }
         Ok(bytes_read)
     }
     
     pub fn write_packet(&self, packet: &[u8]) -> Result<usize> {
-        let mut device = self.device.lock().unwrap();
-        let bytes_written = device.write(packet)?;
+        let device = self.device.lock().unwrap();
+        let bytes_written = device.send(packet)?;
         Ok(bytes_written)
     }
     
@@ -78,8 +79,16 @@ impl IpAllocator {
             ));
         }
         
-        let base_ip: Ipv4Addr = parts[0].parse()?;
-        let prefix_len: u8 = parts[1].parse()?;
+        let base_ip: Ipv4Addr = parts[0].parse().map_err(|err| {
+            crate::error::NetInfinityError::InvalidConfiguration(format!(
+                "Invalid IP range base: {err}"
+            ))
+        })?;
+        let prefix_len: u8 = parts[1].parse().map_err(|err| {
+            crate::error::NetInfinityError::InvalidConfiguration(format!(
+                "Invalid IP range prefix: {err}"
+            ))
+        })?;
         
         // Calculate netmask
         let netmask = match prefix_len {
@@ -90,8 +99,9 @@ impl IpAllocator {
         };
         
         // Start allocating from .1 (avoid .0 network address)
-        let mut next_ip = base_ip;
-        next_ip.octets()[3] = 1;
+        let mut octets = base_ip.octets();
+        octets[3] = 1;
+        let next_ip = Ipv4Addr::from(octets);
         
         Ok(Self {
             network: base_ip,
@@ -104,6 +114,12 @@ impl IpAllocator {
     pub fn allocate(&mut self) -> Result<IpAddr> {
         // Simple sequential allocation for now
         let ip = self.next_ip;
+
+        if !self.is_in_range(ip) {
+            return Err(crate::error::NetInfinityError::InvalidConfiguration(
+                format!("IP allocation exceeded range: {}", ip)
+            ));
+        }
         
         // Increment next IP
         let octets = self.next_ip.octets();
@@ -121,10 +137,23 @@ impl IpAllocator {
             }
         }
         
-        self.next_ip = Ipv4Addr::from(new_octets);
+        let next_ip = Ipv4Addr::from(new_octets);
+        if !self.is_in_range(next_ip) {
+            return Err(crate::error::NetInfinityError::InvalidConfiguration(
+                format!("IP allocation exceeded range: {}", next_ip)
+            ));
+        }
+
+        self.next_ip = next_ip;
         self.used_ips.push(ip);
         
         Ok(IpAddr::V4(ip))
+    }
+
+    fn is_in_range(&self, ip: Ipv4Addr) -> bool {
+        let net = u32::from(self.network);
+        let mask = u32::from(self.netmask);
+        (u32::from(ip) & mask) == (net & mask)
     }
 }
 
@@ -170,7 +199,7 @@ impl PacketFilter {
         Self {}
     }
     
-    pub fn filter_packet(&self, packet: &[u8]) -> bool {
+    pub fn filter_packet(&self, _packet: &[u8]) -> bool {
         // Always allow for now
         true
     }

@@ -5,20 +5,75 @@ on:
     branches: ["**"]
   pull_request:
 
+env:
+  build_type_debug: "true"
+  build_type_release: "false"
+  build_os_windows: "true"
+  build_os_linux: "true"
+  build_os_macos: "true"
+  build_os_android: "false"
+  build_os_ios: "false"
+
 jobs:
-  slint-app:
-    name: net-infinity(${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+  build-flags:
+    name: net-infinity build flags
+    runs-on: ubuntu-latest
+    outputs:
+      build_type_debug: ${{ steps.flags.outputs.build_type_debug }}
+      build_type_release: ${{ steps.flags.outputs.build_type_release }}
+      build_os_windows: ${{ steps.flags.outputs.build_os_windows }}
+      build_os_linux: ${{ steps.flags.outputs.build_os_linux }}
+      build_os_macos: ${{ steps.flags.outputs.build_os_macos }}
+      build_os_android: ${{ steps.flags.outputs.build_os_android }}
+      build_os_ios: ${{ steps.flags.outputs.build_os_ios }}
+    steps:
+      - name: set flags
+        id: flags
+        run: |
+          echo "build_type_debug=${{ env.build_type_debug }}" >> $GITHUB_OUTPUT
+          echo "build_type_release=${{ env.build_type_release }}" >> $GITHUB_OUTPUT
+          echo "build_os_windows=${{ env.build_os_windows }}" >> $GITHUB_OUTPUT
+          echo "build_os_linux=${{ env.build_os_linux }}" >> $GITHUB_OUTPUT
+          echo "build_os_macos=${{ env.build_os_macos }}" >> $GITHUB_OUTPUT
+          echo "build_os_android=${{ env.build_os_android }}" >> $GITHUB_OUTPUT
+          echo "build_os_ios=${{ env.build_os_ios }}" >> $GITHUB_OUTPUT
+
+  app-windows-debug:
+    name: net-infinity windows debug
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_windows == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build app (debug)
+        run: cargo build -p net-infinity
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
+
+      - name: upload app binary (windows, debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-infinity-windows-debug
+          path: ${{ runner.temp }}/netinfinity-cargo/debug/net-infinity.exe
+
+  app-linux-debug:
+    name: net-infinity linux debug
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_linux == 'true' }}
+    runs-on: ubuntu-latest
     steps:
       - name: checkout
         uses: actions/checkout@v4
 
       - name: install linux dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -41,27 +96,142 @@ jobs:
       - name: cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: build app
-        run: cargo build --release -p net-infinity-ui
+      - name: build app (debug)
+        run: cargo build -p net-infinity
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
 
-      - name: upload app binary (unix)
-        if: runner.os != 'Windows'
+      - name: upload app binary (linux, debug)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-${{ matrix.os }}
-          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity-ui
+          name: net-infinity-linux-debug
+          path: ${{ runner.temp }}/netinfinity-cargo/debug/net-infinity
 
-      - name: upload app binary (windows)
-        if: runner.os == 'Windows'
+  app-macos-debug:
+    name: net-infinity macos debug
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_macos == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build app (debug)
+        run: cargo build -p net-infinity
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
+
+      - name: upload app binary (macos, debug)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-${{ matrix.os }}
-          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity-ui.exe
+          name: net-infinity-macos-debug
+          path: ${{ runner.temp }}/netinfinity-cargo/debug/net-infinity
 
-  android:
-    name: net-infinity (android)
+  app-windows-release:
+    name: net-infinity windows release
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_windows == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build app (release)
+        run: cargo build --release -p net-infinity
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
+
+      - name: upload app binary (windows, release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-infinity-windows-release
+          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity.exe
+
+  app-linux-release:
+    name: net-infinity linux release
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_linux == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxkbcommon-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrender-dev \
+            libxfixes-dev \
+            libxext-dev \
+            libxcb1-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build app (release)
+        run: cargo build --release -p net-infinity
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
+
+      - name: upload app binary (linux, release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-infinity-linux-release
+          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity
+
+  app-macos-release:
+    name: net-infinity macos release
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_macos == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build app (release)
+        run: cargo build --release -p net-infinity
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
+
+      - name: upload app binary (macos, release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-infinity-macos-release
+          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity
+
+  android-debug:
+    name: net-infinity android debug
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_android == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: checkout
@@ -76,25 +246,84 @@ jobs:
       - name: set up android sdk
         uses: android-actions/setup-android@v3
 
-      - name: build android shell
+      - name: build android shell (debug)
         uses: gradle/gradle-build-action@v2
         with:
           gradle-version: 8.7
           build-root-directory: android
           arguments: assembleDebug
 
-  ios:
-    name: net-infinity (ios)
+      - name: upload android apk (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-infinity-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  android-release:
+    name: net-infinity android release
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_android == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: set up java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: set up android sdk
+        uses: android-actions/setup-android@v3
+
+      - name: build android shell (release)
+        uses: gradle/gradle-build-action@v2
+        with:
+          gradle-version: 8.7
+          build-root-directory: android
+          arguments: assembleRelease
+
+      - name: upload android apk (release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-infinity-android-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+  ios-debug:
+    name: net-infinity ios debug
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_ios == 'true' }}
     runs-on: macos-latest
     steps:
       - name: checkout
         uses: actions/checkout@v4
 
-      - name: build ios shell
+      - name: build ios shell (debug)
         run: |
           xcodebuild \
             -project NetInfinity.xcodeproj \
             -scheme NetInfinity-iOS \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            build
+
+  ios-release:
+    name: net-infinity ios release
+    needs: build-flags
+    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_ios == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: build ios shell (release)
+        run: |
+          xcodebuild \
+            -project NetInfinity.xcodeproj \
+            -scheme NetInfinity-iOS \
+            -configuration Release \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             build

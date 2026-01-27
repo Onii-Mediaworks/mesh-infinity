@@ -4,5 +4,8 @@
 pub mod web_of_trust;
 pub mod identity;
 
-pub use web_of_trust::*;
-pub use identity::*;
+pub use identity::{Identity as LocalIdentity, IdentityManager};
+pub use web_of_trust::{
+    Identity as TrustIdentity, SharedSecret, TrustEndorsement, TrustMarker, TrustPropagation,
+    TrustRelationship, VerificationMethod, WebOfTrust,
+};
