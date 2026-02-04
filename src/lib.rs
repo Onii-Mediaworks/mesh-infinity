@@ -1,23 +1,25 @@
-// NetInfinity unified crate.
+// Mesh Infinity unified crate.
 
-#[path = "backend/core/src/lib.rs"]
+#[path = "../backend/core/src/lib.rs"]
 pub mod core;
-#[path = "backend/auth/src/lib.rs"]
+#[path = "../backend/auth/src/lib.rs"]
 pub mod auth;
-#[path = "backend/crypto/src/lib.rs"]
+#[path = "../backend/crypto/src/lib.rs"]
 pub mod crypto;
-#[path = "backend/mesh/src/lib.rs"]
+#[path = "../backend/mesh/src/lib.rs"]
 pub mod mesh;
-#[path = "backend/transport/src/lib.rs"]
+#[path = "../backend/transport/src/lib.rs"]
 pub mod transport;
-#[path = "backend/discovery/src/lib.rs"]
+#[path = "../backend/discovery/src/lib.rs"]
 pub mod discovery;
-#[path = "backend/src/lib.rs"]
+#[path = "../backend/src/lib.rs"]
 pub mod backend;
-#[path = "backend/ffi/src/lib.rs"]
+#[path = "../backend/ffi/src/lib.rs"]
 pub mod ffi;
+pub mod runtime;
 
 pub use backend::{
-    FileTransferSummary, Message, NetInfinityService, NodeMode, PeerSummary, RoomSummary,
+    FileTransferSummary, Message, MeshInfinityService, NodeMode, PeerSummary, RoomSummary,
     ServiceConfig, Settings,
 };
+pub use runtime::{MeshInfinityRuntime, RuntimeConfig};

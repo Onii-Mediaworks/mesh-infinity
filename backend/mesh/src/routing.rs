@@ -90,7 +90,7 @@ impl RoutingTable {
             route.last_updated = SystemTime::now();
             Ok(())
         } else {
-            Err(crate::core::error::NetInfinityError::PeerNotFound(
+            Err(crate::core::error::MeshInfinityError::PeerNotFound(
                 format!("{:?}", peer_id)
             ))
         }

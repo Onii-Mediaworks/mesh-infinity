@@ -4,7 +4,7 @@ use std::time::SystemTime;
 use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::core::{FileId, PeerId};
-use crate::error::{NetInfinityError, Result};
+use crate::core::error::{MeshInfinityError, Result};
 
 use super::{ChunkManager, TransferQueue};
 
@@ -108,7 +108,7 @@ impl FileTransferManager {
             let transfer = self
                 .transfers
                 .get_mut(&id)
-                .ok_or_else(|| NetInfinityError::FileTransferError("queue item missing".to_string()))?;
+                .ok_or_else(|| MeshInfinityError::FileTransferError("queue item missing".to_string()))?;
             transfer.status = TransferStatus::InProgress;
             if transfer.progress.started_at.is_none() {
                 transfer.progress.started_at = Some(SystemTime::now());
@@ -124,7 +124,7 @@ impl FileTransferManager {
         let transfer = self
             .transfers
             .get_mut(id)
-            .ok_or_else(|| NetInfinityError::FileTransferError("transfer not found".to_string()))?;
+            .ok_or_else(|| MeshInfinityError::FileTransferError("transfer not found".to_string()))?;
 
         let now = SystemTime::now();
         if transfer.progress.started_at.is_none() {
@@ -149,7 +149,7 @@ impl FileTransferManager {
         let transfer = self
             .transfers
             .get_mut(id)
-            .ok_or_else(|| NetInfinityError::FileTransferError("transfer not found".to_string()))?;
+            .ok_or_else(|| MeshInfinityError::FileTransferError("transfer not found".to_string()))?;
         transfer.progress.transferred_bytes = transfer.progress.total_bytes;
         transfer.progress.updated_at = SystemTime::now();
         transfer.status = TransferStatus::Completed;
@@ -160,7 +160,7 @@ impl FileTransferManager {
         let transfer = self
             .transfers
             .get_mut(id)
-            .ok_or_else(|| NetInfinityError::FileTransferError("transfer not found".to_string()))?;
+            .ok_or_else(|| MeshInfinityError::FileTransferError("transfer not found".to_string()))?;
         transfer.status = TransferStatus::Failed;
         transfer.progress.updated_at = SystemTime::now();
         transfer.last_error = Some(reason.to_string());
@@ -171,7 +171,7 @@ impl FileTransferManager {
         let transfer = self
             .transfers
             .get_mut(id)
-            .ok_or_else(|| NetInfinityError::FileTransferError("transfer not found".to_string()))?;
+            .ok_or_else(|| MeshInfinityError::FileTransferError("transfer not found".to_string()))?;
         transfer.status = TransferStatus::Canceled;
         transfer.progress.updated_at = SystemTime::now();
         Ok(())
@@ -214,6 +214,6 @@ impl FileTransferManager {
 fn random_file_id(rng: &SystemRandom) -> Result<FileId> {
     let mut id = [0u8; 32];
     rng.fill(&mut id)
-        .map_err(|_| NetInfinityError::FileTransferError("file id generation failed".to_string()))?;
+        .map_err(|_| MeshInfinityError::FileTransferError("file id generation failed".to_string()))?;
     Ok(id)
 }

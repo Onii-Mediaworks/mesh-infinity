@@ -2,7 +2,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 use tun_tap::{Iface, Mode};
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct VirtualInterface {
     device: Arc<Mutex<Iface>>,
@@ -74,18 +74,18 @@ impl IpAllocator {
         // Parse CIDR notation (e.g., "10.42.0.0/16")
         let parts: Vec<&str> = ip_range.split('/').collect();
         if parts.len() != 2 {
-            return Err(crate::error::NetInfinityError::InvalidConfiguration(
+            return Err(crate::core::error::MeshInfinityError::InvalidConfiguration(
                 format!("Invalid IP range format: {}", ip_range)
             ));
         }
         
         let base_ip: Ipv4Addr = parts[0].parse().map_err(|err| {
-            crate::error::NetInfinityError::InvalidConfiguration(format!(
+            crate::core::error::MeshInfinityError::InvalidConfiguration(format!(
                 "Invalid IP range base: {err}"
             ))
         })?;
         let prefix_len: u8 = parts[1].parse().map_err(|err| {
-            crate::error::NetInfinityError::InvalidConfiguration(format!(
+            crate::core::error::MeshInfinityError::InvalidConfiguration(format!(
                 "Invalid IP range prefix: {err}"
             ))
         })?;
@@ -116,7 +116,7 @@ impl IpAllocator {
         let ip = self.next_ip;
 
         if !self.is_in_range(ip) {
-            return Err(crate::error::NetInfinityError::InvalidConfiguration(
+            return Err(crate::core::error::MeshInfinityError::InvalidConfiguration(
                 format!("IP allocation exceeded range: {}", ip)
             ));
         }
@@ -139,7 +139,7 @@ impl IpAllocator {
         
         let next_ip = Ipv4Addr::from(new_octets);
         if !self.is_in_range(next_ip) {
-            return Err(crate::error::NetInfinityError::InvalidConfiguration(
+            return Err(crate::core::error::MeshInfinityError::InvalidConfiguration(
                 format!("IP allocation exceeded range: {}", next_ip)
             ));
         }

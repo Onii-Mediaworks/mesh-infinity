@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub trait ProtocolHandler: Send + Sync {
     fn protocol(&self) -> &'static str;

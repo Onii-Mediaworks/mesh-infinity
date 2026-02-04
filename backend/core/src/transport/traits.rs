@@ -1,6 +1,6 @@
 // Transport traits for modular transport implementations
 use crate::core::{PeerInfo, TransportType, TransportQuality};
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub trait Transport: Send + Sync {
     /// Connect to a peer via this transport

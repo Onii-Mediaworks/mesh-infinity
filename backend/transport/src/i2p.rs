@@ -76,7 +76,7 @@ pub struct I2pListener;
 
 impl Listener for I2pListener {
     fn accept(&mut self) -> Result<Box<dyn Connection>> {
-        Err(crate::core::error::NetInfinityError::OperationNotSupported)
+        Err(crate::core::error::MeshInfinityError::OperationNotSupported)
     }
 
     fn close(&mut self) -> Result<()> {

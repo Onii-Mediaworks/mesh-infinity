@@ -1,4 +1,4 @@
-name: net-infinity build
+name: mesh-infinity build
 
 on:
   push:
@@ -16,7 +16,7 @@ env:
 
 jobs:
   build-flags:
-    name: net-infinity build flags
+    name: mesh-infinity build flags
     runs-on: ubuntu-latest
     outputs:
       build_type_debug: ${{ steps.flags.outputs.build_type_debug }}
@@ -39,7 +39,7 @@ jobs:
           echo "build_os_ios=${{ env.build_os_ios }}" >> $GITHUB_OUTPUT
 
   app-windows-debug:
-    name: net-infinity windows debug
+    name: mesh-infinity windows debug
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_windows == 'true' }}
     runs-on: windows-latest
@@ -47,25 +47,42 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: enable windows desktop
+        run: flutter config --enable-windows-desktop
+
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: build app (debug)
-        run: cargo build -p net-infinity
+      - name: build backend (debug)
+        run: cargo build -p mesh-infinity
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
 
-      - name: upload app binary (windows, debug)
+      - name: build flutter bundle (debug)
+        run: flutter build windows --debug
+        working-directory: frontend
+
+      - name: stage backend for flutter
+        shell: pwsh
+        run: |
+          Copy-Item "${{ runner.temp }}\netinfinity-cargo\debug\mesh_infinity.dll" frontend\build\windows\x64\runner\Debug\mesh_infinity.dll
+
+      - name: upload app bundle (windows, debug)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-windows-debug
-          path: ${{ runner.temp }}/netinfinity-cargo/debug/net-infinity.exe
+          name: mesh-infinity-windows-debug
+          path: frontend/build/windows/x64/runner/Debug
 
   app-linux-debug:
-    name: net-infinity linux debug
+    name: mesh-infinity linux debug
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_linux == 'true' }}
     runs-on: ubuntu-latest
@@ -93,22 +110,39 @@ jobs:
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: enable linux desktop
+        run: flutter config --enable-linux-desktop
+
       - name: cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: build app (debug)
-        run: cargo build -p net-infinity
+      - name: build backend (debug)
+        run: cargo build -p mesh-infinity
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
 
-      - name: upload app binary (linux, debug)
+      - name: build flutter bundle (debug)
+        run: flutter build linux --debug
+        working-directory: frontend
+
+      - name: stage backend for flutter
+        run: |
+          cp "${{ runner.temp }}/netinfinity-cargo/debug/libmesh_infinity.so" \
+            frontend/build/linux/x64/debug/bundle/libmesh_infinity.so
+
+      - name: upload app bundle (linux, debug)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-linux-debug
-          path: ${{ runner.temp }}/netinfinity-cargo/debug/net-infinity
+          name: mesh-infinity-linux-debug
+          path: frontend/build/linux/x64/debug/bundle
 
   app-macos-debug:
-    name: net-infinity macos debug
+    name: mesh-infinity macos debug
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_macos == 'true' }}
     runs-on: macos-latest
@@ -119,22 +153,39 @@ jobs:
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: enable macos desktop
+        run: flutter config --enable-macos-desktop
+
       - name: cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: build app (debug)
-        run: cargo build -p net-infinity
+      - name: build backend (debug)
+        run: cargo build -p mesh-infinity
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
 
-      - name: upload app binary (macos, debug)
+      - name: build flutter bundle (debug)
+        run: flutter build macos --debug
+        working-directory: frontend
+
+      - name: stage backend for flutter
+        run: |
+          cp "${{ runner.temp }}/netinfinity-cargo/debug/libmesh_infinity.dylib" \
+            frontend/build/macos/Build/Products/Debug/mesh_infinity_frontend.app/Contents/MacOS/libmesh_infinity.dylib
+
+      - name: upload app bundle (macos, debug)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-macos-debug
-          path: ${{ runner.temp }}/netinfinity-cargo/debug/net-infinity
+          name: mesh-infinity-macos-debug
+          path: frontend/build/macos/Build/Products/Debug/mesh_infinity_frontend.app
 
   app-windows-release:
-    name: net-infinity windows release
+    name: mesh-infinity windows release
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_windows == 'true' }}
     runs-on: windows-latest
@@ -142,25 +193,42 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: enable windows desktop
+        run: flutter config --enable-windows-desktop
+
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: build app (release)
-        run: cargo build --release -p net-infinity
+      - name: build backend (release)
+        run: cargo build --release -p mesh-infinity
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
 
-      - name: upload app binary (windows, release)
+      - name: build flutter bundle (release)
+        run: flutter build windows --release
+        working-directory: frontend
+
+      - name: stage backend for flutter
+        shell: pwsh
+        run: |
+          Copy-Item "${{ runner.temp }}\netinfinity-cargo\release\mesh_infinity.dll" frontend\build\windows\x64\runner\Release\mesh_infinity.dll
+
+      - name: upload app bundle (windows, release)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-windows-release
-          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity.exe
+          name: mesh-infinity-windows-release
+          path: frontend/build/windows/x64/runner/Release
 
   app-linux-release:
-    name: net-infinity linux release
+    name: mesh-infinity linux release
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_linux == 'true' }}
     runs-on: ubuntu-latest
@@ -188,22 +256,39 @@ jobs:
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: enable linux desktop
+        run: flutter config --enable-linux-desktop
+
       - name: cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: build app (release)
-        run: cargo build --release -p net-infinity
+      - name: build backend (release)
+        run: cargo build --release -p mesh-infinity
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
 
-      - name: upload app binary (linux, release)
+      - name: build flutter bundle (release)
+        run: flutter build linux --release
+        working-directory: frontend
+
+      - name: stage backend for flutter
+        run: |
+          cp "${{ runner.temp }}/netinfinity-cargo/release/libmesh_infinity.so" \
+            frontend/build/linux/x64/release/bundle/libmesh_infinity.so
+
+      - name: upload app bundle (linux, release)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-linux-release
-          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity
+          name: mesh-infinity-linux-release
+          path: frontend/build/linux/x64/release/bundle
 
   app-macos-release:
-    name: net-infinity macos release
+    name: mesh-infinity macos release
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_macos == 'true' }}
     runs-on: macos-latest
@@ -214,22 +299,39 @@ jobs:
       - name: set up rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: enable macos desktop
+        run: flutter config --enable-macos-desktop
+
       - name: cache rust
         uses: Swatinem/rust-cache@v2
 
-      - name: build app (release)
-        run: cargo build --release -p net-infinity
+      - name: build backend (release)
+        run: cargo build --release -p mesh-infinity
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/netinfinity-cargo
 
-      - name: upload app binary (macos, release)
+      - name: build flutter bundle (release)
+        run: flutter build macos --release
+        working-directory: frontend
+
+      - name: stage backend for flutter
+        run: |
+          cp "${{ runner.temp }}/netinfinity-cargo/release/libmesh_infinity.dylib" \
+            frontend/build/macos/Build/Products/Release/mesh_infinity_frontend.app/Contents/MacOS/libmesh_infinity.dylib
+
+      - name: upload app bundle (macos, release)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-macos-release
-          path: ${{ runner.temp }}/netinfinity-cargo/release/net-infinity
+          name: mesh-infinity-macos-release
+          path: frontend/build/macos/Build/Products/Release/mesh_infinity_frontend.app
 
   android-debug:
-    name: net-infinity android debug
+    name: mesh-infinity android debug
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_android == 'true' }}
     runs-on: ubuntu-latest
@@ -237,6 +339,11 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
       - name: set up java
         uses: actions/setup-java@v4
         with:
@@ -246,21 +353,30 @@ jobs:
       - name: set up android sdk
         uses: android-actions/setup-android@v3
 
-      - name: build android shell (debug)
-        uses: gradle/gradle-build-action@v2
-        with:
-          gradle-version: 8.7
-          build-root-directory: android
-          arguments: assembleDebug
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build backend (debug)
+        run: |
+          cargo install cargo-ndk --locked
+          cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 \
+            -o frontend/android/app/src/main/jniLibs build -p mesh-infinity
+
+      - name: build android app (debug)
+        run: flutter build apk --debug
+        working-directory: frontend
 
       - name: upload android apk (debug)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-android-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: mesh-infinity-android-debug
+          path: frontend/build/app/outputs/flutter-apk/app-debug.apk
 
   android-release:
-    name: net-infinity android release
+    name: mesh-infinity android release
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_android == 'true' }}
     runs-on: ubuntu-latest
@@ -268,6 +384,11 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
       - name: set up java
         uses: actions/setup-java@v4
         with:
@@ -277,21 +398,30 @@ jobs:
       - name: set up android sdk
         uses: android-actions/setup-android@v3
 
-      - name: build android shell (release)
-        uses: gradle/gradle-build-action@v2
-        with:
-          gradle-version: 8.7
-          build-root-directory: android
-          arguments: assembleRelease
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build backend (release)
+        run: |
+          cargo install cargo-ndk --locked
+          cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 \
+            -o frontend/android/app/src/main/jniLibs build -p mesh-infinity --release
+
+      - name: build android app (release)
+        run: flutter build apk --release
+        working-directory: frontend
 
       - name: upload android apk (release)
         uses: actions/upload-artifact@v4
         with:
-          name: net-infinity-android-release
-          path: android/app/build/outputs/apk/release/app-release.apk
+          name: mesh-infinity-android-release
+          path: frontend/build/app/outputs/flutter-apk/app-release.apk
 
   ios-debug:
-    name: net-infinity ios debug
+    name: mesh-infinity ios debug
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_ios == 'true' }}
     runs-on: macos-latest
@@ -299,18 +429,28 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
-      - name: build ios shell (debug)
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build backend (debug)
         run: |
-          xcodebuild \
-            -project NetInfinity.xcodeproj \
-            -scheme NetInfinity-iOS \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            build
+          cargo build -p mesh-infinity --target aarch64-apple-ios
+          cargo build -p mesh-infinity --target x86_64-apple-ios
+
+      - name: build ios app (debug)
+        run: flutter build ios --debug --no-codesign
+        working-directory: frontend
 
   ios-release:
-    name: net-infinity ios release
+    name: mesh-infinity ios release
     needs: build-flags
     if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_ios == 'true' }}
     runs-on: macos-latest
@@ -318,12 +458,22 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
-      - name: build ios shell (release)
+      - name: set up flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: set up rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: build backend (release)
         run: |
-          xcodebuild \
-            -project NetInfinity.xcodeproj \
-            -scheme NetInfinity-iOS \
-            -configuration Release \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            build
+          cargo build -p mesh-infinity --target aarch64-apple-ios --release
+          cargo build -p mesh-infinity --target x86_64-apple-ios --release
+
+      - name: build ios app (release)
+        run: flutter build ios --release --no-codesign
+        working-directory: frontend

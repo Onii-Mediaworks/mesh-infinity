@@ -1,4 +1,4 @@
-// SeasonCom Transport Layer
+// Mesh Infinity Transport Layer
 // This module implements various transport protocols for the mesh network
 
 pub mod tor;

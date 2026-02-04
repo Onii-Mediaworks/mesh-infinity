@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::core::{PeerId, PeerInfo};
-use crate::error::Result;
+use crate::core::error::Result;
 
 use super::{AdaptiveDiscovery, BootstrapService};
 

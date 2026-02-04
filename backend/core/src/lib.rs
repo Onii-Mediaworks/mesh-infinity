@@ -1,5 +1,5 @@
-// SeasonCom Core Library
-// Main entry point for the SeasonCom mesh networking platform
+// Mesh Infinity Core Library
+// Main entry point for the Mesh Infinity mesh networking platform
 
 pub mod core;
 pub mod transport;

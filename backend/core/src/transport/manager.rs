@@ -1,7 +1,7 @@
 // Transport manager for handling multiple transport types
 use crate::core::{PeerInfo, TransportType, TransportQuality};
-use crate::error::Result;
-use crate::transport::traits::{Transport, Connection, TransportFactory};
+use crate::core::error::Result;
+use super::traits::{Connection, Transport, TransportFactory};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -63,7 +63,7 @@ impl TransportManager {
                 }
             }
         }
-        Err(crate::error::NetInfinityError::NoAvailableTransport)
+        Err(crate::core::error::MeshInfinityError::NoAvailableTransport)
     }
     
     pub fn get_transport(&self, transport_type: &TransportType) -> Option<Arc<dyn Transport>> {
@@ -78,7 +78,7 @@ impl TransportManager {
         if let Some(transport) = self.transports.get(&transport_type) {
             transport.measure_quality(target)
         } else {
-            Err(crate::error::NetInfinityError::TransportError(
+            Err(crate::core::error::MeshInfinityError::TransportError(
                 format!("Transport type {:?} not available", transport_type)
             ))
         }

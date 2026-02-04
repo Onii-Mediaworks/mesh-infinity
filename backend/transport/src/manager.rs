@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::core::core::{PeerInfo, TransportQuality, TransportType};
-use crate::core::error::{NetInfinityError, Result};
+use crate::core::error::{MeshInfinityError, Result};
 use crate::core::transport::traits::{Connection, Listener, Transport, TransportFactory};
 use crate::core::transport::TransportManager;
 
-use crate::{BluetoothTransport, ClearnetTransport, I2pTransport, TorTransport};
+use super::{BluetoothTransport, ClearnetTransport, I2pTransport, TorTransport};
 
 struct ConfigurableTransport {
     enabled: Arc<AtomicBool>,
@@ -27,14 +27,14 @@ impl ConfigurableTransport {
 impl Transport for ConfigurableTransport {
     fn connect(&self, peer_info: &PeerInfo) -> Result<Box<dyn Connection>> {
         if !self.is_enabled() {
-            return Err(NetInfinityError::TransportError("Transport disabled".to_string()));
+            return Err(MeshInfinityError::TransportError("Transport disabled".to_string()));
         }
         self.inner.connect(peer_info)
     }
 
     fn listen(&self) -> Result<Box<dyn Listener>> {
         if !self.is_enabled() {
-            return Err(NetInfinityError::TransportError("Transport disabled".to_string()));
+            return Err(MeshInfinityError::TransportError("Transport disabled".to_string()));
         }
         self.inner.listen()
     }
@@ -53,7 +53,7 @@ impl Transport for ConfigurableTransport {
 
     fn measure_quality(&self, target: &PeerInfo) -> Result<TransportQuality> {
         if !self.is_available() {
-            return Err(NetInfinityError::TransportError("Transport disabled".to_string()));
+            return Err(MeshInfinityError::TransportError("Transport disabled".to_string()));
         }
         self.inner.measure_quality(target)
     }

@@ -2100,6 +2100,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "mesh-infinity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "arti-client",
+ "base64 0.22.1",
+ "bip39",
+ "boringtun",
+ "bytes 1.11.0",
+ "chacha20poly1305",
+ "config",
+ "crc32fast",
+ "crossbeam-channel",
+ "ed25519-dalek",
+ "flate2",
+ "flutter_rust_bridge",
+ "getrandom 0.2.17",
+ "hkdf",
+ "libc",
+ "log",
+ "lru",
+ "pnet",
+ "rand_core 0.5.1",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2 0.5.10",
+ "stun",
+ "thiserror 1.0.69",
+ "time",
+ "tokio 1.49.0",
+ "tokio-stream",
+ "tor-rtcompat",
+ "tracing",
+ "trust-dns-resolver",
+ "trust-dns-server",
+ "tun-tap",
+ "turn",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2183,157 +2228,6 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
-]
-
-[[package]]
-name = "net-infinity-auth"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ed25519-dalek",
- "log",
- "net-infinity-core",
- "net-infinity-crypto",
- "rand_core 0.5.1",
- "ring",
- "serde",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "net-infinity-backend"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "getrandom 0.2.17",
- "net-infinity-auth",
- "net-infinity-core",
- "net-infinity-mesh",
- "net-infinity-transport",
- "thiserror 1.0.69",
- "time",
-]
-
-[[package]]
-name = "net-infinity-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arti-client",
- "boringtun",
- "bytes 1.11.0",
- "chacha20poly1305",
- "config",
- "crc32fast",
- "ed25519-dalek",
- "flate2",
- "flutter_rust_bridge",
- "log",
- "lru",
- "pnet",
- "ring",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "stun",
- "thiserror 1.0.69",
- "tokio 1.49.0",
- "tokio-stream",
- "tor-rtcompat",
- "tracing",
- "trust-dns-resolver",
- "trust-dns-server",
- "tun-tap",
- "turn",
- "x25519-dalek",
-]
-
-[[package]]
-name = "net-infinity-crypto"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "base64 0.22.1",
- "bip39",
- "chacha20poly1305",
- "ed25519-dalek",
- "hkdf",
- "log",
- "net-infinity-core",
- "rand_core 0.5.1",
- "ring",
- "serde",
- "sha2 0.10.9",
- "thiserror 1.0.69",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
-name = "net-infinity-discovery"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "log",
- "net-infinity-core",
- "net-infinity-mesh",
- "serde",
- "thiserror 1.0.69",
- "tokio 1.49.0",
-]
-
-[[package]]
-name = "net-infinity-ffi"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
- "flutter_rust_bridge",
- "libc",
- "log",
- "net-infinity-auth",
- "net-infinity-backend",
- "net-infinity-core",
- "net-infinity-crypto",
- "net-infinity-discovery",
- "net-infinity-mesh",
- "net-infinity-transport",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "net-infinity-mesh"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "boringtun",
- "log",
- "net-infinity-auth",
- "net-infinity-core",
- "net-infinity-crypto",
- "net-infinity-transport",
- "serde",
- "thiserror 1.0.69",
- "tokio 1.49.0",
-]
-
-[[package]]
-name = "net-infinity-transport"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arti-client",
- "boringtun",
- "log",
- "net-infinity-core",
- "serde",
- "socket2 0.5.10",
- "thiserror 1.0.69",
- "tokio 1.49.0",
- "tor-rtcompat",
 ]
 
 [[package]]

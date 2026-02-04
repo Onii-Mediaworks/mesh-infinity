@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct BandwidthManager {
     limit_kbps: u32,

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::core::{PeerId, PeerInfo, TrustLevel};
-use crate::error::{NetInfinityError, Result};
+use crate::core::error::{MeshInfinityError, Result};
 
 pub struct PeerManager {
     peers: HashMap<PeerId, PeerInfo>,
@@ -41,7 +41,7 @@ impl PeerManager {
             self.trust.insert(*peer_id, trust_level);
             Ok(())
         } else {
-            Err(NetInfinityError::PeerNotFound(format!("{:?}", peer_id)))
+            Err(MeshInfinityError::PeerNotFound(format!("{:?}", peer_id)))
         }
     }
 

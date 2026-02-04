@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, SystemTime};
 
 use crate::core::core::PeerId;
-use crate::core::error::{NetInfinityError, Result};
+use crate::core::error::{MeshInfinityError, Result};
 use rand_core::{OsRng, RngCore};
 
 #[derive(Clone)]
@@ -54,7 +54,7 @@ impl PFSManager {
         let current = self
             .current_sessions
             .get_mut(peer_id)
-            .ok_or(NetInfinityError::NoActiveSession)?;
+            .ok_or(MeshInfinityError::NoActiveSession)?;
 
         current.encryption_key = random_key()?;
         current.mac_key = random_key()?;

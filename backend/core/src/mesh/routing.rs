@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 use crate::core::PeerId;
-use crate::error::Result;
-use crate::transport::TransportManager;
+use crate::core::error::Result;
+use crate::core::transport::TransportManager;
 
 pub struct MessageRouter {
     routing_table: Arc<RwLock<RoutingTable>>,
@@ -153,7 +153,7 @@ impl MessageRouter {
             self.ack_tracker.clear_pending(&message.target);
         }
         
-        Err(crate::error::NetInfinityError::TransportError(
+        Err(crate::core::error::MeshInfinityError::TransportError(
             "All paths failed".to_string()
         ))
     }

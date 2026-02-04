@@ -84,7 +84,7 @@ pub struct TorListener;
 impl Listener for TorListener {
     fn accept(&mut self) -> Result<Box<dyn Connection>> {
         // Accept incoming Tor connection
-        Err(crate::core::error::NetInfinityError::OperationNotSupported)
+        Err(crate::core::error::MeshInfinityError::OperationNotSupported)
     }
     
     fn close(&mut self) -> Result<()> {

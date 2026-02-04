@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct TrafficRouter;
 

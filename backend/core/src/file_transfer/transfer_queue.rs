@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct TransferQueue<T> {
     queue: VecDeque<T>,

@@ -328,7 +328,7 @@ fn derive_recovery_key(mnemonic: &Mnemonic, salt: &[u8]) -> Result<[u8; 32], Vau
     let seed = mnemonic.to_seed("");
     let hkdf = Hkdf::<Sha512>::new(Some(salt), seed.as_slice());
     let mut output = [0u8; 32];
-    hkdf.expand(b"net-infinity recovery key", &mut output)
+    hkdf.expand(b"mesh-infinity recovery key", &mut output)
         .map_err(|_| VaultError::Hkdf)?;
     Ok(output)
 }
@@ -371,7 +371,7 @@ fn decrypt_key_slot(derived_key: &[u8; 32], slot: &WrappedKeySlot) -> Result<Vau
 fn derive_file_key(key: &VaultKey, file_id: &[u8; 16]) -> Result<[u8; 32], VaultError> {
     let hkdf = Hkdf::<Sha512>::new(Some(file_id), key.as_bytes());
     let mut output = [0u8; 32];
-    hkdf.expand(b"net-infinity file key", &mut output)
+    hkdf.expand(b"mesh-infinity file key", &mut output)
         .map_err(|_| VaultError::Hkdf)?;
     Ok(output)
 }

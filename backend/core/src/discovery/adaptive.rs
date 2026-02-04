@@ -1,5 +1,5 @@
 use crate::core::PeerInfo;
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct AdaptiveDiscovery {
     known_peers: Vec<PeerInfo>,

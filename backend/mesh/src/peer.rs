@@ -83,7 +83,7 @@ impl PeerManager {
             peer.available_transports = transports.to_vec();
             Ok(())
         } else {
-            Err(crate::core::error::NetInfinityError::PeerNotFound(
+            Err(crate::core::error::MeshInfinityError::PeerNotFound(
                 format!("{:?}", peer_id)
             ))
         }
