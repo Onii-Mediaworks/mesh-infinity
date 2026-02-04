@@ -1,8 +1,8 @@
 // Simple integration test to verify the basic structure
 #[cfg(test)]
 mod tests {
-    use net_infinity::core::{MeshConfig, PeerInfo, TransportType, TrustLevel};
-    use net_infinity::core::error::Result;
+    use mesh_infinity::core::{MeshConfig, PeerInfo, TransportType, TrustLevel};
+    use mesh_infinity::core::error::Result;
 
     #[test]
     fn test_basic_configuration() {
@@ -29,9 +29,9 @@ mod tests {
 
     #[test]
     fn test_error_handling() {
-        let error = net_infinity::core::error::NetInfinityError::PeerNotFound("test".to_string());
+        let error = mesh_infinity::core::error::MeshInfinityError::PeerNotFound("test".to_string());
         match error {
-            net_infinity::core::error::NetInfinityError::PeerNotFound(msg) => {
+            mesh_infinity::core::error::MeshInfinityError::PeerNotFound(msg) => {
                 assert_eq!(msg, "test");
             }
             _ => panic!("Wrong error type"),

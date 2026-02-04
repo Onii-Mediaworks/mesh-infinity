@@ -1,25 +1,28 @@
-# SeasonCom Technical Specification
+# Mesh Infinity Technical Specification
 
 ## UI Platform Direction (Updated)
 
-NetInfinity will use a **Flutter UI-only** layer for all supported platforms (Android, iOS, desktop) while keeping the Rust backend as the trusted security boundary. The UI does not implement cryptography, transport, or storage primitives; it only renders state and issues user-intent commands through a minimal FFI bridge.
+Mesh Infinity uses a **Flutter UI-only** layer for all supported platforms (Android primary, iOS incidental, desktop) while keeping the Rust backend as the trusted security boundary. The UI does not implement cryptography, transport, or storage primitives; it only renders state and issues user-intent commands through a minimal, audited boundary.
+
+**Note:** Slint UI documentation is archival and kept only for parity checks. Flutter is the canonical UI.
 
 ### Canonical UI
 
 - **Flutter** is the canonical UI across platforms.
-- **Slint** and **SwiftUI** are deprecated and retained only for parity checks or legacy reference.
+- **Slint** and **SwiftUI** are deprecated and not part of the build; references are archival only.
+- Brand assets live in `assets/logo.png` and should be used for app icons and in-app branding.
 
-### Flutter ↔ Rust Boundary (Security Constraints)
+### UI ↔ Rust Boundary (Security Constraints)
 
 - The Rust core is the source of truth for identities, keys, transport, and storage.
-- Flutter is treated as **untrusted UI**; it must not hold secrets or perform cryptographic operations.
-- All FFI calls are **versioned, typed, and validated**. Do not expose low-level networking or crypto primitives to Dart.
+- The UI is treated as **untrusted**; it must not hold secrets or perform cryptographic operations.
+- All UI-to-core calls are **versioned, typed, and validated**. Do not expose low-level networking or crypto primitives to the UI layer.
 - Prefer **minimal, intent-based APIs** (e.g., "send_message", "create_room", "pair_peer") over raw configuration access.
 - No cloud services or vendor SDK dependencies (e.g., Google Play Services, Apple/Microsoft cloud APIs).
 
-### FFI Transport
+### UI Integration
 
-- Use `dart:ffi` to bind to the Rust FFI crate and keep platform channels thin.
+- Use `dart:ffi` to bind to the Rust FFI module and keep platform channels thin.
 - Generated bindings must be stable and audited; schema validation is required for structured payloads.
 - FFI error codes are mapped to user-facing error models without leaking internal details.
 
@@ -31,13 +34,13 @@ NetInfinity will use a **Flutter UI-only** layer for all supported platforms (An
 
 ## Flutter UI Implementation
 
-The NetInfinity application is built using Flutter with a modern MVVM architecture, following the patterns established in the Android mobile UI while leveraging native Flutter technologies.
+The Mesh Infinity application is built using Flutter with a modern MVVM architecture, following the patterns established in the Android mobile UI while leveraging native Flutter technologies.
 
 ### Architecture Overview
 
 ```mermaid
 graph TD
-    A[NetInfinityApp] --> B[AppState: ChangeNotifier]
+    A[MeshInfinityApp] --> B[AppState: ChangeNotifier]
     A --> C[DependencyContainer]
     A --> D[NavigationManager]
     B --> E[AuthenticationState]
@@ -55,16 +58,16 @@ graph TD
 ```dart
 // main.dart
 void main() {
-  runApp(const NetInfinityApp());
+  runApp(const MeshInfinityApp());
 }
 
-class NetInfinityApp extends StatelessWidget {
-  const NetInfinityApp({super.key});
+class MeshInfinityApp extends StatelessWidget {
+  const MeshInfinityApp({super.key});
   
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'NetInfinity',
+      title: 'Mesh Infinity',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2C6EE2)),
         useMaterial3: true,
@@ -447,26 +450,255 @@ This Flutter UI implementation provides a native experience across all platforms
 
 ## Core System Architecture
 
+Mesh Infinity is built as a **PMWAN (Private Mesh Wide Area Network)** - a complete networking platform that provides:
+
+1. **Encrypted P2P Mesh Network** - Decentralized communication using Tor/I2P/WireGuard
+2. **System-Wide VPN/Proxy** - Routes all device traffic through the mesh
+3. **Exit Node Network** - Access internet through trusted mesh peers
+4. **Hop-by-Hop Routing** - Discovery-driven, topology-based routing with no predetermined paths
+5. **Multi-Layer Message Security** - Sign, encrypt, re-sign, encrypt scheme for all communications
+
+### Mesh Addressing Scheme
+
+Mesh Infinity uses a **256-bit addressing scheme** (8 groups of 8 hexadecimal characters):
+
+```
+a1b2c3d4:e5f6a7b8:12345678:90abcdef:01234567:89abcdef:fedcba98:76543210
+└────────────── device address (20 bytes) ──────────────┘└── conversation ID (12 bytes) ──┘
+```
+
+#### Address Structure
+
+- **Device Address (160 bits / 20 bytes)**: First 5 groups - identifies a device endpoint
+- **Conversation ID (96 bits / 12 bytes)**: Last 3 groups - identifies a specific conversation within a connection
+
+#### Address Types
+
+| Type | Description | Sharing |
+|------|-------------|---------|
+| **Primary** | Deterministic from public key, shared publicly | Shared with anyone |
+| **Trusted Channel** | Negotiated per trusted peer relationship | Never shared publicly |
+| **Ephemeral** | Random, temporary for single sessions | Disposable |
+
+#### Conversation Identification
+
+Conversations are uniquely identified by the tuple:
+```
+(source_address, destination_address, conversation_id)
+```
+
+This enables:
+- Multiple concurrent conversations to the same peer
+- Privacy through address separation (primary vs trusted channel)
+- Session isolation without exposing identities
+
+### Hop-by-Hop Routing
+
+Mesh Infinity uses **discovery-driven, hop-by-hop routing** where:
+
+- **Each node only decides the next hop** - no predetermined end-to-end paths
+- **Links stay open until delivery** - no acknowledgments or retransmission
+- **Routing tables built from discovery** - neighbors share reachability announcements
+- **Trust-weighted paths** - routing considers Web of Trust relationships
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Routing Model                                               │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  Node A ──────► Node B ──────► Node C ──────► Node D        │
+│     │              │              │              │           │
+│  "Next hop        "Next hop      "Next hop      Destination │
+│   is B"            is C"          is D"                      │
+│                                                              │
+│  Each node only knows its neighbors and their reachability  │
+│  No node knows the complete path                            │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Reachability Announcements
+
+Nodes share routing information via announcements:
+```rust
+ReachabilityAnnouncement {
+    destination: DeviceAddress,   // Who can be reached
+    hop_count: u8,                // How many hops away
+    latency_estimate_ms: u32,     // Cumulative latency
+    path_trust: TrustLevel,       // Minimum trust along path
+}
+```
+
+### Message Encryption Scheme
+
+All messages use a **multi-layer signing and encryption scheme** that ensures:
+- Authenticity at every hop
+- Privacy of sender identity
+- Trust verification for trusted channels
+
+#### Encryption Process
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Step 1: Sign with sender's private key                      │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ signature = Ed25519_Sign(sender_private_key, message)  ││
+│  │ signed_message = message || signature                   ││
+│  └─────────────────────────────────────────────────────────┘│
+├─────────────────────────────────────────────────────────────┤
+│  Step 2: If trusted, encrypt with trust-pair key            │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ if (mutual_trust) {                                     ││
+│  │   trust_encrypted = AES256_GCM(                         ││
+│  │     trust_channel_key,  // Derived from both keys       ││
+│  │     signed_message                                       ││
+│  │   )                                                      ││
+│  │ } else {                                                 ││
+│  │   trust_encrypted = signed_message                       ││
+│  │ }                                                        ││
+│  └─────────────────────────────────────────────────────────┘│
+├─────────────────────────────────────────────────────────────┤
+│  Step 3: Re-sign the encrypted content                       │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ outer_signature = Ed25519_Sign(                         ││
+│  │   sender_private_key,                                    ││
+│  │   trust_encrypted                                        ││
+│  │ )                                                        ││
+│  │ double_signed = trust_encrypted || outer_signature       ││
+│  └─────────────────────────────────────────────────────────┘│
+├─────────────────────────────────────────────────────────────┤
+│  Step 4: Encrypt with recipient's global public key          │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ final_message = X25519_Box(                             ││
+│  │   recipient_public_key,                                  ││
+│  │   ephemeral_keypair,                                     ││
+│  │   double_signed                                          ││
+│  │ )                                                        ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Security Properties
+
+| Property | How Achieved |
+|----------|--------------|
+| **Sender authenticity** | Inner signature (Step 1) |
+| **Trust verification** | Trust-pair encryption (Step 2) |
+| **Forwarding authenticity** | Outer signature (Step 3) |
+| **Sender privacy** | Final encryption (Step 4) hides sender identity |
+| **Recipient privacy** | Only recipient can decrypt |
+
+#### For Network Connections
+
+Ongoing network connections (files, streams) use the same scheme for the **handshake**, which derives a session key. Subsequent data uses the session key for performance:
+
+```rust
+// Handshake: Full 4-step encryption
+let handshake = encrypt_message(session_proposal, ...);
+send(handshake);
+
+// After handshake: Session key for data
+let session_key = derive_session_key(handshake_result);
+let encrypted_data = AES256_GCM(session_key, data);
+```
+
+### PMWAN Overview
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Application Layer                                       │
+│  • Web browsers, SSH clients, messaging apps            │
+│  • Connect via mesh addresses (256-bit)                  │
+└────────────────────────┬─────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│  Mesh Infinity VPN Service (Virtual Interface)             │
+│  • Captures all traffic to mesh network                  │
+│  • Mesh address ↔ peer resolution                        │
+│  • Traffic shaping and QoS                               │
+└────────────────────────┬─────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│  Hop-by-Hop Router                                       │
+│  • Next-hop decisions based on topology discovery        │
+│  • No predetermined paths                                │
+│  • Links maintained until delivery (no ACK/retransmit)  │
+│  • Trust-weighted route selection                        │
+└────────────────────────┬─────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│  Message Crypto Layer                                    │
+│  • Sign → [Trust Encrypt] → Re-sign → Final Encrypt      │
+│  • Session key derivation for ongoing connections        │
+│  • Perfect Forward Secrecy via key ratcheting            │
+└────────────────────────┬─────────────────────────────────┘
+                         ↓
+┌──────────────────────────────────────────────────────────┐
+│  Multi-Transport Layer                                   │
+│  • Tor (primary - censorship resistance)                 │
+│  • I2P (fallback - alternative anonymous network)        │
+│  • WireGuard mesh (direct - low latency)                 │
+│  • Clearnet (optional - when anonymity not required)     │
+└──────────────────────────────────────────────────────────┘
+```
+
+### On-Device Routing (Tailscale-like)
+
+Mesh Infinity provides system-wide VPN functionality where users control how traffic is routed:
+
+| Traffic Type | Routing Options |
+|--------------|-----------------|
+| **Mesh traffic** | Always routes through mesh (hop-by-hop) |
+| **Non-mesh traffic** | User choice: Direct internet OR via exit node |
+
+**Modes:**
+- **Mesh Only**: Only mesh traffic uses the mesh; internet goes direct
+- **Exit Node**: All traffic routes through a selected mesh peer (exit node)
+- **Policy-Based**: Custom rules (e.g., work traffic → specific exit, streaming → low-latency exit)
+
+### Key Features
+
+- **256-bit Mesh Addresses**: Flexible addressing with device + conversation separation
+- **Hop-by-Hop Routing**: Decentralized, discovery-driven, no predetermined paths
+- **Multi-Layer Crypto**: Sign, encrypt, re-sign, encrypt for all messages
+- **Trusted Channels**: Private addresses per trust relationship
+- **Session Keys**: Handshake-derived keys for efficient ongoing connections
+- **On-Device Routing**: Tailscale-like control over traffic routing
+- **Platform Integration**: Network Extension (iOS/macOS), VPN Service (Android), TUN/TAP (Linux/Windows)
+
+See [PMWAN_ARCHITECTURE.md](PMWAN_ARCHITECTURE.md) for complete technical details.
+
 ## Rust Backend Structure
 
 ```rust
-// Root Cargo.toml workspace
-[workspace]
-members = [
-    "backend/core",
-    "backend/transport",
-    "backend/crypto",
-    "backend/auth",
-    "backend/mesh",
-    "backend/discovery",
-    "backend/ffi",
-]
+// Root Cargo.toml (single package)
+[package]
+name = "mesh-infinity"
+version = "0.1.0"
+edition = "2021"
 
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
+[lib]
+name = "mesh_infinity"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# (core + transport + crypto + auth + mesh + discovery + ffi)
+```
+
+### Unified Module Layout
+
+```
+src/
+  lib.rs             // re-exports backend + modules
+  runtime.rs         // runtime config (UI-enabled, node mode)
+backend/
+  core/              // core types + transport + mesh internals
+  auth/
+  crypto/
+  mesh/
+  transport/
+  discovery/
+  ffi/               // C ABI surface for UI shells (legacy Flutter)
+  src/               // MeshInfinityService + app-facing API
 ```
 
 ### FFI Interface Design
@@ -482,6 +714,14 @@ pub struct MeshConfig {
     pub log_level: u8,
     pub enable_tor: bool,
     pub enable_clearnet: bool,
+    pub mesh_discovery: bool,
+    pub allow_relays: bool,
+    pub enable_i2p: bool,
+    pub enable_bluetooth: bool,
+    pub wireguard_port: u16,
+    pub max_peers: u32,
+    pub max_connections: u32,
+    pub node_mode: u8, // 0=Client, 1=Server, 2=Dual
 }
 
 #[repr(C)]
@@ -508,6 +748,11 @@ pub extern "C" fn mesh_init(config: *const MeshConfig) -> *mut MeshContext {
 }
 
 #[no_mangle]
+pub extern "C" fn mi_set_node_mode(ctx: *mut MeshContext, mode: u8) -> i32 {
+    // Runtime toggle: Client / Server / Dual
+}
+
+#[no_mangle]
 pub extern "C" fn mesh_send_message(
     ctx: *mut MeshContext,
     message: *const Message
@@ -529,6 +774,14 @@ pub extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
     // Cleanup resources
 }
 ```
+
+### Runtime Modes (Server / Client / Dual)
+
+- The application is always built as a complete bundle.
+- **UI enabled at startup** ⇒ backend starts in **Client** or **Dual** mode (based on runtime config).
+- **UI disabled at startup** ⇒ backend starts in **Server** mode.
+- At runtime, the UI can switch between **Client** and **Dual** by calling `mi_set_node_mode`.
+- Server mode exposes server-side components for trusted instances; Client mode is UI-backed only.
 
 ### Transport Layer Implementation
 
@@ -951,643 +1204,9 @@ impl RoutingTable {
 }
 ```
 
-## Direct Rust Integration with Slint
+## Flutter UI Integration (FFI-only)
 
-```rust
-// ui/src/integration.rs - Direct Rust integration
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
-use net-infinity_backend::MeshService;
-
-// Direct integration without FFI overhead
-pub struct MeshIntegration {
-    mesh_service: Arc<Mutex<MeshService>>,
-    ui_handle: slint::ComponentHandle<MainWindow>,
-}
-
-impl MeshIntegration {
-    pub fn new(mesh_service: Arc<Mutex<MeshService>>, ui_handle: slint::ComponentHandle<MainWindow>) -> Self {
-        Self {
-            mesh_service,
-            ui_handle,
-        }
-    }
-    
-    pub fn start_message_listener(&self) {
-        let mesh_service = self.mesh_service.clone();
-        let ui_handle = self.ui_handle.clone();
-        
-        // Start async listener thread
-        thread::spawn(move || {
-            loop {
-                // Poll for new messages
-                if let Ok(messages) = mesh_service.lock().unwrap().get_new_messages() {
-                    for message in messages {
-                        // Update UI directly with new message
-                        ui_handle.global::<MainWindowCallbacks>()
-                            .invoke_new_message_received(message.into());
-                    }
-                }
-                
-                // Poll for peer updates
-                if let Ok(peers) = mesh_service.lock().unwrap().get_peer_updates() {
-                    for peer in peers {
-                        ui_handle.global::<MainWindowCallbacks>()
-                            .invoke_peer_update(peer.into());
-                    }
-                }
-                
-                thread::sleep(Duration::from_millis(100));
-            }
-        });
-    }
-    
-    pub fn send_message(&self, peer_id: String, text: String) -> Result<(), String> {
-        let service = self.mesh_service.lock().unwrap();
-        service.send_message(&peer_id, &text)
-    }
-    
-    pub fn add_peer(&self, peer_id: String, public_key: String) -> Result<(), String> {
-        let service = self.mesh_service.lock().unwrap();
-        service.add_peer(&peer_id, &public_key)
-    }
-}
-```
-
-## Slint Performance Optimizations
-
-```rust
-// ui/src/performance.rs
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-
-pub struct UIOptimizer {
-    render_times: Arc<Mutex<Vec<Duration>>>,
-    frame_counter: Arc<Mutex<u64>>,
-    last_frame_time: Instant,
-}
-
-impl UIOptimizer {
-    pub fn new() -> Self {
-        Self {
-            render_times: Arc::new(Mutex::new(Vec::new())),
-            frame_counter: Arc::new(Mutex::new(0)),
-            last_frame_time: Instant::now(),
-        }
-    }
-    
-    pub fn start_frame(&mut self) {
-        self.last_frame_time = Instant::now();
-    }
-    
-    pub fn end_frame(&mut self) {
-        let frame_time = self.last_frame_time.elapsed();
-        let mut render_times = self.render_times.lock().unwrap();
-        render_times.push(frame_time);
-        
-        // Keep only last 1000 frames
-        if render_times.len() > 1000 {
-            render_times.remove(0);
-        }
-        
-        *self.frame_counter.lock().unwrap() += 1;
-    }
-    
-    pub fn get_fps(&self) -> f32 {
-        let render_times = self.render_times.lock().unwrap();
-        if render_times.is_empty() {
-            0.0
-        } else {
-            let total_time: Duration = render_times.iter().sum();
-            let avg_time = total_time / render_times.len() as u32;
-            1000.0 / avg_time.as_millis() as f32
-        }
-    }
-    
-    pub fn optimize_model_updates(&self, model: &ModelRc<impl Model>) {
-        // Batch model updates to reduce redraw frequency
-        // This would integrate with Slint's model update system
-    }
-}
-
-// Slint-specific optimizations
-/*
-// In .slint file - Use efficient data structures
-property <DataModel> efficient_model: DataModel {
-    // Use VecModel for better performance with large datasets
-}
-
-// Use virtualization for long lists
-ListView {
-    model: efficient_model;
-    // Slint automatically virtualizes long lists
-}
-
-// Optimize animations
-Rectangle {
-    property <float> animation_progress: 0.0;
-    
-    // Use simple easing functions
-    in {
-        animation_progress => {
-            duration: 200ms;
-            easing: ease-in-out;
-        }
-    }
-}
-
-// Minimize property bindings
-Text {
-    // Cache computed values instead of binding to complex expressions
-    text: cached_computed_value;
-}
-*/
-```
-
-## Slint Build Configuration
-
-```toml
-# ui/Cargo.toml
-[package]
-name = "net-infinity-ui"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-slint = { version = "1.0", features = ["image-decoder"] }
-net-infinity-backend = { path = "../backend" }
-
-[build-dependencies]
-slint-build = "1.0"
-
-[build]
-# Enable Slint build integration
-```
-
-```toml
-# app/Cargo.toml
-[package]
-name = "net-infinity"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-net-infinity-ui = { path = "../ui" }
-
-[[bin]]
-name = "net-infinity"
-path = "src/main.rs"
-```
-
-```rust
-// ui/build.rs
-fn main() {
-    slint_build::compile("ui/main.slint").unwrap();
-}
-```
-
-```slint
-// ui/main.slint
-import { MeshUI } from "ui/components.slint";
-
-export component MainWindow inherits Window {
-    width: 1200px;
-    height: 800px;
-    
-    MeshUI {
-        anchors: fill;
-    }
-}
-```
-
-## Slint UI Integration
-
-```rust
-// ui/src/lib.rs - Slint UI components
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
-
-// UI Models
-#[derive(Clone, Debug)]
-pub struct PeerModel {
-    pub id: SharedString,
-    pub name: SharedString,
-    pub trust_level: u8,
-    pub status: SharedString,
-    pub last_seen: SharedString,
-}
-
-#[derive(Clone, Debug)]
-pub struct MessageModel {
-    pub id: SharedString,
-    pub sender_id: SharedString,
-    pub sender_name: SharedString,
-    pub text: SharedString,
-    pub timestamp: SharedString,
-    pub status: MessageStatus,
-    pub is_outgoing: bool,
-}
-
-#[derive(Clone, Debug)]
-pub enum MessageStatus {
-    Pending,
-    Sent,
-    Delivered,
-    Read,
-    Failed,
-}
-
-// Main UI Controller
-pub struct MeshUI {
-    app: slint::ComponentHandle<MainWindow>,
-    mesh_service: Arc<Mutex<MeshService>>,
-    peers_model: ModelRc<PeerModel>,
-    messages_model: ModelRc<MessageModel>,
-    current_chat: Option<String>,
-}
-
-impl MeshUI {
-    pub fn new(mesh_service: Arc<Mutex<MeshService>>) -> Self {
-        let app = MainWindow::new().unwrap();
-        
-        let peers_model = VecModel::default();
-        let messages_model = VecModel::default();
-        
-        Self {
-            app,
-            mesh_service,
-            peers_model: ModelRc::new(peers_model),
-            messages_model: ModelRc::new(messages_model),
-            current_chat: None,
-        }
-    }
-    
-    pub fn run(&self) {
-        // Setup UI callbacks
-        self.setup_callbacks();
-        
-        // Load initial data
-        self.load_peers();
-        
-        // Start message listener
-        self.start_message_listener();
-        
-        // Run the UI
-        self.app.run().unwrap();
-    }
-    
-    fn setup_callbacks(&self) {
-        let mesh_service = self.mesh_service.clone();
-        let peers_model = self.peers_model.clone();
-        let messages_model = self.messages_model.clone();
-        
-        // Send message callback
-        self.app.global::<MainWindowCallbacks>().on_send_message(move |text| {
-            if let Some(current_chat) = &self.current_chat {
-                let service = mesh_service.lock().unwrap();
-                service.send_message(current_chat, &text);
-            }
-        });
-        
-        // Select peer callback
-        self.app.global::<MainWindowCallbacks>().on_select_peer(move |peer_id| {
-            self.current_chat = Some(peer_id.to_string());
-            self.load_messages(&peer_id);
-        });
-        
-        // Add peer callback
-        self.app.global::<MainWindowCallbacks>().on_add_peer(move |peer_id, public_key| {
-            let service = mesh_service.lock().unwrap();
-            service.add_peer(&peer_id, &public_key);
-            self.load_peers();
-        });
-    }
-    
-    fn load_peers(&self) {
-        let service = self.mesh_service.lock().unwrap();
-        let peers = service.get_connected_peers();
-        
-        let mut model = VecModel::default();
-        for peer in peers {
-            model.push(PeerModel {
-                id: SharedString::from(peer.id),
-                name: SharedString::from(peer.name.unwrap_or_else(|| peer.id.clone())),
-                trust_level: peer.trust_level,
-                status: SharedString::from("Online"),
-                last_seen: SharedString::from(format!("{} minutes ago", peer.last_seen_minutes)),
-            });
-        }
-        
-        self.peers_model = ModelRc::new(model);
-        self.app.set_peers(self.peers_model.clone());
-    }
-    
-    fn load_messages(&self, peer_id: &str) {
-        let service = self.mesh_service.lock().unwrap();
-        let messages = service.get_messages_for_peer(peer_id);
-        
-        let mut model = VecModel::default();
-        for msg in messages {
-            model.push(MessageModel {
-                id: SharedString::from(msg.id),
-                sender_id: SharedString::from(msg.sender_id),
-                sender_name: SharedString::from(msg.sender_name),
-                text: SharedString::from(msg.text),
-                timestamp: SharedString::from(msg.timestamp),
-                status: msg.status,
-                is_outgoing: msg.is_outgoing,
-            });
-        }
-        
-        self.messages_model = ModelRc::new(model);
-        self.app.set_messages(self.messages_model.clone());
-    }
-    
-    fn start_message_listener(&self) {
-        let messages_model = self.messages_model.clone();
-        let current_chat = self.current_chat.clone();
-        
-        // Start async listener
-        std::thread::spawn(move || {
-            // This would typically use a channel or callback system
-            // to receive new messages from the mesh service
-        });
-    }
-}
-
-// Slint UI Definition (in separate .slint file)
-/*
-MainWindow := Window {
-    width: 1200px;
-    height: 800px;
-    title: "SeasonCom Mesh Messenger";
-    
-    background: #1a1a1a;
-    
-    // Main layout
-    GridLayout {
-        columns: 2;
-        spacing: 0;
-        
-        // Sidebar - Peers list
-        VerticalLayout {
-            width: 300px;
-            background: #252525;
-            padding: 10px;
-            
-            Text {
-                text: "Connected Peers";
-                font-size: 18px;
-                color: #ffffff;
-                font-weight: bold;
-                margin-bottom: 10px;
-            }
-            
-            ListView {
-                id: peers_list;
-                width: parent.width;
-                height: 400px;
-                
-                model: <peers_model>;
-                
-                delegate: Rectangle {
-                    height: 60px;
-                    width: parent.width;
-                    background: #333333;
-                    border-radius: 8px;
-                    margin: 5px;
-                    
-                    // Peer info
-                    Text {
-                        text: model.name;
-                        color: #ffffff;
-                        font-size: 16px;
-                        x: 15px;
-                        y: 10px;
-                    }
-                    
-                    Text {
-                        text: model.id;
-                        color: #888888;
-                        font-size: 12px;
-                        x: 15px;
-                        y: 30px;
-                    }
-                    
-                    Text {
-                        text: model.status;
-                        color: #00ff00;
-                        font-size: 12px;
-                        x: 200px;
-                        y: 10px;
-                    }
-                    
-                    TouchArea {
-                        anchors: fill;
-                        clicked: {
-                            select_peer(model.id);
-                        }
-                    }
-                }
-            }
-            
-            // Add peer section
-            Rectangle {
-                height: 80px;
-                width: parent.width;
-                background: #333333;
-                border-radius: 8px;
-                margin-top: 20px;
-                
-                VerticalLayout {
-                    padding: 10px;
-                    
-                    Text {
-                        text: "Add New Peer";
-                        color: #ffffff;
-                        font-size: 14px;
-                    }
-                    
-                    HorizontalLayout {
-                        TextField {
-                            id: peer_id_input;
-                            placeholder-text: "Peer ID";
-                            width: 200px;
-                        }
-                        
-                        TextField {
-                            id: pubkey_input;
-                            placeholder-text: "Public Key";
-                            width: 200px;
-                        }
-                        
-                        Button {
-                            text: "Add";
-                            clicked: {
-                                add_peer(peer_id_input.text, pubkey_input.text);
-                                peer_id_input.text = "";
-                                pubkey_input.text = "";
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Main content - Chat area
-        VerticalLayout {
-            width: 900px;
-            height: parent.height;
-            
-            // Chat header
-            Rectangle {
-                height: 60px;
-                width: parent.width;
-                background: #252525;
-                
-                Text {
-                    id: chat_title;
-                    text: "Select a peer to start chatting";
-                    color: #ffffff;
-                    font-size: 18px;
-                    x: 20px;
-                    y: 20px;
-                }
-            }
-            
-            // Messages area
-            Rectangle {
-                id: messages_area;
-                width: parent.width;
-                height: 600px;
-                background: #1e1e1e;
-                
-                ListView {
-                    id: messages_list;
-                    width: parent.width;
-                    height: parent.height;
-                    padding: 20px;
-                    
-                    model: <messages_model>;
-                    
-                    delegate: HorizontalLayout {
-                        width: parent.width;
-                        height: auto;
-                        padding: 5px;
-                        
-                        // Incoming message
-                        if (model.is_outgoing == false) {
-                            Rectangle {
-                                width: 400px;
-                                height: auto;
-                                background: #2d2d2d;
-                                border-radius: 12px;
-                                padding: 10px;
-                                margin-left: 10px;
-                                
-                                VerticalLayout {
-                                    Text {
-                                        text: model.sender_name;
-                                        color: #888888;
-                                        font-size: 12px;
-                                    }
-                                    
-                                    Text {
-                                        text: model.text;
-                                        color: #ffffff;
-                                        font-size: 14px;
-                                        wrap: word-wrap;
-                                    }
-                                    
-                                    Text {
-                                        text: model.timestamp;
-                                        color: #666666;
-                                        font-size: 10px;
-                                        margin-top: 5px;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Outgoing message
-                        else {
-                            Rectangle {
-                                width: 400px;
-                                height: auto;
-                                background: #007acc;
-                                border-radius: 12px;
-                                padding: 10px;
-                                margin-right: 10px;
-                                
-                                VerticalLayout {
-                                    Text {
-                                        text: "You";
-                                        color: #cccccc;
-                                        font-size: 12px;
-                                    }
-                                    
-                                    Text {
-                                        text: model.text;
-                                        color: #ffffff;
-                                        font-size: 14px;
-                                        wrap: word-wrap;
-                                    }
-                                    
-                                    Text {
-                                        text: model.timestamp;
-                                        color: #dddddd;
-                                        font-size: 10px;
-                                        margin-top: 5px;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Message input area
-            Rectangle {
-                height: 100px;
-                width: parent.width;
-                background: #252525;
-                
-                HorizontalLayout {
-                    padding: 20px;
-                    
-                    TextField {
-                        id: message_input;
-                        placeholder-text: "Type your message...";
-                        width: 700px;
-                        height: 40px;
-                        
-                        key-pressed => {
-                            if (event.key == Key_Return) {
-                                send_message(message_input.text);
-                                message_input.text = "";
-                            }
-                        }
-                    }
-                    
-                    Button {
-                        text: "Send";
-                        width: 100px;
-                        height: 40px;
-                        clicked: {
-                            send_message(message_input.text);
-                            message_input.text = "";
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-*/
-```
+All UI integrations occur through Flutter calling the Rust FFI surface. UI state is derived from backend state via intent-based APIs and event polling.
 
 ## Security Considerations
 

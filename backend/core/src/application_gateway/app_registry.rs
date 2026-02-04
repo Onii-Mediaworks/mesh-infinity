@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct AppRegistry {
     apps: HashMap<String, String>,

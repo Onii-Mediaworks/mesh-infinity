@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::core::PeerId;
-use crate::error::{NetInfinityError, Result};
+use crate::core::error::{MeshInfinityError, Result};
 
 #[derive(Clone)]
 pub struct SessionKeys {
@@ -57,7 +57,7 @@ impl PfsManager {
         let current = self
             .current_sessions
             .get_mut(peer_id)
-            .ok_or(NetInfinityError::NoActiveSession)?;
+            .ok_or(MeshInfinityError::NoActiveSession)?;
 
         let now = SystemTime::now();
         current.encryption_key = random_key(&self.rng)?;
@@ -72,6 +72,6 @@ impl PfsManager {
 fn random_key(rng: &SystemRandom) -> Result<[u8; 32]> {
     let mut key = [0u8; 32];
     rng.fill(&mut key)
-        .map_err(|_| NetInfinityError::CryptoError("random key generation failed".to_string()))?;
+        .map_err(|_| MeshInfinityError::CryptoError("random key generation failed".to_string()))?;
     Ok(key)
 }

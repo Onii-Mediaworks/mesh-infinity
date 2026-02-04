@@ -1,8 +1,8 @@
-// Error handling for SeasonCom
+// Error handling for Mesh Infinity
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum NetInfinityError {
+pub enum MeshInfinityError {
     // Core errors
     #[error("Invalid configuration: {0}")]
     InvalidConfiguration(String),
@@ -72,4 +72,4 @@ pub enum NetInfinityError {
     DeserializationError(String),
 }
 
-pub type Result<T> = std::result::Result<T, NetInfinityError>;
+pub type Result<T> = std::result::Result<T, MeshInfinityError>;

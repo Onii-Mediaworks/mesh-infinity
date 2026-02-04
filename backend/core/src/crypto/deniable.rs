@@ -1,6 +1,6 @@
 use ed25519_dalek::{Keypair, PublicKey, Signature, Signer, Verifier};
 
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct DeniableAuth {
     identity: Keypair,

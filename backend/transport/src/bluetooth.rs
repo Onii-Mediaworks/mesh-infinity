@@ -76,7 +76,7 @@ pub struct BluetoothListener;
 
 impl Listener for BluetoothListener {
     fn accept(&mut self) -> Result<Box<dyn Connection>> {
-        Err(crate::core::error::NetInfinityError::OperationNotSupported)
+        Err(crate::core::error::MeshInfinityError::OperationNotSupported)
     }
 
     fn close(&mut self) -> Result<()> {

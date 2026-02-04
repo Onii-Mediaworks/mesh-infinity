@@ -1,10 +1,10 @@
 [package]
-name = "net-infinity"
+name = "mesh-infinity"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "net_infinity"
+name = "mesh_infinity"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]

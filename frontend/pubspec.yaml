@@ -1,5 +1,5 @@
-name: net_infinity_frontend
-description: "Unified Flutter UI for NetInfinity."
+name: mesh_infinity_frontend
+description: "Unified Flutter UI for Mesh Infinity."
 publish_to: 'none'
 
 version: 0.1.0+1
@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   ffi: ^2.1.5
+  provider: ^6.1.1
 
 dev_dependencies:
   flutter_test:

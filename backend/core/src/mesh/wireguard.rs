@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::core::PeerId;
-use crate::error::Result;
+use crate::core::error::Result;
 
 pub struct WireGuardMesh {
     peers: HashMap<PeerId, WireGuardPeer>,

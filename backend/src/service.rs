@@ -4,9 +4,11 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::time::{Duration, SystemTime};
 
 use getrandom::getrandom;
+use ed25519_dalek::Signer;
 use crate::auth::identity::IdentityManager;
 use crate::auth::web_of_trust::{
-    Identity as WotIdentity, VerificationMethod as WotVerificationMethod, WebOfTrust,
+    Identity as WotIdentity, TrustAttestation, VerificationMethod as WotVerificationMethod,
+    WebOfTrust,
 };
 use crate::core::core::{
     MeshConfig, PeerId, PeerInfo, TransportType, TrustLevel as CoreTrustLevel,
@@ -14,7 +16,7 @@ use crate::core::core::{
 use crate::core::file_transfer::{
     FileMetadata, FileTransferManager, TransferDirection, TransferItem, TransferStatus,
 };
-use crate::core::error::{NetInfinityError, Result};
+use crate::core::error::{MeshInfinityError, Result};
 use crate::core::crypto::PfsManager;
 use crate::core::discovery::DiscoveryService;
 use crate::core::mesh::{
@@ -83,6 +85,14 @@ pub struct Settings {
 }
 
 #[derive(Clone, Debug)]
+pub struct IdentitySummary {
+    pub peer_id: PeerId,
+    pub public_key: [u8; 32],
+    pub dh_public: [u8; 32],
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct ServiceConfig {
     pub initial_mode: NodeMode,
     pub mesh_config: MeshConfig,
@@ -110,7 +120,7 @@ struct ServiceState {
     transfer_listeners: Vec<Sender<FileTransferSummary>>,
 }
 
-pub struct NetInfinityService {
+pub struct MeshInfinityService {
     state: Arc<RwLock<ServiceState>>,
     peers: PeerManager,
     identity_manager: IdentityManager,
@@ -122,7 +132,7 @@ pub struct NetInfinityService {
     discovery: Arc<Mutex<DiscoveryService>>,
 }
 
-impl NetInfinityService {
+impl MeshInfinityService {
     pub fn new(config: ServiceConfig) -> Self {
         let mut identity_manager = IdentityManager::new();
         let identity_peer_id = identity_manager
@@ -206,7 +216,7 @@ impl NetInfinityService {
 
     pub fn queue_file_send(&self, peer_id: &str, name: &str, size_bytes: u64) -> Result<String> {
         let peer_id = peer_id_from_pairing_code(peer_id).ok_or_else(|| {
-            NetInfinityError::InvalidConfiguration("invalid peer id".to_string())
+            MeshInfinityError::InvalidConfiguration("invalid peer id".to_string())
         })?;
         let metadata = FileMetadata::new(name, size_bytes);
         let mut manager = self.file_transfers.lock().unwrap();
@@ -221,7 +231,7 @@ impl NetInfinityService {
         size_bytes: u64,
     ) -> Result<String> {
         let peer_id = peer_id_from_pairing_code(peer_id).ok_or_else(|| {
-            NetInfinityError::InvalidConfiguration("invalid peer id".to_string())
+            MeshInfinityError::InvalidConfiguration("invalid peer id".to_string())
         })?;
         let metadata = FileMetadata::new(name, size_bytes);
         let mut manager = self.file_transfers.lock().unwrap();
@@ -242,12 +252,12 @@ impl NetInfinityService {
         bytes: u64,
     ) -> Result<FileTransferSummary> {
         let file_id = file_id_from_string(transfer_id)
-            .ok_or_else(|| NetInfinityError::InvalidConfiguration("invalid file id".to_string()))?;
+            .ok_or_else(|| MeshInfinityError::InvalidConfiguration("invalid file id".to_string()))?;
         let mut manager = self.file_transfers.lock().unwrap();
         manager.update_progress(&file_id, bytes)?;
         let item = manager
             .transfer(&file_id)
-            .ok_or_else(|| NetInfinityError::FileTransferError("transfer not found".to_string()))?;
+            .ok_or_else(|| MeshInfinityError::FileTransferError("transfer not found".to_string()))?;
         let summary = transfer_summary(&item);
         
         // Notify transfer listeners
@@ -303,14 +313,14 @@ impl NetInfinityService {
     pub fn create_room(&self, name: &str) -> Result<String> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
-            return Err(NetInfinityError::InvalidConfiguration(
+            return Err(MeshInfinityError::InvalidConfiguration(
                 "room name required".to_string(),
             ));
         }
 
         let mut state = self.state.write().unwrap();
         if state.settings.node_mode == NodeMode::Server {
-            return Err(NetInfinityError::OperationNotSupported);
+            return Err(MeshInfinityError::OperationNotSupported);
         }
 
         let room_id = random_id("room");
@@ -332,13 +342,37 @@ impl NetInfinityService {
     pub fn select_room(&self, room_id: &str) -> Result<()> {
         let mut state = self.state.write().unwrap();
         if state.settings.node_mode == NodeMode::Server {
-            return Err(NetInfinityError::OperationNotSupported);
+            return Err(MeshInfinityError::OperationNotSupported);
         }
 
         state.active_room_id = Some(room_id.to_string());
         if let Some(room) = state.rooms.iter_mut().find(|room| room.id == room_id) {
             room.unread_count = 0;
         }
+        Ok(())
+    }
+
+    pub fn delete_room(&self, room_id: &str) -> Result<()> {
+        let mut state = self.state.write().unwrap();
+        if state.settings.node_mode == NodeMode::Server {
+            return Err(MeshInfinityError::OperationNotSupported);
+        }
+
+        let index = state
+            .rooms
+            .iter()
+            .position(|room| room.id == room_id)
+            .ok_or_else(|| {
+                MeshInfinityError::InvalidConfiguration("room not found".to_string())
+            })?;
+
+        state.rooms.remove(index);
+        state.messages.remove(room_id);
+
+        if state.active_room_id.as_deref() == Some(room_id) {
+            state.active_room_id = state.rooms.first().map(|room| room.id.clone());
+        }
+
         Ok(())
     }
 
@@ -394,7 +428,7 @@ impl NetInfinityService {
         {
             let mut state = self.state.write().unwrap();
             if state.settings.node_mode == NodeMode::Server {
-                return Err(NetInfinityError::OperationNotSupported);
+                return Err(MeshInfinityError::OperationNotSupported);
             }
 
             let message = Message {
@@ -425,6 +459,45 @@ impl NetInfinityService {
         }
 
         Ok(())
+    }
+
+    pub fn delete_message(&self, message_id: &str) -> Result<String> {
+        let mut state = self.state.write().unwrap();
+        if state.settings.node_mode == NodeMode::Server {
+            return Err(MeshInfinityError::OperationNotSupported);
+        }
+
+        let mut found_room_id: Option<String> = None;
+        for (room_id, messages) in state.messages.iter_mut() {
+            if let Some(index) = messages.iter().position(|message| message.id == message_id) {
+                messages.remove(index);
+                found_room_id = Some(room_id.clone());
+                break;
+            }
+        }
+
+        let room_id = found_room_id.ok_or_else(|| {
+            MeshInfinityError::InvalidConfiguration("message not found".to_string())
+        })?;
+
+        // Get last message info first to avoid overlapping borrows
+        let last_message_info = state
+            .messages
+            .get(&room_id)
+            .and_then(|messages| messages.last())
+            .map(|msg| (msg.text.clone(), msg.timestamp.clone()));
+
+        if let Some(room) = state.rooms.iter_mut().find(|room| room.id == room_id) {
+            if let Some((text, timestamp)) = last_message_info {
+                room.last_message = text;
+                room.timestamp = timestamp;
+            } else {
+                room.last_message.clear();
+                room.timestamp.clear();
+            }
+        }
+
+        Ok(room_id)
     }
 
     pub fn pair_peer(&self, code: &str) -> Result<()> {
@@ -601,6 +674,64 @@ impl NetInfinityService {
             .get_primary_identity()
             .and_then(|identity| identity.name.clone())
     }
+
+    pub fn local_identity_summary(&self) -> Option<IdentitySummary> {
+        self.identity_manager.get_primary_identity().map(|identity| {
+            IdentitySummary {
+                peer_id: identity.peer_id,
+                public_key: identity.keypair.public.to_bytes(),
+                dh_public: identity.dh_public,
+                name: identity.name.clone(),
+            }
+        })
+    }
+
+    pub fn trust_attest(
+        &self,
+        endorser_peer_id: &PeerId,
+        target_peer_id: &PeerId,
+        trust_level: CoreTrustLevel,
+        method: WotVerificationMethod,
+    ) -> Result<()> {
+        let identity = self
+            .identity_manager
+            .get_identity(endorser_peer_id)
+            .ok_or_else(|| MeshInfinityError::AuthError("Identity not found".to_string()))?;
+
+        let mut attestation = TrustAttestation::new(
+            *endorser_peer_id,
+            *target_peer_id,
+            trust_level,
+            method,
+            identity.keypair.public.to_bytes(),
+        );
+
+        let message = attestation.signable_message();
+        let signature = identity.keypair.sign(&message);
+        attestation.signature = signature.to_bytes().to_vec();
+
+        self.web_of_trust.add_attestation(attestation)
+    }
+
+    pub fn trust_verify(
+        &self,
+        target_peer_id: &PeerId,
+        trust_markers: Vec<(PeerId, PeerId, CoreTrustLevel, SystemTime)>,
+    ) -> CoreTrustLevel {
+        use crate::auth::web_of_trust::TrustMarker;
+
+        let markers = trust_markers
+            .into_iter()
+            .map(|(endorser, target, trust_level, timestamp)| TrustMarker {
+                endorser,
+                target,
+                trust_level,
+                timestamp,
+            })
+            .collect::<Vec<_>>();
+
+        self.web_of_trust.verify_peer(target_peer_id, &markers)
+    }
 }
 
 fn random_id(prefix: &str) -> String {
@@ -708,7 +839,7 @@ fn trust_label(level: CoreTrustLevel) -> String {
     .to_string()
 }
 
-impl NetInfinityService {
+impl MeshInfinityService {
     fn route_outbound_message(&self, target: PeerId, payload: &[u8]) -> Result<()> {
         let session = {
             let mut manager = self.pfs_manager.lock().unwrap();

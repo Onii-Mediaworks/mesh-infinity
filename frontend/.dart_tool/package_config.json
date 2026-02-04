@@ -104,10 +104,22 @@
       "languageVersion": "3.5"
     },
     {
+      "name": "nested",
+      "rootUri": "file:///Users/rootless/.pub-cache/hosted/pub.dev/nested-1.0.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
+    },
+    {
       "name": "path",
       "rootUri": "file:///Users/rootless/.pub-cache/hosted/pub.dev/path-1.9.1",
       "packageUri": "lib/",
       "languageVersion": "3.4"
+    },
+    {
+      "name": "provider",
+      "rootUri": "file:///Users/rootless/.pub-cache/hosted/pub.dev/provider-6.1.5+1",
+      "packageUri": "lib/",
+      "languageVersion": "2.12"
     },
     {
       "name": "sky_engine",
@@ -164,7 +176,7 @@
       "languageVersion": "3.5"
     },
     {
-      "name": "net_infinity_frontend",
+      "name": "mesh_infinity_frontend",
       "rootUri": "../",
       "packageUri": "lib/",
       "languageVersion": "3.10"

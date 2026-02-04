@@ -1,13 +1,13 @@
-# Slint Mobile Scaffold
+# Flutter Mobile Scaffold
 
-This directory tracks the Slint mobile integration work. The shared UI lives in `ui/main.slint` and is
-exported through `ui/src/lib.rs` for embedding in platform shells.
+This directory tracks the Flutter mobile integration work. The shared UI lives in `frontend/` and is
+embedded in platform shells via Flutter.
 
 Goals
-- Use the Slint UI on all platforms.
+- Use the Flutter UI on all platforms.
 - Keep the SwiftUI codebase as a reference only during migration.
 - Ship a single app per platform that can run Client, Server, or Dual modes.
 
 Entry Points
-- `net_infinity_ui::run_app()` runs the Slint UI for desktop.
-- `netinfinity_run()` is the exported C entrypoint for mobile shells.
+- The Flutter entrypoint is in `frontend/lib/main.dart`.
+- The Rust core is exposed via the `backend/ffi` C ABI and loaded by Dart FFI.

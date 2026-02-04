@@ -8,7 +8,7 @@ use boringtun::crypto::x25519::{X25519PublicKey, X25519SecretKey};
 use boringtun::noise::{Tunn, TunnResult};
 
 use crate::core::core::{PeerId, TransportType};
-use crate::core::error::{NetInfinityError, Result};
+use crate::core::error::{MeshInfinityError, Result};
 
 #[derive(Clone)]
 pub struct WGConfig {
@@ -106,7 +106,7 @@ impl WireGuardMesh {
             index,
             None,
         )
-        .map_err(|err| NetInfinityError::WireGuardError(err.to_string()))?;
+        .map_err(|err| MeshInfinityError::WireGuardError(err.to_string()))?;
 
         let peer = WGPeer {
             public_key,
@@ -141,7 +141,7 @@ impl WireGuardMesh {
         let mut peers = self.peers.lock().unwrap();
         let peer = peers
             .get_mut(target)
-            .ok_or_else(|| NetInfinityError::PeerNotFound(format!("{:?}", target)))?;
+            .ok_or_else(|| MeshInfinityError::PeerNotFound(format!("{:?}", target)))?;
 
         let mut dst = vec![0u8; 65535];
         match peer.tunnel.encapsulate(payload, &mut dst) {
@@ -151,7 +151,7 @@ impl WireGuardMesh {
                 Ok(())
             }
             TunnResult::Done => Ok(()),
-            TunnResult::Err(err) => Err(NetInfinityError::WireGuardError(format!(
+            TunnResult::Err(err) => Err(MeshInfinityError::WireGuardError(format!(
                 "{err:?}"
             ))),
             _ => Ok(()),
@@ -204,7 +204,7 @@ impl RoutingTable {
 fn secret_from_bytes(bytes: [u8; 32]) -> Result<X25519SecretKey> {
     let hex = hex_encode(&bytes);
     X25519SecretKey::from_str(&hex)
-        .map_err(|_| NetInfinityError::WireGuardError("Invalid private key".to_string()))
+        .map_err(|_| MeshInfinityError::WireGuardError("Invalid private key".to_string()))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

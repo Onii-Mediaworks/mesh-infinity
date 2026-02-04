@@ -1,4 +1,4 @@
-// Core types and structures for SeasonCom
+// Core types and structures for Mesh Infinity
 use std::net::{IpAddr, SocketAddr};
 use std::time::SystemTime;
 use serde::{Serialize, Deserialize};
@@ -33,7 +33,7 @@ pub struct NetworkPacket {
     pub connection_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Protocol {
     TCP,
     UDP,

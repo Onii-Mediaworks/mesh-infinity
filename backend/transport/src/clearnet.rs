@@ -20,7 +20,7 @@ impl Transport for ClearnetTransport {
     fn connect(&self, peer_info: &PeerInfo) -> Result<Box<dyn Connection>> {
         // Get peer endpoint
         let endpoint = peer_info.endpoint.ok_or(
-            crate::core::error::NetInfinityError::TransportError(
+            crate::core::error::MeshInfinityError::TransportError(
                 "Peer has no endpoint".to_string()
             )
         )?;

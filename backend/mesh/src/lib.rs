@@ -1,4 +1,4 @@
-// SeasonCom Mesh Networking Layer
+// Mesh Infinity Mesh Networking Layer
 // This module implements the WireGuard-based mesh networking
 
 pub mod wireguard;
