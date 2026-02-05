@@ -57,7 +57,7 @@ struct BackupContents {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct TrustStore {
+pub struct TrustStore {
     /// Peer ID → Trust level
     trust_levels: HashMap<String, u8>,
 
@@ -69,7 +69,7 @@ struct TrustStore {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct TrustEndorsement {
+pub struct TrustEndorsement {
     endorser_id: String,
     target_id: String,
     trust_level: u8,
@@ -78,7 +78,7 @@ struct TrustEndorsement {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct NetworkMap {
+pub struct NetworkMap {
     /// Known peers and their metadata (NOT conversation history)
     peers: HashMap<String, PeerMetadata>,
 
@@ -90,7 +90,7 @@ struct NetworkMap {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct PeerMetadata {
+pub struct PeerMetadata {
     peer_id: String,
     display_name: Option<String>,
     public_key: Vec<u8>,
@@ -100,7 +100,7 @@ struct PeerMetadata {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct RelayNode {
+pub struct RelayNode {
     node_id: String,
     onion_address: Option<String>,
     i2p_address: Option<String>,
@@ -108,7 +108,7 @@ struct RelayNode {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct BackupSettings {
+pub struct BackupSettings {
     display_name: Option<String>,
     preferred_transports: Vec<String>,
     enable_tor: bool,

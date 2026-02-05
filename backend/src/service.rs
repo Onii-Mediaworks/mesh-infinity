@@ -129,6 +129,7 @@ pub struct MeshInfinityService {
     transport_manager: TransportManagerImpl,
     message_router: MessageRouter,
     pfs_manager: Arc<Mutex<PfsManager>>,
+    #[allow(dead_code)]
     discovery: Arc<Mutex<DiscoveryService>>,
 }
 

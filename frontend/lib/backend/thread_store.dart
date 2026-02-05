@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../state/app_state.dart';
+
 import '../models/thread_models.dart';
 import 'backend_bridge.dart';
 import 'backend_models.dart';
@@ -9,9 +11,12 @@ import 'file_transfer_models.dart';
 import 'peer_models.dart';
 
 class ThreadStore extends ChangeNotifier {
-  ThreadStore({BackendBridge? backend}) : _backend = backend ?? BackendBridge.open();
+  ThreadStore({BackendBridge? backend, AppState? appState})
+      : _backend = backend ?? BackendBridge.open(allowMissing: true),
+        _appState = appState;
 
   final BackendBridge _backend;
+  final AppState? _appState;
   Timer? _poller;
 
   List<ThreadSummary> _threads = const [];
@@ -39,6 +44,10 @@ class ThreadStore extends ChangeNotifier {
   BackendBridge get backendBridge => _backend;
 
   Future<void> initialize() async {
+    if (!_backend.isAvailable) {
+      final error = _backend.initError ?? 'Backend unavailable. Ensure the Rust service is running.';
+      _appState?.setError(AppError(AppErrorType.networkError, error));
+    }
     _reloadAll();
     _ready = true;
     _poller?.cancel();

@@ -24,7 +24,7 @@ class AppDependencyContainer implements DependencyContainer {
   late final AnalyticsService _analyticsService;
 
   AppDependencyContainer({int nodeMode = 0}) {
-    _backendBridge = BackendBridge.open(nodeMode: nodeMode);
+    _backendBridge = BackendBridge.open(nodeMode: nodeMode, allowMissing: false);
     _authenticationService = DefaultAuthenticationService(_backendBridge);
     _roomService = DefaultRoomService(_backendBridge);
     _messageService = DefaultMessageService(_backendBridge);
