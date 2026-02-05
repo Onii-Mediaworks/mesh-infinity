@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../../backend/thread_store.dart';
 import '../../core/layout/layout_spec.dart';
 import '../../models/thread_models.dart';
+import '../../state/app_state.dart';
 import 'widgets/composer_bar.dart';
 import 'widgets/conversation_list.dart';
 import 'widgets/top_bar.dart';
@@ -34,7 +36,7 @@ class _SignalShellState extends State<SignalShell> {
   @override
   void initState() {
     super.initState();
-    _store = ThreadStore();
+    _store = ThreadStore(appState: context.read<AppState>());
     _store.initialize();
   }
 
@@ -48,6 +50,14 @@ class _SignalShellState extends State<SignalShell> {
 
   @override
   Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
+    if (appState.error != null) {
+      return Scaffold(
+        body: SafeArea(
+          child: _BackendErrorScreen(error: appState.error!),
+        ),
+      );
+    }
     return AnimatedBuilder(
       animation: _store,
       builder: (context, _) {
@@ -702,6 +712,48 @@ class _ChatEmptyState extends StatelessWidget {
               icon: const Icon(Icons.edit_outlined),
               label: const Text('Start typing'),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendErrorScreen extends StatelessWidget {
+  const _BackendErrorScreen({required this.error});
+
+  final AppError error;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.warning_amber_rounded, size: 48, color: cs.error),
+            const SizedBox(height: 12),
+            Text(
+              error.title,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              error.message,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+            if (error.error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                error.error.toString(),
+                textAlign: TextAlign.center,
+                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+              ),
+            ],
           ],
         ),
       ),

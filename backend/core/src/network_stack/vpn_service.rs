@@ -24,6 +24,7 @@ pub struct VpnService {
     ip_peer_map: Arc<RwLock<HashMap<IpAddr, PeerId>>>,
 
     /// DNS resolver for mesh-internal names
+    #[allow(dead_code)]
     dns_resolver: Arc<DnsResolver>,
 
     /// Packet handler callback

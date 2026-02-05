@@ -99,6 +99,7 @@ pub struct HopRouter {
     /// Our own device address
     our_address: DeviceAddress,
     /// Our peer ID
+    #[allow(dead_code)]
     our_peer_id: PeerId,
 
     /// Direct neighbors we can communicate with
@@ -111,6 +112,7 @@ pub struct HopRouter {
     active_links: Arc<RwLock<HashMap<ConversationId, ActiveLink>>>,
 
     /// Pending announcements to propagate
+    #[allow(dead_code)]
     pending_announcements: Arc<RwLock<VecDeque<(PeerId, ReachabilityAnnouncement)>>>,
 
     /// Configuration

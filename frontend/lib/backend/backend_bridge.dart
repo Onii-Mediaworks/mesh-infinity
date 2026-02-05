@@ -3,30 +3,44 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/thread_models.dart';
 import 'backend_models.dart';
 
 class BackendBridge {
-  BackendBridge._(this._bindings, this._context);
+  BackendBridge._(this._bindings, this._context, this._initError);
 
-  factory BackendBridge.open({int nodeMode = 0}) {
+  factory BackendBridge.open({int nodeMode = 0, required bool allowMissing}) {
     try {
       final bindings = _BackendBindings(_openLibrary());
       final context = _initContext(bindings, nodeMode);
       if (context == nullptr) {
-        return BackendBridge._(bindings, context);
+        final error = _readLastError(bindings) ?? 'mesh_init returned null';
+        debugPrint('BackendBridge: mesh_init failed: $error');
+        if (allowMissing) {
+          return BackendBridge._(bindings, context, error);
+        }
+        throw StateError(error);
       }
-      return BackendBridge._(bindings, context);
-    } catch (_) {
-      return BackendBridge._(null, nullptr);
+      return BackendBridge._(bindings, context, null);
+    } catch (error, stack) {
+      final message = 'BackendBridge: failed to load backend library: $error';
+      debugPrint(message);
+      debugPrint(stack.toString());
+      if (allowMissing) {
+        return BackendBridge._(null, nullptr, message);
+      }
+      throw StateError(message);
     }
   }
 
   final _BackendBindings? _bindings;
   final Pointer<Void> _context;
+  final String? _initError;
 
   bool get isAvailable => _bindings != null && _context != nullptr;
+  String? get initError => _initError;
 
   List<ThreadSummary> fetchThreads() {
     if (!isAvailable) {
@@ -308,6 +322,16 @@ class BackendBridge {
     _bindings?.stringFree(ptr);
     return value;
   }
+
+  static String? _readLastError(_BackendBindings bindings) {
+    final ptr = bindings.lastErrorMessage();
+    if (ptr == nullptr) {
+      return null;
+    }
+    final value = ptr.toDartString();
+    bindings.stringFree(ptr);
+    return value;
+  }
 }
 
 Pointer<Void> _initContext(_BackendBindings bindings, int nodeMode) {
@@ -386,6 +410,9 @@ class _BackendBindings {
             _lib.lookupFunction<TrustVerifyJsonNative, TrustVerifyJsonDart>(
           'mi_trust_verify_json',
         ),
+        lastErrorMessage = _lib.lookupFunction<LastErrorMessageNative, LastErrorMessageDart>(
+          'mi_last_error_message',
+        ),
         stringFree = _lib.lookupFunction<StringFreeNative, StringFreeDart>('mi_string_free');
 
   // ignore: unused_field
@@ -409,6 +436,7 @@ class _BackendBindings {
   final LocalIdentityJsonDart localIdentityJson;
   final TrustAttestDart trustAttest;
   final TrustVerifyJsonDart trustVerifyJson;
+  final LastErrorMessageDart lastErrorMessage;
   final StringFreeDart stringFree;
 }
 
@@ -531,5 +559,7 @@ typedef TrustVerifyJsonDart = Pointer<Utf8> Function(
   Pointer<Utf8>,
   Pointer<Utf8>,
 );
+typedef LastErrorMessageNative = Pointer<Utf8> Function();
+typedef LastErrorMessageDart = Pointer<Utf8> Function();
 typedef StringFreeNative = Void Function(Pointer<Utf8>);
 typedef StringFreeDart = void Function(Pointer<Utf8>);
