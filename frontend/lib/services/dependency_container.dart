@@ -1,8 +1,10 @@
 import '../backend/backend_bridge.dart';
+import '../core/state/mesh_state.dart';
 import 'implementations.dart';
 import 'service_interfaces.dart';
 
 abstract class DependencyContainer {
+  MeshState get meshState;
   AuthenticationService get authenticationService;
   RoomService get roomService;
   MessageService get messageService;
@@ -15,6 +17,7 @@ abstract class DependencyContainer {
 
 class AppDependencyContainer implements DependencyContainer {
   late final BackendBridge _backendBridge;
+  late final MeshState _meshState;
   late final AuthenticationService _authenticationService;
   late final RoomService _roomService;
   late final MessageService _messageService;
@@ -24,7 +27,11 @@ class AppDependencyContainer implements DependencyContainer {
   late final AnalyticsService _analyticsService;
 
   AppDependencyContainer({int nodeMode = 0}) {
-    _backendBridge = BackendBridge.open(nodeMode: nodeMode, allowMissing: false);
+    _backendBridge = BackendBridge.open(
+      nodeMode: nodeMode,
+      allowMissing: false,
+    );
+    _meshState = MeshState(backend: _backendBridge);
     _authenticationService = DefaultAuthenticationService(_backendBridge);
     _roomService = DefaultRoomService(_backendBridge);
     _messageService = DefaultMessageService(_backendBridge);
@@ -33,6 +40,9 @@ class AppDependencyContainer implements DependencyContainer {
     _notificationService = DefaultNotificationService();
     _analyticsService = DefaultAnalyticsService();
   }
+
+  @override
+  MeshState get meshState => _meshState;
 
   @override
   AuthenticationService get authenticationService => _authenticationService;
@@ -59,6 +69,7 @@ class AppDependencyContainer implements DependencyContainer {
   BackendBridge get backendBridge => _backendBridge;
 
   void dispose() {
+    _meshState.dispose();
     _backendBridge.dispose();
   }
 }

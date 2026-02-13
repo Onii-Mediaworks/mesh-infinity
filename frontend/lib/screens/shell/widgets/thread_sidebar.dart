@@ -43,15 +43,13 @@ class ThreadSidebar extends StatelessWidget {
                     children: [
                       Text(
                         'Conversations',
-                        style: Theme.of(context)
-                            .textTheme.titleMedium
+                        style: Theme.of(context).textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                       if (pairingCode != null && pairingCode!.isNotEmpty)
                         SelectableText(
                           pairingCode!,
-                          style: Theme.of(context)
-                              .textTheme.bodySmall
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(color: cs.onSurfaceVariant),
                         ),
                     ],
@@ -74,15 +72,25 @@ class ThreadSidebar extends StatelessWidget {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.chat_bubble_outline, size: 40, color: cs.onSurfaceVariant),
+                          Icon(
+                            Icons.chat_bubble_outline,
+                            size: 40,
+                            color: cs.onSurfaceVariant,
+                          ),
                           const SizedBox(height: 8),
-                          Text('No conversations', style: TextStyle(color: cs.onSurfaceVariant)),
+                          Text(
+                            'No conversations',
+                            style: TextStyle(color: cs.onSurfaceVariant),
+                          ),
                         ],
                       ),
                     ),
                   )
                 : ListView.builder(
-                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 4,
+                      horizontal: 8,
+                    ),
                     itemCount: threads.length,
                     itemBuilder: (context, i) {
                       final thread = threads[i];
@@ -94,10 +102,7 @@ class ThreadSidebar extends StatelessWidget {
                     },
                   ),
           ),
-          if (footer != null) ...[
-            const Divider(height: 1),
-            footer!,
-          ],
+          if (footer != null) ...[const Divider(height: 1), footer!],
         ],
       ),
     );
@@ -106,7 +111,6 @@ class ThreadSidebar extends StatelessWidget {
 
 class _ThreadTile extends StatelessWidget {
   const _ThreadTile({
-    super.key,
     required this.thread,
     required this.selected,
     required this.onTap,
@@ -132,14 +136,18 @@ class _ThreadTile extends StatelessWidget {
         backgroundColor: _avatarColor(thread.title),
         child: Text(
           thread.title.isNotEmpty ? thread.title[0].toUpperCase() : '?',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 16),
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            fontSize: 16,
+          ),
         ),
       ),
       title: Text(
         thread.title,
         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-              fontWeight: hasUnread ? FontWeight.w600 : FontWeight.normal,
-            ),
+          fontWeight: hasUnread ? FontWeight.w600 : FontWeight.normal,
+        ),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
@@ -155,7 +163,9 @@ class _ThreadTile extends StatelessWidget {
         children: [
           Text(
             thread.lastSeen,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
           ),
           if (hasUnread) ...[
             const SizedBox(height: 4),
@@ -167,7 +177,11 @@ class _ThreadTile extends StatelessWidget {
               ),
               child: Text(
                 thread.unreadCount.toString(),
-                style: TextStyle(color: cs.onPrimary, fontSize: 11, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  color: cs.onPrimary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
@@ -184,8 +198,14 @@ Color _avatarColor(String name) {
     hash = hash & 0x7FFFFFFF;
   }
   const palette = [
-    Color(0xFF1ABC9C), Color(0xFFE74C3C), Color(0xFF9B59B6), Color(0xFFE67E22),
-    Color(0xFF3498DB), Color(0xFF2ECC71), Color(0xFFE91E63), Color(0xFF607D8B),
+    Color(0xFF1ABC9C),
+    Color(0xFFE74C3C),
+    Color(0xFF9B59B6),
+    Color(0xFFE67E22),
+    Color(0xFF3498DB),
+    Color(0xFF2ECC71),
+    Color(0xFFE91E63),
+    Color(0xFF607D8B),
   ];
   return palette[hash % palette.length];
 }

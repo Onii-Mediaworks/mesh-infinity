@@ -1,37 +1,166 @@
-# Ignore the reference directory
+# ============================================
+# Mesh Infinity - Unified .gitignore
+# ============================================
+
+# Reference and documentation artifacts
 reference/
 
-# Build artifacts
+# Build artifacts - all platforms
 build/
+**/build/
+/coverage/
+
+# ============================================
+# Rust
+# ============================================
+target/
+**/target/
+Cargo.lock
+
+# ============================================
+# Flutter/Dart
+# ============================================
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+frontend/build/
+
+# Flutter generated files
+**/Flutter/ephemeral/
+**/Flutter/Generated.xcconfig
+**/Flutter/flutter_export_environment.sh
+**/Flutter/App.framework
+**/Flutter/Flutter.framework
+**/Flutter/Flutter.podspec
+**/Flutter/app.flx
+**/Flutter/app.zip
+**/Flutter/flutter_assets/
+**/Runner/GeneratedPluginRegistrant.*
+**/GeneratedPluginRegistrant.java
+ServiceDefinitions.json
+.flutter-plugins
+.flutter-plugins-dependencies
+migrate_working_dir/
+
+# Symbolication and obfuscation
+app.*.symbols
+app.*.map.json
+
+# ============================================
+# Android/Gradle
+# ============================================
+.gradle/
+**/.gradle/
+gradle-wrapper.jar
+/captures/
+/gradlew
+/gradlew.bat
+local.properties
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+.cxx/
+
+# Android keystores (NEVER commit!)
+key.properties
+**/*.keystore
+**/*.jks
+
+# ============================================
+# iOS/Xcode
+# ============================================
+**/Pods/
+**/xcuserdata/
+**/.symlinks/
+*.mode1v3
+*.mode2v3
+*.moved-aside
+*.pbxuser
+*.perspectivev3
+**/*sync/
+.sconsign.dblite
+.tags*
+**/.vagrant/
 DerivedData/
 **/DerivedData/
 *.xcworkspace
 xcuserdata/
-**/xcuserdata/
 *.xcuserstate
 *.xcscmblueprint
+**/dgph
+profile
+Icon?
+**/.generated/
+
+# Keep default Xcode files
+!default.mode1v3
+!default.mode2v3
+!default.pbxuser
+!default.perspectivev3
+
+# ============================================
+# macOS
+# ============================================
+.DS_Store
 .swiftpm/
 **/.swiftpm/
 
-# Rust
-target/
-**/target/
-/target/
+# ============================================
+# Linux
+# ============================================
+**/linux/flutter/ephemeral/
 
-# Android / Gradle
-.gradle/
-**/.gradle/
-android/**/build/
-android/local.properties
+# ============================================
+# Windows
+# ============================================
+**/windows/flutter/ephemeral/
+
+# Visual Studio user files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio build files
+x64/
+x86/
+
+# Visual Studio cache
+*.[Cc]ache
+!*.[Cc]ache/
+
+# ============================================
+# IDEs
+# ============================================
 .idea/
 **/.idea/
 *.iml
+*.ipr
+*.iws
+.vscode/
 
-# Node
+# ============================================
+# Logs and temporary files
+# ============================================
+*.log
+*.class
+*.pyc
+*.swp
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+
+# ============================================
+# Node/npm (if used)
+# ============================================
 node_modules/
 
-# OS files
-.DS_Store
-
-#Flutter builds, because AI is stupid
-frontend/build/
+# ============================================
+# Claude AI
+# ============================================
+.claude/

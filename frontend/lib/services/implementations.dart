@@ -9,8 +9,8 @@ class DefaultAuthenticationService implements AuthenticationService {
 
   @override
   Future<bool> authenticate(String identifier) async {
-    // For now, return true as authentication is handled by identity creation
-    return true;
+    // Identity is currently provisioned by backend initialization.
+    return isAuthenticated();
   }
 
   @override
@@ -20,7 +20,10 @@ class DefaultAuthenticationService implements AuthenticationService {
 
   @override
   Future<bool> isAuthenticated() async {
-    return _bridge.isAvailable;
+    if (!_bridge.isAvailable) {
+      return false;
+    }
+    return _bridge.hasIdentity();
   }
 }
 
@@ -116,7 +119,10 @@ class DefaultNotificationService implements NotificationService {
 
 class DefaultAnalyticsService implements AnalyticsService {
   @override
-  Future<void> logEvent(String eventName, Map<String, dynamic> parameters) async {
+  Future<void> logEvent(
+    String eventName,
+    Map<String, dynamic> parameters,
+  ) async {
     // Not implemented yet - intentionally no-op for privacy
   }
 }

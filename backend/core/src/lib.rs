@@ -13,6 +13,7 @@ pub mod exit_node;
 pub mod application_gateway;
 pub mod security;
 pub mod error;
+pub mod service;
 
 pub use core::*;
 pub use transport::*;
@@ -26,3 +27,4 @@ pub use exit_node::*;
 pub use application_gateway::*;
 pub use security::*;
 pub use error::*;
+pub use service::*;

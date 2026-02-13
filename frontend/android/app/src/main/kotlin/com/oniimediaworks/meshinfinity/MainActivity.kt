@@ -1,4 +1,4 @@
-package com.example.mesh_infinity_frontend
+package com.oniimediaworks.meshinfinity
 
 import io.flutter.embedding.android.FlutterActivity
 

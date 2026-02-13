@@ -3,11 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../models/thread_models.dart';
 
 class ConversationList extends StatefulWidget {
-  const ConversationList({
-    super.key,
-    required this.messages,
-    this.emptyState,
-  });
+  const ConversationList({super.key, required this.messages, this.emptyState});
 
   final List<MessageItem> messages;
   final Widget? emptyState;
@@ -66,10 +62,12 @@ class _ConversationListState extends State<ConversationList> {
         final prev = i > 0 ? msgs[i - 1] : null;
         final next = i < msgs.length - 1 ? msgs[i + 1] : null;
 
-        final sameAsPrev = prev != null &&
+        final sameAsPrev =
+            prev != null &&
             prev.isOutgoing == msg.isOutgoing &&
             prev.sender == msg.sender;
-        final sameAsNext = next != null &&
+        final sameAsNext =
+            next != null &&
             next.isOutgoing == msg.isOutgoing &&
             next.sender == msg.sender;
 
@@ -89,7 +87,6 @@ class _ConversationListState extends State<ConversationList> {
 
 class _Bubble extends StatelessWidget {
   const _Bubble({
-    super.key,
     required this.message,
     required this.showSender,
     required this.isFirstInGroup,
@@ -130,7 +127,9 @@ class _Bubble extends StatelessWidget {
           );
 
     return Column(
-      crossAxisAlignment: out ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      crossAxisAlignment: out
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
       children: [
         if (showSender)
           Padding(
@@ -160,9 +159,15 @@ class _Bubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(message.text, style: TextStyle(color: textColor, fontSize: 15, height: 1.4)),
+              Text(
+                message.text,
+                style: TextStyle(color: textColor, fontSize: 15, height: 1.4),
+              ),
               const SizedBox(height: 4),
-              Text(message.timestamp, style: TextStyle(fontSize: 10, color: tsColor)),
+              Text(
+                message.timestamp,
+                style: TextStyle(fontSize: 10, color: tsColor),
+              ),
             ],
           ),
         ),

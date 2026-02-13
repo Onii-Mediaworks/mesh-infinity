@@ -55,7 +55,16 @@ pub enum MeshInfinityError {
     
     #[error("Insufficient trust level")]
     InsufficientTrust,
-    
+
+    #[error("Untrusted peer")]
+    UntrustedPeer,
+
+    #[error("Connection rejected: {0}")]
+    ConnectionRejected(String),
+
+    #[error("Protocol version mismatch")]
+    ProtocolMismatch,
+
     #[error("Resource not available")]
     ResourceUnavailable,
     
@@ -70,6 +79,12 @@ pub enum MeshInfinityError {
     
     #[error("Deserialization error: {0}")]
     DeserializationError(String),
+
+    #[error("Lock error: {0}")]
+    LockError(String),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 pub type Result<T> = std::result::Result<T, MeshInfinityError>;

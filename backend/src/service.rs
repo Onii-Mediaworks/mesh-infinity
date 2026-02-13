@@ -21,8 +21,8 @@ use crate::core::crypto::PfsManager;
 use crate::core::discovery::DiscoveryService;
 use crate::core::mesh::{
     EncryptedPayload, Endpoint, MessagePriority, MessageRouter, OutboundMessage, PathInfo,
+    PeerManager, VerificationMethod,
 };
-use crate::mesh::peer::{PeerManager, VerificationMethod};
 use crate::transport::TransportManagerImpl;
 use time::format_description;
 
@@ -732,6 +732,63 @@ impl MeshInfinityService {
             .collect::<Vec<_>>();
 
         self.web_of_trust.verify_peer(target_peer_id, &markers)
+    }
+
+    /// Enable mDNS discovery on the local network
+    pub fn enable_mdns(&self, port: u16) -> Result<()> {
+        let peer_id = self.identity_manager
+            .get_primary_identity()
+            .map(|id| id.peer_id)
+            .ok_or_else(|| MeshInfinityError::AuthError("No identity available".to_string()))?;
+
+        let mut discovery = self.discovery.lock()
+            .map_err(|e| MeshInfinityError::LockError(format!("Discovery lock poisoned: {}", e)))?;
+
+        discovery.enable_mdns(peer_id, port)?;
+
+        // Update mesh_discovery flag
+        self.set_mesh_discovery(true);
+
+        Ok(())
+    }
+
+    /// Disable mDNS discovery
+    pub fn disable_mdns(&self) -> Result<()> {
+        let mut discovery = self.discovery.lock()
+            .map_err(|e| MeshInfinityError::LockError(format!("Discovery lock poisoned: {}", e)))?;
+
+        discovery.disable_mdns()?;
+        self.set_mesh_discovery(false);
+
+        Ok(())
+    }
+
+    /// Check if mDNS discovery is running
+    pub fn is_mdns_running(&self) -> bool {
+        self.discovery.lock()
+            .map(|d| d.is_mdns_running())
+            .unwrap_or(false)
+    }
+
+    /// Get discovered peers from all discovery methods
+    pub fn get_discovered_peers(&self) -> Result<Vec<PeerSummary>> {
+        let mut discovery = self.discovery.lock()
+            .map_err(|e| MeshInfinityError::LockError(format!("Discovery lock poisoned: {}", e)))?;
+
+        let peers = discovery.refresh()?;
+
+        // Convert to PeerSummary format
+        let summaries: Vec<PeerSummary> = peers.iter().map(|peer| {
+            let short_code: String = peer_id_string(&peer.peer_id).chars().take(6).collect();
+            PeerSummary {
+                id: peer_id_string(&peer.peer_id),
+                name: format!("Peer {}", short_code),
+                trust_level: peer.trust_level as i32,
+                status: trust_label(peer.trust_level),
+            }
+        }).collect();
+
+        Ok(summaries)
     }
 }
 

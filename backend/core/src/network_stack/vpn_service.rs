@@ -10,6 +10,7 @@ use crate::core::{PeerId, PeerInfo};
 use crate::core::error::{MeshInfinityError, Result};
 use super::virtual_interface::VirtualInterface;
 use super::dns_resolver::DnsResolver;
+use crate::core::mesh::WireGuardMesh;
 
 /// VPN Service provides system-wide network routing through the mesh
 /// Modeled after Tailscale's architecture
@@ -29,6 +30,9 @@ pub struct VpnService {
 
     /// Packet handler callback
     packet_handler: Arc<Mutex<Option<Box<dyn PacketHandler + Send>>>>,
+
+    /// WireGuard mesh for direct integration
+    wg_mesh: Arc<RwLock<Option<Arc<RwLock<WireGuardMesh>>>>>,
 
     /// Running state
     running: Arc<Mutex<bool>>,
@@ -63,6 +67,7 @@ impl VpnService {
             ip_peer_map: Arc::new(RwLock::new(HashMap::new())),
             dns_resolver: Arc::new(dns_resolver),
             packet_handler: Arc::new(Mutex::new(None)),
+            wg_mesh: Arc::new(RwLock::new(None)),
             running: Arc::new(Mutex::new(false)),
             network_range: network_range.to_string(),
         })
@@ -85,6 +90,7 @@ impl VpnService {
         let running_flag = self.running.clone();
         let packet_handler = self.packet_handler.clone();
         let ip_peer_map = self.ip_peer_map.clone();
+        let wg_mesh = self.wg_mesh.clone();
 
         thread::spawn(move || {
             let mut buffer = vec![0u8; 65536]; // Max IP packet size
@@ -105,10 +111,22 @@ impl VpnService {
                 // Parse IP header to get destination
                 if let Some(dest_ip) = parse_dest_ip(&packet) {
                     // Check if this is for a known peer
-                    if ip_peer_map.read().unwrap().contains_key(&dest_ip) {
-                        // Route through mesh
-                        if let Some(handler) = packet_handler.lock().unwrap().as_mut() {
-                            let _ = handler.handle_outbound(dest_ip, packet);
+                    if let Some(peer_id) = ip_peer_map.read().unwrap().get(&dest_ip) {
+                        // Try WireGuard mesh first (if available)
+                        let mut sent_via_wg = false;
+                        if let Some(wg) = wg_mesh.read().unwrap().as_ref() {
+                            if let Ok(wg_lock) = wg.read() {
+                                if wg_lock.send_message(peer_id, &packet).is_ok() {
+                                    sent_via_wg = true;
+                                }
+                            }
+                        }
+
+                        // Fallback to packet handler if WireGuard didn't work
+                        if !sent_via_wg {
+                            if let Some(handler) = packet_handler.lock().unwrap().as_mut() {
+                                let _ = handler.handle_outbound(dest_ip, packet);
+                            }
                         }
                     } else {
                         // Regular internet traffic - could be handled differently
@@ -176,6 +194,25 @@ impl VpnService {
     /// Set the packet handler for outbound traffic
     pub fn set_packet_handler<H: PacketHandler + 'static>(&self, handler: H) {
         *self.packet_handler.lock().unwrap() = Some(Box::new(handler));
+    }
+
+    /// Set the WireGuard mesh for direct packet routing
+    pub fn set_wireguard_mesh(&self, wg_mesh: Arc<RwLock<WireGuardMesh>>) {
+        *self.wg_mesh.write().unwrap() = Some(wg_mesh);
+    }
+
+    /// Route packet directly through WireGuard mesh (if available)
+    fn route_through_wireguard(&self, dest_ip: IpAddr, packet: Vec<u8>) -> bool {
+        if let Some(wg_mesh) = self.wg_mesh.read().unwrap().as_ref() {
+            // Look up peer ID for destination IP
+            if let Some(peer_id) = self.ip_peer_map.read().unwrap().get(&dest_ip) {
+                // Send through WireGuard
+                if let Ok(wg) = wg_mesh.read() {
+                    return wg.send_message(peer_id, &packet).is_ok();
+                }
+            }
+        }
+        false
     }
 
     /// Get interface name

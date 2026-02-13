@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../backend/thread_store.dart';
 import '../../core/layout/layout_spec.dart';
+import '../../core/state/mesh_state.dart';
 import '../../models/thread_models.dart';
-import '../../state/app_state.dart';
 import 'widgets/composer_bar.dart';
 import 'widgets/conversation_list.dart';
 import 'widgets/top_bar.dart';
@@ -25,7 +24,6 @@ class SignalShell extends StatefulWidget {
 class _SignalShellState extends State<SignalShell> {
   final TextEditingController _composer = TextEditingController();
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  late final ThreadStore _store;
   final FocusNode _composerFocus = FocusNode();
   GlobalMenuSelection _menuSelection = const GlobalMenuSelection(
     section: GlobalMenuSection.chat,
@@ -34,125 +32,134 @@ class _SignalShellState extends State<SignalShell> {
   String? _activeSubSectionId;
 
   @override
-  void initState() {
-    super.initState();
-    _store = ThreadStore(appState: context.read<AppState>());
-    _store.initialize();
-  }
-
-  @override
   void dispose() {
     _composer.dispose();
     _composerFocus.dispose();
-    _store.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final appState = context.watch<AppState>();
-    if (appState.error != null) {
+    final meshState = context.watch<MeshState>();
+    if (meshState.error != null) {
       return Scaffold(
-        body: SafeArea(
-          child: _BackendErrorScreen(error: appState.error!),
-        ),
+        body: SafeArea(child: _BackendErrorScreen(error: meshState.error!)),
       );
     }
-    return AnimatedBuilder(
-      animation: _store,
-      builder: (context, _) {
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final layout = LayoutSpec.resolve(constraints);
-            final threads = _store.threads;
-            final activeThread = _resolveActiveThread(threads, _store.activeThreadId);
-            final isChatActive = _menuSelection.section == GlobalMenuSection.chat;
-            final showConversationPane = layout.showSecondaryPane && isChatActive;
-    if (isChatActive && _activeSubSectionId == null) {
-      _activeSubSectionId = _store.activeThreadId ?? 'chat-list';
-    }
-            final sidebarSelectionId = _sidebarSelectionId(
-              section: _menuSelection.section,
-              explicit: _activeSubSectionId,
-            );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final layout = LayoutSpec.resolve(constraints);
+        final threads = meshState.threads;
+        final activeThread = _resolveActiveThread(
+          threads,
+          meshState.activeThreadId,
+        );
+        final isChatActive = _menuSelection.section == GlobalMenuSection.chat;
+        final showConversationPane = layout.showSecondaryPane && isChatActive;
+        if (isChatActive && _activeSubSectionId == null) {
+          _activeSubSectionId = meshState.activeThreadId ?? 'chat-list';
+        }
+        final sidebarSelectionId = _sidebarSelectionId(
+          section: _menuSelection.section,
+          explicit: _activeSubSectionId,
+        );
 
-            final sidebar = _buildSectionSidebar(
-              context,
-              section: _menuSelection.section,
-              threads: threads,
-              layout: layout,
-              selectionId: sidebarSelectionId,
-            );
-            final showMainList = !layout.showSidebar && !showConversationPane;
+        final sidebar = _buildSectionSidebar(
+          context,
+          section: _menuSelection.section,
+          threads: threads,
+          layout: layout,
+          selectionId: sidebarSelectionId,
+        );
+        final showMainList = !layout.showSidebar && !showConversationPane;
 
-            return Scaffold(
-              key: _scaffoldKey,
-              body: SafeArea(
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        children: [
-                          TopBar(
-                            title: isChatActive
-                                ? (activeThread?.title ?? 'Mesh Infinity')
-                                : _resolveSectionTitle(_menuSelection.section, _activeSubSectionId),
-                            subtitle: isChatActive
-                                ? (activeThread != null ? 'End-to-end encrypted · P2P mesh' : null)
-                                : _resolveSectionSubtitle(_menuSelection.section, _activeSubSectionId),
-                            sectionIcon: isChatActive ? null : _iconForSection(_menuSelection.section),
-                            showMenuButton: true,
-                            onMenuTap: () => _scaffoldKey.currentState?.openDrawer(),
-                            showBackButton: _showBackButtonForSection(),
-                            onBackTap: _handleBack,
-                            leading: const [],
-                            trailing: _buildTopActions(isChatActive),
-                          ),
-                          Expanded(
-                            child: showConversationPane
-                                ? Row(
-                                    children: [
-                                      SizedBox(
-                                        width: layout.secondaryPaneWidth,
-                                        child: ThreadSidebar(
-                                          threads: threads,
-                                          activeThreadId: _store.activeThreadId,
-                                          activeSection: _menuSelection.section,
-                                          onSelectThread: _onThreadSelected,
-                                          onCreateThread: _promptCreateThread,
-                                          onSelectSection: _onNavSection,
-                                          pairingCode: _store.pairingCode,
-                                          footer: _buildChatSettingsFooter(),
-                                        ),
-                                      ),
-                                      const VerticalDivider(width: 1),
-                                      Expanded(child: _buildPrimaryContent(threads, activeThread)),
-                                    ],
-                                  )
-                                : (showMainList ? sidebar : _buildPrimaryContent(threads, activeThread)),
-                          ),
-                          if (isChatActive)
-                            ComposerBar(
-                              controller: _composer,
-                              onAdd: _promptCreateThread,
-                              onSend: _handleSend,
-                              enabled: activeThread != null,
-                              focusNode: _composerFocus,
-                            ),
-                        ],
+        return Scaffold(
+          key: _scaffoldKey,
+          body: SafeArea(
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    children: [
+                      TopBar(
+                        title: isChatActive
+                            ? (activeThread?.title ?? 'Mesh Infinity')
+                            : _resolveSectionTitle(
+                                _menuSelection.section,
+                                _activeSubSectionId,
+                              ),
+                        subtitle: isChatActive
+                            ? (activeThread != null
+                                  ? 'End-to-end encrypted · P2P mesh'
+                                  : null)
+                            : _resolveSectionSubtitle(
+                                _menuSelection.section,
+                                _activeSubSectionId,
+                              ),
+                        sectionIcon: isChatActive
+                            ? null
+                            : _iconForSection(_menuSelection.section),
+                        showMenuButton: true,
+                        onMenuTap: () =>
+                            _scaffoldKey.currentState?.openDrawer(),
+                        showBackButton: _showBackButtonForSection(),
+                        onBackTap: _handleBack,
+                        leading: const [],
+                        trailing: _buildTopActions(isChatActive),
                       ),
-                    ),
-                  ],
+                      Expanded(
+                        child: showConversationPane
+                            ? Row(
+                                children: [
+                                  SizedBox(
+                                    width: layout.secondaryPaneWidth,
+                                    child: ThreadSidebar(
+                                      threads: threads,
+                                      activeThreadId: meshState.activeThreadId,
+                                      activeSection: _menuSelection.section,
+                                      onSelectThread: _onThreadSelected,
+                                      onCreateThread: _promptCreateThread,
+                                      onSelectSection: _onNavSection,
+                                      pairingCode: meshState.pairingCode,
+                                      footer: _buildChatSettingsFooter(),
+                                    ),
+                                  ),
+                                  const VerticalDivider(width: 1),
+                                  Expanded(
+                                    child: _buildPrimaryContent(
+                                      threads,
+                                      activeThread,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : (showMainList
+                                  ? sidebar
+                                  : _buildPrimaryContent(
+                                      threads,
+                                      activeThread,
+                                    )),
+                      ),
+                      if (isChatActive)
+                        ComposerBar(
+                          controller: _composer,
+                          onAdd: _promptCreateThread,
+                          onSend: _handleSend,
+                          enabled: activeThread != null,
+                          focusNode: _composerFocus,
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-              drawer: Drawer(
-                child: GlobalMenuDrawer(
-                  activeSection: _menuSelection.section,
-                  onSelect: _handleDrawerSelect,
-                ),
-              ),
-            );
-          },
+              ],
+            ),
+          ),
+          drawer: Drawer(
+            child: GlobalMenuDrawer(
+              activeSection: _menuSelection.section,
+              onSelect: _handleDrawerSelect,
+            ),
+          ),
         );
       },
     );
@@ -161,7 +168,7 @@ class _SignalShellState extends State<SignalShell> {
   // --- navigation helpers ---
 
   void _onThreadSelected(String id) {
-    _store.selectThread(id);
+    _meshState().selectThread(id);
     if (_menuSelection.section != GlobalMenuSection.chat) {
       setState(() {
         _menuSelection = _selectionForSection(GlobalMenuSection.chat);
@@ -204,22 +211,40 @@ class _SignalShellState extends State<SignalShell> {
   static GlobalMenuSelection _selectionForSection(GlobalMenuSection section) {
     switch (section) {
       case GlobalMenuSection.chat:
-        return const GlobalMenuSelection(section: GlobalMenuSection.chat, title: 'Chat');
+        return const GlobalMenuSelection(
+          section: GlobalMenuSection.chat,
+          title: 'Chat',
+        );
       case GlobalMenuSection.files:
         return const GlobalMenuSelection(
-            section: GlobalMenuSection.files, title: 'Files', subtitle: 'Transfer activity and history');
+          section: GlobalMenuSection.files,
+          title: 'Files',
+          subtitle: 'Transfer activity and history',
+        );
       case GlobalMenuSection.networkOptions:
         return const GlobalMenuSelection(
-            section: GlobalMenuSection.networkOptions, title: 'Network', subtitle: 'VPN routing and discovery');
+          section: GlobalMenuSection.networkOptions,
+          title: 'Network',
+          subtitle: 'VPN routing and discovery',
+        );
       case GlobalMenuSection.meshOptions:
         return const GlobalMenuSelection(
-            section: GlobalMenuSection.meshOptions, title: 'Peers', subtitle: 'Connected peers and trust');
+          section: GlobalMenuSection.meshOptions,
+          title: 'Peers',
+          subtitle: 'Connected peers and trust',
+        );
       case GlobalMenuSection.trustCenter:
         return const GlobalMenuSelection(
-            section: GlobalMenuSection.trustCenter, title: 'Trust Center', subtitle: 'Attestations and verification');
+          section: GlobalMenuSection.trustCenter,
+          title: 'Trust Center',
+          subtitle: 'Attestations and verification',
+        );
       case GlobalMenuSection.applicationSettings:
         return const GlobalMenuSelection(
-            section: GlobalMenuSection.applicationSettings, title: 'Settings', subtitle: 'Preferences and node mode');
+          section: GlobalMenuSection.applicationSettings,
+          title: 'Settings',
+          subtitle: 'Preferences and node mode',
+        );
     }
   }
 
@@ -243,7 +268,7 @@ class _SignalShellState extends State<SignalShell> {
   // --- backend action handlers (unchanged) ---
 
   void _handleUpdateSettings(BackendSettings updated) {
-    final bridge = _store.backendBridge;
+    final bridge = _meshState().backendBridge;
     final success = bridge.setTransportFlags(
       enableTor: updated.enableTor,
       enableClearnet: updated.enableClearnet,
@@ -253,20 +278,20 @@ class _SignalShellState extends State<SignalShell> {
       enableBluetooth: updated.enableBluetooth,
     );
     if (success) {
-      _store.refreshSettings();
+      _meshState().refreshSettings();
     }
   }
 
   void _handleSelectNodeMode(BackendNodeMode mode) {
-    final bridge = _store.backendBridge;
+    final bridge = _meshState().backendBridge;
     final success = bridge.setNodeMode(mode.wireValue);
     if (success) {
-      _store.refreshSettings();
+      _meshState().refreshSettings();
     }
   }
 
   void _handleAttestTrust(TrustAttestationRequest request) {
-    _store.attestTrust(
+    _meshState().attestTrust(
       targetPeerId: request.peerId,
       trustLevel: request.trustLevel,
       verificationMethod: request.verificationMethod,
@@ -274,10 +299,13 @@ class _SignalShellState extends State<SignalShell> {
   }
 
   void _handleVerifyTrust(String peerId) {
-    _store.verifyTrust(peerId);
+    _meshState().verifyTrust(peerId);
   }
 
-  ThreadSummary? _resolveActiveThread(List<ThreadSummary> threads, String? activeId) {
+  ThreadSummary? _resolveActiveThread(
+    List<ThreadSummary> threads,
+    String? activeId,
+  ) {
     if (threads.isEmpty) {
       return null;
     }
@@ -321,14 +349,14 @@ class _SignalShellState extends State<SignalShell> {
     if (trimmed.isEmpty) {
       return;
     }
-    await _store.createThread(trimmed);
+    await _meshState().createThread(trimmed);
   }
 
   void _handleSend(String text) {
     if (text.trim().isEmpty) {
       return;
     }
-    _store.sendMessage(text);
+    _meshState().sendMessage(text);
     _composer.clear();
   }
 
@@ -339,11 +367,14 @@ class _SignalShellState extends State<SignalShell> {
     });
   }
 
-  Widget _buildPrimaryContent(List<ThreadSummary> threads, ThreadSummary? activeThread) {
+  Widget _buildPrimaryContent(
+    List<ThreadSummary> threads,
+    ThreadSummary? activeThread,
+  ) {
     final isChatActive = _menuSelection.section == GlobalMenuSection.chat;
     if (isChatActive) {
       return ConversationList(
-        messages: _store.activeMessages,
+        messages: _meshState().activeMessages,
         emptyState: activeThread == null
             ? _EmptyState(onCreate: _promptCreateThread)
             : _ChatEmptyState(onStart: () => _composerFocus.requestFocus()),
@@ -354,20 +385,20 @@ class _SignalShellState extends State<SignalShell> {
       selection: _menuSelection.subSectionId == null
           ? _menuSelection.copyWith(subSectionId: _activeSubSectionId)
           : _menuSelection,
-      pairingCode: _store.pairingCode,
-      peerCount: _store.peerCount,
-      peers: _store.peers,
-      transfers: _store.transfers,
+      pairingCode: _meshState().pairingCode,
+      peerCount: _meshState().peerCount,
+      peers: _meshState().peers,
+      transfers: _meshState().transfers,
       threads: threads,
-      activeThreadId: _store.activeThreadId,
-      onSelectThread: (id) => _store.selectThread(id),
-      settings: _store.settings,
+      activeThreadId: _meshState().activeThreadId,
+      onSelectThread: (id) => _meshState().selectThread(id),
+      settings: _meshState().settings,
       onSelect: _handleSelectSection,
       onUpdateSettings: _handleUpdateSettings,
       onSelectNodeMode: _handleSelectNodeMode,
       onAttestTrust: _handleAttestTrust,
       onVerifyTrust: _handleVerifyTrust,
-      lastVerifiedTrustLevel: _store.lastVerifiedTrustLevel,
+      lastVerifiedTrustLevel: _meshState().lastVerifiedTrustLevel,
     );
   }
 
@@ -398,7 +429,6 @@ class _SignalShellState extends State<SignalShell> {
     return actions;
   }
 
-
   Widget _buildChatSettingsFooter() {
     final cs = Theme.of(context).colorScheme;
     return Padding(
@@ -411,7 +441,10 @@ class _SignalShellState extends State<SignalShell> {
             label: const Text('Chat settings'),
           ),
           const SizedBox(height: 8),
-          Text('TODO: add per-chat preferences', style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12)),
+          Text(
+            'TODO: add per-chat preferences',
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+          ),
         ],
       ),
     );
@@ -428,12 +461,12 @@ class _SignalShellState extends State<SignalShell> {
       case GlobalMenuSection.chat:
         return ThreadSidebar(
           threads: threads,
-          activeThreadId: _store.activeThreadId,
+          activeThreadId: _meshState().activeThreadId,
           activeSection: section,
           onSelectThread: _onThreadSelected,
           onCreateThread: _promptCreateThread,
           onSelectSection: _onNavSection,
-          pairingCode: _store.pairingCode,
+          pairingCode: _meshState().pairingCode,
           footer: _buildChatSettingsFooter(),
         );
       case GlobalMenuSection.files:
@@ -481,7 +514,7 @@ class _SignalShellState extends State<SignalShell> {
   String? _defaultSubSectionId(GlobalMenuSection section) {
     switch (section) {
       case GlobalMenuSection.chat:
-        return _store.activeThreadId ?? 'chat-list';
+        return _meshState().activeThreadId ?? 'chat-list';
       case GlobalMenuSection.files:
         return 'transfers';
       case GlobalMenuSection.networkOptions:
@@ -499,10 +532,6 @@ class _SignalShellState extends State<SignalShell> {
     return SectionNavCatalog.files;
   }
 
-  List<SectionNavItem> _chatSidebarItems() {
-    return SectionNavCatalog.chat;
-  }
-
   List<SectionNavItem> _networkSidebarItems() {
     return SectionNavCatalog.network;
   }
@@ -516,10 +545,6 @@ class _SignalShellState extends State<SignalShell> {
   }
 
   void _onFilesSubSection(String id) {
-    setState(() => _activeSubSectionId = id);
-  }
-
-  void _onChatSubSection(String id) {
     setState(() => _activeSubSectionId = id);
   }
 
@@ -552,13 +577,17 @@ class _SignalShellState extends State<SignalShell> {
   bool _showBackButtonForSection() {
     switch (_menuSelection.section) {
       case GlobalMenuSection.chat:
-        return _activeSubSectionId != null && _activeSubSectionId != 'chat-list';
+        return _activeSubSectionId != null &&
+            _activeSubSectionId != 'chat-list';
       case GlobalMenuSection.applicationSettings:
-        return _activeSubSectionId != null && _activeSubSectionId != 'preferences';
+        return _activeSubSectionId != null &&
+            _activeSubSectionId != 'preferences';
       case GlobalMenuSection.files:
-        return _activeSubSectionId != null && _activeSubSectionId != 'transfers';
+        return _activeSubSectionId != null &&
+            _activeSubSectionId != 'transfers';
       case GlobalMenuSection.networkOptions:
-        return _activeSubSectionId != null && _activeSubSectionId != 'transports';
+        return _activeSubSectionId != null &&
+            _activeSubSectionId != 'transports';
       case GlobalMenuSection.meshOptions:
         return _activeSubSectionId != null && _activeSubSectionId != 'peers';
       case GlobalMenuSection.trustCenter:
@@ -600,7 +629,10 @@ class _SignalShellState extends State<SignalShell> {
     return _menuSelection.title;
   }
 
-  String? _resolveSectionSubtitle(GlobalMenuSection section, String? subSectionId) {
+  String? _resolveSectionSubtitle(
+    GlobalMenuSection section,
+    String? subSectionId,
+  ) {
     final item = _lookupSubSection(section, subSectionId);
     if (item != null) {
       return item.subtitle;
@@ -608,7 +640,10 @@ class _SignalShellState extends State<SignalShell> {
     return _menuSelection.subtitle;
   }
 
-  SectionNavItem? _lookupSubSection(GlobalMenuSection section, String? subSectionId) {
+  SectionNavItem? _lookupSubSection(
+    GlobalMenuSection section,
+    String? subSectionId,
+  ) {
     if (subSectionId == null) {
       return null;
     }
@@ -639,10 +674,12 @@ class _SignalShellState extends State<SignalShell> {
         return const [];
     }
   }
+
+  MeshState _meshState() => context.read<MeshState>();
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({super.key, required this.onCreate});
+  const _EmptyState({required this.onCreate});
 
   final VoidCallback onCreate;
 
@@ -659,7 +696,9 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               'No conversations yet',
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 6),
             Text(
@@ -681,7 +720,7 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _ChatEmptyState extends StatelessWidget {
-  const _ChatEmptyState({super.key, required this.onStart});
+  const _ChatEmptyState({required this.onStart});
 
   final VoidCallback onStart;
 
@@ -694,11 +733,17 @@ class _ChatEmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.chat_bubble_outline, size: 46, color: cs.onSurfaceVariant),
+            Icon(
+              Icons.chat_bubble_outline,
+              size: 46,
+              color: cs.onSurfaceVariant,
+            ),
             const SizedBox(height: 12),
             Text(
               'Conversation ready',
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 6),
             Text(
@@ -737,7 +782,9 @@ class _BackendErrorScreen extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               error.title,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
