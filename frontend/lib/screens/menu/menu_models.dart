@@ -156,6 +156,18 @@ class SectionNavCatalog {
       icon: Icons.badge_outlined,
     ),
     SectionNavItem(
+      id: 'services',
+      title: 'Services',
+      subtitle: 'Hosted service configuration',
+      icon: Icons.cloud_outlined,
+    ),
+    SectionNavItem(
+      id: 'advanced',
+      title: 'Advanced',
+      subtitle: 'Statistics and diagnostics',
+      icon: Icons.developer_mode_outlined,
+    ),
+    SectionNavItem(
       id: 'about',
       title: 'About',
       subtitle: 'Versions and licenses',

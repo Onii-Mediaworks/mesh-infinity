@@ -33,6 +33,32 @@ Mesh Infinity uses a **Flutter UI-only** layer for all supported platforms (Andr
 - All inbound/outbound payloads crossing the FFI boundary must be size-checked and sanitized.
 
 ## Flutter UI Implementation
+## Settings Panel Enhancements
+### Settings Panel
+- **Network Backends**: Contains toggles for transport flags, VPN routes, clearnet routes, and a statistics view.
+- **Peers**: Divided into *Trusted Peers* and *Discovered/Added Peers* sections. Each peer profile displays identity, trust level, available transports, and connection metrics. Profiles are selectable to view detailed information.
+- **Services**: Allows configuration of hosted services, specifying service name, path, and address. Supports enabling/disabling services.
+- **Advanced**: Contains a slider to toggle visibility of advanced statistics such as node health, packet loss, latency, and bandwidth usage.
+### Files Section
+Provides controls for hosting, sending, and receiving files. Exposes APIs for file transfer initiation, progress monitoring, and cancellation.
+### UI ↔ Rust Boundary
+New FFI endpoints are required to expose the above functionality:
+- `mi_get_network_stats`
+- `mi_get_peer_list`
+- `mi_get_service_list`
+- `mi_configure_service`
+- `mi_toggle_transport_flag`
+- `mi_set_vpn_route`
+- `mi_set_clearnet_route`
+- `mi_file_transfer_start`
+- `mi_file_transfer_cancel`
+- `mi_file_transfer_status`
+### Navigation
+Adds a new `settings` destination with sub-destinations for each tab. NavigationManager will expose methods to navigate to specific tabs.
+### State Management
+Introduces `SettingsViewModel` and `PeerListViewModel` to fetch and expose data via the new FFI calls.
+### Testing
+Unit tests for new view models, widget tests for tab navigation, integration tests for FFI calls.
 
 The Mesh Infinity application is built using Flutter with a modern MVVM architecture, following the patterns established in the Android mobile UI while leveraging native Flutter technologies.
 

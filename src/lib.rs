@@ -6,8 +6,6 @@ pub mod core;
 pub mod auth;
 #[path = "../backend/crypto/src/lib.rs"]
 pub mod crypto;
-#[path = "../backend/mesh/src/lib.rs"]
-pub mod mesh;
 #[path = "../backend/transport/src/lib.rs"]
 pub mod transport;
 #[path = "../backend/discovery/src/lib.rs"]

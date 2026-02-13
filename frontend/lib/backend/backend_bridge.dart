@@ -42,6 +42,13 @@ class BackendBridge {
   bool get isAvailable => _bindings != null && _context != nullptr;
   String? get initError => _initError;
 
+  String? getLastError() {
+    if (!isAvailable) {
+      return null;
+    }
+    return _readString(_bindings!.lastErrorMessage());
+  }
+
   List<ThreadSummary> fetchThreads() {
     if (!isAvailable) {
       return const [];
@@ -52,13 +59,15 @@ class BackendBridge {
     }
     final decoded = jsonDecode(jsonString) as List<dynamic>;
     return decoded
-        .map((item) => ThreadSummary(
-              id: item['id'] as String? ?? '',
-              title: item['title'] as String? ?? '',
-              preview: item['preview'] as String? ?? '',
-              lastSeen: item['lastSeen'] as String? ?? '',
-              unreadCount: item['unreadCount'] as int? ?? 0,
-            ))
+        .map(
+          (item) => ThreadSummary(
+            id: item['id'] as String? ?? '',
+            title: item['title'] as String? ?? '',
+            preview: item['preview'] as String? ?? '',
+            lastSeen: item['lastSeen'] as String? ?? '',
+            unreadCount: item['unreadCount'] as int? ?? 0,
+          ),
+        )
         .toList();
   }
 
@@ -76,13 +85,15 @@ class BackendBridge {
     }
     final decoded = jsonDecode(jsonString) as List<dynamic>;
     return decoded
-        .map((item) => MessageItem(
-              id: item['id'] as String? ?? '',
-              sender: item['sender'] as String? ?? '',
-              text: item['text'] as String? ?? '',
-              timestamp: item['timestamp'] as String? ?? '',
-              isOutgoing: item['isOutgoing'] as bool? ?? false,
-            ))
+        .map(
+          (item) => MessageItem(
+            id: item['id'] as String? ?? '',
+            sender: item['sender'] as String? ?? '',
+            text: item['text'] as String? ?? '',
+            timestamp: item['timestamp'] as String? ?? '',
+            isOutgoing: item['isOutgoing'] as bool? ?? false,
+          ),
+        )
         .toList();
   }
 
@@ -127,9 +138,23 @@ class BackendBridge {
       return null;
     }
     final namePtr = name.toNativeUtf8();
-    final roomPtr = _bindings!.createRoom(_context, namePtr);
-    calloc.free(namePtr);
-    return _readString(roomPtr);
+    try {
+      final roomPtr = _bindings!.createRoom(_context, namePtr);
+      final roomId = _readString(roomPtr);
+      if (roomId == null) {
+        throw StateError(getLastError() ?? 'Failed to create room');
+      }
+      return roomId;
+    } finally {
+      calloc.free(namePtr);
+    }
+  }
+
+  bool hasIdentity() {
+    if (!isAvailable) {
+      return false;
+    }
+    return _bindings!.hasIdentity(_context) == 1;
   }
 
   bool selectRoom(String roomId) {
@@ -308,6 +333,196 @@ class BackendBridge {
     return decoded.isNotEmpty;
   }
 
+  // mDNS Discovery methods
+
+  bool enableMdns({int port = 51820}) {
+    if (!isAvailable) {
+      return false;
+    }
+    final result = _bindings!.mdnsEnable(_context, port);
+    return result == 0;
+  }
+
+  bool disableMdns() {
+    if (!isAvailable) {
+      return false;
+    }
+    final result = _bindings!.mdnsDisable(_context);
+    return result == 0;
+  }
+
+  bool isMdnsRunning() {
+    if (!isAvailable) {
+      return false;
+    }
+    final result = _bindings!.mdnsIsRunning(_context);
+    return result == 1;
+  }
+
+  List<Map<String, dynamic>> getDiscoveredPeers() {
+    if (!isAvailable) {
+      return [];
+    }
+    final jsonString = _readString(_bindings!.mdnsGetDiscoveredPeers(_context));
+    if (jsonString == null) {
+      return [];
+    }
+    final decoded = jsonDecode(jsonString);
+    if (decoded is List) {
+      return decoded.cast<Map<String, dynamic>>();
+    }
+    return [];
+  }
+
+  Map<String, dynamic>? getNetworkStats() {
+    if (!isAvailable) {
+      return null;
+    }
+    final jsonString = _readString(_bindings!.getNetworkStats(_context));
+    if (jsonString == null) {
+      return null;
+    }
+    final decoded = jsonDecode(jsonString);
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(decoded);
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? startFileTransfer({
+    required String direction,
+    String? peerId,
+    required String filePath,
+  }) {
+    if (!isAvailable) {
+      return null;
+    }
+    final directionPtr = direction.toNativeUtf8();
+    final peerIdPtr = peerId?.toNativeUtf8() ?? nullptr;
+    final filePathPtr = filePath.toNativeUtf8();
+
+    final jsonString = _readString(
+      _bindings!.fileTransferStart(_context, directionPtr, peerIdPtr, filePathPtr),
+    );
+
+    calloc.free(directionPtr);
+    if (peerIdPtr != nullptr) calloc.free(peerIdPtr);
+    calloc.free(filePathPtr);
+
+    if (jsonString == null) {
+      return null;
+    }
+    final decoded = jsonDecode(jsonString);
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(decoded);
+    }
+    return null;
+  }
+
+  bool cancelFileTransfer(String transferId) {
+    if (!isAvailable) {
+      return false;
+    }
+    final transferIdPtr = transferId.toNativeUtf8();
+    final result = _bindings!.fileTransferCancel(_context, transferIdPtr);
+    calloc.free(transferIdPtr);
+    return result == 0;
+  }
+
+  Map<String, dynamic>? getFileTransferStatus(String transferId) {
+    if (!isAvailable) {
+      return null;
+    }
+    final transferIdPtr = transferId.toNativeUtf8();
+    final jsonString = _readString(
+      _bindings!.fileTransferStatus(_context, transferIdPtr),
+    );
+    calloc.free(transferIdPtr);
+
+    if (jsonString == null) {
+      return null;
+    }
+    final decoded = jsonDecode(jsonString);
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(decoded);
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> getServiceList() {
+    if (!isAvailable) {
+      return [];
+    }
+    final jsonString = _readString(_bindings!.getServiceList(_context));
+    if (jsonString == null) {
+      return [];
+    }
+    final decoded = jsonDecode(jsonString);
+    if (decoded is List) {
+      return decoded.map((e) {
+        if (e is Map<String, dynamic>) {
+          return e;
+        }
+        if (e is Map) {
+          return Map<String, dynamic>.from(e);
+        }
+        return <String, dynamic>{};
+      }).toList();
+    }
+    return [];
+  }
+
+  bool configureService(String serviceId, Map<String, dynamic> config) {
+    if (!isAvailable) {
+      return false;
+    }
+    final serviceIdPtr = serviceId.toNativeUtf8();
+    final configJsonPtr = jsonEncode(config).toNativeUtf8();
+    final result = _bindings!.configureService(_context, serviceIdPtr, configJsonPtr);
+    calloc.free(serviceIdPtr);
+    calloc.free(configJsonPtr);
+    return result != 0;
+  }
+
+  bool toggleTransport(String transportName, bool enabled) {
+    if (!isAvailable) {
+      return false;
+    }
+    final transportNamePtr = transportName.toNativeUtf8();
+    final result = _bindings!.toggleTransportFlag(_context, transportNamePtr, enabled ? 1 : 0);
+    calloc.free(transportNamePtr);
+    return result != 0;
+  }
+
+  bool setVpnRoute(Map<String, dynamic> routeConfig) {
+    if (!isAvailable) {
+      return false;
+    }
+    final routeConfigPtr = jsonEncode(routeConfig).toNativeUtf8();
+    final result = _bindings!.setVpnRoute(_context, routeConfigPtr);
+    calloc.free(routeConfigPtr);
+    return result != 0;
+  }
+
+  bool setClearnetRoute(Map<String, dynamic> routeConfig) {
+    if (!isAvailable) {
+      return false;
+    }
+    final routeConfigPtr = jsonEncode(routeConfig).toNativeUtf8();
+    final result = _bindings!.setClearnetRoute(_context, routeConfigPtr);
+    calloc.free(routeConfigPtr);
+    return result != 0;
+  }
+
   void dispose() {
     if (isAvailable) {
       _bindings!.meshDestroy(_context);
@@ -373,47 +588,128 @@ DynamicLibrary _openLibrary() {
 class _BackendBindings {
   // ignore: unused_field
   _BackendBindings(this._lib)
-      : meshInit = _lib.lookupFunction<MeshInitNative, MeshInitDart>('mesh_init'),
-        meshDestroy =
-            _lib.lookupFunction<MeshDestroyNative, MeshDestroyDart>('mesh_destroy'),
-        roomsJson = _lib.lookupFunction<RoomsJsonNative, RoomsJsonDart>('mi_rooms_json'),
-        messagesJson = _lib.lookupFunction<MessagesJsonNative, MessagesJsonDart>('mi_messages_json'),
-        peersJson = _lib.lookupFunction<PeersJsonNative, PeersJsonDart>('mi_peers_json'),
-        fileTransfersJson =
-            _lib.lookupFunction<FileTransfersJsonNative, FileTransfersJsonDart>(
-          'mi_file_transfers_json',
-        ),
-        activeRoomId = _lib.lookupFunction<ActiveRoomIdNative, ActiveRoomIdDart>('mi_active_room_id'),
-        createRoom = _lib.lookupFunction<CreateRoomNative, CreateRoomDart>('mi_create_room'),
-        selectRoom = _lib.lookupFunction<SelectRoomNative, SelectRoomDart>('mi_select_room'),
-        deleteRoom = _lib.lookupFunction<DeleteRoomNative, DeleteRoomDart>('mi_delete_room'),
-        sendTextMessage = _lib.lookupFunction<SendTextMessageNative, SendTextMessageDart>(
-          'mi_send_text_message',
-        ),
-        deleteMessage =
-            _lib.lookupFunction<DeleteMessageNative, DeleteMessageDart>('mi_delete_message'),
-        setNodeMode = _lib.lookupFunction<SetNodeModeNative, SetNodeModeDart>('mi_set_node_mode'),
-        settingsJson =
-            _lib.lookupFunction<SettingsJsonNative, SettingsJsonDart>('mi_settings_json'),
-        setTransportFlags = _lib.lookupFunction<SetTransportFlagsNative, SetTransportFlagsDart>(
-          'mi_set_transport_flags',
-        ),
-        pollEvents = _lib.lookupFunction<PollEventsNative, PollEventsDart>('mi_poll_events'),
-        localIdentityJson =
-            _lib.lookupFunction<LocalIdentityJsonNative, LocalIdentityJsonDart>(
-          'mi_local_identity_json',
-        ),
-        trustAttest = _lib.lookupFunction<TrustAttestNative, TrustAttestDart>(
-          'mi_trust_attest',
-        ),
-        trustVerifyJson =
-            _lib.lookupFunction<TrustVerifyJsonNative, TrustVerifyJsonDart>(
-          'mi_trust_verify_json',
-        ),
-        lastErrorMessage = _lib.lookupFunction<LastErrorMessageNative, LastErrorMessageDart>(
-          'mi_last_error_message',
-        ),
-        stringFree = _lib.lookupFunction<StringFreeNative, StringFreeDart>('mi_string_free');
+    : meshInit = _lib.lookupFunction<MeshInitNative, MeshInitDart>('mesh_init'),
+      meshDestroy = _lib.lookupFunction<MeshDestroyNative, MeshDestroyDart>(
+        'mesh_destroy',
+      ),
+      roomsJson = _lib.lookupFunction<RoomsJsonNative, RoomsJsonDart>(
+        'mi_rooms_json',
+      ),
+      messagesJson = _lib.lookupFunction<MessagesJsonNative, MessagesJsonDart>(
+        'mi_messages_json',
+      ),
+      peersJson = _lib.lookupFunction<PeersJsonNative, PeersJsonDart>(
+        'mi_peers_json',
+      ),
+      fileTransfersJson = _lib
+          .lookupFunction<FileTransfersJsonNative, FileTransfersJsonDart>(
+            'mi_file_transfers_json',
+          ),
+      activeRoomId = _lib.lookupFunction<ActiveRoomIdNative, ActiveRoomIdDart>(
+        'mi_active_room_id',
+      ),
+      createRoom = _lib.lookupFunction<CreateRoomNative, CreateRoomDart>(
+        'mi_create_room',
+      ),
+      selectRoom = _lib.lookupFunction<SelectRoomNative, SelectRoomDart>(
+        'mi_select_room',
+      ),
+      deleteRoom = _lib.lookupFunction<DeleteRoomNative, DeleteRoomDart>(
+        'mi_delete_room',
+      ),
+      sendTextMessage = _lib
+          .lookupFunction<SendTextMessageNative, SendTextMessageDart>(
+            'mi_send_text_message',
+          ),
+      deleteMessage = _lib
+          .lookupFunction<DeleteMessageNative, DeleteMessageDart>(
+            'mi_delete_message',
+          ),
+      setNodeMode = _lib.lookupFunction<SetNodeModeNative, SetNodeModeDart>(
+        'mi_set_node_mode',
+      ),
+      settingsJson = _lib.lookupFunction<SettingsJsonNative, SettingsJsonDart>(
+        'mi_settings_json',
+      ),
+      setTransportFlags = _lib
+          .lookupFunction<SetTransportFlagsNative, SetTransportFlagsDart>(
+            'mi_set_transport_flags',
+          ),
+      pollEvents = _lib.lookupFunction<PollEventsNative, PollEventsDart>(
+        'mi_poll_events',
+      ),
+      localIdentityJson = _lib
+          .lookupFunction<LocalIdentityJsonNative, LocalIdentityJsonDart>(
+            'mi_local_identity_json',
+          ),
+      trustAttest = _lib.lookupFunction<TrustAttestNative, TrustAttestDart>(
+        'mi_trust_attest',
+      ),
+      trustVerifyJson = _lib
+          .lookupFunction<TrustVerifyJsonNative, TrustVerifyJsonDart>(
+            'mi_trust_verify_json',
+          ),
+      hasIdentity = _lib.lookupFunction<HasIdentityNative, HasIdentityDart>(
+        'mi_has_identity',
+      ),
+      lastErrorMessage = _lib
+          .lookupFunction<LastErrorMessageNative, LastErrorMessageDart>(
+            'mi_last_error_message',
+          ),
+      stringFree = _lib.lookupFunction<StringFreeNative, StringFreeDart>(
+        'mi_string_free',
+      ),
+      mdnsEnable = _lib.lookupFunction<MdnsEnableNative, MdnsEnableDart>(
+        'mi_mdns_enable',
+      ),
+      mdnsDisable = _lib.lookupFunction<MdnsDisableNative, MdnsDisableDart>(
+        'mi_mdns_disable',
+      ),
+      mdnsIsRunning = _lib
+          .lookupFunction<MdnsIsRunningNative, MdnsIsRunningDart>(
+            'mi_mdns_is_running',
+          ),
+      mdnsGetDiscoveredPeers = _lib
+          .lookupFunction<
+            MdnsGetDiscoveredPeersNative,
+            MdnsGetDiscoveredPeersDart
+          >('mi_mdns_get_discovered_peers'),
+      getNetworkStats = _lib
+          .lookupFunction<GetNetworkStatsNative, GetNetworkStatsDart>(
+            'mi_get_network_stats',
+          ),
+      fileTransferStart = _lib
+          .lookupFunction<FileTransferStartNative, FileTransferStartDart>(
+            'mi_file_transfer_start',
+          ),
+      fileTransferCancel = _lib
+          .lookupFunction<FileTransferCancelNative, FileTransferCancelDart>(
+            'mi_file_transfer_cancel',
+          ),
+      fileTransferStatus = _lib
+          .lookupFunction<FileTransferStatusNative, FileTransferStatusDart>(
+            'mi_file_transfer_status',
+          ),
+      getServiceList = _lib
+          .lookupFunction<GetServiceListNative, GetServiceListDart>(
+            'mi_get_service_list',
+          ),
+      configureService = _lib
+          .lookupFunction<ConfigureServiceNative, ConfigureServiceDart>(
+            'mi_configure_service',
+          ),
+      toggleTransportFlag = _lib
+          .lookupFunction<ToggleTransportFlagNative, ToggleTransportFlagDart>(
+            'mi_toggle_transport_flag',
+          ),
+      setVpnRoute = _lib
+          .lookupFunction<SetVpnRouteNative, SetVpnRouteDart>(
+            'mi_set_vpn_route',
+          ),
+      setClearnetRoute = _lib
+          .lookupFunction<SetClearnetRouteNative, SetClearnetRouteDart>(
+            'mi_set_clearnet_route',
+          );
 
   // ignore: unused_field
   final DynamicLibrary _lib;
@@ -436,8 +732,22 @@ class _BackendBindings {
   final LocalIdentityJsonDart localIdentityJson;
   final TrustAttestDart trustAttest;
   final TrustVerifyJsonDart trustVerifyJson;
+  final HasIdentityDart hasIdentity;
   final LastErrorMessageDart lastErrorMessage;
   final StringFreeDart stringFree;
+  final MdnsEnableDart mdnsEnable;
+  final MdnsDisableDart mdnsDisable;
+  final MdnsIsRunningDart mdnsIsRunning;
+  final MdnsGetDiscoveredPeersDart mdnsGetDiscoveredPeers;
+  final GetNetworkStatsDart getNetworkStats;
+  final FileTransferStartDart fileTransferStart;
+  final FileTransferCancelDart fileTransferCancel;
+  final FileTransferStatusDart fileTransferStatus;
+  final GetServiceListDart getServiceList;
+  final ConfigureServiceDart configureService;
+  final ToggleTransportFlagDart toggleTransportFlag;
+  final SetVpnRouteDart setVpnRoute;
+  final SetClearnetRouteDart setClearnetRoute;
 }
 
 base class FfiMeshConfig extends Struct {
@@ -483,7 +793,8 @@ typedef MeshDestroyNative = Void Function(Pointer<Void>);
 typedef MeshDestroyDart = void Function(Pointer<Void>);
 typedef RoomsJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef RoomsJsonDart = Pointer<Utf8> Function(Pointer<Void>);
-typedef MessagesJsonNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef MessagesJsonNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef MessagesJsonDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef PeersJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef PeersJsonDart = Pointer<Utf8> Function(Pointer<Void>);
@@ -497,69 +808,106 @@ typedef SelectRoomNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef SelectRoomDart = int Function(Pointer<Void>, Pointer<Utf8>);
 typedef DeleteRoomNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef DeleteRoomDart = int Function(Pointer<Void>, Pointer<Utf8>);
-typedef SendTextMessageNative = Int32 Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
-typedef SendTextMessageDart = int Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
+typedef SendTextMessageNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef SendTextMessageDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 typedef DeleteMessageNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef DeleteMessageDart = int Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetNodeModeNative = Int32 Function(Pointer<Void>, Uint8);
 typedef SetNodeModeDart = int Function(Pointer<Void>, int);
 typedef SettingsJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef SettingsJsonDart = Pointer<Utf8> Function(Pointer<Void>);
-typedef SetTransportFlagsNative = Int32 Function(
-  Pointer<Void>,
-  Uint8,
-  Uint8,
-  Uint8,
-  Uint8,
-  Uint8,
-  Uint8,
-);
-typedef SetTransportFlagsDart = int Function(
-  Pointer<Void>,
-  int,
-  int,
-  int,
-  int,
-  int,
-  int,
-);
+typedef SetTransportFlagsNative =
+    Int32 Function(Pointer<Void>, Uint8, Uint8, Uint8, Uint8, Uint8, Uint8);
+typedef SetTransportFlagsDart =
+    int Function(Pointer<Void>, int, int, int, int, int, int);
 typedef PollEventsNative = Pointer<Utf8> Function(Pointer<Void>, Uint32);
 typedef PollEventsDart = Pointer<Utf8> Function(Pointer<Void>, int);
 typedef LocalIdentityJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef LocalIdentityJsonDart = Pointer<Utf8> Function(Pointer<Void>);
-typedef TrustAttestNative = Int32 Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  Int32,
-  Uint8,
-);
-typedef TrustAttestDart = int Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  int,
-  int,
-);
-typedef TrustVerifyJsonNative = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
-typedef TrustVerifyJsonDart = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
+typedef TrustAttestNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Int32, Uint8);
+typedef TrustAttestDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, int, int);
+typedef TrustVerifyJsonNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TrustVerifyJsonDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef HasIdentityNative = Uint8 Function(Pointer<Void>);
+typedef HasIdentityDart = int Function(Pointer<Void>);
 typedef LastErrorMessageNative = Pointer<Utf8> Function();
 typedef LastErrorMessageDart = Pointer<Utf8> Function();
 typedef StringFreeNative = Void Function(Pointer<Utf8>);
 typedef StringFreeDart = void Function(Pointer<Utf8>);
+
+// mDNS Discovery
+typedef MdnsEnableNative = Int32 Function(Pointer<Void>, Uint16);
+typedef MdnsEnableDart = int Function(Pointer<Void>, int);
+typedef MdnsDisableNative = Int32 Function(Pointer<Void>);
+typedef MdnsDisableDart = int Function(Pointer<Void>);
+typedef MdnsIsRunningNative = Int32 Function(Pointer<Void>);
+typedef MdnsIsRunningDart = int Function(Pointer<Void>);
+typedef MdnsGetDiscoveredPeersNative = Pointer<Utf8> Function(Pointer<Void>);
+
+// Network Statistics
+typedef GetNetworkStatsNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetNetworkStatsDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// File Transfer
+typedef FileTransferStartNative = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
+typedef FileTransferStartDart = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
+typedef FileTransferCancelNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef FileTransferCancelDart = int Function(Pointer<Void>, Pointer<Utf8>);
+typedef FileTransferStatusNative = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+);
+typedef FileTransferStatusDart = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+);
+
+// Service Management
+typedef GetServiceListNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetServiceListDart = Pointer<Utf8> Function(Pointer<Void>);
+typedef ConfigureServiceNative = Int32 Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
+typedef ConfigureServiceDart = int Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
+
+// Transport Management
+typedef ToggleTransportFlagNative = Int32 Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Int32,
+);
+typedef ToggleTransportFlagDart = int Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  int,
+);
+
+// Route Configuration
+typedef SetVpnRouteNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetVpnRouteDart = int Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetClearnetRouteNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetClearnetRouteDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+typedef MdnsGetDiscoveredPeersDart = Pointer<Utf8> Function(Pointer<Void>);

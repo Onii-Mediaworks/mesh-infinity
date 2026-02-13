@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
-use std::time::SystemTime;
+use std::time::{SystemTime, Duration};
 
 use ed25519_dalek::{PublicKey, Signature, Verifier};
 use serde::{Deserialize, Serialize};
 
 use crate::core::{PeerId, TrustLevel};
 use crate::core::error::{MeshInfinityError, Result};
+use super::storage::{ExportedTrustGraph, SerializableTrustRelationship, RevocationCertificate, RevocationReason};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Identity {
@@ -533,6 +534,122 @@ impl WebOfTrust {
         trust_markers
             .iter()
             .any(|marker| marker.endorser == *peer_id && marker.target == *target)
+    }
+
+    /// Export trust graph for persistence
+    pub fn export(&self) -> ExportedTrustGraph {
+        let graph = self.trust_graph.read().unwrap();
+        let attestations = self.attestations.read().unwrap();
+
+        let relationships = graph
+            .iter()
+            .map(|(peer_id, rel)| {
+                let timestamp = rel.last_seen
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                SerializableTrustRelationship {
+                    peer_id: *peer_id,
+                    trust_level: rel.trust_level,
+                    verification_methods: rel.verification_methods.clone(),
+                    last_seen_timestamp: timestamp,
+                }
+            })
+            .collect();
+
+        ExportedTrustGraph {
+            relationships,
+            attestations: attestations.clone(),
+            version: 1,
+        }
+    }
+
+    /// Import trust graph from persisted data
+    pub fn import(exported: ExportedTrustGraph) -> Self {
+        let mut graph = HashMap::new();
+
+        for rel in exported.relationships {
+            let last_seen = SystemTime::UNIX_EPOCH
+                + Duration::from_secs(rel.last_seen_timestamp);
+
+            graph.insert(
+                rel.peer_id,
+                TrustRelationship {
+                    peer_id: rel.peer_id,
+                    trust_level: rel.trust_level,
+                    verification_methods: rel.verification_methods,
+                    last_seen,
+                },
+            );
+        }
+
+        Self {
+            my_identity: None,
+            trust_graph: Arc::new(RwLock::new(graph)),
+            attestations: Arc::new(RwLock::new(exported.attestations)),
+        }
+    }
+
+    /// Revoke trust for a peer
+    pub fn revoke_trust(&self, peer_id: &PeerId, reason: RevocationReason) -> Result<RevocationCertificate> {
+        // Remove peer from trust graph
+        self.trust_graph.write().unwrap().remove(peer_id);
+
+        // Remove attestations for this peer
+        self.attestations.write().unwrap().remove(peer_id);
+
+        // Create revocation certificate
+        let local_peer_id = self.my_identity
+            .as_ref()
+            .map(|id| id.peer_id)
+            .unwrap_or([0u8; 32]);
+
+        let cert = RevocationCertificate::new(
+            *peer_id,
+            local_peer_id,
+            reason,
+        );
+
+        Ok(cert)
+    }
+
+    /// Apply temporal decay to trust relationships
+    /// Reduces trust level for peers not seen recently
+    pub fn apply_temporal_decay(&self) {
+        let now = SystemTime::now();
+        let mut graph = self.trust_graph.write().unwrap();
+
+        for rel in graph.values_mut() {
+            if let Ok(age) = now.duration_since(rel.last_seen) {
+                // Decay after 30 days
+                if age > Duration::from_secs(30 * 24 * 3600) {
+                    rel.trust_level = match rel.trust_level {
+                        TrustLevel::HighlyTrusted => TrustLevel::Trusted,
+                        TrustLevel::Trusted => TrustLevel::Caution,
+                        TrustLevel::Caution => TrustLevel::Untrusted,
+                        TrustLevel::Untrusted => TrustLevel::Untrusted,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Broadcast revocation to connected peers
+    /// In a real implementation, this would send the revocation certificate
+    /// to all trusted peers in the mesh
+    pub fn broadcast_revocation(&self, _cert: RevocationCertificate) -> Result<()> {
+        // TODO: Implement broadcasting when network layer is available
+        // For now, just return Ok
+        Ok(())
+    }
+
+    /// Update last_seen timestamp for a peer
+    pub fn update_last_seen(&self, peer_id: &PeerId) -> Result<()> {
+        if let Some(rel) = self.trust_graph.write().unwrap().get_mut(peer_id) {
+            rel.last_seen = SystemTime::now();
+        }
+        Ok(())
     }
 }
 

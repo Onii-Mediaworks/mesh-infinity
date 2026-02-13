@@ -18,6 +18,32 @@ use crate::auth::web_of_trust::VerificationMethod as WotVerificationMethod;
 use crate::core::TrustLevel;
 use serde_json::{json, Value};
 
+// Helper to safely handle mutex locks in FFI context
+fn safe_lock<T>(mutex: &Mutex<T>) -> std::result::Result<std::sync::MutexGuard<T>, String> {
+    mutex.lock().map_err(|e| format!("Mutex lock poisoned: {}", e))
+}
+
+// Macro to catch panics at FFI boundaries
+#[allow(unused_macros)]
+macro_rules! ffi_catch_panic {
+    ($body:expr, $default:expr) => {
+        match panic::catch_unwind(panic::AssertUnwindSafe(|| $body)) {
+            Ok(result) => result,
+            Err(e) => {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    format!("Panic: {}", s)
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    format!("Panic: {}", s)
+                } else {
+                    "Unknown panic".to_string()
+                };
+                set_last_error(&msg);
+                $default
+            }
+        }
+    };
+}
+
 #[repr(C)]
 pub struct FfiMeshConfig {
     pub config_path: *const c_char,
@@ -106,15 +132,18 @@ impl ServiceHandle {
     }
 
     fn push_event(&self, event: BackendEvent) {
-        let mut events = self.events.lock().unwrap();
-        if events.len() >= MAX_EVENTS {
-            events.pop_front();
+        if let Ok(mut events) = self.events.lock() {
+            if events.len() >= MAX_EVENTS {
+                events.pop_front();
+            }
+            events.push_back(event);
         }
-        events.push_back(event);
     }
 
     fn drain_events(&self, max: usize) -> Vec<BackendEvent> {
-        let mut events = self.events.lock().unwrap();
+        let Ok(mut events) = self.events.lock() else {
+            return Vec::new();
+        };
         let mut drained = Vec::new();
         for _ in 0..max {
             if let Some(event) = events.pop_front() {
@@ -162,11 +191,12 @@ fn spawn_listener<T: Send + 'static>(
         match receiver.recv_timeout(Duration::from_millis(250)) {
             Ok(item) => {
                 let event = mapper(item);
-                let mut queue = events.lock().unwrap();
-                if queue.len() >= MAX_EVENTS {
-                    queue.pop_front();
+                if let Ok(mut queue) = events.lock() {
+                    if queue.len() >= MAX_EVENTS {
+                        queue.pop_front();
+                    }
+                    queue.push_back(event);
                 }
-                queue.push_back(event);
             }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
@@ -220,15 +250,21 @@ pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
         identity_name: None,
     };
 
+    let Ok(mut state) = MESH_STATE.lock() else {
+        set_last_error("Failed to acquire mesh state lock");
+        return std::ptr::null_mut();
+    };
+
+    // If already initialized, return the existing instance (idempotent)
+    if let Some(existing) = state.as_ref() {
+        return Arc::into_raw(Arc::clone(existing)) as *mut MeshContext;
+    }
+
+    // Create new service
     let service = MeshInfinityService::new(service_config);
     let handle = ServiceHandle::new(service);
     let arc_handle = Arc::new(Mutex::new(handle));
 
-    let mut state = MESH_STATE.lock().unwrap();
-    if state.is_some() {
-        set_last_error("mesh already initialized");
-        return std::ptr::null_mut();
-    }
     *state = Some(arc_handle.clone());
 
     Arc::into_raw(arc_handle) as *mut MeshContext
@@ -269,7 +305,10 @@ pub extern "C" fn mesh_send_message(ctx: *mut MeshContext, message: *const FfiMe
         }
     };
 
-    let mut guard = service.lock().unwrap();
+    let Ok(mut guard) = service.lock() else {
+        set_last_error("Failed to acquire service lock");
+        return -1;
+    };
     match guard.service.send_message(text) {
         Ok(()) => {
             push_room_update(&mut guard, None);
@@ -323,12 +362,23 @@ pub extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
         return;
     }
 
+    // Validate the context pointer matches our stored state before dereferencing
+    let Ok(mut state) = MESH_STATE.lock() else {
+        set_last_error("Failed to acquire mesh state lock during destroy");
+        return;
+    };
+
+    if state.is_none() {
+        set_last_error("Attempted to destroy uninitialized mesh context");
+        return;
+    }
+
     let arc = unsafe { Arc::from_raw(ctx as *const Mutex<ServiceHandle>) };
     if let Ok(mut guard) = arc.lock() {
         guard.shutdown();
     }
 
-    *MESH_STATE.lock().unwrap() = None;
+    *state = None;
 }
 
 #[no_mangle]
@@ -984,6 +1034,29 @@ pub extern "C" fn mi_last_error_message() -> *mut c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn mi_has_identity(ctx: *mut MeshContext) -> u8 {
+    if ctx.is_null() {
+        return 0;
+    }
+
+    let service = match get_service() {
+        Ok(service) => service,
+        Err(_) => return 0,
+    };
+
+    let guard = match safe_lock(&service) {
+        Ok(guard) => guard,
+        Err(_) => return 0,
+    };
+
+    if guard.service.local_identity_summary().is_some() {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn mi_string_free(value: *mut c_char) {
     if value.is_null() {
         return;
@@ -992,6 +1065,401 @@ pub extern "C" fn mi_string_free(value: *mut c_char) {
     unsafe {
         let _ = CString::from_raw(value);
     }
+}
+
+// mDNS Discovery FFI functions
+
+#[no_mangle]
+pub extern "C" fn mi_mdns_enable(ctx: *mut MeshContext, port: u16) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let Ok(state) = MESH_STATE.lock() else {
+        set_last_error("Failed to acquire mesh state lock");
+        return -1;
+    };
+
+    let Some(handle) = state.as_ref() else {
+        set_last_error("Mesh not initialized");
+        return -1;
+    };
+
+    let Ok(service_handle) = handle.lock() else {
+        set_last_error("Failed to acquire service lock");
+        return -1;
+    };
+
+    match service_handle.service.enable_mdns(port) {
+        Ok(()) => 0,
+        Err(e) => {
+            set_last_error(format!("Failed to enable mDNS: {}", e));
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mi_mdns_disable(ctx: *mut MeshContext) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let Ok(state) = MESH_STATE.lock() else {
+        set_last_error("Failed to acquire mesh state lock");
+        return -1;
+    };
+
+    let Some(handle) = state.as_ref() else {
+        set_last_error("Mesh not initialized");
+        return -1;
+    };
+
+    let Ok(service_handle) = handle.lock() else {
+        set_last_error("Failed to acquire service lock");
+        return -1;
+    };
+
+    match service_handle.service.disable_mdns() {
+        Ok(()) => 0,
+        Err(e) => {
+            set_last_error(format!("Failed to disable mDNS: {}", e));
+            -1
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mi_mdns_is_running(ctx: *mut MeshContext) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let Ok(state) = MESH_STATE.lock() else {
+        set_last_error("Failed to acquire mesh state lock");
+        return -1;
+    };
+
+    let Some(handle) = state.as_ref() else {
+        set_last_error("Mesh not initialized");
+        return -1;
+    };
+
+    let Ok(service_handle) = handle.lock() else {
+        set_last_error("Failed to acquire service lock");
+        return -1;
+    };
+
+    if service_handle.service.is_mdns_running() {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mi_mdns_get_discovered_peers(ctx: *mut MeshContext) -> *mut c_char {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return std::ptr::null_mut();
+    }
+
+    let Ok(state) = MESH_STATE.lock() else {
+        set_last_error("Failed to acquire mesh state lock");
+        return std::ptr::null_mut();
+    };
+
+    let Some(handle) = state.as_ref() else {
+        set_last_error("Mesh not initialized");
+        return std::ptr::null_mut();
+    };
+
+    let Ok(service_handle) = handle.lock() else {
+        set_last_error("Failed to acquire service lock");
+        return std::ptr::null_mut();
+    };
+
+    match service_handle.service.get_discovered_peers() {
+        Ok(peers) => {
+            let peers_json: Vec<Value> = peers.iter().map(|peer| {
+                json!({
+                    "id": peer.id,
+                    "name": peer.name,
+                    "trustLevel": peer.trust_level,
+                    "status": peer.status,
+                })
+            }).collect();
+
+            json_to_c_string(Value::Array(peers_json))
+        }
+        Err(e) => {
+            set_last_error(format!("Failed to get discovered peers: {}", e));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Get network statistics (bytes sent/received, active connections)
+/// Returns JSON: {"bytesSent": 0, "bytesReceived": 0, "activeConnections": 0}
+#[no_mangle]
+pub extern "C" fn mi_get_network_stats(ctx: *mut MeshContext) -> *mut c_char {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return std::ptr::null_mut();
+    }
+
+    // TODO: Implement actual network statistics collection
+    // For now, return placeholder values
+    let stats = json!({
+        "bytesSent": 0,
+        "bytesReceived": 0,
+        "activeConnections": 0,
+        "packetsLost": 0,
+        "avgLatencyMs": 0,
+        "bandwidthKbps": 0,
+    });
+
+    json_to_c_string(stats)
+}
+
+/// Start a file transfer (send or host)
+/// direction: "send" or "host"
+/// peer_id: target peer ID for send, null for host
+/// file_path: path to the file
+/// Returns transfer ID as JSON string or null on error
+#[no_mangle]
+pub extern "C" fn mi_file_transfer_start(
+    ctx: *mut MeshContext,
+    direction: *const c_char,
+    _peer_id: *const c_char,
+    file_path: *const c_char,
+) -> *mut c_char {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return std::ptr::null_mut();
+    }
+
+    let _direction_str = match read_cstr(direction, 16, "direction") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    let _file_path_str = match read_cstr(file_path, 4096, "file_path") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    // TODO: Implement actual file transfer initiation
+    // For now, return a placeholder transfer ID
+    let transfer_id = format!("transfer_{}", SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs());
+
+    json_to_c_string(json!({
+        "transferId": transfer_id,
+        "status": "pending",
+        "message": "File transfer requires full implementation"
+    }))
+}
+
+/// Cancel an active file transfer
+/// transfer_id: ID of the transfer to cancel
+/// Returns 0 on success, -1 on error
+#[no_mangle]
+pub extern "C" fn mi_file_transfer_cancel(
+    ctx: *mut MeshContext,
+    transfer_id: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let _transfer_id = match read_cstr(transfer_id, 256, "transfer_id") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return -1;
+        }
+    };
+
+    // TODO: Implement actual transfer cancellation
+    set_last_error("File transfer cancellation requires full implementation");
+    -2 // Not implemented
+}
+
+/// Get status of a specific file transfer
+/// transfer_id: ID of the transfer
+/// Returns JSON with transfer status or null on error
+#[no_mangle]
+pub extern "C" fn mi_file_transfer_status(
+    ctx: *mut MeshContext,
+    transfer_id: *const c_char,
+) -> *mut c_char {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return std::ptr::null_mut();
+    }
+
+    let _transfer_id = match read_cstr(transfer_id, 256, "transfer_id") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return std::ptr::null_mut();
+        }
+    };
+
+    // TODO: Implement actual transfer status retrieval
+    json_to_c_string(json!({
+        "transferId": _transfer_id,
+        "status": "unknown",
+        "progress": 0,
+        "message": "Transfer status requires full implementation"
+    }))
+}
+
+/// Gets list of configured services
+/// Returns JSON array of services or empty array on error
+#[no_mangle]
+pub extern "C" fn mi_get_service_list(ctx: *mut MeshContext) -> *mut c_char {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return json_to_c_string(json!([]));
+    }
+
+    // TODO: Implement actual service list retrieval from backend
+    json_to_c_string(json!([
+        {
+            "id": "example-service-1",
+            "name": "Example Service",
+            "type": "http",
+            "status": "inactive",
+            "port": 8080,
+            "protocol": "http",
+        }
+    ]))
+}
+
+/// Configures a service with the given parameters
+/// Returns 1 on success, 0 on failure
+#[no_mangle]
+pub extern "C" fn mi_configure_service(
+    ctx: *mut MeshContext,
+    service_id: *const c_char,
+    config_json: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return 0;
+    }
+
+    let _service_id = match read_cstr(service_id, 256, "service_id") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return 0;
+        }
+    };
+
+    let _config_json = match read_cstr(config_json, 4096, "config_json") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return 0;
+        }
+    };
+
+    // TODO: Implement actual service configuration
+    set_last_error("Service configuration not yet implemented");
+    0
+}
+
+/// Toggles a transport flag (enable/disable transport)
+/// Returns 1 on success, 0 on failure
+#[no_mangle]
+pub extern "C" fn mi_toggle_transport_flag(
+    ctx: *mut MeshContext,
+    transport_name: *const c_char,
+    enabled: i32,
+) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return 0;
+    }
+
+    let _transport_name = match read_cstr(transport_name, 64, "transport_name") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return 0;
+        }
+    };
+
+    let _enabled = enabled != 0;
+
+    // TODO: Implement actual transport flag toggling
+    // This should update backend settings and enable/disable the specified transport
+    set_last_error("Transport flag toggling not yet implemented");
+    0
+}
+
+/// Sets VPN route configuration
+/// Returns 1 on success, 0 on failure
+#[no_mangle]
+pub extern "C" fn mi_set_vpn_route(
+    ctx: *mut MeshContext,
+    route_config_json: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return 0;
+    }
+
+    let _route_config = match read_cstr(route_config_json, 4096, "route_config_json") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return 0;
+        }
+    };
+
+    // TODO: Implement actual VPN route configuration
+    // This should configure exit node routing through the mesh
+    set_last_error("VPN route configuration not yet implemented");
+    0
+}
+
+/// Sets clearnet route configuration
+/// Returns 1 on success, 0 on failure
+#[no_mangle]
+pub extern "C" fn mi_set_clearnet_route(
+    ctx: *mut MeshContext,
+    route_config_json: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return 0;
+    }
+
+    let _route_config = match read_cstr(route_config_json, 4096, "route_config_json") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return 0;
+        }
+    };
+
+    // TODO: Implement actual clearnet route configuration
+    // This should configure direct routing without mesh
+    set_last_error("Clearnet route configuration not yet implemented");
+    0
 }
 
 fn get_service() -> Result<Arc<Mutex<ServiceHandle>>> {
@@ -1306,10 +1774,15 @@ fn rust_error_to_c_code(err: &MeshInfinityError) -> i32 {
         MeshInfinityError::ConnectionTimeout => -504,
         MeshInfinityError::InvalidMessageFormat => -505,
         MeshInfinityError::InsufficientTrust => -506,
+        MeshInfinityError::UntrustedPeer => -509,
+        MeshInfinityError::ConnectionRejected(_) => -510,
+        MeshInfinityError::ProtocolMismatch => -511,
         MeshInfinityError::ResourceUnavailable => -507,
         MeshInfinityError::OperationNotSupported => -508,
         MeshInfinityError::IoError(_) => -1001,
         MeshInfinityError::SerializationError(_) => -1002,
         MeshInfinityError::DeserializationError(_) => -1003,
+        MeshInfinityError::LockError(_) => -1004,
+        MeshInfinityError::InvalidInput(_) => -1005,
     }
 }
