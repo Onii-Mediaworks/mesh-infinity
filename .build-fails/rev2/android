@@ -1,0 +1,21 @@
+Resolving dependencies...
+Downloading packages...
+  ffi 2.1.5 (2.2.0 available)
+  lints 6.0.0 (6.1.0 available)
+  meta 1.17.0 (1.18.1 available)
+  mobile_scanner 5.2.3 (7.2.0 available)
+  source_span 1.10.1 (1.10.2 available)
+Got dependencies!
+5 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+Resolving dependencies...
+Downloading packages...
+  ffi 2.1.5 (2.2.0 available)
+  lints 6.0.0 (6.1.0 available)
+  meta 1.17.0 (1.18.1 available)
+  mobile_scanner 5.2.3 (7.2.0 available)
+  source_span 1.10.1 (1.10.2 available)
+Got dependencies!
+5 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+Error: The operation was canceled.
