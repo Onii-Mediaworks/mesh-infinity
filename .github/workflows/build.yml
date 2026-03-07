@@ -85,7 +85,7 @@ jobs:
           channel: stable
 
       - name: build windows (${{ matrix.profile }})
-        run: make build-${{ matrix.profile }} OS=windows
+        run: make build-${{ matrix.profile }} OS=windows SHELL=bash
         shell: bash
 
       - uses: actions/upload-artifact@v4
@@ -106,6 +106,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
 
@@ -144,11 +146,10 @@ jobs:
 
       - run: make build-${{ matrix.profile }} OS=ios UNSIGNED=1
 
-      # CI always uses UNSIGNED=1 → outputs .app bundle, not .ipa
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-ios-${{ matrix.profile }}
-          path: build/output/*/ios/meshinfinity-*-${{ matrix.profile }}.*
+          path: build/output/*/ios/meshinfinity-*-${{ matrix.profile }}.ipa
 
   # ── Android ────────────────────────────────────────────────────────────────
 
@@ -179,7 +180,15 @@ jobs:
         with:
           channel: stable
 
+      - name: cache cargo-ndk
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-linux-${{ runner.arch }}-v3
+
       - name: install cargo-ndk
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: cargo install cargo-ndk --locked
 
       - run: make build-${{ matrix.profile }} OS=android

@@ -9,8 +9,12 @@ BUILD_DIR             := $(ROOT_DIR)/build
 FLUTTER_INTERMEDIATE_DIR := $(BUILD_DIR)/intermediates/flutter
 RUST_INTERMEDIATE_DIR    := $(BUILD_DIR)/intermediates/rust
 APPLE_PROJECT         := $(PLATFORMS_DIR)/apple/Runner.xcodeproj
-APP_VERSION           := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
-APP_BUILD_NUMBER      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
+# App identity comes from the Rust project — Flutter is just the UI layer.
+APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | tr -d '-[:space:]')
+APP_VERSION      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
+APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
+# Flutter names its Linux runner binary after pubspec `name` — internal detail only.
+FLUTTER_RUNNER_BIN := $(shell awk -F': ' '/^name:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | tr -d '[:space:]')
 
 OS       ?=
 PROFILE  ?= release
@@ -140,6 +144,16 @@ build: guard-os guard-profile setup-build
 	  IPHONEOS_DEPLOYMENT_TARGET="$${APPLE_IOS_DEPLOYMENT_TARGET:-13.0}" \
 	  CARGO_TARGET_DIR="$(RUST_INTERMEDIATE_DIR)" \
 	    "$$rustup_cargo" build -p mesh-infinity --target x86_64-apple-ios $$cargo_flags || true; \
+	elif [[ "$(OS)" == "macos" ]]; then \
+	  RUSTC="$$rustup_rustc" CARGO_TARGET_DIR="$(RUST_INTERMEDIATE_DIR)" \
+	    "$$rustup_cargo" build -p mesh-infinity --target aarch64-apple-darwin $$cargo_flags; \
+	  RUSTC="$$rustup_rustc" CARGO_TARGET_DIR="$(RUST_INTERMEDIATE_DIR)" \
+	    "$$rustup_cargo" build -p mesh-infinity --target x86_64-apple-darwin $$cargo_flags; \
+	  mkdir -p "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir"; \
+	  lipo -create \
+	    "$(RUST_INTERMEDIATE_DIR)/aarch64-apple-darwin/$$rust_subdir/libmesh_infinity.dylib" \
+	    "$(RUST_INTERMEDIATE_DIR)/x86_64-apple-darwin/$$rust_subdir/libmesh_infinity.dylib" \
+	    -output "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/libmesh_infinity.dylib"; \
 	elif [[ "$(OS)" != "android" ]]; then \
 	  RUSTC="$$rustup_rustc" CARGO_TARGET_DIR="$(RUST_INTERMEDIATE_DIR)" \
 	    "$$rustup_cargo" build -p mesh-infinity $$cargo_flags; \
@@ -163,51 +177,51 @@ build: guard-os guard-profile setup-build
 	    mkdir -p "$$bundle_dir/lib"; \
 	    cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/libmesh_infinity.so" \
 	       "$$bundle_dir/lib/"; \
-	    tar czf "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).tar.gz" \
+	    tar czf "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).tar.gz" \
 	      -C "$$bundle_dir" .; \
-	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).tar.gz"; \
+	    echo "Output: $$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).tar.gz"; \
 	    launcher_dir="$(BUILD_DIR)/intermediates/linux-launcher"; \
 	    mkdir -p "$$launcher_dir"; \
-	    printf '#!/bin/sh\nexec /opt/meshinfinity/meshinfinity "$$@"\n' \
-	      > "$$launcher_dir/meshinfinity"; \
-	    chmod +x "$$launcher_dir/meshinfinity"; \
+	    printf '#!/bin/sh\nexec /opt/$(APP_NAME)/$(FLUTTER_RUNNER_BIN) "$$@"\n' \
+	      > "$$launcher_dir/$(APP_NAME)"; \
+	    chmod +x "$$launcher_dir/$(APP_NAME)"; \
 	    rpm_ver="$$(echo '$(APP_VERSION)' | tr '-' '_')"; \
 	    fpm -s dir -t deb \
-	      -n meshinfinity \
+	      -n $(APP_NAME) \
 	      -v "$(APP_VERSION)" \
 	      --iteration "$(APP_BUILD_NUMBER)" \
 	      --architecture amd64 \
 	      --description "Decentralised mesh networking" \
-	      -p "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).deb" \
-	      "$$bundle_dir/=/opt/meshinfinity" \
-	      "$$launcher_dir/meshinfinity=/usr/bin/meshinfinity"; \
-	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).deb"; \
+	      -p "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).deb" \
+	      "$$bundle_dir/=/opt/$(APP_NAME)" \
+	      "$$launcher_dir/$(APP_NAME)=/usr/bin/$(APP_NAME)"; \
+	    echo "Output: $$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).deb"; \
 	    fpm -s dir -t rpm \
-	      -n meshinfinity \
+	      -n $(APP_NAME) \
 	      -v "$$rpm_ver" \
 	      --iteration "$(APP_BUILD_NUMBER)" \
 	      --architecture x86_64 \
 	      --description "Decentralised mesh networking" \
-	      -p "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).rpm" \
-	      "$$bundle_dir/=/opt/meshinfinity" \
-	      "$$launcher_dir/meshinfinity=/usr/bin/meshinfinity"; \
-	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).rpm"; \
+	      -p "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).rpm" \
+	      "$$bundle_dir/=/opt/$(APP_NAME)" \
+	      "$$launcher_dir/$(APP_NAME)=/usr/bin/$(APP_NAME)"; \
+	    echo "Output: $$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).rpm"; \
 	    appdir="$(BUILD_DIR)/intermediates/linux-appdir"; \
 	    rm -rf "$$appdir"; \
 	    mkdir -p "$$appdir/usr/bin" "$$appdir/usr/lib"; \
-	    cp "$$bundle_dir/meshinfinity" "$$appdir/usr/bin/meshinfinity"; \
+	    cp "$$bundle_dir/$(FLUTTER_RUNNER_BIN)" "$$appdir/usr/bin/$(APP_NAME)"; \
 	    cp -r "$$bundle_dir/data" "$$appdir/usr/bin/data"; \
 	    cp "$$bundle_dir/lib/"*.so "$$appdir/usr/lib/"; \
 	    cp "$(PLATFORMS_DIR)/apple/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png" \
-	       "$$appdir/meshinfinity.png"; \
-	    printf '[Desktop Entry]\nName=Mesh Infinity\nExec=meshinfinity\nIcon=meshinfinity\nType=Application\nCategories=Network;\n' \
-	      > "$$appdir/meshinfinity.desktop"; \
-	    printf '#!/bin/sh\nexport LD_LIBRARY_PATH="$$APPDIR/usr/lib:$$LD_LIBRARY_PATH"\nexec "$$APPDIR/usr/bin/meshinfinity" "$$@"\n' \
+	       "$$appdir/$(APP_NAME).png"; \
+	    printf '[Desktop Entry]\nName=Mesh Infinity\nExec=$(APP_NAME)\nIcon=$(APP_NAME)\nType=Application\nCategories=Network;\n' \
+	      > "$$appdir/$(APP_NAME).desktop"; \
+	    printf '#!/bin/sh\nexport LD_LIBRARY_PATH="$$APPDIR/usr/lib:$$LD_LIBRARY_PATH"\nexec "$$APPDIR/usr/bin/$(APP_NAME)" "$$@"\n' \
 	      > "$$appdir/AppRun"; \
 	    chmod +x "$$appdir/AppRun"; \
 	    ARCH=x86_64 appimagetool "$$appdir" \
-	      "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).AppImage"; \
-	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).AppImage" ;; \
+	      "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).AppImage"; \
+	    echo "Output: $$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).AppImage" ;; \
 	  windows) \
 	    cd "$(FRONTEND_DIR)"; \
 	    flutter config --enable-windows-desktop; \
@@ -221,7 +235,7 @@ build: guard-os guard-profile setup-build
 	    runner_dir="$(FRONTEND_DIR)/build/windows/x64/runner/$$win_subdir"; \
 	    cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/mesh_infinity.dll" \
 	       "$$runner_dir/"; \
-	    dst_dir="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE)"; \
+	    dst_dir="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE)"; \
 	    cp -r "$$runner_dir" "$$dst_dir"; \
 	    echo "Output: $$dst_dir" ;; \
 	  macos) \
@@ -235,9 +249,11 @@ build: guard-os guard-profile setup-build
 	      CODE_SIGNING_ALLOWED=NO \
 	      CODE_SIGNING_REQUIRED=NO \
 	      CODE_SIGN_IDENTITY="" \
+	      ARCHS="arm64 x86_64" \
+	      ONLY_ACTIVE_ARCH=NO \
 	      build; \
-	    app_src="$(BUILD_DIR)/intermediates/apple/macos/Build/Products/$$cfg_name/meshinfinity.app"; \
-	    app_dst="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).app"; \
+	    app_src="$(BUILD_DIR)/intermediates/apple/macos/Build/Products/$$cfg_name/$(APP_NAME).app"; \
+	    app_dst="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).app"; \
 	    rm -rf "$$app_dst"; \
 	    cp -R "$$app_src" "$$app_dst"; \
 	    echo "Output: $$app_dst" ;; \
@@ -259,10 +275,14 @@ build: guard-os guard-profile setup-build
 	        PROVISIONING_PROFILE_SPECIFIER="" \
 	        build; \
 	      app_src="$$ios_derived/Build/Products/$$cfg_name-iphoneos/RunnerIOS.app"; \
-	      app_dst="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).app"; \
-	      rm -rf "$$app_dst"; \
-	      cp -R "$$app_src" "$$app_dst"; \
-	      echo "Output: $$app_dst"; \
+	      ipa_payload="$$ios_derived/IPAPayload"; \
+	      ipa_dst="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).ipa"; \
+	      rm -rf "$$ipa_payload"; \
+	      mkdir -p "$$ipa_payload/Payload"; \
+	      cp -R "$$app_src" "$$ipa_payload/Payload/"; \
+	      cd "$$ipa_payload" && zip -qr "$$ipa_dst" Payload/ && cd "$(ROOT_DIR)"; \
+	      rm -rf "$$ipa_payload"; \
+	      echo "Output: $$ipa_dst"; \
 	    else \
 	      export_method="debugging"; \
 	      [[ "$(PROFILE)" == "release" ]] && export_method="app-store"; \
@@ -295,7 +315,7 @@ build: guard-os guard-profile setup-build
 	        -exportOptionsPlist "$$export_plist" \
 	        -allowProvisioningUpdates; \
 	      ipa_src="$$out_dir/MeshInfinity.ipa"; \
-	      ipa_dst="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).ipa"; \
+	      ipa_dst="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).ipa"; \
 	      [[ -f "$$ipa_src" ]] && mv -f "$$ipa_src" "$$ipa_dst"; \
 	      echo "Output: $$ipa_dst"; \
 	    fi ;; \
@@ -316,8 +336,8 @@ build: guard-os guard-profile setup-build
 	    flutter pub get; \
 	    flutter build apk $$flutter_flags; \
 	    apk_src="$(FRONTEND_DIR)/build/app/outputs/flutter-apk/app-$(PROFILE).apk"; \
-	    cp "$$apk_src" "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).apk"; \
-	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).apk" ;; \
+	    cp "$$apk_src" "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).apk"; \
+	    echo "Output: $$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).apk" ;; \
 	esac
 
 # ── Shorthand build targets ───────────────────────────────────────────────────
