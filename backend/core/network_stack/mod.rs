@@ -2,6 +2,10 @@
 //!
 //! Re-exports packet routing, addressing, DNS/NAT helpers, policy routing, and
 //! virtual interface / VPN integration modules.
+//!
+//! All modules compile on every supported platform.  Platform-specific TUN
+//! backends (tun-tap on Unix, wintun on Windows) are selected inside
+//! `virtual_interface` at compile time; the rest of the stack is agnostic.
 pub mod dns_resolver;
 pub mod hop_router;
 pub mod mesh_address;

@@ -11,6 +11,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 default = []
 transport-bluetooth-native = ["dep:btleplug"]
 transport-rf-meshtastic = ["dep:meshtastic"]
+# Enables TUN/VPN system-wide routing (routes all OS traffic through the mesh).
+# Requires elevated privileges at runtime: root/CAP_NET_ADMIN on Linux/macOS,
+# Administrator + wintun.dll on Windows.
+# The app runs fully without this feature; only exit-node/full-tunnel routing
+# is gated behind it.  Enable with: cargo build --features vpn-routing
+vpn-routing = []
 
 [dependencies]
 # Core networking
@@ -40,10 +46,6 @@ base64 = "0.22"
 socket2 = "0.5"
 btleplug = { version = "0.11", optional = true }
 meshtastic = { version = "0.1.8", optional = true }
-
-# Virtual network interface
-pnet = "0.28"
-tun-tap = "0.1"
 
 # Tor integration
 arti-client = "0.1"
@@ -75,6 +77,16 @@ libc = "0.2"
 # Force vendored OpenSSL so cross-compilation (Android NDK, etc.) works without
 # requiring a pre-installed OpenSSL for each target.
 openssl = { version = "0.10", features = ["vendored"] }
+
+# Virtual network interface
+# tun-tap (Unix/Linux TUN) and pnet are POSIX-only.
+# wintun provides the equivalent Windows TUN driver (same library used by WireGuard).
+[target.'cfg(unix)'.dependencies]
+pnet = "0.28"
+tun-tap = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+wintun = "0.3"
 
 [dev-dependencies]
 tempfile = "3.24"

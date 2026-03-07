@@ -33,7 +33,17 @@ jobs:
             libx11-dev libxkbcommon-dev libxcursor-dev \
             libxrandr-dev libxi-dev libxinerama-dev \
             libxrender-dev libxfixes-dev libxext-dev \
-            libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+            libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            rpm libfuse2
+
+      - name: install fpm
+        run: gem install --no-document fpm
+
+      - name: install appimagetool
+        run: |
+          sudo wget -qO /usr/local/bin/appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -48,7 +58,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-linux-${{ matrix.profile }}
-          path: build/output/*/linux/meshinfinity-*-${{ matrix.profile }}.tar.gz
+          path: |
+            build/output/*/linux/meshinfinity-*-${{ matrix.profile }}.tar.gz
+            build/output/*/linux/meshinfinity-*-${{ matrix.profile }}.deb
+            build/output/*/linux/meshinfinity-*-${{ matrix.profile }}.rpm
+            build/output/*/linux/meshinfinity-*-${{ matrix.profile }}.AppImage
 
   # ── Windows ────────────────────────────────────────────────────────────────
 
@@ -71,13 +85,13 @@ jobs:
           channel: stable
 
       - name: build windows (${{ matrix.profile }})
-        run: make build-${{ matrix.profile }} OS=windows SKIP_RUST=1
+        run: make build-${{ matrix.profile }} OS=windows
         shell: bash
 
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-windows-${{ matrix.profile }}
-          path: build/output/*/windows/meshinfinity-*-${{ matrix.profile }}/
+          path: build/output/*/windows/meshinfinity-*/
 
   # ── macOS ──────────────────────────────────────────────────────────────────
 
