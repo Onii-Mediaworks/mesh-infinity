@@ -2562,5 +2562,7 @@ fn rust_error_to_c_code(err: &MeshInfinityError) -> i32 {
         MeshInfinityError::DeserializationError(_) => -1003,
         MeshInfinityError::LockError(_) => -1004,
         MeshInfinityError::InvalidInput(_) => -1005,
+        MeshInfinityError::VpnRoutingNotEnabled => -1006,
+        MeshInfinityError::InsufficientPrivileges(_) => -1007,
     }
 }

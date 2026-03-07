@@ -1,10 +1,6 @@
-SHELL := /bin/bash
-# On Windows hosts (Git Bash / MSYS2), /bin/bash does not exist as an absolute
-# path.  COMSPEC is only set on Windows, so we fall back to bare 'bash' which
-# is resolved through PATH by GNU Make.
-ifneq ($(COMSPEC),)
-  SHELL := bash
-endif
+# Use bare 'bash' (resolved via PATH) so this works on Linux, macOS, and
+# Windows (Git Bash) without needing an absolute path.
+SHELL := bash
 
 ROOT_DIR              := $(CURDIR)
 FRONTEND_DIR          := $(ROOT_DIR)/frontend
