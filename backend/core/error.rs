@@ -74,6 +74,12 @@ pub enum MeshInfinityError {
     #[error("Operation not supported")]
     OperationNotSupported,
 
+    #[error("VPN routing is not compiled in — rebuild with --features vpn-routing")]
+    VpnRoutingNotEnabled,
+
+    #[error("Insufficient privileges for VPN routing: {0}")]
+    InsufficientPrivileges(String),
+
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 

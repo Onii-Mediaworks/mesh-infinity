@@ -15,9 +15,21 @@ A decentralized mesh networking platform with multi-transport support, web-of-tr
 ## Quick Start
 
 ### Prerequisites
-- Rust toolchain (latest stable)
-- Flutter SDK (3.30+)
-- Platform-specific build tools (Xcode for macOS/iOS, Android SDK, etc.)
+
+All platforms require:
+- **Rust** stable toolchain (`rustup`)
+- **Flutter** SDK 3.30+
+
+| Platform | Additional requirements |
+|---|---|
+| **Linux** | `clang`, `cmake`, `ninja-build`, `pkg-config`, `libgtk-3-dev` (and other GTK/X11 libs — see CI workflow for the full list) |
+| **Linux packages** | `fpm` (`gem install fpm`) · `rpm` system package (for `.rpm`) · `appimagetool` + `libfuse2` (for `.AppImage`) |
+| **Windows** | Flutter Windows desktop toolchain; Visual Studio 2022 Build Tools with MSVC (required by Rust) |
+| **macOS** | Xcode with Command Line Tools |
+| **iOS** | Xcode; `rustup target add aarch64-apple-ios x86_64-apple-ios` |
+| **Android** | Android SDK/NDK; `cargo install cargo-ndk --locked`; `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android` |
+
+> **Windows self-contained?** Yes. The output directory contains the Flutter engine, Dart code, all assets, and `mesh_infinity.dll` (the Rust backend). End users need only the Visual C++ Redistributable, which is pre-installed on Windows 10/11. Note: TUN/VPN functionality is not available on Windows (POSIX-only); all other backend features compile and run normally.
 
 ### Building
 
@@ -31,7 +43,7 @@ make build-both OS=macos,ios UNSIGNED=1
 ./scripts/build.sh --os ios --profile debug --unsigned
 ```
 
-See [build/README.md](build/README.md) for detailed build instructions and options.
+Linux builds produce four artifacts: `.tar.gz`, `.deb`, `.rpm`, and `.AppImage`.
 
 ### Running
 
@@ -40,10 +52,15 @@ See [build/README.md](build/README.md) for detailed build instructions and optio
 # macOS
 open build/output/<timestamp>/macos/meshinfinity-*.app
 
-# Linux
-./build/output/<timestamp>/linux/meshinfinity-*/mesh_infinity_frontend
+# Linux (tarball)
+tar -xzf build/output/<timestamp>/linux/meshinfinity-*-debug.tar.gz -C /tmp/mi
+/tmp/mi/meshinfinity
 
-# Or use Flutter directly
+# Linux (AppImage)
+chmod +x build/output/<timestamp>/linux/meshinfinity-*.AppImage
+./build/output/<timestamp>/linux/meshinfinity-*.AppImage
+
+# Or use Flutter directly for development
 cd frontend && flutter run
 ```
 

@@ -1,4 +1,10 @@
 SHELL := /bin/bash
+# On Windows hosts (Git Bash / MSYS2), /bin/bash does not exist as an absolute
+# path.  COMSPEC is only set on Windows, so we fall back to bare 'bash' which
+# is resolved through PATH by GNU Make.
+ifneq ($(COMSPEC),)
+  SHELL := bash
+endif
 
 ROOT_DIR              := $(CURDIR)
 FRONTEND_DIR          := $(ROOT_DIR)/frontend
@@ -10,10 +16,9 @@ APPLE_PROJECT         := $(PLATFORMS_DIR)/apple/Runner.xcodeproj
 APP_VERSION           := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
 
-OS         ?=
-PROFILE    ?= release
-UNSIGNED   ?= 1
-SKIP_RUST  ?= 0
+OS       ?=
+PROFILE  ?= release
+UNSIGNED ?= 1
 
 .PHONY: help guard-os guard-profile setup-build clean \
         build build-debug build-release build-both \
@@ -39,6 +44,10 @@ help:
 	@echo "Platforms: android  ios  macos  linux  windows"
 	@echo ""
 	@echo "Android requires cargo-ndk: cargo install cargo-ndk --locked"
+	@echo "Linux packages require:"
+	@echo "  fpm:          gem install fpm"
+	@echo "  .rpm output:  apt install rpm"
+	@echo "  .AppImage:    apt install libfuse2 + download appimagetool to PATH"
 
 # ── Guards ────────────────────────────────────────────────────────────────────
 
@@ -156,13 +165,53 @@ build: guard-os guard-profile setup-build
 	    flutter build linux $$flutter_flags; \
 	    bundle_dir="$(FRONTEND_DIR)/build/linux/x64/$$rust_subdir/bundle"; \
 	    mkdir -p "$$bundle_dir/lib"; \
-	    if [[ "$(SKIP_RUST)" != "1" ]]; then \
-	      cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/libmesh_infinity.so" \
-	         "$$bundle_dir/lib/"; \
-	    fi; \
+	    cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/libmesh_infinity.so" \
+	       "$$bundle_dir/lib/"; \
 	    tar czf "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).tar.gz" \
 	      -C "$$bundle_dir" .; \
-	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).tar.gz" ;; \
+	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).tar.gz"; \
+	    launcher_dir="$(BUILD_DIR)/intermediates/linux-launcher"; \
+	    mkdir -p "$$launcher_dir"; \
+	    printf '#!/bin/sh\nexec /opt/meshinfinity/meshinfinity "$$@"\n' \
+	      > "$$launcher_dir/meshinfinity"; \
+	    chmod +x "$$launcher_dir/meshinfinity"; \
+	    rpm_ver="$$(echo '$(APP_VERSION)' | tr '-' '_')"; \
+	    fpm -s dir -t deb \
+	      -n meshinfinity \
+	      -v "$(APP_VERSION)" \
+	      --iteration "$(APP_BUILD_NUMBER)" \
+	      --architecture amd64 \
+	      --description "Decentralised mesh networking" \
+	      -p "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).deb" \
+	      "$$bundle_dir/=/opt/meshinfinity" \
+	      "$$launcher_dir/meshinfinity=/usr/bin/meshinfinity"; \
+	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).deb"; \
+	    fpm -s dir -t rpm \
+	      -n meshinfinity \
+	      -v "$$rpm_ver" \
+	      --iteration "$(APP_BUILD_NUMBER)" \
+	      --architecture x86_64 \
+	      --description "Decentralised mesh networking" \
+	      -p "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).rpm" \
+	      "$$bundle_dir/=/opt/meshinfinity" \
+	      "$$launcher_dir/meshinfinity=/usr/bin/meshinfinity"; \
+	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).rpm"; \
+	    appdir="$(BUILD_DIR)/intermediates/linux-appdir"; \
+	    rm -rf "$$appdir"; \
+	    mkdir -p "$$appdir/usr/bin" "$$appdir/usr/lib"; \
+	    cp "$$bundle_dir/meshinfinity" "$$appdir/usr/bin/meshinfinity"; \
+	    cp -r "$$bundle_dir/data" "$$appdir/usr/bin/data"; \
+	    cp "$$bundle_dir/lib/"*.so "$$appdir/usr/lib/"; \
+	    cp "$(PLATFORMS_DIR)/apple/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png" \
+	       "$$appdir/meshinfinity.png"; \
+	    printf '[Desktop Entry]\nName=Mesh Infinity\nExec=meshinfinity\nIcon=meshinfinity\nType=Application\nCategories=Network;\n' \
+	      > "$$appdir/meshinfinity.desktop"; \
+	    printf '#!/bin/sh\nexport LD_LIBRARY_PATH="$$APPDIR/usr/lib:$$LD_LIBRARY_PATH"\nexec "$$APPDIR/usr/bin/meshinfinity" "$$@"\n' \
+	      > "$$appdir/AppRun"; \
+	    chmod +x "$$appdir/AppRun"; \
+	    ARCH=x86_64 appimagetool "$$appdir" \
+	      "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).AppImage"; \
+	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).AppImage" ;; \
 	  windows) \
 	    cd "$(FRONTEND_DIR)"; \
 	    flutter config --enable-windows-desktop; \
@@ -174,10 +223,8 @@ build: guard-os guard-profile setup-build
 	    win_subdir="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && win_subdir="Release"; \
 	    runner_dir="$(FRONTEND_DIR)/build/windows/x64/runner/$$win_subdir"; \
-	    if [[ "$(SKIP_RUST)" != "1" ]]; then \
-	      cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/mesh_infinity.dll" \
-	         "$$runner_dir/"; \
-	    fi; \
+	    cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/mesh_infinity.dll" \
+	       "$$runner_dir/"; \
 	    dst_dir="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE)"; \
 	    cp -r "$$runner_dir" "$$dst_dir"; \
 	    echo "Output: $$dst_dir" ;; \
@@ -215,7 +262,7 @@ build: guard-os guard-profile setup-build
 	        CODE_SIGN_IDENTITY="" \
 	        PROVISIONING_PROFILE_SPECIFIER="" \
 	        build; \
-	      app_src="$$ios_derived/Build/Products/$$cfg_name-iphoneos/Runner.app"; \
+	      app_src="$$ios_derived/Build/Products/$$cfg_name-iphoneos/RunnerIOS.app"; \
 	      app_dst="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).app"; \
 	      rm -rf "$$app_dst"; \
 	      cp -R "$$app_src" "$$app_dst"; \
@@ -260,6 +307,9 @@ build: guard-os guard-profile setup-build
 	    if ! command -v cargo-ndk &>/dev/null; then \
 	      echo "ERROR: cargo-ndk not found — install with: cargo install cargo-ndk --locked"; \
 	      exit 1; \
+	    fi; \
+	    if [[ ! -d "$(FRONTEND_DIR)/android" ]]; then \
+	      cd "$(FRONTEND_DIR)"; flutter create --platforms=android .; cd "$(ROOT_DIR)"; \
 	    fi; \
 	    mkdir -p "$(FRONTEND_DIR)/android/app/src/main/jniLibs"; \
 	    cargo ndk \
