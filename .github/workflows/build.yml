@@ -71,7 +71,7 @@ jobs:
           channel: stable
 
       - name: build windows (${{ matrix.profile }})
-        run: make build-${{ matrix.profile }} OS=windows
+        run: make build-${{ matrix.profile }} OS=windows SKIP_RUST=1
         shell: bash
 
       - uses: actions/upload-artifact@v4
@@ -130,10 +130,11 @@ jobs:
 
       - run: make build-${{ matrix.profile }} OS=ios UNSIGNED=1
 
+      # CI always uses UNSIGNED=1 → outputs .app bundle, not .ipa
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-ios-${{ matrix.profile }}
-          path: build/output/*/ios/meshinfinity-*-${{ matrix.profile }}.ipa
+          path: build/output/*/ios/meshinfinity-*-${{ matrix.profile }}.*
 
   # ── Android ────────────────────────────────────────────────────────────────
 
