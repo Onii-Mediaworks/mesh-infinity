@@ -1,435 +1,175 @@
-name: mesh-infinity build
+name: build
 
 on:
   push:
     branches: ["**"]
   pull_request:
 
-env:
-  build_type_debug: "true"
-  build_type_release: "false"
-  build_os_windows: "true"
-  build_os_linux: "true"
-  build_os_macos: "true"
-  build_os_android: "false"
-  build_os_ios: "true"
+# Cancel any in-progress run for the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-flags:
-    name: mesh-infinity build flags
+
+  # ── Linux ──────────────────────────────────────────────────────────────────
+
+  build-linux:
+    name: linux (${{ matrix.profile }})
     runs-on: ubuntu-latest
-    outputs:
-      build_type_debug: ${{ steps.flags.outputs.build_type_debug }}
-      build_type_release: ${{ steps.flags.outputs.build_type_release }}
-      build_os_windows: ${{ steps.flags.outputs.build_os_windows }}
-      build_os_linux: ${{ steps.flags.outputs.build_os_linux }}
-      build_os_macos: ${{ steps.flags.outputs.build_os_macos }}
-      build_os_android: ${{ steps.flags.outputs.build_os_android }}
-      build_os_ios: ${{ steps.flags.outputs.build_os_ios }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
     steps:
-      - name: set flags
-        id: flags
-        run: |
-          echo "build_type_debug=${{ env.build_type_debug }}" >> $GITHUB_OUTPUT
-          echo "build_type_release=${{ env.build_type_release }}" >> $GITHUB_OUTPUT
-          echo "build_os_windows=${{ env.build_os_windows }}" >> $GITHUB_OUTPUT
-          echo "build_os_linux=${{ env.build_os_linux }}" >> $GITHUB_OUTPUT
-          echo "build_os_macos=${{ env.build_os_macos }}" >> $GITHUB_OUTPUT
-          echo "build_os_android=${{ env.build_os_android }}" >> $GITHUB_OUTPUT
-          echo "build_os_ios=${{ env.build_os_ios }}" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v4
 
-  app-windows-debug:
-    name: mesh-infinity windows debug
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_windows == 'true' }}
-    runs-on: windows-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: enable windows desktop
-        run: flutter config --enable-windows-desktop
-
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build windows app (debug)
-        run: make build-debug OS=windows
-        shell: bash
-
-      - name: upload app bundle (windows, debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-windows-debug
-          path: build/output/*/windows/meshinfinity-*-debug
-
-  app-linux-debug:
-    name: mesh-infinity linux debug
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_linux == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-
-      - name: install linux dependencies
+      - name: install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libx11-dev \
-            libxkbcommon-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxi-dev \
-            libxinerama-dev \
-            libxrender-dev \
-            libxfixes-dev \
-            libxext-dev \
-            libxcb1-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev libblkid-dev liblzma-dev \
+            libx11-dev libxkbcommon-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libxinerama-dev \
+            libxrender-dev libxfixes-dev libxext-dev \
+            libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: enable linux desktop
-        run: flutter config --enable-linux-desktop
+      - run: make build-${{ matrix.profile }} OS=linux
 
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build linux app (debug)
-        run: make build-debug OS=linux
-
-      - name: upload app bundle (linux, debug)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-linux-debug
-          path: build/output/*/linux/meshinfinity-*-debug.tar.gz
+          name: mesh-infinity-linux-${{ matrix.profile }}
+          path: build/output/*/linux/meshinfinity-*-${{ matrix.profile }}.tar.gz
 
-  app-macos-debug:
-    name: mesh-infinity macos debug
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_macos == 'true' }}
-    runs-on: macos-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
+  # ── Windows ────────────────────────────────────────────────────────────────
 
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: enable macos desktop
-        run: flutter config --enable-macos-desktop
-
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build macos app (debug)
-        run: make build-debug OS=macos UNSIGNED=1
-
-      - name: upload app bundle (macos, debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-macos-debug
-          path: build/output/*/macos/meshinfinity-*-debug.app
-
-  app-windows-release:
-    name: mesh-infinity windows release
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_windows == 'true' }}
+  build-windows:
+    name: windows (${{ matrix.profile }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: enable windows desktop
-        run: flutter config --enable-windows-desktop
-
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build windows app (release)
-        run: make build-release OS=windows
+      - name: build windows (${{ matrix.profile }})
+        run: make build-${{ matrix.profile }} OS=windows
         shell: bash
 
-      - name: upload app bundle (windows, release)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-windows-release
-          path: build/output/*/windows/meshinfinity-*-release
+          name: mesh-infinity-windows-${{ matrix.profile }}
+          path: build/output/*/windows/meshinfinity-*-${{ matrix.profile }}/
 
-  app-linux-release:
-    name: mesh-infinity linux release
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_linux == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
+  # ── macOS ──────────────────────────────────────────────────────────────────
 
-      - name: install linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libx11-dev \
-            libxkbcommon-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxi-dev \
-            libxinerama-dev \
-            libxrender-dev \
-            libxfixes-dev \
-            libxext-dev \
-            libxcb1-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev
-
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: enable linux desktop
-        run: flutter config --enable-linux-desktop
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build linux app (release)
-        run: make build-release OS=linux
-
-      - name: upload app bundle (linux, release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-linux-release
-          path: build/output/*/linux/meshinfinity-*-release.tar.gz
-
-  app-macos-release:
-    name: mesh-infinity macos release
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_macos == 'true' }}
+  build-macos:
+    name: macos (${{ matrix.profile }})
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: enable macos desktop
-        run: flutter config --enable-macos-desktop
+      - run: make build-${{ matrix.profile }} OS=macos UNSIGNED=1
 
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build macos app (release)
-        run: make build-release OS=macos UNSIGNED=1
-
-      - name: upload app bundle (macos, release)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-macos-release
-          path: build/output/*/macos/meshinfinity-*-release.app
+          name: mesh-infinity-macos-${{ matrix.profile }}
+          path: build/output/*/macos/meshinfinity-*-${{ matrix.profile }}.app
 
-  android-debug:
-    name: mesh-infinity android debug
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_android == 'true' }}
+  # ── iOS ────────────────────────────────────────────────────────────────────
+
+  build-ios:
+    name: ios (${{ matrix.profile }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: make build-${{ matrix.profile }} OS=ios UNSIGNED=1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesh-infinity-ios-${{ matrix.profile }}
+          path: build/output/*/ios/meshinfinity-*-${{ matrix.profile }}.ipa
+
+  # ── Android ────────────────────────────────────────────────────────────────
+
+  build-android:
+    name: android (${{ matrix.profile }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: set up java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: set up android sdk
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v3
 
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: route android build outputs to root build/
-        run: |
-          mkdir -p build/intermediates/flutter
-          rm -rf frontend/build
-          ln -s ../build/intermediates/flutter frontend/build
-
-          mkdir -p build/intermediates/rust/android
-          rm -rf frontend/android/app/src/main/jniLibs
-          ln -s ../../../../../build/intermediates/rust/android/jniLibs frontend/android/app/src/main/jniLibs
-
-      - name: build backend (debug)
-        run: |
-          cargo install cargo-ndk --locked
-          cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 \
-            -o frontend/android/app/src/main/jniLibs build -p mesh-infinity
-
-      - name: build android app (debug)
-        run: flutter build apk --debug
-        working-directory: frontend
-
-      - name: upload android apk (debug)
-        uses: actions/upload-artifact@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          name: mesh-infinity-android-debug
-          path: build/intermediates/flutter/app/outputs/flutter-apk/app-debug.apk
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
-  android-release:
-    name: mesh-infinity android release
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_android == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
 
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
 
-      - name: set up java
-        uses: actions/setup-java@v4
+      - name: install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - run: make build-${{ matrix.profile }} OS=android
+
+      - uses: actions/upload-artifact@v4
         with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: set up android sdk
-        uses: android-actions/setup-android@v3
-
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: route android build outputs to root build/
-        run: |
-          mkdir -p build/intermediates/flutter
-          rm -rf frontend/build
-          ln -s ../build/intermediates/flutter frontend/build
-
-          mkdir -p build/intermediates/rust/android
-          rm -rf frontend/android/app/src/main/jniLibs
-          ln -s ../../../../../build/intermediates/rust/android/jniLibs frontend/android/app/src/main/jniLibs
-
-      - name: build backend (release)
-        run: |
-          cargo install cargo-ndk --locked
-          cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 \
-            -o frontend/android/app/src/main/jniLibs build -p mesh-infinity --release
-
-      - name: build android app (release)
-        run: flutter build apk --release
-        working-directory: frontend
-
-      - name: upload android apk (release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-android-release
-          path: build/intermediates/flutter/app/outputs/flutter-apk/app-release.apk
-
-  ios-debug:
-    name: mesh-infinity ios debug
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_debug == 'true' && needs.build-flags.outputs.build_os_ios == 'true' }}
-    runs-on: macos-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build ios app (debug)
-        run: make build-debug OS=ios UNSIGNED=1
-
-      - name: upload ios app bundle (debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-ios-debug
-          path: build/output/*/ios/meshinfinity-*-debug-ios.app
-
-  ios-release:
-    name: mesh-infinity ios release
-    needs: build-flags
-    if: ${{ needs.build-flags.outputs.build_type_release == 'true' && needs.build-flags.outputs.build_os_ios == 'true' }}
-    runs-on: macos-latest
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
-
-      - name: set up flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: set up rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cache rust
-        uses: Swatinem/rust-cache@v2
-
-      - name: build ios app (release)
-        run: make build-release OS=ios UNSIGNED=1
-
-      - name: upload ios app bundle (release)
-        uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-ios-release
-          path: build/output/*/ios/meshinfinity-*-release-ios.app
+          name: mesh-infinity-android-${{ matrix.profile }}
+          path: build/output/*/android/meshinfinity-*-${{ matrix.profile }}.apk

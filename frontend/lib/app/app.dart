@@ -1,117 +1,87 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 
-import '../core/state/mesh_state.dart';
-import '../navigation/navigation_manager.dart';
-import '../screens/shell/signal_shell.dart';
-import '../services/dependency_container.dart';
-import 'app_theme.dart';
+import '../backend/backend_bridge.dart';
+import '../backend/event_bus.dart';
+import '../app/app_theme.dart';
+import '../shell/shell_state.dart';
+import '../shell/app_shell.dart';
+import '../onboarding/onboarding_screen.dart';
+import '../features/messaging/messaging_state.dart';
+import '../features/peers/peers_state.dart';
+import '../features/files/files_state.dart';
+import '../features/network/network_state.dart';
+import '../features/settings/settings_state.dart';
 
 class MeshInfinityApp extends StatefulWidget {
-  const MeshInfinityApp({super.key});
+  const MeshInfinityApp({super.key, required this.bridge});
+
+  final BackendBridge bridge;
 
   @override
   State<MeshInfinityApp> createState() => _MeshInfinityAppState();
 }
 
 class _MeshInfinityAppState extends State<MeshInfinityApp> {
-  AppDependencyContainer? _container;
-  NavigationManager? _navigationManager;
-  Object? _startupError;
+  late final bool _hasIdentity;
+  bool _onboardingComplete = false;
 
   @override
   void initState() {
     super.initState();
-    try {
-      _container = AppDependencyContainer();
-      _navigationManager = NavigationManager();
-      _container!.meshState.initialize();
-      _initializeAuth();
-    } catch (error) {
-      _startupError = error;
-    }
-  }
+    _hasIdentity = widget.bridge.hasIdentity();
 
-  Future<void> _initializeAuth() async {
-    final container = _container;
-    if (container == null) return;
-    final isAuthenticated = await container.authenticationService
-        .isAuthenticated();
-    container.meshState.setAuthenticationState(
-      isAuthenticated
-          ? AuthenticationState.authenticated
-          : AuthenticationState.notAuthenticated,
-    );
+    // Start the event bus only if the backend is available
+    if (widget.bridge.isAvailable) {
+      EventBus.instance.start(widget.bridge.contextAddress);
+    }
   }
 
   @override
   void dispose() {
-    _container?.dispose();
-    _navigationManager?.dispose();
+    EventBus.instance.stop();
+    widget.bridge.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_startupError != null ||
-        _container == null ||
-        _navigationManager == null) {
-      return MaterialApp(
+    return MultiProvider(
+      providers: [
+        Provider<BackendBridge>.value(value: widget.bridge),
+        ChangeNotifierProvider(create: (_) => ShellState()),
+        ChangeNotifierProvider(
+          create: (_) => MessagingState(widget.bridge),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => PeersState(widget.bridge),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => FilesState(widget.bridge),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => NetworkState(widget.bridge),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => SettingsState(widget.bridge),
+        ),
+      ],
+      child: MaterialApp(
         title: 'Mesh Infinity',
         theme: MeshTheme.light(),
         darkTheme: MeshTheme.dark(),
-        themeMode: ThemeMode.system,
-        home: Scaffold(
-          body: SafeArea(
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.shield_outlined, size: 40),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Unable to start Mesh Infinity securely.',
-                      textAlign: TextAlign.center,
-                    ),
-                    if (!kReleaseMode && _startupError != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        _startupError.toString(),
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
-    return MultiProvider(
-      providers: [
-        ChangeNotifierProvider<MeshState>.value(value: _container!.meshState),
-        ChangeNotifierProvider<NavigationManager>.value(
-          value: _navigationManager!,
-        ),
-        Provider<DependencyContainer>.value(value: _container!),
-      ],
-      child: Consumer<MeshState>(
-        builder: (context, meshState, _) {
-          return MaterialApp(
-            title: 'Mesh Infinity',
-            theme: MeshTheme.light(),
-            darkTheme: MeshTheme.dark(),
-            themeMode: meshState.themeMode,
-            home: const SignalShell(),
-          );
-        },
+        debugShowCheckedModeBanner: false,
+        home: _buildHome(),
       ),
     );
+  }
+
+  Widget _buildHome() {
+    if (!_hasIdentity && !_onboardingComplete) {
+      return OnboardingScreen(
+        onComplete: () => setState(() => _onboardingComplete = true),
+      );
+    }
+    return const AppShell();
   }
 }
