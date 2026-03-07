@@ -17,22 +17,22 @@ mesh-infinity/
 │   ├── transport/        # Transport layer (Tor, I2P, Clearnet)
 │   ├── discovery/        # Peer discovery (mDNS, DHT)
 │   ├── ffi/              # C FFI bindings for Flutter
-│   └── src/              # Backend service implementation
+│   ├── lib.rs            # Backend API surface
+│   └── service.rs        # Backend service implementation
 ├── frontend/             # Flutter UI (multi-platform)
 │   ├── lib/             # Dart source code
-│   ├── android/         # Android platform integration
-│   ├── ios/             # iOS platform integration
-│   ├── macos/           # macOS platform integration
-│   ├── linux/           # Linux platform integration
-│   └── windows/         # Windows platform integration
+│   └── ios/             # Flutter-managed iOS compatibility files required by tooling
+├── platforms/            # Platform host projects
+│   ├── android/         # Android host integration
+│   ├── apple/           # Unified Apple host project (iOS + macOS)
+│   ├── linux/           # Linux host integration
+│   └── windows/         # Windows host integration
 ├── build/               # Build artifacts (gitignored)
 │   ├── output/         # Final packaged applications
 │   ├── intermediates/  # Build intermediates
 │   └── logs/           # Build logs
 ├── scripts/            # Build and deployment scripts
-│   ├── build.sh       # Organized build script
-│   └── build_unified.sh # Original build script (compat)
-├── plans/             # Implementation plans and roadmap
+│   └── build.sh       # Makefile convenience wrapper
 └── assets/            # Shared assets
 ```
 
@@ -63,29 +63,32 @@ The build system is organized to keep all artifacts in the `build/` directory:
 
 1. **Rust Backend** → `build/intermediates/{profile}/libmesh_infinity.{so,dylib,dll}`
 2. **Flutter Frontend** → Platform-specific bundles
-3. **Final Package** → `build/output/{platform}/meshinfinity-{version}-{profile}.{tar.gz,dmg,zip}`
+3. **Final Package** → `build/output/{timestamp}/{os}/...`
 
 See [build/README.md](build/README.md) for detailed build documentation.
+
+Canonical entrypoint is root [`Makefile`](Makefile).
 
 ## Development Workflow
 
 ### Building
 ```bash
-# Build for current platform
-./scripts/build.sh --profile debug
+# Canonical build entrypoint
+make build-debug OS=linux
+make build-release OS=ios UNSIGNED=1
 
-# Build all profiles (CI/CD)
-./scripts/build.sh --all --clean
+# Convenience wrapper
+./scripts/build.sh --os macos --profile debug --unsigned
 ```
 
 ### Platform Development
 - **Rust changes**: Edit files in `backend/` or `src/`
 - **UI changes**: Edit files in `frontend/lib/`
-- **Platform integration**: Edit platform-specific files in `frontend/{platform}/`
+- **Platform integration**: Edit platform-specific files in `platforms/{android,apple,linux,windows}/`
 
 ### Adding Features
 1. Implement backend logic in appropriate `backend/` module
-2. Add FFI bindings in `backend/ffi/src/lib.rs`
+2. Add FFI bindings in `backend/ffi/lib.rs`
 3. Add Dart bindings in `frontend/lib/backend/backend_bridge.dart`
 4. Implement UI in `frontend/lib/`
 
@@ -97,8 +100,8 @@ The `src/` directory is the Rust library entry point (required by Cargo):
 - `src/runtime.rs` - Runtime configuration and initialization
 
 ### Backend Modules
-Each directory under `backend/` is an internal module with `src/lib.rs`:
-- Pulled into main crate via `#[path = "../backend/{module}/src/lib.rs"]` in `src/lib.rs`
+Each directory under `backend/` is an internal module with files directly in that directory:
+- Pulled into main crate via `#[path = "../backend/{module}/lib.rs"]` in `src/lib.rs`
 - Not separate crates (no individual Cargo.toml files)
 - Organized for logical separation, compiled as one unit
 - All accessible through the main `mesh_infinity` library

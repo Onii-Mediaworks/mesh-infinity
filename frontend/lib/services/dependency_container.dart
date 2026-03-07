@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../backend/backend_bridge.dart';
 import '../core/state/mesh_state.dart';
 import 'implementations.dart';
@@ -29,7 +31,9 @@ class AppDependencyContainer implements DependencyContainer {
   AppDependencyContainer({int nodeMode = 0}) {
     _backendBridge = BackendBridge.open(
       nodeMode: nodeMode,
-      allowMissing: false,
+      // Allow missing backend only for non-release builds so debugging can
+      // proceed without crashing on startup, while release remains strict.
+      allowMissing: !kReleaseMode,
     );
     _meshState = MeshState(backend: _backendBridge);
     _authenticationService = DefaultAuthenticationService(_backendBridge);

@@ -720,17 +720,22 @@ backend/
   core/              // core types + transport + mesh internals
   auth/
   crypto/
-  mesh/
   transport/
   discovery/
-  ffi/               // C ABI surface for UI shells (legacy Flutter)
-  src/               // MeshInfinityService + app-facing API
+  ffi/               // C ABI surface for Flutter UI integration
+  lib.rs             // MeshInfinityService + app-facing API exports
+  service.rs         // Backend service implementation
+platforms/
+  android/
+  apple/             // unified Apple host (iOS + macOS)
+  linux/
+  windows/
 ```
 
 ### FFI Interface Design
 
 ```rust
-// ffi/src/lib.rs - Public FFI interface
+// backend/ffi/lib.rs - Public FFI interface
 use std::os::raw::c_char;
 use std::ffi::{CStr, CString};
 

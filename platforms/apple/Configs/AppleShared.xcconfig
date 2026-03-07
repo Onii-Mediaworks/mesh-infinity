@@ -1,0 +1,11 @@
+// Canonical Apple build metadata shared by iOS and macOS hosts.
+// Root-level authority during migration to a single Apple Xcode project.
+
+APPLE_DISPLAY_NAME = Mesh Infinity
+APPLE_BUNDLE_NAME = MeshInfinity
+APPLE_PRODUCT_NAME = meshinfinity
+APPLE_PRODUCT_BUNDLE_IDENTIFIER = com.oniimediaworks.meshinfinity
+
+IPHONEOS_DEPLOYMENT_TARGET = 13.0
+MACOSX_DEPLOYMENT_TARGET = 10.15
+

@@ -1,23 +1,23 @@
 // Mesh Infinity unified crate.
 
-#[path = "../backend/core/src/lib.rs"]
-pub mod core;
-#[path = "../backend/auth/src/lib.rs"]
+#[path = "../backend/auth/lib.rs"]
 pub mod auth;
-#[path = "../backend/crypto/src/lib.rs"]
-pub mod crypto;
-#[path = "../backend/transport/src/lib.rs"]
-pub mod transport;
-#[path = "../backend/discovery/src/lib.rs"]
-pub mod discovery;
-#[path = "../backend/src/lib.rs"]
+#[path = "../backend/lib.rs"]
 pub mod backend;
-#[path = "../backend/ffi/src/lib.rs"]
+#[path = "../backend/core/lib.rs"]
+pub mod core;
+#[path = "../backend/crypto/lib.rs"]
+pub mod crypto;
+#[path = "../backend/discovery/lib.rs"]
+pub mod discovery;
+#[path = "../backend/ffi/lib.rs"]
 pub mod ffi;
 pub mod runtime;
+#[path = "../backend/transport/lib.rs"]
+pub mod transport;
 
 pub use backend::{
-    FileTransferSummary, Message, MeshInfinityService, NodeMode, PeerSummary, RoomSummary,
+    FileTransferSummary, MeshInfinityService, Message, NodeMode, PeerSummary, RoomSummary,
     ServiceConfig, Settings,
 };
 pub use runtime::{MeshInfinityRuntime, RuntimeConfig};
