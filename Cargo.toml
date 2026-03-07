@@ -72,5 +72,9 @@ crossbeam-channel = "0.5"
 flutter_rust_bridge = "1.80.0"
 libc = "0.2"
 
+# Force vendored OpenSSL so cross-compilation (Android NDK, etc.) works without
+# requiring a pre-installed OpenSSL for each target.
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 tempfile = "3.24"

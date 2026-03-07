@@ -10,9 +10,10 @@ APPLE_PROJECT         := $(PLATFORMS_DIR)/apple/Runner.xcodeproj
 APP_VERSION           := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
 
-OS       ?=
-PROFILE  ?= release
-UNSIGNED ?= 1
+OS         ?=
+PROFILE    ?= release
+UNSIGNED   ?= 1
+SKIP_RUST  ?= 0
 
 .PHONY: help guard-os guard-profile setup-build clean \
         build build-debug build-release build-both \
@@ -148,25 +149,35 @@ build: guard-os guard-profile setup-build
 	  linux) \
 	    cd "$(FRONTEND_DIR)"; \
 	    flutter config --enable-linux-desktop; \
+	    if [[ ! -d "$(FRONTEND_DIR)/linux" ]]; then \
+	      flutter create --platforms=linux . ; \
+	    fi; \
 	    flutter pub get; \
 	    flutter build linux $$flutter_flags; \
 	    bundle_dir="$(FRONTEND_DIR)/build/linux/x64/$$rust_subdir/bundle"; \
 	    mkdir -p "$$bundle_dir/lib"; \
-	    cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/libmesh_infinity.so" \
-	       "$$bundle_dir/lib/"; \
+	    if [[ "$(SKIP_RUST)" != "1" ]]; then \
+	      cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/libmesh_infinity.so" \
+	         "$$bundle_dir/lib/"; \
+	    fi; \
 	    tar czf "$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).tar.gz" \
 	      -C "$$bundle_dir" .; \
 	    echo "Output: $$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).tar.gz" ;; \
 	  windows) \
 	    cd "$(FRONTEND_DIR)"; \
 	    flutter config --enable-windows-desktop; \
+	    if [[ ! -d "$(FRONTEND_DIR)/windows" ]]; then \
+	      flutter create --platforms=windows . ; \
+	    fi; \
 	    flutter pub get; \
 	    flutter build windows $$flutter_flags; \
 	    win_subdir="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && win_subdir="Release"; \
 	    runner_dir="$(FRONTEND_DIR)/build/windows/x64/runner/$$win_subdir"; \
-	    cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/mesh_infinity.dll" \
-	       "$$runner_dir/"; \
+	    if [[ "$(SKIP_RUST)" != "1" ]]; then \
+	      cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/mesh_infinity.dll" \
+	         "$$runner_dir/"; \
+	    fi; \
 	    dst_dir="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE)"; \
 	    cp -r "$$runner_dir" "$$dst_dir"; \
 	    echo "Output: $$dst_dir" ;; \
@@ -190,42 +201,61 @@ build: guard-os guard-profile setup-build
 	  ios) \
 	    cfg_name="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && cfg_name="Release"; \
-	    export_method="debugging"; \
-	    [[ "$(PROFILE)" == "release" && "$(UNSIGNED)" != "1" ]] && export_method="app-store"; \
-	    archive_dir="$(BUILD_DIR)/intermediates/apple/ios"; \
-	    archive_path="$$archive_dir/RunnerIOS.xcarchive"; \
-	    export_plist="$$archive_dir/ExportOptions-$(PROFILE).plist"; \
-	    mkdir -p "$$archive_dir"; \
-	    printf '%s\n' \
-	      '<?xml version="1.0" encoding="UTF-8"?>' \
-	      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-	      '<plist version="1.0"><dict>' \
-	      '  <key>method</key>' \
-	      "  <string>$$export_method</string>" \
-	      '  <key>signingStyle</key><string>automatic</string>' \
-	      '  <key>stripSwiftSymbols</key><true/>' \
-	      '  <key>compileBitcode</key><false/>' \
-	      '</dict></plist>' > "$$export_plist"; \
-	    xcodebuild \
-	      -project "$(APPLE_PROJECT)" \
-	      -scheme RunnerIOS \
-	      -configuration "$$cfg_name" \
-	      -destination 'generic/platform=iOS' \
-	      -archivePath "$$archive_path" \
-	      -derivedDataPath "$$archive_dir" \
-	      -allowProvisioningUpdates \
-	      -allowProvisioningDeviceRegistration \
-	      archive; \
-	    xcodebuild \
-	      -exportArchive \
-	      -archivePath "$$archive_path" \
-	      -exportPath "$$out_dir" \
-	      -exportOptionsPlist "$$export_plist" \
-	      -allowProvisioningUpdates; \
-	    ipa_src="$$out_dir/MeshInfinity.ipa"; \
-	    ipa_dst="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).ipa"; \
-	    [[ -f "$$ipa_src" ]] && mv -f "$$ipa_src" "$$ipa_dst"; \
-	    echo "Output: $$ipa_dst" ;; \
+	    ios_derived="$(BUILD_DIR)/intermediates/apple/ios"; \
+	    mkdir -p "$$ios_derived"; \
+	    if [[ "$(UNSIGNED)" == "1" ]]; then \
+	      xcodebuild \
+	        -project "$(APPLE_PROJECT)" \
+	        -scheme RunnerIOS \
+	        -configuration "$$cfg_name" \
+	        -destination 'generic/platform=iOS' \
+	        -derivedDataPath "$$ios_derived" \
+	        CODE_SIGNING_ALLOWED=NO \
+	        CODE_SIGNING_REQUIRED=NO \
+	        CODE_SIGN_IDENTITY="" \
+	        PROVISIONING_PROFILE_SPECIFIER="" \
+	        build; \
+	      app_src="$$ios_derived/Build/Products/$$cfg_name-iphoneos/Runner.app"; \
+	      app_dst="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).app"; \
+	      rm -rf "$$app_dst"; \
+	      cp -R "$$app_src" "$$app_dst"; \
+	      echo "Output: $$app_dst"; \
+	    else \
+	      export_method="debugging"; \
+	      [[ "$(PROFILE)" == "release" ]] && export_method="app-store"; \
+	      archive_path="$$ios_derived/RunnerIOS.xcarchive"; \
+	      export_plist="$$ios_derived/ExportOptions-$(PROFILE).plist"; \
+	      printf '%s\n' \
+	        '<?xml version="1.0" encoding="UTF-8"?>' \
+	        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+	        '<plist version="1.0"><dict>' \
+	        '  <key>method</key>' \
+	        "  <string>$$export_method</string>" \
+	        '  <key>signingStyle</key><string>automatic</string>' \
+	        '  <key>stripSwiftSymbols</key><true/>' \
+	        '  <key>compileBitcode</key><false/>' \
+	        '</dict></plist>' > "$$export_plist"; \
+	      xcodebuild \
+	        -project "$(APPLE_PROJECT)" \
+	        -scheme RunnerIOS \
+	        -configuration "$$cfg_name" \
+	        -destination 'generic/platform=iOS' \
+	        -archivePath "$$archive_path" \
+	        -derivedDataPath "$$ios_derived" \
+	        -allowProvisioningUpdates \
+	        -allowProvisioningDeviceRegistration \
+	        archive; \
+	      xcodebuild \
+	        -exportArchive \
+	        -archivePath "$$archive_path" \
+	        -exportPath "$$out_dir" \
+	        -exportOptionsPlist "$$export_plist" \
+	        -allowProvisioningUpdates; \
+	      ipa_src="$$out_dir/MeshInfinity.ipa"; \
+	      ipa_dst="$$out_dir/meshinfinity-$(APP_VERSION)-$(PROFILE).ipa"; \
+	      [[ -f "$$ipa_src" ]] && mv -f "$$ipa_src" "$$ipa_dst"; \
+	      echo "Output: $$ipa_dst"; \
+	    fi ;; \
 	  android) \
 	    if ! command -v cargo-ndk &>/dev/null; then \
 	      echo "ERROR: cargo-ndk not found — install with: cargo install cargo-ndk --locked"; \
