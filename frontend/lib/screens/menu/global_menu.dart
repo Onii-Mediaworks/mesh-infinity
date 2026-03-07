@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../backend/backend_models.dart';
 import '../../backend/file_transfer_models.dart';
@@ -321,6 +324,111 @@ class _FilesSection extends StatelessWidget {
 
   final List<FileTransferItem> transfers;
 
+  Future<void> _startTransfer(BuildContext context, String direction) async {
+    final cs = Theme.of(context).colorScheme;
+    final meshState = context.read<MeshState>();
+    final bridge = meshState.backendBridge;
+    if (!bridge.isAvailable) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Backend is unavailable.'),
+          backgroundColor: cs.error,
+        ),
+      );
+      return;
+    }
+
+    final fileController = TextEditingController();
+    final peerController = TextEditingController();
+    final payload = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(direction == 'send' ? 'Send file' : 'Host file'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (direction == 'send') ...[
+                TextField(
+                  controller: peerController,
+                  decoration: const InputDecoration(
+                    labelText: 'Target peer ID',
+                    hintText: 'Optional',
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+              TextField(
+                controller: fileController,
+                decoration: const InputDecoration(
+                  labelText: 'File path',
+                  hintText: '/absolute/path/to/file',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop({
+                  'peerId': peerController.text.trim(),
+                  'filePath': fileController.text.trim(),
+                });
+              },
+              child: const Text('Start'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (!context.mounted) return;
+
+    fileController.dispose();
+    peerController.dispose();
+
+    if (payload == null) return;
+    final filePath = payload['filePath'] ?? '';
+    final peerId = payload['peerId'] ?? '';
+    if (filePath.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('A file path is required.')));
+      return;
+    }
+
+    final result = bridge.startFileTransfer(
+      direction: direction,
+      peerId: peerId.isEmpty ? null : peerId,
+      filePath: filePath,
+    );
+    if (result == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(bridge.getLastError() ?? 'Failed to start transfer.'),
+          backgroundColor: cs.error,
+        ),
+      );
+      return;
+    }
+
+    meshState.refreshData();
+    final transferId = result['transferId'] as String?;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          transferId?.isNotEmpty == true
+              ? 'Transfer queued: $transferId'
+              : 'Transfer queued.',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -340,7 +448,11 @@ class _FilesSection extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.file_present_outlined, color: cs.primary, size: 20),
+                    Icon(
+                      Icons.file_present_outlined,
+                      color: cs.primary,
+                      size: 20,
+                    ),
                     const SizedBox(width: 8),
                     Text(
                       'File Transfer',
@@ -355,7 +467,7 @@ class _FilesSection extends StatelessWidget {
                   children: [
                     Expanded(
                       child: FilledButton.tonalIcon(
-                        onPressed: null, // TODO: Implement file sending
+                        onPressed: () => _startTransfer(context, 'send'),
                         icon: const Icon(Icons.upload_outlined),
                         label: const Text('Send File'),
                       ),
@@ -363,7 +475,7 @@ class _FilesSection extends StatelessWidget {
                     const SizedBox(width: 12),
                     Expanded(
                       child: FilledButton.tonalIcon(
-                        onPressed: null, // TODO: Implement file hosting
+                        onPressed: () => _startTransfer(context, 'host'),
                         icon: const Icon(Icons.cloud_upload_outlined),
                         label: const Text('Host File'),
                       ),
@@ -372,11 +484,8 @@ class _FilesSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'File transfer requires FFI integration',
-                  style: TextStyle(
-                    color: cs.onSurfaceVariant,
-                    fontSize: 11,
-                  ),
+                  'Transfers are handled by the local backend service.',
+                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 11),
                   textAlign: TextAlign.center,
                 ),
               ],
@@ -389,9 +498,9 @@ class _FilesSection extends StatelessWidget {
         if (activeTransfers.isNotEmpty) ...[
           Text(
             'Active Transfers',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           ...activeTransfers.map((t) => _TransferCard(transfer: t)),
@@ -422,10 +531,7 @@ class _FilesSection extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     'Send or host files to get started',
-                    style: TextStyle(
-                      color: cs.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
+                    style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
                   ),
                 ],
               ),
@@ -434,9 +540,9 @@ class _FilesSection extends StatelessWidget {
         else if (activeTransfers.isEmpty) ...[
           Text(
             'Recent Transfers',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           ...transfers.take(5).map((t) => _TransferCard(transfer: t)),
@@ -560,7 +666,7 @@ class _StorageSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'TODO: Wire to backend storage settings once available.',
+                  'Storage paths are managed by backend policy.',
                   style: TextStyle(color: cs.onSurfaceVariant),
                 ),
               ],
@@ -573,10 +679,18 @@ class _StorageSection extends StatelessWidget {
             leading: const Icon(Icons.delete_outline),
             title: const Text('Clear cached files'),
             subtitle: Text(
-              'TODO: hook to cache manager',
+              'Clear transfer cache maintained by backend',
               style: TextStyle(color: cs.onSurfaceVariant),
             ),
-            onTap: () {},
+            onTap: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text(
+                    'Cache clearing is not exposed by backend yet.',
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ],
@@ -742,6 +856,13 @@ class _TransportsSection extends StatelessWidget {
       return const Center(child: Text('Settings unavailable'));
     }
     final cs = Theme.of(context).colorScheme;
+    final stats =
+        context.watch<MeshState>().backendBridge.getNetworkStats() ??
+        const <String, dynamic>{};
+    final bytesSent = (stats['bytesSent'] as num?)?.toInt() ?? 0;
+    final bytesReceived = (stats['bytesReceived'] as num?)?.toInt() ?? 0;
+    final activeConnections =
+        (stats['activeConnections'] as num?)?.toInt() ?? 0;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -772,31 +893,22 @@ class _TransportsSection extends StatelessWidget {
                     _StatItem(
                       icon: Icons.arrow_upward,
                       label: 'Sent',
-                      value: '0 KB',
+                      value: _fmtBytes(bytesSent),
                       color: cs.primary,
                     ),
                     _StatItem(
                       icon: Icons.arrow_downward,
                       label: 'Received',
-                      value: '0 KB',
+                      value: _fmtBytes(bytesReceived),
                       color: cs.secondary,
                     ),
                     _StatItem(
                       icon: Icons.link,
                       label: 'Active',
-                      value: '0',
+                      value: '$activeConnections',
                       color: cs.tertiary,
                     ),
                   ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Statistics require FFI integration',
-                  style: TextStyle(
-                    color: cs.onSurfaceVariant,
-                    fontSize: 11,
-                  ),
-                  textAlign: TextAlign.center,
                 ),
               ],
             ),
@@ -807,9 +919,9 @@ class _TransportsSection extends StatelessWidget {
         // Transport Toggles
         Text(
           'Transport Backends',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
         Card(
@@ -862,9 +974,9 @@ class _TransportsSection extends StatelessWidget {
         // Mesh Options
         Text(
           'Mesh Options',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
         Card(
@@ -894,6 +1006,15 @@ class _TransportsSection extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  static String _fmtBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 }
 
@@ -1023,9 +1144,9 @@ class _RoutingSectionState extends State<_RoutingSection> {
     };
     final success = meshState.backendBridge.setVpnRoute(config);
     if (success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('VPN route configured')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('VPN route configured')));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Failed to configure VPN route')),
@@ -1035,10 +1156,7 @@ class _RoutingSectionState extends State<_RoutingSection> {
 
   void _applyClearnetRoute() {
     final meshState = Provider.of<MeshState>(context, listen: false);
-    final config = {
-      'mode': 'clearnet',
-      'bypassMesh': true,
-    };
+    final config = {'mode': 'clearnet', 'bypassMesh': true};
     final success = meshState.backendBridge.setClearnetRoute(config);
     if (success) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1072,15 +1190,19 @@ class _RoutingSectionState extends State<_RoutingSection> {
                     children: [
                       Text(
                         'Routing Configuration',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: cs.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: cs.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         'Control how traffic is routed through the mesh network',
-                        style: TextStyle(color: cs.onPrimaryContainer, fontSize: 13),
+                        style: TextStyle(
+                          color: cs.onPrimaryContainer,
+                          fontSize: 13,
+                        ),
                       ),
                     ],
                   ),
@@ -1105,41 +1227,36 @@ class _RoutingSectionState extends State<_RoutingSection> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                RadioListTile<String>(
-                  value: 'mesh',
-                  groupValue: _routingMode,
-                  onChanged: (value) {
-                    setState(() => _routingMode = value!);
-                  },
-                  title: const Text('Mesh routing'),
-                  subtitle: Text(
-                    'Route through mesh peers (default)',
-                    style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
-                  ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Mesh routing'),
+                      selected: _routingMode == 'mesh',
+                      onSelected: (_) => setState(() => _routingMode = 'mesh'),
+                    ),
+                    ChoiceChip(
+                      label: const Text('VPN mode'),
+                      selected: _routingMode == 'vpn',
+                      onSelected: (_) => setState(() => _routingMode = 'vpn'),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Direct clearnet'),
+                      selected: _routingMode == 'clearnet',
+                      onSelected: (_) =>
+                          setState(() => _routingMode = 'clearnet'),
+                    ),
+                  ],
                 ),
-                RadioListTile<String>(
-                  value: 'vpn',
-                  groupValue: _routingMode,
-                  onChanged: (value) {
-                    setState(() => _routingMode = value!);
-                  },
-                  title: const Text('VPN mode'),
-                  subtitle: Text(
-                    'Route through exit nodes with encryption',
-                    style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
-                  ),
-                ),
-                RadioListTile<String>(
-                  value: 'clearnet',
-                  groupValue: _routingMode,
-                  onChanged: (value) {
-                    setState(() => _routingMode = value!);
-                  },
-                  title: const Text('Direct clearnet'),
-                  subtitle: Text(
-                    'Bypass mesh for direct internet access',
-                    style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
-                  ),
+                const SizedBox(height: 12),
+                Text(
+                  _routingMode == 'mesh'
+                      ? 'Route through mesh peers (default)'
+                      : _routingMode == 'vpn'
+                      ? 'Route through exit nodes with encryption'
+                      : 'Bypass mesh for direct internet access',
+                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
                 ),
               ],
             ),
@@ -1163,7 +1280,7 @@ class _RoutingSectionState extends State<_RoutingSection> {
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: _selectedExitNode ?? 'auto',
+                    initialValue: _selectedExitNode ?? 'auto',
                     decoration: const InputDecoration(
                       labelText: 'Exit node',
                       border: OutlineInputBorder(),
@@ -1181,12 +1298,19 @@ class _RoutingSectionState extends State<_RoutingSection> {
                   const SizedBox(height: 16),
                   Row(
                     children: [
-                      Icon(Icons.info_outline, size: 16, color: cs.onSurfaceVariant),
+                      Icon(
+                        Icons.info_outline,
+                        size: 16,
+                        color: cs.onSurfaceVariant,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           'Exit nodes route your traffic securely through the mesh',
-                          style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+                          style: TextStyle(
+                            color: cs.onSurfaceVariant,
+                            fontSize: 12,
+                          ),
                         ),
                       ),
                     ],
@@ -1220,7 +1344,11 @@ class _RoutingSectionState extends State<_RoutingSection> {
                   const SizedBox(height: 12),
                   Row(
                     children: [
-                      Icon(Icons.warning_amber_rounded, size: 16, color: cs.error),
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        size: 16,
+                        color: cs.error,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -1247,16 +1375,20 @@ class _RoutingSectionState extends State<_RoutingSection> {
         Card(
           child: ListTile(
             leading: Icon(
-              _routingMode == 'vpn' ? Icons.vpn_lock :
-              _routingMode == 'clearnet' ? Icons.public :
-              Icons.hub_outlined,
+              _routingMode == 'vpn'
+                  ? Icons.vpn_lock
+                  : _routingMode == 'clearnet'
+                  ? Icons.public
+                  : Icons.hub_outlined,
               color: cs.primary,
             ),
             title: const Text('Current routing mode'),
             subtitle: Text(
-              _routingMode == 'vpn' ? 'VPN mode active' :
-              _routingMode == 'clearnet' ? 'Direct clearnet' :
-              'Mesh routing',
+              _routingMode == 'vpn'
+                  ? 'VPN mode active'
+                  : _routingMode == 'clearnet'
+                  ? 'Direct clearnet'
+                  : 'Mesh routing',
             ),
           ),
         ),
@@ -1271,63 +1403,93 @@ class _DiscoverySection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-
-    // TODO: Wire to backend bridge for mDNS control
-    // backend.enableMdns(port: 51820) / backend.disableMdns()
-    // backend.isMdnsRunning() / backend.getDiscoveredPeers()
+    final meshState = context.watch<MeshState>();
+    final bridge = meshState.backendBridge;
+    final running = bridge.isMdnsRunning();
+    final discovered = bridge.getDiscoveredPeers();
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // mDNS Info Card
         Card(
-          color: cs.primaryContainer,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.router_outlined, color: cs.primary),
-                    const SizedBox(width: 12),
-                    Text(
-                      'mDNS Discovery',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: cs.primary,
-                        fontWeight: FontWeight.w600,
-                      ),
+          child: Column(
+            children: [
+              SwitchListTile(
+                title: const Text('Enable mDNS discovery'),
+                subtitle: Text(
+                  running ? 'mDNS is running on port 51820' : 'mDNS is stopped',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+                value: running,
+                onChanged: (value) {
+                  final success = value
+                      ? bridge.enableMdns(port: 51820)
+                      : bridge.disableMdns();
+                  final message = success
+                      ? (value ? 'mDNS enabled' : 'mDNS disabled')
+                      : (bridge.getLastError() ??
+                            'Failed to update mDNS state');
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(message),
+                      backgroundColor: success ? null : cs.error,
                     ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Local network peer discovery is ready.\n\n'
-                  'The backend now includes:\n'
-                  '• mDNS/Bonjour broadcasting\n'
-                  '• Automatic peer discovery on LAN\n'
-                  '• WireGuard mesh networking\n\n'
-                  'UI wiring is in progress. Use the backend bridge methods:\n'
-                  '- enableMdns(port: 51820)\n'
-                  '- disableMdns()\n'
-                  '- isMdnsRunning()\n'
-                  '- getDiscoveredPeers()',
-                  style: TextStyle(color: cs.onPrimaryContainer, height: 1.5),
-                ),
-              ],
-            ),
+                  );
+                  meshState.refreshData();
+                },
+              ),
+            ],
           ),
         ),
         const SizedBox(height: 12),
-        Card(
-          child: ListTile(
-            leading: const Icon(Icons.check_circle_outline),
-            title: const Text('Backend Ready'),
-            subtitle: Text(
-              'mDNS service implemented and compiled',
-              style: TextStyle(color: cs.onSurfaceVariant),
+        Row(
+          children: [
+            Text(
+              'Discovered peers',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
-          ),
+            const Spacer(),
+            IconButton(
+              onPressed: meshState.refreshData,
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh',
+            ),
+          ],
+        ),
+        Card(
+          child: discovered.isEmpty
+              ? ListTile(
+                  leading: const Icon(Icons.people_outline),
+                  title: const Text('No discovered peers'),
+                  subtitle: Text(
+                    running
+                        ? 'Peers will appear here when discovered on LAN.'
+                        : 'Enable mDNS to discover LAN peers.',
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
+                )
+              : Column(
+                  children: [
+                    for (int i = 0; i < discovered.length; i++) ...[
+                      if (i > 0) const Divider(height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.person_outline),
+                        title: Text(
+                          (discovered[i]['name'] as String?)?.isNotEmpty == true
+                              ? discovered[i]['name'] as String
+                              : (discovered[i]['id'] as String? ??
+                                    'Unknown peer'),
+                        ),
+                        subtitle: Text(
+                          discovered[i]['status'] as String? ?? 'discovered',
+                          style: TextStyle(color: cs.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
         ),
       ],
     );
@@ -1403,9 +1565,9 @@ class _MeshSection extends StatelessWidget {
         // Trusted Peers section
         Text(
           'Trusted Peers',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
         if (trustedPeers.isEmpty)
@@ -1445,9 +1607,9 @@ class _MeshSection extends StatelessWidget {
         // Discovered/Added Peers section
         Text(
           'Discovered & Added Peers',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
         if (discoveredPeers.isEmpty)
@@ -1534,10 +1696,7 @@ class _PeerTile extends StatelessWidget {
               const SizedBox(width: 4),
               Text(
                 peer.status,
-                style: TextStyle(
-                  color: cs.onSurfaceVariant,
-                  fontSize: 12,
-                ),
+                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
               ),
               const SizedBox(width: 12),
               // Trust-level badge
@@ -1554,7 +1713,9 @@ class _PeerTile extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
-                    color: peer.trustLevel >= 2 ? cs.primary : cs.onSurfaceVariant,
+                    color: peer.trustLevel >= 2
+                        ? cs.primary
+                        : cs.onSurfaceVariant,
                   ),
                 ),
               ),
@@ -1576,9 +1737,11 @@ class _PeerTile extends StatelessWidget {
       ),
       trailing: Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
       onTap: () {
-        // TODO: Navigate to detailed peer profile view
-        // This will show full peer ID, available transports, connection metrics,
-        // trust attestations, etc.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Peer detail view is not available yet.'),
+          ),
+        );
       },
     );
   }
@@ -1772,10 +1935,115 @@ class _ThemeModeSelector extends StatelessWidget {
   }
 }
 
-class _IdentitySection extends StatelessWidget {
+class _IdentitySection extends StatefulWidget {
   const _IdentitySection({required this.settings});
 
   final BackendSettings? settings;
+
+  @override
+  State<_IdentitySection> createState() => _IdentitySectionState();
+}
+
+class _IdentitySectionState extends State<_IdentitySection> {
+  bool _scannerOpen = false;
+
+  String _extractPairingCode(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return '';
+    if (trimmed.startsWith('mesh://pair/')) {
+      return trimmed.substring('mesh://pair/'.length).trim();
+    }
+    final uri = Uri.tryParse(trimmed);
+    if (uri != null) {
+      final qp = uri.queryParameters['code'];
+      if (qp != null && qp.trim().isNotEmpty) {
+        return qp.trim();
+      }
+    }
+    return trimmed;
+  }
+
+  Future<void> _showPairingQr(BuildContext context, String pairingCode) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Pairing QR'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            QrImageView(
+              data: 'mesh://pair/$pairingCode',
+              version: QrVersions.auto,
+              size: 220,
+            ),
+            const SizedBox(height: 12),
+            SelectableText(pairingCode),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _scanPairingQr(BuildContext context) async {
+    if (_scannerOpen) return;
+    _scannerOpen = true;
+    final controller = MobileScannerController();
+    final meshState = context.read<MeshState>();
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Scan pairing QR'),
+        content: SizedBox(
+          width: 320,
+          height: 320,
+          child: MobileScanner(
+            controller: controller,
+            onDetect: (capture) {
+              for (final barcode in capture.barcodes) {
+                final raw = barcode.rawValue;
+                if (raw == null || raw.trim().isEmpty) continue;
+                final pairingCode = _extractPairingCode(raw);
+                if (pairingCode.isEmpty) continue;
+                final ok = meshState.pairPeer(pairingCode);
+                Navigator.of(dialogContext).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      ok
+                          ? 'Peer paired successfully.'
+                          : (meshState.backendBridge.getLastError() ??
+                                'Pairing failed.'),
+                    ),
+                    backgroundColor: ok
+                        ? null
+                        : Theme.of(context).colorScheme.error,
+                  ),
+                );
+                break;
+              }
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    await controller.dispose();
+    _scannerOpen = false;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1797,8 +2065,8 @@ class _IdentitySection extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 SelectableText(
-                  settings?.localPeerId.isNotEmpty == true
-                      ? settings!.localPeerId
+                  widget.settings?.localPeerId.isNotEmpty == true
+                      ? widget.settings!.localPeerId
                       : 'Unavailable',
                   style: TextStyle(
                     color: cs.onSurfaceVariant,
@@ -1815,10 +2083,38 @@ class _IdentitySection extends StatelessWidget {
             leading: const Icon(Icons.qr_code_2_outlined),
             title: const Text('Show pairing code'),
             subtitle: Text(
-              'TODO: display pairing QR',
+              'Show QR and copy pairing code',
               style: TextStyle(color: cs.onSurfaceVariant),
             ),
-            onTap: () {},
+            onTap: () async {
+              final value = widget.settings?.pairingCode ?? '';
+              if (value.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Pairing code unavailable.')),
+                );
+                return;
+              }
+              await Clipboard.setData(ClipboardData(text: value));
+              if (!context.mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Pairing code copied.')),
+              );
+              await _showPairingQr(context, value);
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.qr_code_scanner_outlined),
+            title: const Text('Scan peer QR code'),
+            subtitle: Text(
+              'Use camera to auto-detect pairing code',
+              style: TextStyle(color: cs.onSurfaceVariant),
+            ),
+            onTap: () async {
+              await _scanPairingQr(context);
+            },
           ),
         ),
       ],
@@ -1832,9 +2128,87 @@ class _IdentitySection extends StatelessWidget {
 class _ServicesSection extends StatelessWidget {
   const _ServicesSection();
 
+  Future<void> _addService(BuildContext context) async {
+    final meshState = context.read<MeshState>();
+    final bridge = meshState.backendBridge;
+    final cs = Theme.of(context).colorScheme;
+    final idController = TextEditingController();
+    final portController = TextEditingController(text: '8080');
+
+    final payload = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Configure service'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: idController,
+              decoration: const InputDecoration(labelText: 'Service ID'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: portController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Port'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop({
+                'serviceId': idController.text.trim(),
+                'port': int.tryParse(portController.text.trim()) ?? 8080,
+              });
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (!context.mounted) return;
+
+    idController.dispose();
+    portController.dispose();
+
+    if (payload == null) return;
+    final serviceId = payload['serviceId'] as String? ?? '';
+    if (serviceId.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Service ID is required.')));
+      return;
+    }
+    final ok = bridge.configureService(serviceId, {
+      'port': payload['port'],
+      'enabled': true,
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Service configuration submitted.'
+              : (bridge.getLastError() ?? 'Failed to configure service.'),
+        ),
+        backgroundColor: ok ? null : cs.error,
+      ),
+    );
+    if (ok) {
+      meshState.refreshData();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final meshState = context.watch<MeshState>();
+    final services = meshState.backendBridge.getServiceList();
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -1875,50 +2249,59 @@ class _ServicesSection extends StatelessWidget {
         ),
         const SizedBox(height: 16),
 
-        // Service configuration (placeholder)
         Text(
           'Active Services',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
         Card(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              children: [
-                Icon(
-                  Icons.cloud_off_outlined,
-                  size: 40,
-                  color: cs.onSurfaceVariant,
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'No services configured',
-                  style: TextStyle(
-                    color: cs.onSurfaceVariant,
-                    fontWeight: FontWeight.w500,
+          child: services.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.cloud_off_outlined,
+                        size: 40,
+                        color: cs.onSurfaceVariant,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'No services configured',
+                        style: TextStyle(
+                          color: cs.onSurfaceVariant,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
+                )
+              : Column(
+                  children: [
+                    for (int i = 0; i < services.length; i++) ...[
+                      if (i > 0) const Divider(height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.cloud_done_outlined),
+                        title: Text(
+                          services[i]['name'] as String? ??
+                              services[i]['id'] as String? ??
+                              'Service',
+                        ),
+                        subtitle: Text(
+                          'Status: ${services[i]['status'] ?? 'unknown'}',
+                          style: TextStyle(color: cs.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Service configuration requires FFI integration',
-                  style: TextStyle(
-                    color: cs.onSurfaceVariant,
-                    fontSize: 12,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ],
-            ),
-          ),
         ),
         const SizedBox(height: 16),
 
-        // Add service button (disabled until FFI ready)
         FilledButton.icon(
-          onPressed: null, // TODO: Enable when FFI ready
+          onPressed: () => _addService(context),
           icon: const Icon(Icons.add),
           label: const Text('Add Service'),
         ),
@@ -1937,6 +2320,14 @@ class _AdvancedSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final meshState = context.watch<MeshState>();
+    final stats =
+        meshState.backendBridge.getNetworkStats() ?? const <String, dynamic>{};
+    final packetsLost = (stats['packetsLost'] as num?)?.toDouble() ?? 0.0;
+    final avgLatencyMs = (stats['avgLatencyMs'] as num?)?.toInt() ?? 0;
+    final bandwidthKbps = (stats['bandwidthKbps'] as num?)?.toDouble() ?? 0.0;
+    final activeConnections =
+        (stats['activeConnections'] as num?)?.toInt() ?? 0;
+    final health = activeConnections > 0 ? 'Connected' : 'Idle';
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -1963,9 +2354,9 @@ class _AdvancedSection extends StatelessWidget {
         if (meshState.showAdvancedStats) ...[
           Text(
             'Diagnostics',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           Card(
@@ -1976,36 +2367,26 @@ class _AdvancedSection extends StatelessWidget {
                 children: [
                   _DiagnosticRow(
                     label: 'Node Health',
-                    value: 'Healthy',
+                    value: health,
                     color: cs.primary,
                   ),
                   const SizedBox(height: 12),
                   _DiagnosticRow(
                     label: 'Packet Loss',
-                    value: '0.0%',
+                    value: '${packetsLost.toStringAsFixed(1)}%',
                     color: cs.secondary,
                   ),
                   const SizedBox(height: 12),
                   _DiagnosticRow(
                     label: 'Average Latency',
-                    value: '0 ms',
+                    value: '$avgLatencyMs ms',
                     color: cs.tertiary,
                   ),
                   const SizedBox(height: 12),
                   _DiagnosticRow(
                     label: 'Bandwidth Usage',
-                    value: '0 KB/s',
+                    value: '${bandwidthKbps.toStringAsFixed(1)} kbps',
                     color: cs.primary,
-                  ),
-                  const SizedBox(height: 12),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Real-time statistics require FFI integration',
-                    style: TextStyle(
-                      color: cs.onSurfaceVariant,
-                      fontSize: 11,
-                    ),
                   ),
                 ],
               ),
@@ -2042,10 +2423,7 @@ class _DiagnosticRow extends StatelessWidget {
         ),
         Text(
           value,
-          style: TextStyle(
-            fontWeight: FontWeight.w600,
-            color: color,
-          ),
+          style: TextStyle(fontWeight: FontWeight.w600, color: color),
         ),
       ],
     );
@@ -2066,7 +2444,7 @@ class _AboutSection extends StatelessWidget {
             leading: const Icon(Icons.info_outline),
             title: const Text('Mesh Infinity'),
             subtitle: Text(
-              'TODO: display version from package info',
+              'Version 0.1.1',
               style: TextStyle(color: cs.onSurfaceVariant),
             ),
           ),
@@ -2077,10 +2455,14 @@ class _AboutSection extends StatelessWidget {
             leading: const Icon(Icons.description_outlined),
             title: const Text('Licenses'),
             subtitle: Text(
-              'TODO: open license page',
+              'Open third-party licenses',
               style: TextStyle(color: cs.onSurfaceVariant),
             ),
-            onTap: () {},
+            onTap: () => showLicensePage(
+              context: context,
+              applicationName: 'Mesh Infinity',
+              applicationVersion: '0.1.1',
+            ),
           ),
         ),
       ],

@@ -101,7 +101,7 @@ class BackendBridge {
     if (!isAvailable) {
       return const [];
     }
-    final jsonString = _readString(_bindings!.peersJson(_context));
+    final jsonString = _readString(_bindings!.peerListJson(_context));
     if (jsonString == null) {
       return const [];
     }
@@ -321,6 +321,16 @@ class BackendBridge {
     return result == 0;
   }
 
+  bool pairPeer(String code) {
+    if (!isAvailable) {
+      return false;
+    }
+    final codePtr = code.toNativeUtf8();
+    final result = _bindings!.pairPeer(_context, codePtr);
+    calloc.free(codePtr);
+    return result == 0;
+  }
+
   bool pollEvents() {
     if (!isAvailable) {
       return false;
@@ -405,7 +415,12 @@ class BackendBridge {
     final filePathPtr = filePath.toNativeUtf8();
 
     final jsonString = _readString(
-      _bindings!.fileTransferStart(_context, directionPtr, peerIdPtr, filePathPtr),
+      _bindings!.fileTransferStart(
+        _context,
+        directionPtr,
+        peerIdPtr,
+        filePathPtr,
+      ),
     );
 
     calloc.free(directionPtr);
@@ -487,7 +502,11 @@ class BackendBridge {
     }
     final serviceIdPtr = serviceId.toNativeUtf8();
     final configJsonPtr = jsonEncode(config).toNativeUtf8();
-    final result = _bindings!.configureService(_context, serviceIdPtr, configJsonPtr);
+    final result = _bindings!.configureService(
+      _context,
+      serviceIdPtr,
+      configJsonPtr,
+    );
     calloc.free(serviceIdPtr);
     calloc.free(configJsonPtr);
     return result != 0;
@@ -498,7 +517,11 @@ class BackendBridge {
       return false;
     }
     final transportNamePtr = transportName.toNativeUtf8();
-    final result = _bindings!.toggleTransportFlag(_context, transportNamePtr, enabled ? 1 : 0);
+    final result = _bindings!.toggleTransportFlag(
+      _context,
+      transportNamePtr,
+      enabled ? 1 : 0,
+    );
     calloc.free(transportNamePtr);
     return result != 0;
   }
@@ -550,9 +573,18 @@ class BackendBridge {
 }
 
 Pointer<Void> _initContext(_BackendBindings bindings, int nodeMode) {
+  final configPath = Platform.environment['MESH_CONFIG_PATH']?.trim();
+  final wireguardPort = int.tryParse(
+    (Platform.environment['MESH_WIREGUARD_PORT'] ?? '').trim(),
+  );
+
+  final configPathPtr = (configPath != null && configPath.isNotEmpty)
+      ? configPath.toNativeUtf8()
+      : nullptr;
+
   final config = calloc<FfiMeshConfig>();
   config.ref
-    ..configPath = nullptr
+    ..configPath = configPathPtr
     ..logLevel = 2
     ..enableTor = 1
     ..enableClearnet = 1
@@ -560,12 +592,18 @@ Pointer<Void> _initContext(_BackendBindings bindings, int nodeMode) {
     ..allowRelays = 1
     ..enableI2p = 0
     ..enableBluetooth = 0
-    ..wireguardPort = 0
+    ..wireguardPort =
+        (wireguardPort != null && wireguardPort > 0 && wireguardPort <= 65535)
+        ? wireguardPort
+        : 0
     ..maxPeers = 0
     ..maxConnections = 0
     ..nodeMode = nodeMode;
   final context = bindings.meshInit(config);
   calloc.free(config);
+  if (configPathPtr != nullptr) {
+    calloc.free(configPathPtr);
+  }
   return context;
 }
 
@@ -601,6 +639,9 @@ class _BackendBindings {
       peersJson = _lib.lookupFunction<PeersJsonNative, PeersJsonDart>(
         'mi_peers_json',
       ),
+      peerListJson = _lib.lookupFunction<PeerListJsonNative, PeerListJsonDart>(
+        'mi_get_peer_list',
+      ),
       fileTransfersJson = _lib
           .lookupFunction<FileTransfersJsonNative, FileTransfersJsonDart>(
             'mi_file_transfers_json',
@@ -635,6 +676,9 @@ class _BackendBindings {
           .lookupFunction<SetTransportFlagsNative, SetTransportFlagsDart>(
             'mi_set_transport_flags',
           ),
+      pairPeer = _lib.lookupFunction<PairPeerNative, PairPeerDart>(
+        'mi_pair_peer',
+      ),
       pollEvents = _lib.lookupFunction<PollEventsNative, PollEventsDart>(
         'mi_poll_events',
       ),
@@ -702,10 +746,9 @@ class _BackendBindings {
           .lookupFunction<ToggleTransportFlagNative, ToggleTransportFlagDart>(
             'mi_toggle_transport_flag',
           ),
-      setVpnRoute = _lib
-          .lookupFunction<SetVpnRouteNative, SetVpnRouteDart>(
-            'mi_set_vpn_route',
-          ),
+      setVpnRoute = _lib.lookupFunction<SetVpnRouteNative, SetVpnRouteDart>(
+        'mi_set_vpn_route',
+      ),
       setClearnetRoute = _lib
           .lookupFunction<SetClearnetRouteNative, SetClearnetRouteDart>(
             'mi_set_clearnet_route',
@@ -718,6 +761,7 @@ class _BackendBindings {
   final RoomsJsonDart roomsJson;
   final MessagesJsonDart messagesJson;
   final PeersJsonDart peersJson;
+  final PeerListJsonDart peerListJson;
   final FileTransfersJsonDart fileTransfersJson;
   final ActiveRoomIdDart activeRoomId;
   final CreateRoomDart createRoom;
@@ -728,6 +772,7 @@ class _BackendBindings {
   final SetNodeModeDart setNodeMode;
   final SettingsJsonDart settingsJson;
   final SetTransportFlagsDart setTransportFlags;
+  final PairPeerDart pairPeer;
   final PollEventsDart pollEvents;
   final LocalIdentityJsonDart localIdentityJson;
   final TrustAttestDart trustAttest;
@@ -798,6 +843,8 @@ typedef MessagesJsonNative =
 typedef MessagesJsonDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef PeersJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef PeersJsonDart = Pointer<Utf8> Function(Pointer<Void>);
+typedef PeerListJsonNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef PeerListJsonDart = Pointer<Utf8> Function(Pointer<Void>);
 typedef FileTransfersJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef FileTransfersJsonDart = Pointer<Utf8> Function(Pointer<Void>);
 typedef ActiveRoomIdNative = Pointer<Utf8> Function(Pointer<Void>);
@@ -822,6 +869,8 @@ typedef SetTransportFlagsNative =
     Int32 Function(Pointer<Void>, Uint8, Uint8, Uint8, Uint8, Uint8, Uint8);
 typedef SetTransportFlagsDart =
     int Function(Pointer<Void>, int, int, int, int, int, int);
+typedef PairPeerNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef PairPeerDart = int Function(Pointer<Void>, Pointer<Utf8>);
 typedef PollEventsNative = Pointer<Utf8> Function(Pointer<Void>, Uint32);
 typedef PollEventsDart = Pointer<Utf8> Function(Pointer<Void>, int);
 typedef LocalIdentityJsonNative = Pointer<Utf8> Function(Pointer<Void>);
@@ -855,54 +904,40 @@ typedef GetNetworkStatsNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetNetworkStatsDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // File Transfer
-typedef FileTransferStartNative = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
-typedef FileTransferStartDart = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
+typedef FileTransferStartNative =
+    Pointer<Utf8> Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+    );
+typedef FileTransferStartDart =
+    Pointer<Utf8> Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+    );
 typedef FileTransferCancelNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef FileTransferCancelDart = int Function(Pointer<Void>, Pointer<Utf8>);
-typedef FileTransferStatusNative = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-);
-typedef FileTransferStatusDart = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-);
+typedef FileTransferStatusNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef FileTransferStatusDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // Service Management
 typedef GetServiceListNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetServiceListDart = Pointer<Utf8> Function(Pointer<Void>);
-typedef ConfigureServiceNative = Int32 Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
-typedef ConfigureServiceDart = int Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
+typedef ConfigureServiceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ConfigureServiceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 
 // Transport Management
-typedef ToggleTransportFlagNative = Int32 Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Int32,
-);
-typedef ToggleTransportFlagDart = int Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  int,
-);
+typedef ToggleTransportFlagNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef ToggleTransportFlagDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, int);
 
 // Route Configuration
 typedef SetVpnRouteNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);

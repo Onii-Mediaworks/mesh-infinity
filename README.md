@@ -22,14 +22,13 @@ A decentralized mesh networking platform with multi-transport support, web-of-tr
 ### Building
 
 ```bash
-# Build for current platform (debug mode)
-./scripts/build.sh --profile debug
+# Canonical build entrypoint
+make build-debug OS=linux
+make build-release OS=macos UNSIGNED=1
+make build-both OS=macos,ios UNSIGNED=1
 
-# Build for release
-./scripts/build.sh --profile release
-
-# Build all profiles (useful for CI/CD)
-./scripts/build.sh --all --clean
+# Convenience wrapper (delegates to Makefile)
+./scripts/build.sh --os ios --profile debug --unsigned
 ```
 
 See [build/README.md](build/README.md) for detailed build instructions and options.
@@ -39,10 +38,10 @@ See [build/README.md](build/README.md) for detailed build instructions and optio
 ```bash
 # After building, run the platform-specific executable
 # macOS
-open build/output/macos/meshinfinity-*.app
+open build/output/<timestamp>/macos/meshinfinity-*.app
 
 # Linux
-./build/output/linux/meshinfinity-*/mesh_infinity_frontend
+./build/output/<timestamp>/linux/meshinfinity-*/mesh_infinity_frontend
 
 # Or use Flutter directly
 cd frontend && flutter run
@@ -55,9 +54,10 @@ See [STRUCTURE.md](STRUCTURE.md) for a detailed explanation of the project organ
 **Key directories:**
 - `backend/` - Rust backend modules (mesh, crypto, auth, transport, etc.)
 - `frontend/` - Flutter UI (single codebase for all platforms)
-- `scripts/` - Build and deployment scripts
+- `platforms/` - Platform-specific host projects (Android, Apple, Linux, Windows)
+- `Makefile` - Canonical cross-platform build entrypoint
+- `scripts/` - Helper/convenience scripts
 - `build/` - All build artifacts (gitignored)
-- `plans/` - Implementation plans and roadmap
 
 ## Architecture
 
@@ -71,8 +71,8 @@ Mesh Infinity uses a **unified architecture**:
 
 ### Adding a Feature
 
-1. **Backend**: Implement in `backend/{module}/src/`
-2. **FFI**: Add C bindings in `backend/ffi/src/lib.rs`
+1. **Backend**: Implement in `backend/{module}/`
+2. **FFI**: Add C bindings in `backend/ffi/lib.rs`
 3. **Dart Bridge**: Add Dart bindings in `frontend/lib/backend/backend_bridge.dart`
 4. **UI**: Implement in `frontend/lib/`
 
@@ -81,11 +81,9 @@ Mesh Infinity uses a **unified architecture**:
 - Rust code is organized as internal modules under `backend/`
 - All modules compile into one `mesh-infinity` crate (cdylib + rlib)
 - Flutter code follows standard Flutter project structure
-- Platform integrations in `frontend/{android,ios,macos,linux,windows}/`
+- Platform integrations in `platforms/{android,apple,linux,windows}/`
 
 ## Implementation Status
-
-See [plans/](plans/) for current implementation roadmaps.
 
 **Current version**: 0.1.1
 

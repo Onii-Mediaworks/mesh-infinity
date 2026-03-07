@@ -1,0 +1,254 @@
+//! Virtual interface abstraction (TUN) plus local IP/route utilities.
+//!
+//! This module wraps a host TUN device and provides helper components for IP
+//! allocation, route bookkeeping, and packet filtering before packets enter
+//! higher mesh processing layers.
+use crate::core::error::Result;
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, Mutex};
+use tun_tap::{Iface, Mode};
+
+pub struct VirtualInterface {
+    device: Arc<Mutex<Iface>>,
+    ip_allocator: IpAllocator,
+    route_table: RouteTable,
+    packet_filter: PacketFilter,
+}
+
+impl VirtualInterface {
+    /// Create and initialize a TUN interface with local allocator and routing.
+    pub fn new(interface_name: &str, ip_range: &str) -> Result<Self> {
+        // Create TUN device
+        let device = Iface::new(interface_name, Mode::Tun)?;
+
+        // Configure IP range
+        let ip_allocator = IpAllocator::new(ip_range)?;
+
+        // Initialize route table
+        let route_table = RouteTable::new();
+
+        // Initialize packet filter
+        let packet_filter = PacketFilter::new();
+
+        Ok(Self {
+            device: Arc::new(Mutex::new(device)),
+            ip_allocator,
+            route_table,
+            packet_filter,
+        })
+    }
+
+    /// Read one packet from TUN device and apply ingress packet filter.
+    ///
+    /// Returns `Ok(0)` when packet is dropped by filter.
+    pub fn read_packet(&self, buffer: &mut [u8]) -> Result<usize> {
+        let device = self.device.lock().unwrap();
+        let bytes_read = device.recv(buffer)?;
+        if !self.packet_filter.filter_packet(&buffer[..bytes_read]) {
+            return Ok(0);
+        }
+        Ok(bytes_read)
+    }
+
+    /// Write one packet to TUN device.
+    pub fn write_packet(&self, packet: &[u8]) -> Result<usize> {
+        let device = self.device.lock().unwrap();
+        let bytes_written = device.send(packet)?;
+        Ok(bytes_written)
+    }
+
+    /// Allocate next available IP address from configured local pool.
+    pub fn allocate_ip(&mut self) -> Result<IpAddr> {
+        self.ip_allocator.allocate()
+    }
+
+    /// Add route entry to local route table.
+    pub fn add_route(
+        &mut self,
+        destination: IpAddr,
+        gateway: Option<IpAddr>,
+        interface: &str,
+    ) -> Result<()> {
+        self.route_table.add_route(destination, gateway, interface)
+    }
+
+    /// Return OS-level interface name of underlying TUN device.
+    pub fn get_interface_name(&self) -> String {
+        let device = self.device.lock().unwrap();
+        device.name().to_string()
+    }
+}
+
+pub struct IpAllocator {
+    network: Ipv4Addr,
+    netmask: Ipv4Addr,
+    next_ip: Ipv4Addr,
+    used_ips: Vec<Ipv4Addr>,
+}
+
+impl IpAllocator {
+    /// Create allocator from CIDR-like IPv4 range string (e.g. `10.42.0.0/16`).
+    pub fn new(ip_range: &str) -> Result<Self> {
+        // Parse CIDR notation (e.g., "10.42.0.0/16")
+        let parts: Vec<&str> = ip_range.split('/').collect();
+        if parts.len() != 2 {
+            return Err(crate::core::error::MeshInfinityError::InvalidConfiguration(
+                format!("Invalid IP range format: {}", ip_range),
+            ));
+        }
+
+        let base_ip: Ipv4Addr = parts[0].parse().map_err(|err| {
+            crate::core::error::MeshInfinityError::InvalidConfiguration(format!(
+                "Invalid IP range base: {err}"
+            ))
+        })?;
+        let prefix_len: u8 = parts[1].parse().map_err(|err| {
+            crate::core::error::MeshInfinityError::InvalidConfiguration(format!(
+                "Invalid IP range prefix: {err}"
+            ))
+        })?;
+
+        // Calculate netmask
+        let netmask = match prefix_len {
+            0..=8 => Ipv4Addr::new(255, 0, 0, 0),
+            9..=16 => Ipv4Addr::new(255, 255, 0, 0),
+            17..=24 => Ipv4Addr::new(255, 255, 255, 0),
+            _ => Ipv4Addr::new(255, 255, 255, 255),
+        };
+
+        // Start allocating from .1 (avoid .0 network address)
+        let mut octets = base_ip.octets();
+        octets[3] = 1;
+        let next_ip = Ipv4Addr::from(octets);
+
+        Ok(Self {
+            network: base_ip,
+            netmask,
+            next_ip,
+            used_ips: vec![base_ip], // Reserve network address
+        })
+    }
+
+    /// Allocate the next sequential IPv4 address in range.
+    ///
+    /// Uses simple monotonic increment and tracks issued addresses.
+    pub fn allocate(&mut self) -> Result<IpAddr> {
+        // Simple sequential allocation for now
+        let ip = self.next_ip;
+
+        if !self.is_in_range(ip) {
+            return Err(crate::core::error::MeshInfinityError::InvalidConfiguration(
+                format!("IP allocation exceeded range: {}", ip),
+            ));
+        }
+
+        // Increment next IP
+        let octets = self.next_ip.octets();
+        let mut new_octets = octets;
+
+        // Increment last octet, handle overflow
+        new_octets[3] = new_octets[3].wrapping_add(1);
+        if new_octets[3] == 0 {
+            new_octets[2] = new_octets[2].wrapping_add(1);
+            if new_octets[2] == 0 {
+                new_octets[1] = new_octets[1].wrapping_add(1);
+                if new_octets[1] == 0 {
+                    new_octets[0] = new_octets[0].wrapping_add(1);
+                }
+            }
+        }
+
+        let next_ip = Ipv4Addr::from(new_octets);
+        if !self.is_in_range(next_ip) {
+            return Err(crate::core::error::MeshInfinityError::InvalidConfiguration(
+                format!("IP allocation exceeded range: {}", next_ip),
+            ));
+        }
+
+        self.next_ip = next_ip;
+        self.used_ips.push(ip);
+
+        Ok(IpAddr::V4(ip))
+    }
+
+    /// Check whether `ip` belongs to configured network prefix.
+    fn is_in_range(&self, ip: Ipv4Addr) -> bool {
+        let net = u32::from(self.network);
+        let mask = u32::from(self.netmask);
+        (u32::from(ip) & mask) == (net & mask)
+    }
+}
+
+pub struct RouteTable {
+    routes: Vec<RouteEntry>,
+}
+
+impl Default for RouteTable {
+    /// Create empty route table.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RouteTable {
+    /// Construct empty route list.
+    pub fn new() -> Self {
+        Self { routes: Vec::new() }
+    }
+
+    /// Append a route entry for destination.
+    pub fn add_route(
+        &mut self,
+        destination: IpAddr,
+        gateway: Option<IpAddr>,
+        interface: &str,
+    ) -> Result<()> {
+        self.routes.push(RouteEntry {
+            destination,
+            gateway,
+            interface: interface.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Find matching route for exact destination address.
+    pub fn find_route(&self, destination: &IpAddr) -> Option<&RouteEntry> {
+        // Simple linear search for now
+        self.routes.iter().find(|route| {
+            // Basic matching - would be more sophisticated in real implementation
+            &route.destination == destination
+        })
+    }
+}
+
+pub struct RouteEntry {
+    pub destination: IpAddr,
+    pub gateway: Option<IpAddr>,
+    pub interface: String,
+}
+
+pub struct PacketFilter {
+    // Packet filtering rules would go here
+}
+
+impl Default for PacketFilter {
+    /// Construct permissive default packet filter.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PacketFilter {
+    /// Create packet filter instance.
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    /// Evaluate packet against current rules.
+    ///
+    /// Current implementation allows all packets.
+    pub fn filter_packet(&self, _packet: &[u8]) -> bool {
+        // Always allow for now
+        true
+    }
+}

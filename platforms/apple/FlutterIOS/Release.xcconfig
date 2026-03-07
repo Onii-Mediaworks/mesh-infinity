@@ -1,0 +1,2 @@
+#include "../../../build/intermediates/apple/flutter/Flutter-Generated.xcconfig"
+#include "../../apple/Configs/AppleShared.xcconfig"

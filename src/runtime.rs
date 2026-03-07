@@ -1,5 +1,5 @@
-use crate::{MeshInfinityService, NodeMode, ServiceConfig};
 use crate::core::MeshConfig;
+use crate::{MeshInfinityService, NodeMode, ServiceConfig};
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
@@ -27,11 +27,7 @@ pub struct MeshInfinityRuntime {
 
 impl MeshInfinityRuntime {
     pub fn new(config: RuntimeConfig) -> Self {
-        let initial_mode = if config.ui_enabled {
-            config.node_mode
-        } else {
-            NodeMode::Server
-        };
+        let initial_mode = Self::normalize_mode(config.ui_enabled, config.node_mode);
 
         let service = MeshInfinityService::new(ServiceConfig {
             initial_mode,
@@ -62,6 +58,80 @@ impl MeshInfinityRuntime {
     }
 
     pub fn set_node_mode(&mut self, mode: NodeMode) {
-        self.service.set_node_mode(mode);
+        self.service
+            .set_node_mode(Self::normalize_mode(self.ui_enabled, mode));
+    }
+
+    pub fn start(&self) -> crate::core::error::Result<()> {
+        self.service.start()
+    }
+
+    pub fn stop(&self) -> crate::core::error::Result<()> {
+        self.service.stop()
+    }
+
+    pub fn set_ui_enabled(&mut self, enabled: bool) {
+        self.ui_enabled = enabled;
+        let current = self.service.settings().node_mode;
+        let normalized = Self::normalize_mode(enabled, current);
+        if normalized != current {
+            self.service.set_node_mode(normalized);
+        }
+    }
+
+    fn normalize_mode(ui_enabled: bool, requested: NodeMode) -> NodeMode {
+        if ui_enabled {
+            requested
+        } else {
+            // Headless runtime must keep networking active.
+            NodeMode::Server
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headless_runtime_forces_server_mode() {
+        let runtime = MeshInfinityRuntime::new(RuntimeConfig {
+            ui_enabled: false,
+            node_mode: NodeMode::Client,
+            ..RuntimeConfig::default()
+        });
+
+        assert_eq!(runtime.node_mode(), NodeMode::Server);
+        assert!(runtime.service().is_running());
+    }
+
+    #[test]
+    fn client_mode_stops_and_dual_mode_starts() {
+        let mut runtime = MeshInfinityRuntime::new(RuntimeConfig::default());
+
+        assert_eq!(runtime.node_mode(), NodeMode::Client);
+        assert!(!runtime.service().is_running());
+
+        runtime.set_node_mode(NodeMode::Dual);
+        assert_eq!(runtime.node_mode(), NodeMode::Dual);
+        assert!(runtime.service().is_running());
+
+        runtime.set_node_mode(NodeMode::Client);
+        assert_eq!(runtime.node_mode(), NodeMode::Client);
+        assert!(!runtime.service().is_running());
+    }
+
+    #[test]
+    fn disabling_ui_reconciles_mode_to_server() {
+        let mut runtime = MeshInfinityRuntime::new(RuntimeConfig {
+            ui_enabled: true,
+            node_mode: NodeMode::Dual,
+            ..RuntimeConfig::default()
+        });
+
+        assert_eq!(runtime.node_mode(), NodeMode::Dual);
+        runtime.set_ui_enabled(false);
+        assert_eq!(runtime.node_mode(), NodeMode::Server);
+        assert!(runtime.service().is_running());
     }
 }

@@ -58,7 +58,7 @@ class MeshState extends ChangeNotifier {
   Session? _currentSession;
 
   // Theme & UI preferences
-  ThemeMode _themeMode = ThemeMode.light;
+  ThemeMode _themeMode = ThemeMode.system;
   bool _isLoading = false;
 
   // App settings
@@ -213,6 +213,12 @@ class MeshState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void refreshData() {
+    if (!_backend.isAvailable) return;
+    _reloadAll();
+    notifyListeners();
+  }
+
   bool attestTrust({
     required String targetPeerId,
     required int trustLevel,
@@ -253,6 +259,18 @@ class MeshState extends ChangeNotifier {
     _lastVerifiedTrustLevel = trustLevel;
     notifyListeners();
     return trustLevel;
+  }
+
+  bool pairPeer(String pairingCode) {
+    if (!_backend.isAvailable) return false;
+    final trimmed = pairingCode.trim();
+    if (trimmed.isEmpty) return false;
+    final ok = _backend.pairPeer(trimmed);
+    if (ok) {
+      _reloadAll();
+      notifyListeners();
+    }
+    return ok;
   }
 
   BackendSettings? _loadSettings() {

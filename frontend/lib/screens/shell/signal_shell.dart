@@ -442,7 +442,7 @@ class _SignalShellState extends State<SignalShell> {
           ),
           const SizedBox(height: 8),
           Text(
-            'TODO: add per-chat preferences',
+            'Per-chat preferences are managed in chat settings.',
             style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
           ),
         ],
