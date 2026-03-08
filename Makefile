@@ -55,12 +55,12 @@ guard-os:
 	@if [[ -z "$(OS)" ]]; then \
 	  echo "ERROR: OS is required (android|ios|macos|linux|windows)"; exit 1; \
 	fi; \
-	IFS=',' read -ra _oses <<< "$(OS)"; \
+	IFS=, read -ra _oses <<< "$(OS)"; \
 	for _os in "$${_oses[@]}"; do \
-	  _os="$$(echo "$$_os" | tr -d '[:space:]')"; \
+	  _os="$$(echo "$$_os" | sed "s/[[:space:]]//g")"; \
 	  if [[ "$$_os" != "android" && "$$_os" != "ios" && "$$_os" != "macos" && \
 	        "$$_os" != "linux"   && "$$_os" != "windows" ]]; then \
-	    echo "ERROR: unknown platform '$$_os' — must be android|ios|macos|linux|windows"; exit 1; \
+	    echo "ERROR: unknown platform $$_os -- must be android|ios|macos|linux|windows"; exit 1; \
 	  fi; \
 	done
 
@@ -85,10 +85,10 @@ clean:
 build: guard-os guard-profile setup-build
 	@set -euo pipefail; \
 	\
-	IFS=',' read -ra _oses <<< "$(OS)"; \
+	IFS=, read -ra _oses <<< "$(OS)"; \
 	if [[ "$${#_oses[@]}" -gt 1 ]]; then \
 	  for _os in "$${_oses[@]}"; do \
-	    _os="$$(echo "$$_os" | sed 's/[[:space:]]//g')"; \
+	    _os="$$(echo "$$_os" | sed "s/[[:space:]]//g")"; \
 	    $(MAKE) build OS="$$_os" PROFILE="$(PROFILE)" UNSIGNED="$(UNSIGNED)"; \
 	  done; \
 	  exit 0; \
@@ -112,9 +112,8 @@ build: guard-os guard-profile setup-build
 	  ephemeral_dir="$(BUILD_DIR)/intermediates/apple/flutter"; \
 	  mkdir -p "$$ephemeral_dir"; \
 	  if [[ ! -f "$$ephemeral_dir/Flutter-Generated.xcconfig" ]]; then \
-	    flutter_root="$$(flutter --version --machine \
-	      | ruby -rjson -e 'puts JSON.parse(STDIN.read)["flutterRoot"]')"; \
-	    printf '%s\n' \
+	    flutter_root="$$(flutter --version --machine | jq -r .flutterRoot)"; \
+	    printf "%s\n" \
 	      "FLUTTER_ROOT=$$flutter_root" \
 	      "FLUTTER_APPLICATION_PATH=$(FRONTEND_DIR)" \
 	      "COCOAPODS_PARALLEL_CODE_SIGN=true" \
@@ -182,10 +181,10 @@ build: guard-os guard-profile setup-build
 	    echo "Output: $$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).tar.gz"; \
 	    launcher_dir="$(BUILD_DIR)/intermediates/linux-launcher"; \
 	    mkdir -p "$$launcher_dir"; \
-	    printf '#!/bin/sh\nexec /opt/$(APP_NAME)/$(FLUTTER_RUNNER_BIN) "$$@"\n' \
+	    printf "#!/bin/sh\nexec /opt/$(APP_NAME)/$(FLUTTER_RUNNER_BIN) \"$$@\"\n" \
 	      > "$$launcher_dir/$(APP_NAME)"; \
 	    chmod +x "$$launcher_dir/$(APP_NAME)"; \
-	    rpm_ver="$$(echo '$(APP_VERSION)' | tr '-' '_')"; \
+	    rpm_ver="$$(echo "$(APP_VERSION)" | tr "-" "_")"; \
 	    fpm -s dir -t deb \
 	      -n $(APP_NAME) \
 	      -v "$(APP_VERSION)" \
@@ -214,9 +213,9 @@ build: guard-os guard-profile setup-build
 	    cp "$$bundle_dir/lib/"*.so "$$appdir/usr/lib/"; \
 	    cp "$(PLATFORMS_DIR)/apple/Runner/Assets.xcassets/AppIcon.appiconset/app_icon_256.png" \
 	       "$$appdir/$(APP_NAME).png"; \
-	    printf '[Desktop Entry]\nName=Mesh Infinity\nExec=$(APP_NAME)\nIcon=$(APP_NAME)\nType=Application\nCategories=Network;\n' \
+	    printf "[Desktop Entry]\nName=Mesh Infinity\nExec=$(APP_NAME)\nIcon=$(APP_NAME)\nType=Application\nCategories=Network;\n" \
 	      > "$$appdir/$(APP_NAME).desktop"; \
-	    printf '#!/bin/sh\nexport LD_LIBRARY_PATH="$$APPDIR/usr/lib:$$LD_LIBRARY_PATH"\nexec "$$APPDIR/usr/bin/$(APP_NAME)" "$$@"\n' \
+	    printf "#!/bin/sh\nexport LD_LIBRARY_PATH=\"$$APPDIR/usr/lib:$$LD_LIBRARY_PATH\"\nexec \"$$APPDIR/usr/bin/$(APP_NAME)\" \"$$@\"\n" \
 	      > "$$appdir/AppRun"; \
 	    chmod +x "$$appdir/AppRun"; \
 	    ARCH=x86_64 appimagetool "$$appdir" \
@@ -243,22 +242,22 @@ build: guard-os guard-profile setup-build
 	    out_exe_win="$$(cygpath -w "$$out_exe" 2>/dev/null || cygpath -m "$$out_exe" 2>/dev/null || echo "$$out_exe")"; \
 	    nsi="$$nsi_dir/installer.nsi"; \
 	    { \
-	      printf '%s\n' '!define APP_NAME "Mesh Infinity"'; \
-	      printf '%s\n' 'Unicode true'; \
-	      printf 'Name "Mesh Infinity $(APP_VERSION)"\n'; \
-	      printf 'OutFile "%s"\n' "$$out_exe_win"; \
-	      printf '%s\n' 'InstallDir "$PROGRAMFILES64\MeshInfinity"'; \
-	      printf '%s\n' 'RequestExecutionLevel admin'; \
-	      printf '%s\n' 'Section'; \
-	      printf '%s\n' '  SetOutPath "$INSTDIR"'; \
-	      printf '  File /r "%s\*.*"\n' "$$runner_win"; \
-	      printf '%s\n' '  CreateShortCut "$DESKTOP\Mesh Infinity.lnk" "$INSTDIR\mesh_infinity_frontend.exe"'; \
-	      printf '%s\n' '  WriteUninstaller "$INSTDIR\uninstall.exe"'; \
-	      printf '%s\n' 'SectionEnd'; \
-	      printf '%s\n' 'Section "Uninstall"'; \
-	      printf '%s\n' '  Delete "$DESKTOP\Mesh Infinity.lnk"'; \
-	      printf '%s\n' '  RMDir /r "$INSTDIR"'; \
-	      printf '%s\n' 'SectionEnd'; \
+	      printf "%s\n" "!define APP_NAME \"Mesh Infinity\""; \
+	      printf "%s\n" "Unicode true"; \
+	      printf "Name \"Mesh Infinity $(APP_VERSION)\"\n"; \
+	      printf "OutFile \"%s\"\n" "$$out_exe_win"; \
+	      printf "%s\n" "InstallDir \"\$$PROGRAMFILES64\\MeshInfinity\""; \
+	      printf "%s\n" "RequestExecutionLevel admin"; \
+	      printf "%s\n" "Section"; \
+	      printf "%s\n" "  SetOutPath \"\$$INSTDIR\""; \
+	      printf "  File /r \"%s\\*.*\"\n" "$$runner_win"; \
+	      printf "%s\n" "  CreateShortCut \"\$$DESKTOP\\Mesh Infinity.lnk\" \"\$$INSTDIR\\mesh_infinity_frontend.exe\""; \
+	      printf "%s\n" "  WriteUninstaller \"\$$INSTDIR\\uninstall.exe\""; \
+	      printf "%s\n" "SectionEnd"; \
+	      printf "%s\n" "Section \"Uninstall\""; \
+	      printf "%s\n" "  Delete \"\$$DESKTOP\\Mesh Infinity.lnk\""; \
+	      printf "%s\n" "  RMDir /r \"\$$INSTDIR\""; \
+	      printf "%s\n" "SectionEnd"; \
 	    } > "$$nsi"; \
 	    makensis "$$nsi_dir/installer.nsi"; \
 	    echo "Output: $$out_exe" ;; \
@@ -303,7 +302,7 @@ build: guard-os guard-profile setup-build
 	        -project "$(APPLE_PROJECT)" \
 	        -scheme RunnerIOS \
 	        -configuration "$$cfg_name" \
-	        -destination 'generic/platform=iOS' \
+	        -destination "generic/platform=iOS" \
 	        -derivedDataPath "$$ios_derived" \
 	        CODE_SIGNING_ALLOWED=NO \
 	        CODE_SIGNING_REQUIRED=NO \
@@ -324,21 +323,21 @@ build: guard-os guard-profile setup-build
 	      [[ "$(PROFILE)" == "release" ]] && export_method="app-store"; \
 	      archive_path="$$ios_derived/RunnerIOS.xcarchive"; \
 	      export_plist="$$ios_derived/ExportOptions-$(PROFILE).plist"; \
-	      printf '%s\n' \
-	        '<?xml version="1.0" encoding="UTF-8"?>' \
-	        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-	        '<plist version="1.0"><dict>' \
-	        '  <key>method</key>' \
+	      printf "%s\n" \
+	        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" \
+	        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">" \
+	        "<plist version=\"1.0\"><dict>" \
+	        "  <key>method</key>" \
 	        "  <string>$$export_method</string>" \
-	        '  <key>signingStyle</key><string>automatic</string>' \
-	        '  <key>stripSwiftSymbols</key><true/>' \
-	        '  <key>compileBitcode</key><false/>' \
-	        '</dict></plist>' > "$$export_plist"; \
+	        "  <key>signingStyle</key><string>automatic</string>" \
+	        "  <key>stripSwiftSymbols</key><true/>" \
+	        "  <key>compileBitcode</key><false/>" \
+	        "</dict></plist>" > "$$export_plist"; \
 	      xcodebuild \
 	        -project "$(APPLE_PROJECT)" \
 	        -scheme RunnerIOS \
 	        -configuration "$$cfg_name" \
-	        -destination 'generic/platform=iOS' \
+	        -destination "generic/platform=iOS" \
 	        -archivePath "$$archive_path" \
 	        -derivedDataPath "$$ios_derived" \
 	        -allowProvisioningUpdates \
