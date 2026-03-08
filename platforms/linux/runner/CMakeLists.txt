@@ -12,17 +12,10 @@ add_executable(${BINARY_NAME}
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
 )
 
-# Apply the standard set of build settings.
-# Inlined here for compatibility across Flutter versions (apply_standard_settings
-# may or may not be defined in the parent scope depending on Flutter version).
-if(COMMAND apply_standard_settings)
-  apply_standard_settings(${BINARY_NAME})
-else()
-  target_compile_features(${BINARY_NAME} PUBLIC cxx_std_14)
-  target_compile_options(${BINARY_NAME} PRIVATE -Wall -Werror)
-  target_compile_options(${BINARY_NAME} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
-  target_compile_definitions(${BINARY_NAME} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
-endif()
+target_compile_features(${BINARY_NAME} PUBLIC cxx_std_14)
+target_compile_options(${BINARY_NAME} PRIVATE -Wall -Werror)
+target_compile_options(${BINARY_NAME} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
+target_compile_definitions(${BINARY_NAME} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
 
 # Add preprocessor definitions for the application ID.
 add_definitions(-DAPPLICATION_ID="${APPLICATION_ID}")
