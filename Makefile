@@ -13,7 +13,7 @@ APPLE_PROJECT         := $(PLATFORMS_DIR)/apple/Runner.xcodeproj
 APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | sed 's/[-[:space:]]//g')
 APP_VERSION      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
-# Flutter names its Linux runner binary after pubspec `name` — internal detail only.
+# Flutter names its Linux runner binary after pubspec name — internal detail only.
 FLUTTER_RUNNER_BIN := $(shell awk -F': ' '/^name:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | sed 's/[[:space:]]//g')
 
 OS       ?=
@@ -265,7 +265,8 @@ build: guard-os guard-profile setup-build
 	  macos) \
 	    cfg_name="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && cfg_name="Release"; \
-	    cd "$(FRONTEND_DIR)"; flutter build macos-framework $$flutter_flags; cd "$(ROOT_DIR)"; \
+	    flutter config --enable-macos-desktop; \
+	    cd "$(FRONTEND_DIR)"; flutter pub get; flutter build macos-framework $$flutter_flags; cd "$(ROOT_DIR)"; \
 	    xcodebuild \
 	      -project "$(APPLE_PROJECT)" \
 	      -scheme Runner \
