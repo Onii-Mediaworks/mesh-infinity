@@ -10,11 +10,11 @@ FLUTTER_INTERMEDIATE_DIR := $(BUILD_DIR)/intermediates/flutter
 RUST_INTERMEDIATE_DIR    := $(BUILD_DIR)/intermediates/rust
 APPLE_PROJECT         := $(PLATFORMS_DIR)/apple/Runner.xcodeproj
 # App identity comes from the Rust project — Flutter is just the UI layer.
-APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | tr -d '-[:space:]')
+APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | sed 's/[-[:space:]]//g')
 APP_VERSION      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
 # Flutter names its Linux runner binary after pubspec `name` — internal detail only.
-FLUTTER_RUNNER_BIN := $(shell awk -F': ' '/^name:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | tr -d '[:space:]')
+FLUTTER_RUNNER_BIN := $(shell awk -F': ' '/^name:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | sed 's/[[:space:]]//g')
 
 OS       ?=
 PROFILE  ?= release
@@ -88,7 +88,7 @@ build: guard-os guard-profile setup-build
 	IFS=',' read -ra _oses <<< "$(OS)"; \
 	if [[ "$${#_oses[@]}" -gt 1 ]]; then \
 	  for _os in "$${_oses[@]}"; do \
-	    _os="$$(echo "$$_os" | tr -d '[:space:]')"; \
+	    _os="$$(echo "$$_os" | sed 's/[[:space:]]//g')"; \
 	    $(MAKE) build OS="$$_os" PROFILE="$(PROFILE)" UNSIGNED="$(UNSIGNED)"; \
 	  done; \
 	  exit 0; \
@@ -241,14 +241,31 @@ build: guard-os guard-profile setup-build
 	    runner_win="$$(cygpath -w "$$runner_dir" 2>/dev/null || cygpath -m "$$runner_dir" 2>/dev/null || echo "$$runner_dir")"; \
 	    out_exe="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).exe"; \
 	    out_exe_win="$$(cygpath -w "$$out_exe" 2>/dev/null || cygpath -m "$$out_exe" 2>/dev/null || echo "$$out_exe")"; \
-	    printf '!define APP_NAME "Mesh Infinity"\nUnicode true\nName "Mesh Infinity $(APP_VERSION)"\nOutFile "%s"\nInstallDir "$$PROGRAMFILES64\\MeshInfinity"\nRequestExecutionLevel admin\nSection\n  SetOutPath "$$INSTDIR"\n  File /r "%s\\*.*"\n  CreateShortCut "$$DESKTOP\\Mesh Infinity.lnk" "$$INSTDIR\\mesh_infinity_frontend.exe"\n  WriteUninstaller "$$INSTDIR\\uninstall.exe"\nSectionEnd\nSection "Uninstall"\n  Delete "$$DESKTOP\\Mesh Infinity.lnk"\n  RMDir /r "$$INSTDIR"\nSectionEnd\n' \
-	      "$$out_exe_win" "$$runner_win" > "$$nsi_dir/installer.nsi"; \
+	    nsi="$$nsi_dir/installer.nsi"; \
+	    { \
+	      printf '%s\n' '!define APP_NAME "Mesh Infinity"'; \
+	      printf '%s\n' 'Unicode true'; \
+	      printf 'Name "Mesh Infinity $(APP_VERSION)"\n'; \
+	      printf 'OutFile "%s"\n' "$$out_exe_win"; \
+	      printf '%s\n' 'InstallDir "$PROGRAMFILES64\MeshInfinity"'; \
+	      printf '%s\n' 'RequestExecutionLevel admin'; \
+	      printf '%s\n' 'Section'; \
+	      printf '%s\n' '  SetOutPath "$INSTDIR"'; \
+	      printf '  File /r "%s\*.*"\n' "$$runner_win"; \
+	      printf '%s\n' '  CreateShortCut "$DESKTOP\Mesh Infinity.lnk" "$INSTDIR\mesh_infinity_frontend.exe"'; \
+	      printf '%s\n' '  WriteUninstaller "$INSTDIR\uninstall.exe"'; \
+	      printf '%s\n' 'SectionEnd'; \
+	      printf '%s\n' 'Section "Uninstall"'; \
+	      printf '%s\n' '  Delete "$DESKTOP\Mesh Infinity.lnk"'; \
+	      printf '%s\n' '  RMDir /r "$INSTDIR"'; \
+	      printf '%s\n' 'SectionEnd'; \
+	    } > "$$nsi"; \
 	    makensis "$$nsi_dir/installer.nsi"; \
 	    echo "Output: $$out_exe" ;; \
 	  macos) \
 	    cfg_name="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && cfg_name="Release"; \
-	    cd "$(FRONTEND_DIR)"; flutter build macos-framework --no-codesign $$flutter_flags; cd "$(ROOT_DIR)"; \
+	    cd "$(FRONTEND_DIR)"; flutter build macos-framework $$flutter_flags; cd "$(ROOT_DIR)"; \
 	    xcodebuild \
 	      -project "$(APPLE_PROJECT)" \
 	      -scheme Runner \
@@ -277,7 +294,7 @@ build: guard-os guard-profile setup-build
 	  ios) \
 	    cfg_name="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && cfg_name="Release"; \
-	    cd "$(FRONTEND_DIR)"; flutter build ios-framework --no-codesign $$flutter_flags; cd "$(ROOT_DIR)"; \
+	    cd "$(FRONTEND_DIR)"; flutter build ios-framework $$flutter_flags; cd "$(ROOT_DIR)"; \
 	    ios_derived="$(BUILD_DIR)/intermediates/apple/ios"; \
 	    mkdir -p "$$ios_derived"; \
 	    if [[ "$(UNSIGNED)" == "1" ]]; then \
