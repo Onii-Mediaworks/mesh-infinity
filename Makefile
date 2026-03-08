@@ -168,8 +168,8 @@ build: guard-os guard-profile setup-build
 	  linux) \
 	    cd "$(FRONTEND_DIR)"; \
 	    flutter config --enable-linux-desktop; \
-	    if [[ ! -d "$(FRONTEND_DIR)/linux" ]]; then \
-	      flutter create --platforms=linux . ; \
+	    if [[ ! -e "$(FRONTEND_DIR)/linux" ]]; then \
+	      ln -s "$(PLATFORMS_DIR)/linux" "$(FRONTEND_DIR)/linux"; \
 	    fi; \
 	    flutter pub get; \
 	    flutter build linux $$flutter_flags; \
@@ -225,8 +225,9 @@ build: guard-os guard-profile setup-build
 	  windows) \
 	    cd "$(FRONTEND_DIR)"; \
 	    flutter config --enable-windows-desktop; \
-	    if [[ ! -d "$(FRONTEND_DIR)/windows" ]]; then \
-	      flutter create --platforms=windows . ; \
+	    if [[ ! -e "$(FRONTEND_DIR)/windows" ]]; then \
+	      ln -s "$(PLATFORMS_DIR)/windows" "$(FRONTEND_DIR)/windows" 2>/dev/null || \
+	        cp -r "$(PLATFORMS_DIR)/windows" "$(FRONTEND_DIR)/windows"; \
 	    fi; \
 	    flutter pub get; \
 	    flutter build windows $$flutter_flags; \
@@ -235,12 +236,19 @@ build: guard-os guard-profile setup-build
 	    runner_dir="$(FRONTEND_DIR)/build/windows/x64/runner/$$win_subdir"; \
 	    cp "$(RUST_INTERMEDIATE_DIR)/$$rust_subdir/mesh_infinity.dll" \
 	       "$$runner_dir/"; \
-	    dst_dir="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE)"; \
-	    cp -r "$$runner_dir" "$$dst_dir"; \
-	    echo "Output: $$dst_dir" ;; \
+	    nsi_dir="$(BUILD_DIR)/intermediates/windows-nsis"; \
+	    mkdir -p "$$nsi_dir"; \
+	    runner_win="$$(cygpath -w "$$runner_dir" 2>/dev/null || cygpath -m "$$runner_dir" 2>/dev/null || echo "$$runner_dir")"; \
+	    out_exe="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).exe"; \
+	    out_exe_win="$$(cygpath -w "$$out_exe" 2>/dev/null || cygpath -m "$$out_exe" 2>/dev/null || echo "$$out_exe")"; \
+	    printf '!define APP_NAME "Mesh Infinity"\nUnicode true\nName "Mesh Infinity $(APP_VERSION)"\nOutFile "%s"\nInstallDir "$$PROGRAMFILES64\\MeshInfinity"\nRequestExecutionLevel admin\nSection\n  SetOutPath "$$INSTDIR"\n  File /r "%s\\*.*"\n  CreateShortCut "$$DESKTOP\\Mesh Infinity.lnk" "$$INSTDIR\\mesh_infinity_frontend.exe"\n  WriteUninstaller "$$INSTDIR\\uninstall.exe"\nSectionEnd\nSection "Uninstall"\n  Delete "$$DESKTOP\\Mesh Infinity.lnk"\n  RMDir /r "$$INSTDIR"\nSectionEnd\n' \
+	      "$$out_exe_win" "$$runner_win" > "$$nsi_dir/installer.nsi"; \
+	    makensis "$$nsi_dir/installer.nsi"; \
+	    echo "Output: $$out_exe" ;; \
 	  macos) \
 	    cfg_name="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && cfg_name="Release"; \
+	    cd "$(FRONTEND_DIR)"; flutter build macos-framework --no-codesign $$flutter_flags; cd "$(ROOT_DIR)"; \
 	    xcodebuild \
 	      -project "$(APPLE_PROJECT)" \
 	      -scheme Runner \
@@ -253,13 +261,23 @@ build: guard-os guard-profile setup-build
 	      ONLY_ACTIVE_ARCH=NO \
 	      build; \
 	    app_src="$(BUILD_DIR)/intermediates/apple/macos/Build/Products/$$cfg_name/$(APP_NAME).app"; \
-	    app_dst="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).app"; \
-	    rm -rf "$$app_dst"; \
-	    cp -R "$$app_src" "$$app_dst"; \
-	    echo "Output: $$app_dst" ;; \
+	    dmg_stage="$(BUILD_DIR)/intermediates/dmg-stage"; \
+	    rm -rf "$$dmg_stage"; \
+	    mkdir "$$dmg_stage"; \
+	    cp -R "$$app_src" "$$dmg_stage/"; \
+	    ln -s /Applications "$$dmg_stage/Applications"; \
+	    dmg_dst="$$out_dir/$(APP_NAME)-$(APP_VERSION)-$(PROFILE).dmg"; \
+	    hdiutil create \
+	      -volname "Mesh Infinity" \
+	      -srcfolder "$$dmg_stage" \
+	      -ov -format UDZO \
+	      "$$dmg_dst"; \
+	    rm -rf "$$dmg_stage"; \
+	    echo "Output: $$dmg_dst" ;; \
 	  ios) \
 	    cfg_name="Debug"; \
 	    [[ "$(PROFILE)" == "release" ]] && cfg_name="Release"; \
+	    cd "$(FRONTEND_DIR)"; flutter build ios-framework --no-codesign $$flutter_flags; cd "$(ROOT_DIR)"; \
 	    ios_derived="$(BUILD_DIR)/intermediates/apple/ios"; \
 	    mkdir -p "$$ios_derived"; \
 	    if [[ "$(UNSIGNED)" == "1" ]]; then \
@@ -324,8 +342,8 @@ build: guard-os guard-profile setup-build
 	      echo "ERROR: cargo-ndk not found — install with: cargo install cargo-ndk --locked"; \
 	      exit 1; \
 	    fi; \
-	    if [[ ! -d "$(FRONTEND_DIR)/android" ]]; then \
-	      cd "$(FRONTEND_DIR)"; flutter create --platforms=android .; cd "$(ROOT_DIR)"; \
+	    if [[ ! -e "$(FRONTEND_DIR)/android" ]]; then \
+	      ln -s "$(PLATFORMS_DIR)/android" "$(FRONTEND_DIR)/android"; \
 	    fi; \
 	    mkdir -p "$(FRONTEND_DIR)/android/app/src/main/jniLibs"; \
 	    cargo ndk \

@@ -417,7 +417,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "mkdir -p \"$PROJECT_DIR\"/../../build/intermediates/apple/flutter && echo \"$PRODUCT_NAME.app\" > \"$PROJECT_DIR\"/../../build/intermediates/apple/flutter/.app_filename && \"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh embed\n";
+			shellScript = "mkdir -p \"$PROJECT_DIR\"/../../build/intermediates/apple/flutter && echo \"$PRODUCT_NAME.app\" > \"$PROJECT_DIR\"/../../build/intermediates/apple/flutter/.app_filename\nFRAMEWORK_DIR=\"$FLUTTER_APPLICATION_PATH/build/macos/framework/$CONFIGURATION\"\nDEST=\"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$DEST\"\nrsync -a --delete \"$FRAMEWORK_DIR/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/\" \"$DEST/FlutterMacOS.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/macos-arm64_x86_64/App.framework/\" \"$DEST/App.framework/\"\n";
 		};
 		33CC111E2044C6BF0003C045 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -437,7 +437,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"$FLUTTER_ROOT\"/packages/flutter_tools/bin/macos_assemble.sh && touch ../../build/intermediates/apple/flutter/tripwire";
+			shellScript = "FRAMEWORK_DIR=\"$FLUTTER_APPLICATION_PATH/build/macos/framework/$CONFIGURATION\"\nif [ ! -d \"$FRAMEWORK_DIR/FlutterMacOS.xcframework\" ]; then\n  cd \"$FLUTTER_APPLICATION_PATH\"\n  if [ \"$CONFIGURATION\" = \"Release\" ]; then\n    flutter build macos-framework --no-codesign --release\n  else\n    flutter build macos-framework --no-codesign --debug\n  fi\nfi\nrsync -a --delete \"$FRAMEWORK_DIR/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/\" \"$BUILT_PRODUCTS_DIR/FlutterMacOS.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/macos-arm64_x86_64/App.framework/\" \"$BUILT_PRODUCTS_DIR/App.framework/\"\ntouch \"$PROJECT_DIR/../../build/intermediates/apple/flutter/tripwire\"\n";
 		};
 		8E733EEAEBC9335FC1A3A8A8 /* Run Script */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -456,7 +456,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" build";
+			shellScript = "FRAMEWORK_DIR=\"$FLUTTER_APPLICATION_PATH/build/ios-framework/$CONFIGURATION\"\nif [ ! -d \"$FRAMEWORK_DIR/Flutter.xcframework\" ]; then\n  cd \"$FLUTTER_APPLICATION_PATH\"\n  if [ \"$CONFIGURATION\" = \"Release\" ]; then\n    flutter build ios-framework --no-codesign --release\n  else\n    flutter build ios-framework --no-codesign --debug\n  fi\nfi\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  FW_SLICE=\"ios-arm64_x86_64-simulator\"\nelse\n  FW_SLICE=\"ios-arm64\"\nfi\nrsync -a --delete \"$FRAMEWORK_DIR/Flutter.xcframework/$FW_SLICE/Flutter.framework/\" \"$BUILT_PRODUCTS_DIR/Flutter.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/$FW_SLICE/App.framework/\" \"$BUILT_PRODUCTS_DIR/App.framework/\"\n";
 		};
 		A1B2C3D4E5F6000000000001 /* Build Rust Native Library */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -495,7 +495,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin";
+			shellScript = "FRAMEWORK_DIR=\"$FLUTTER_APPLICATION_PATH/build/ios-framework/$CONFIGURATION\"\nDEST=\"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$DEST\"\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  FW_SLICE=\"ios-arm64_x86_64-simulator\"\nelse\n  FW_SLICE=\"ios-arm64\"\nfi\nrsync -a --delete \"$FRAMEWORK_DIR/Flutter.xcframework/$FW_SLICE/Flutter.framework/\" \"$DEST/Flutter.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/$FW_SLICE/App.framework/\" \"$DEST/App.framework/\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

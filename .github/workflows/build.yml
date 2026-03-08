@@ -84,6 +84,9 @@ jobs:
         with:
           channel: stable
 
+      - name: install NSIS
+        run: choco install nsis -y
+
       - name: build windows (${{ matrix.profile }})
         run: make build-${{ matrix.profile }} OS=windows SHELL=bash
         shell: bash
@@ -91,7 +94,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-windows-${{ matrix.profile }}
-          path: build/output/*/windows/meshinfinity-*/
+          path: build/output/*/windows/meshinfinity-*-${{ matrix.profile }}.exe
 
   # ── macOS ──────────────────────────────────────────────────────────────────
 
@@ -120,7 +123,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-macos-${{ matrix.profile }}
-          path: build/output/*/macos/meshinfinity-*-${{ matrix.profile }}.app
+          path: build/output/*/macos/meshinfinity-*-${{ matrix.profile }}.dmg
 
   # ── iOS ────────────────────────────────────────────────────────────────────
 
