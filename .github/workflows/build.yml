@@ -200,3 +200,39 @@ jobs:
         with:
           name: mesh-infinity-android-${{ matrix.profile }}
           path: build/output/*/android/meshinfinity-*-${{ matrix.profile }}.apk
+
+  # ── Publish prerelease ──────────────────────────────────────────────────────
+
+  publish:
+    name: publish prerelease
+    needs: [build-linux, build-windows, build-macos, build-ios, build-android]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: compute release tag
+        id: tag
+        run: |
+          tag="dev-${GITHUB_REF_NAME//\//-}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: publish prerelease
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          mapfile -t files < <(find dist -type f | sort)
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --title "Pre-release: ${{ github.ref_name }}" \
+            --notes "Automated build from commit \`${{ github.sha }}\`" \
+            "${files[@]}"
