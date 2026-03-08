@@ -417,7 +417,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "mkdir -p \"$PROJECT_DIR\"/../../build/intermediates/apple/flutter && echo \"$PRODUCT_NAME.app\" > \"$PROJECT_DIR\"/../../build/intermediates/apple/flutter/.app_filename\nFRAMEWORK_DIR=\"$FLUTTER_APPLICATION_PATH/build/macos/framework/$CONFIGURATION\"\nDEST=\"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$DEST\"\nrsync -a --delete \"$FRAMEWORK_DIR/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/\" \"$DEST/FlutterMacOS.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/macos-arm64_x86_64/App.framework/\" \"$DEST/App.framework/\"\n";
+			shellScript = "CONFIGURATION_LC=$(echo \"$CONFIGURATION\" | tr '[:upper:]' '[:lower:]')\nFRAMEWORK_DIR=\"$FLUTTER_FRAMEWORK_BASE/$CONFIGURATION_LC/frontend\"\nDEST=\"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH\"\nmkdir -p \"$DEST\"\nrsync -a --delete \"$FRAMEWORK_DIR/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/\" \"$DEST/FlutterMacOS.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/macos-arm64_x86_64/App.framework/\" \"$DEST/App.framework/\"\n";
 		};
 		33CC111E2044C6BF0003C045 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -437,7 +437,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "FRAMEWORK_DIR=\"$FLUTTER_APPLICATION_PATH/build/macos/framework/$CONFIGURATION\"\nif [ ! -d \"$FRAMEWORK_DIR/FlutterMacOS.xcframework\" ]; then\n  cd \"$FLUTTER_APPLICATION_PATH\"\n  if [ \"$CONFIGURATION\" = \"Release\" ]; then\n    flutter build macos-framework --no-codesign --release\n  else\n    flutter build macos-framework --no-codesign --debug\n  fi\nfi\nrsync -a --delete \"$FRAMEWORK_DIR/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/\" \"$BUILT_PRODUCTS_DIR/FlutterMacOS.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/macos-arm64_x86_64/App.framework/\" \"$BUILT_PRODUCTS_DIR/App.framework/\"\ntouch \"$PROJECT_DIR/../../build/intermediates/apple/flutter/tripwire\"\n";
+			shellScript = "CONFIGURATION_LC=$(echo \"$CONFIGURATION\" | tr '[:upper:]' '[:lower:]')\nFRAMEWORK_DIR=\"$FLUTTER_FRAMEWORK_BASE/$CONFIGURATION_LC/frontend\"\nrsync -a --delete \"$FRAMEWORK_DIR/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/\" \"$BUILT_PRODUCTS_DIR/FlutterMacOS.framework/\"\nrsync -a --delete \"$FRAMEWORK_DIR/App.xcframework/macos-arm64_x86_64/App.framework/\" \"$BUILT_PRODUCTS_DIR/App.framework/\"\n";
 		};
 		8E733EEAEBC9335FC1A3A8A8 /* Run Script */ = {
 			isa = PBXShellScriptBuildPhase;
