@@ -6,7 +6,7 @@ use crate::core::error::{MeshInfinityError, Result};
 mod android {
     use super::{MeshInfinityError, Result};
     use jni::objects::{JByteArray, JClass, JValue};
-    use jni::sys::{jint, jsize, JavaVM as SysJavaVM, JNI_GetCreatedJavaVMs};
+    use jni::sys::{jsize, JavaVM as SysJavaVM, JNI_GetCreatedJavaVMs};
     use jni::{JNIEnv, JavaVM};
 
     const KEYSTORE_CLASS: &str = "com/oniimediaworks/meshinfinity/KeystoreBridge";
@@ -29,14 +29,15 @@ mod android {
         Ok(std::mem::ManuallyDrop::new(java_vm))
     }
 
-    fn with_env<T>(f: impl FnOnce(&JNIEnv) -> Result<T>) -> Result<T> {
+    fn with_env<T>(f: impl FnOnce(&mut JNIEnv) -> Result<T>) -> Result<T> {
         let vm = get_vm()?;
-        let env = unsafe { (&*vm).attach_current_thread() }
+        let mut env = vm
+            .attach_current_thread()
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI attach failed: {}", e)))?;
-        f(&env)
+        f(&mut env)
     }
 
-    fn call_static_wrap(env: &JNIEnv, method: &str, input: &[u8]) -> Result<Vec<u8>> {
+    fn call_static_wrap(env: &mut JNIEnv, method: &str, input: &[u8]) -> Result<Vec<u8>> {
         let class: JClass = env
             .find_class(KEYSTORE_CLASS)
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI class lookup failed: {}", e)))?;
@@ -48,7 +49,7 @@ mod android {
                 class,
                 method,
                 "([B)[B",
-                &[JValue::from(JByteArray::from(input_array))],
+                &[JValue::Object(&*input_array)],
             )
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI call failed: {}", e)))?
             .l()
@@ -67,7 +68,7 @@ mod android {
         Ok(bytes)
     }
 
-    fn call_static_delete(env: &JNIEnv) -> Result<()> {
+    fn call_static_delete(env: &mut JNIEnv) -> Result<()> {
         let class: JClass = env
             .find_class(KEYSTORE_CLASS)
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI class lookup failed: {}", e)))?;
@@ -119,17 +120,63 @@ pub fn delete_key_alias() -> Result<()> {
     android::delete_key()
 }
 
-#[cfg(not(target_os = "android"))]
-pub fn wrap_key_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
-    Ok(bytes.to_vec())
-}
+// ── Non-Android: platform keyring (macOS Keychain / iOS Keychain /
+//    Windows Credential Manager / Linux Secret Service) ──────────────────────
+//
+// The raw 32-byte encryption key is stored directly as a binary secret inside
+// the platform keystore.  On Linux, if the Secret Service daemon is not
+// reachable (e.g. headless server), the functions return an error and the
+// caller (persistence.rs) falls back to a 0600-restricted filesystem file.
 
 #[cfg(not(target_os = "android"))]
-pub fn unwrap_key_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
-    Ok(bytes.to_vec())
+const KEYRING_SERVICE: &str = "mesh-infinity";
+#[cfg(not(target_os = "android"))]
+const KEYRING_USER: &str = "identity-key";
+
+/// Store `key` bytes in the platform keystore.
+///
+/// Returns an error if the keystore is unavailable (e.g. headless Linux
+/// without Secret Service); callers should fall back to a restricted file.
+#[cfg(not(target_os = "android"))]
+pub fn store_key(key: &[u8]) -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .map_err(|e| MeshInfinityError::CryptoError(format!("keyring init: {e}")))?;
+    entry
+        .set_secret(key)
+        .map_err(|e| MeshInfinityError::CryptoError(format!("keyring store: {e}")))
 }
 
+/// Load the key bytes from the platform keystore.
+///
+/// Returns an error if the keystore is unavailable or the entry does not exist.
 #[cfg(not(target_os = "android"))]
-pub fn delete_key_alias() -> Result<()> {
+pub fn load_key() -> Result<Vec<u8>> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .map_err(|e| MeshInfinityError::CryptoError(format!("keyring init: {e}")))?;
+    entry
+        .get_secret()
+        .map_err(|e| MeshInfinityError::CryptoError(format!("keyring load: {e}")))
+}
+
+/// Returns `true` if the platform keystore holds an identity key entry.
+#[cfg(not(target_os = "android"))]
+pub fn key_in_keystore() -> bool {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .ok()
+        .and_then(|e| e.get_secret().ok())
+        .is_some()
+}
+
+/// Remove the identity key entry from the platform keystore.
+///
+/// This is the critical first step of the emergency destroy sequence — once
+/// deleted, the `identity.dat` ciphertext becomes permanently unreadable.
+/// Ignores "entry not found" errors so the destroy path is always idempotent.
+#[cfg(not(target_os = "android"))]
+pub fn delete_key() -> Result<()> {
+    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        // Ignore errors: the entry may already be absent.
+        let _ = entry.delete_credential();
+    }
     Ok(())
 }

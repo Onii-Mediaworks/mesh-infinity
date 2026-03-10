@@ -14,10 +14,14 @@ import 'models/settings_models.dart';
 class BackendBridge {
   BackendBridge._(this._bindings, this._context, this._initError);
 
-  factory BackendBridge.open({int nodeMode = 0, required bool allowMissing}) {
+  factory BackendBridge.open({
+    int nodeMode = 0,
+    required bool allowMissing,
+    String? configPath,
+  }) {
     try {
       final bindings = _BackendBindings(_openLibrary());
-      final context = _initContext(bindings, nodeMode);
+      final context = _initContext(bindings, nodeMode, configPath: configPath);
       if (context == nullptr) {
         final error = _readLastError(bindings) ?? 'mesh_init returned null';
         debugPrint('BackendBridge: mesh_init failed: $error');
@@ -451,14 +455,23 @@ class BackendBridge {
 // Initialization helpers
 // ---------------------------------------------------------------------------
 
-Pointer<Void> _initContext(_BackendBindings bindings, int nodeMode) {
-  final configPath = Platform.environment['MESH_CONFIG_PATH']?.trim();
+Pointer<Void> _initContext(
+  _BackendBindings bindings,
+  int nodeMode, {
+  String? configPath,
+}) {
+  final envConfigPath = Platform.environment['MESH_CONFIG_PATH']?.trim();
+  final resolvedPath = (configPath != null && configPath.isNotEmpty)
+      ? configPath
+      : (envConfigPath != null && envConfigPath.isNotEmpty)
+          ? envConfigPath
+          : null;
   final wireguardPort = int.tryParse(
     (Platform.environment['MESH_WIREGUARD_PORT'] ?? '').trim(),
   );
 
-  final configPathPtr = (configPath != null && configPath.isNotEmpty)
-      ? configPath.toNativeUtf8()
+  final configPathPtr = resolvedPath != null
+      ? resolvedPath.toNativeUtf8()
       : nullptr;
 
   final config = calloc<FfiMeshConfig>();

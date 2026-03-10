@@ -37,7 +37,7 @@ jobs:
 
       - run: cargo install cargo-ndk
 
-      - run: make android-rust-debug android-rust-release
+      - run: make -j2 android-rust-debug android-rust-release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -59,7 +59,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: make macos-rust-debug macos-rust-release
+      - run: make -j2 macos-rust-debug macos-rust-release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -70,13 +70,9 @@ jobs:
   # Downloads pre-built .so files and runs the Gradle assembly step only.
 
   build-android:
-    name: android-${{ matrix.profile }}
+    name: android
     needs: rust-android
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [debug, release]
     steps:
       - uses: actions/checkout@v4
 
@@ -98,12 +94,12 @@ jobs:
           name: rust-android-jni
           path: build/intermediates/android/jni/
 
-      - run: make android-gradle-${{ matrix.profile }}
+      - run: make -j2 android-gradle-debug android-gradle-release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-android-${{ matrix.profile }}
-          path: build/output/android/${{ matrix.profile }}/*.apk
+          name: mesh-infinity-android
+          path: build/output/android/**/*.apk
 
   # ── Rust: Linux ────────────────────────────────────────────────────────────
   # Builds libmesh_infinity.so for x86_64 Linux in a single job so the
@@ -121,7 +117,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: make linux-rust-debug linux-rust-release
+      - run: make -j2 linux-rust-debug linux-rust-release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -146,7 +142,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: make windows-rust-debug windows-rust-release
+      # openssl-sys vendored build requires a full Perl installation.
+      # Git Bash's MSYS2 perl is missing Locale::Maketext::Simple; Strawberry
+      # Perl (pre-installed on windows-latest) has everything needed.
+      - name: Put Strawberry Perl first in PATH
+        run: echo "C:/Strawberry/perl/bin" >> "$GITHUB_PATH"
+
+      - run: make -j2 windows-rust-debug windows-rust-release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -157,13 +159,9 @@ jobs:
   # Downloads pre-built dylib and runs Flutter framework build + Xcode + DMG.
 
   build-macos:
-    name: macos-${{ matrix.profile }}
+    name: macos
     needs: rust-macos
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [debug, release]
     steps:
       - uses: actions/checkout@v4
 
@@ -176,25 +174,21 @@ jobs:
           name: rust-macos-libs
           path: build/intermediates/macos/rust/
 
-      - run: make macos-xcode-${{ matrix.profile }}
+      - run: make macos-xcode-debug macos-xcode-release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-macos-${{ matrix.profile }}
-          path: build/output/macos/${{ matrix.profile }}/*.dmg
+          name: mesh-infinity-macos
+          path: build/output/macos/**/*.dmg
 
   # ── Linux: bundle + packaging ──────────────────────────────────────────────
   # Downloads pre-built .so and runs Flutter build linux + packaging
   # (AppImage, tar.gz, DEB, RPM).
 
   build-linux:
-    name: linux-${{ matrix.profile }}
+    name: linux
     needs: rust-linux
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [debug, release]
     steps:
       - uses: actions/checkout@v4
 
@@ -218,28 +212,24 @@ jobs:
           name: rust-linux-libs
           path: build/intermediates/linux/rust/
 
-      - run: make linux-bundle-${{ matrix.profile }}
+      - run: make linux-bundle-debug linux-bundle-release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-linux-${{ matrix.profile }}
-          path: build/output/linux/${{ matrix.profile }}/
+          name: mesh-infinity-linux
+          path: build/output/linux/
 
   # ── Windows: bundle + packaging ────────────────────────────────────────────
   # Downloads pre-built .dll and runs Flutter build windows + packaging
   # (NSIS installer, portable zip).
 
   build-windows:
-    name: windows-${{ matrix.profile }}
+    name: windows
     needs: rust-windows
     runs-on: windows-latest
     defaults:
       run:
         shell: bash
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [debug, release]
     steps:
       - uses: actions/checkout@v4
 
@@ -256,12 +246,12 @@ jobs:
           name: rust-windows-libs
           path: build/intermediates/windows/rust/
 
-      - run: make windows-bundle-${{ matrix.profile }}
+      - run: make windows-bundle-debug windows-bundle-release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-windows-${{ matrix.profile }}
-          path: build/output/windows/${{ matrix.profile }}/
+          name: mesh-infinity-windows
+          path: build/output/windows/
 
   # ── Prerelease ─────────────────────────────────────────────────────────────
   # Every push to main creates a prerelease tagged v<version>-r<run_number>.
@@ -272,7 +262,16 @@ jobs:
   prerelease:
     name: prerelease
     needs: [build-macos, build-android, build-linux, build-windows]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      (
+        needs.build-macos.result == 'success' ||
+        needs.build-android.result == 'success' ||
+        needs.build-linux.result == 'success' ||
+        needs.build-windows.result == 'success'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -345,7 +344,17 @@ jobs:
   release:
     name: release
     needs: [build-macos, build-android, build-linux, build-windows]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-r')
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      !contains(github.ref, '-r') &&
+      (
+        needs.build-macos.result == 'success' ||
+        needs.build-android.result == 'success' ||
+        needs.build-linux.result == 'success' ||
+        needs.build-windows.result == 'success'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

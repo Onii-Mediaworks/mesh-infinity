@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'app/app.dart';
 import 'backend/backend_bridge.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final bridge = BackendBridge.open(allowMissing: true);
+  final appDir = await getApplicationSupportDirectory();
+  final bridge = BackendBridge.open(configPath: appDir.path, allowMissing: true);
   runApp(MeshInfinityApp(bridge: bridge));
 }
