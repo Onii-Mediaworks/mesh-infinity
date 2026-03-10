@@ -61,7 +61,11 @@ macos-debug macos-release: macos-%:
 	\
 	flutter config --enable-macos-desktop; \
 	( cd "$$src_dir" && flutter pub get ); \
-	( cd "$$src_dir" && flutter build macos-framework "--$$profile" \
+	flutter_mode_flags="--$$profile"; \
+	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
+	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
+	[[ "$$profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
+	( cd "$$src_dir" && flutter build macos-framework $$flutter_mode_flags \
 	    --output "$$fw_dir" ); \
 	\
 	flutter_root="$$(flutter --version --machine | jq -r .flutterRoot)"; \
@@ -74,6 +78,14 @@ macos-debug macos-release: macos-%:
 	  "FLUTTER_BUILD_NAME=$(APP_VERSION)" \
 	  "FLUTTER_BUILD_NUMBER=$(APP_BUILD_NUMBER)" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/Flutter-Generated.xcconfig"; \
+	printf "%s\n" \
+	  "$$fw_dir/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/FlutterMacOS" \
+	  "$$fw_dir/App.xcframework/macos-arm64_x86_64/App.framework/App" \
+	  > "$(BUILD_DIR)/intermediates/apple/flutter/FlutterInputs.xcfilelist"; \
+	printf "%s\n" \
+	  "$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/Runner.app/Contents/Frameworks/FlutterMacOS.framework/FlutterMacOS" \
+	  "$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/Runner.app/Contents/Frameworks/App.framework/App" \
+	  > "$(BUILD_DIR)/intermediates/apple/flutter/FlutterOutputs.xcfilelist"; \
 	\
 	CARGO_TARGET_DIR="$$rust_target" \
 	  cargo build -p mesh-infinity --target aarch64-apple-darwin $$cargo_flags; \
