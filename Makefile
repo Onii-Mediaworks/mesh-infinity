@@ -159,7 +159,7 @@ android-debug android-release: android-%:
 	    -t x86_64 \
 	    -o "$$jni_out" \
 	    -- build -p mesh-infinity $$cargo_flags; \
-	( cd "$(PLATFORMS_DIR)/android" && ./gradlew $$gradle_task ); \
+	( cd "$(PLATFORMS_DIR)/android" && gradle $$gradle_task ); \
 	apk_src="$(BUILD_DIR)/app/outputs/apk/$$profile/app-$$profile.apk"; \
 	cp "$$apk_src" \
 	   "$(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.apk"; \
