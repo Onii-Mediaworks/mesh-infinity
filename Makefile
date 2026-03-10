@@ -79,8 +79,8 @@ macos-debug macos-release: macos-%:
 	  "FLUTTER_BUILD_NUMBER=$(APP_BUILD_NUMBER)" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/Flutter-Generated.xcconfig"; \
 	printf "%s\n" \
-	  "$$fw_dir/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/FlutterMacOS" \
-	  "$$fw_dir/App.xcframework/macos-arm64_x86_64/App.framework/App" \
+	  "$$fw_dir/$$cfg/FlutterMacOS.xcframework/macos-arm64_x86_64/FlutterMacOS.framework/FlutterMacOS" \
+	  "$$fw_dir/$$cfg/App.xcframework/macos-arm64_x86_64/App.framework/App" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/FlutterInputs.xcfilelist"; \
 	printf "%s\n" \
 	  "$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/Runner.app/Contents/Frameworks/FlutterMacOS.framework/FlutterMacOS" \
