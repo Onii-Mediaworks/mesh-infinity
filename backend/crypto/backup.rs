@@ -111,11 +111,11 @@ pub struct RelayNode {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BackupSettings {
-    display_name: Option<String>,
-    preferred_transports: Vec<String>,
-    enable_tor: bool,
-    enable_i2p: bool,
-    enable_clearnet: bool,
+    pub display_name: Option<String>,
+    pub preferred_transports: Vec<String>,
+    pub enable_tor: bool,
+    pub enable_i2p: bool,
+    pub enable_clearnet: bool,
     // Other non-sensitive settings
 }
 

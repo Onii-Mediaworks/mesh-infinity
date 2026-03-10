@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use ed25519_dalek::{Keypair, PublicKey, Signature, Signer, Verifier};
+use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
@@ -144,6 +144,78 @@ impl IdentityManager {
             .get(peer_id)
             .map(|identity| identity.dh_public)
             .ok_or_else(|| MeshInfinityError::AuthError("Identity not found".to_string()))
+    }
+
+    /// Reconstruct and register an identity from stored secret key bytes.
+    ///
+    /// This is the inverse of [`primary_secret_key_bytes`]: it rebuilds the
+    /// Ed25519 keypair and X25519 DH keypair from their serialised scalar
+    /// representations.  The first loaded identity is automatically set as
+    /// primary.
+    pub fn load_identity(
+        &mut self,
+        ed25519_secret: &[u8],
+        x25519_secret: &[u8],
+        name: Option<String>,
+    ) -> Result<PeerId> {
+        let secret_bytes: &[u8; 32] = ed25519_secret.try_into().map_err(|_| {
+            MeshInfinityError::AuthError("Ed25519 secret key must be 32 bytes".to_string())
+        })?;
+        let dh_bytes: [u8; 32] = x25519_secret.try_into().map_err(|_| {
+            MeshInfinityError::AuthError("X25519 secret key must be 32 bytes".to_string())
+        })?;
+
+        let secret = SecretKey::from_bytes(secret_bytes)
+            .map_err(|e: ed25519_dalek::SignatureError| MeshInfinityError::AuthError(e.to_string()))?;
+        let public = PublicKey::from(&secret);
+        let keypair = Keypair { secret, public };
+
+        let dh_secret = StaticSecret::from(dh_bytes);
+        let dh_public = X25519PublicKey::from(&dh_secret).to_bytes();
+        let peer_id = derive_peer_id(&keypair.public);
+        let now = SystemTime::now();
+
+        let identity = Identity {
+            peer_id,
+            keypair,
+            dh_secret,
+            dh_public,
+            name,
+            created_at: now,
+            last_used: now,
+        };
+
+        self.identities.insert(peer_id, identity);
+        if self.primary_identity.is_none() {
+            self.primary_identity = Some(peer_id);
+        }
+
+        Ok(peer_id)
+    }
+
+    /// Update the display name on the primary identity.
+    pub fn set_name(&mut self, name: Option<String>) -> Result<()> {
+        let peer_id = self
+            .primary_identity
+            .ok_or_else(|| MeshInfinityError::AuthError("No primary identity".to_string()))?;
+        let identity = self
+            .identities
+            .get_mut(&peer_id)
+            .ok_or_else(|| MeshInfinityError::AuthError("Primary identity not found".to_string()))?;
+        identity.name = name;
+        Ok(())
+    }
+
+    /// Export the raw secret key bytes for the primary identity.
+    ///
+    /// Returns `(ed25519_secret_32, x25519_secret_32)`, suitable for passing
+    /// to [`IdentityStore::save`] via a [`PersistedIdentity`].
+    pub fn primary_secret_key_bytes(&self) -> Option<([u8; 32], [u8; 32])> {
+        self.primary_identity.and_then(|peer_id| {
+            self.identities.get(&peer_id).map(|identity| {
+                (identity.keypair.secret.to_bytes(), identity.dh_secret.to_bytes())
+            })
+        })
     }
 }
 

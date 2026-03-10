@@ -17,3 +17,4 @@
 - Keep platform-specific code minimal; prefer shared Rust + Flutter logic.
 - Align behavior with `SPEC.md` even if existing code or docs diverge.
 - Cloud services are prohibited for all platforms (no Google Play services, Apple cloud services, or Microsoft cloud services).
+- **No stubs, shims, placeholders, or non-functional code.** When a feature requires backend support that does not yet exist, implement it. Do not add fake or no-op implementations unless the user explicitly permits it for a specific case.

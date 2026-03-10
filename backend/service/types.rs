@@ -72,11 +72,39 @@ pub struct IdentitySummary {
     pub name: Option<String>,
 }
 
+/// Local profile fields stored alongside the identity on disk.
+/// These are device-local and are never transmitted to peers except where
+/// explicitly shown by the public profile visibility setting.
+#[derive(Clone, Debug, Default)]
+pub struct LocalProfile {
+    /// Display name shown to peers who can see this node's public profile.
+    pub public_display_name: Option<String>,
+    /// If `false` (default), this node is not discoverable by unknown peers.
+    pub identity_is_public: bool,
+    /// Private display name stored only on this device.
+    pub private_display_name: Option<String>,
+    /// Private freeform bio stored only on this device.
+    pub private_bio: Option<String>,
+}
+
+/// Identity material passed to [`MeshInfinityService::new`] when an existing
+/// identity is loaded from disk rather than freshly generated.
+#[derive(Clone, Debug)]
+pub struct PreloadedIdentity {
+    pub ed25519_secret: [u8; 32],
+    pub x25519_secret: [u8; 32],
+    pub name: Option<String>,
+    pub profile: LocalProfile,
+}
+
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
     pub initial_mode: NodeMode,
     pub mesh_config: MeshConfig,
     pub identity_name: Option<String>,
+    /// Pre-loaded identity from disk. When `Some`, the service restores this
+    /// identity instead of generating a fresh one.
+    pub preloaded_identity: Option<PreloadedIdentity>,
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +147,7 @@ impl Default for ServiceConfig {
             initial_mode: NodeMode::Client,
             mesh_config: MeshConfig::default(),
             identity_name: None,
+            preloaded_identity: None,
         }
     }
 }

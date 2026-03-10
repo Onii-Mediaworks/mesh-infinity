@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::path::Path;
+use x25519_dalek::StaticSecret as X25519StaticSecret;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -12,14 +13,16 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
+use crate::auth::persistence::{IdentityStore, PersistedIdentity};
 use crate::auth::web_of_trust::VerificationMethod as WotVerificationMethod;
 use crate::backend::{
-    FileTransferSummary, HostedServicePolicy, HostedServiceSummary, IdentitySummary,
-    MeshInfinityService, Message, NodeMode, PeerSummary, ReconnectSyncSnapshot, RoomSummary,
-    ServiceConfig, Settings,
+    FileTransferSummary, HostedServicePolicy, HostedServiceSummary, IdentitySummary, LocalProfile,
+    MeshInfinityService, Message, NodeMode, PeerSummary, PreloadedIdentity, ReconnectSyncSnapshot,
+    RoomSummary, ServiceConfig, Settings,
 };
 use crate::core::TrustLevel;
 use crate::core::{MeshConfig, MeshInfinityError, PeerId, Result, TransportType};
+use crate::crypto::{BackupManager, EncryptedBackup};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use serde_json::{json, Value};
 
@@ -99,6 +102,7 @@ const MAX_EVENTS: usize = 256;
 
 static MESH_STATE: Mutex<Option<Arc<Mutex<ServiceHandle>>>> = Mutex::new(None);
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+static IDENTITY_STORE: Mutex<Option<IdentityStore>> = Mutex::new(None);
 
 struct ServiceHandle {
     service: MeshInfinityService,
@@ -258,10 +262,67 @@ pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
         },
     };
 
+    // Resolve config directory: use the caller-supplied path or fall back to
+    // a platform default so identity persistence works without explicit config.
+    let config_dir = rust_config
+        .config_path
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".mesh-infinity"))
+                .unwrap_or_else(|_| std::path::PathBuf::from(".mesh-infinity"))
+        });
+
+    // Set up the identity store for later FFI operations.
+    let store = IdentityStore::new(&config_dir);
+    if let Ok(mut store_guard) = IDENTITY_STORE.lock() {
+        *store_guard = Some(IdentityStore::new(&config_dir));
+    }
+
+    // Try to load a persisted identity from disk.
+    let preloaded_identity = if store.exists() {
+        match store.load() {
+            Ok(persisted) => {
+                let ed25519_ok: Option<[u8; 32]> =
+                    persisted.ed25519_secret.as_slice().try_into().ok();
+                let x25519_ok: Option<[u8; 32]> =
+                    persisted.x25519_secret.as_slice().try_into().ok();
+                match (ed25519_ok, x25519_ok) {
+                    (Some(ed25519), Some(x25519)) => {
+                        let profile = LocalProfile {
+                            public_display_name: persisted.public_display_name,
+                            identity_is_public: persisted.identity_is_public,
+                            private_display_name: persisted.private_display_name,
+                            private_bio: persisted.private_bio,
+                        };
+                        Some(PreloadedIdentity {
+                            ed25519_secret: ed25519,
+                            x25519_secret: x25519,
+                            name: persisted.name,
+                            profile,
+                        })
+                    }
+                    _ => {
+                        set_last_error("Persisted identity has malformed key material");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                set_last_error(format!("Failed to load persisted identity: {}", e));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let service_config = ServiceConfig {
         initial_mode: node_mode_from_u8(config.node_mode),
         mesh_config: rust_config,
         identity_name: None,
+        preloaded_identity,
     };
 
     let Ok(mut state) = MESH_STATE.lock() else {
@@ -1298,7 +1359,7 @@ pub extern "C" fn mi_has_identity(ctx: *mut MeshContext) -> u8 {
         Err(_) => return 0,
     };
 
-    if guard.service.local_identity_summary().is_some() {
+    if guard.service.is_identity_persisted() {
         1
     } else {
         0
@@ -2157,6 +2218,393 @@ pub extern "C" fn mi_set_clearnet_route(
 
     guard.service.set_clearnet_route_config(route_config);
     1
+}
+
+// ---------------------------------------------------------------------------
+// Identity persistence FFI
+// ---------------------------------------------------------------------------
+
+/// Persist the current in-memory identity to disk for the first time.
+///
+/// Identity material (keypair, DH key) is already generated by `mesh_init`.
+/// This call encrypts it into `identity.dat` / `identity.key` under the
+/// config directory and marks `hasIdentity()` as true for future launches.
+///
+/// `name_ptr` may be null (no display name).
+#[no_mangle]
+pub extern "C" fn mi_create_identity(ctx: *mut MeshContext, name_ptr: *const c_char) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let name = if name_ptr.is_null() {
+        None
+    } else {
+        match read_cstr(name_ptr, MAX_NAME_LEN, "name") {
+            Ok(s) => {
+                let trimmed = s.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            Err(e) => {
+                set_last_error(e.to_string());
+                return -1;
+            }
+        }
+    };
+
+    let service = match get_service() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    let mut guard = service.lock().unwrap();
+
+    if let Some(n) = name.clone() {
+        if let Err(e) = guard.service.set_identity_name(Some(n)) {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    }
+
+    let (ed25519, x25519) = match guard.service.primary_secret_key_bytes() {
+        Some(keys) => keys,
+        None => {
+            set_last_error("No primary identity available");
+            return -1;
+        }
+    };
+
+    let profile = guard.service.local_profile().clone();
+    let persisted = PersistedIdentity {
+        ed25519_secret: ed25519.to_vec(),
+        x25519_secret: x25519.to_vec(),
+        name,
+        public_display_name: profile.public_display_name,
+        identity_is_public: profile.identity_is_public,
+        private_display_name: profile.private_display_name,
+        private_bio: profile.private_bio,
+    };
+
+    let store_guard = IDENTITY_STORE.lock().unwrap();
+    let store = match store_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            set_last_error("Identity store not initialised");
+            return -1;
+        }
+    };
+
+    if let Err(e) = store.save(&persisted) {
+        set_last_error(e.to_string());
+        return -1;
+    }
+
+    guard.service.set_identity_persisted(true);
+    0
+}
+
+/// Update the public profile fields and re-persist the identity.
+///
+/// Expects JSON: `{"displayName":"Alice","isPublic":false}`
+#[no_mangle]
+pub extern "C" fn mi_set_public_profile(ctx: *mut MeshContext, json_ptr: *const c_char) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let json_str = match read_cstr(json_ptr, MAX_KEY_LEN, "json") {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+
+    let parsed: Value = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(format!("Invalid JSON: {}", e));
+            return -1;
+        }
+    };
+
+    let display_name = parsed
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let is_public = parsed
+        .get("isPublic")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let service = match get_service() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    let mut guard = service.lock().unwrap();
+
+    let mut profile = guard.service.local_profile().clone();
+    profile.public_display_name = display_name;
+    profile.identity_is_public = is_public;
+    guard.service.set_local_profile(profile);
+
+    if let Err(e) = persist_identity(&mut guard.service) {
+        set_last_error(e.to_string());
+        return -1;
+    }
+    0
+}
+
+/// Update the private profile fields and re-persist the identity.
+///
+/// Expects JSON: `{"displayName":"Alice Smith","bio":"..."}`
+#[no_mangle]
+pub extern "C" fn mi_set_private_profile(ctx: *mut MeshContext, json_ptr: *const c_char) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let json_str = match read_cstr(json_ptr, MAX_KEY_LEN, "json") {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+
+    let parsed: Value = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_last_error(format!("Invalid JSON: {}", e));
+            return -1;
+        }
+    };
+
+    let display_name = parsed
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let bio = parsed
+        .get("bio")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let service = match get_service() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    let mut guard = service.lock().unwrap();
+
+    let mut profile = guard.service.local_profile().clone();
+    profile.private_display_name = display_name;
+    profile.private_bio = bio;
+    guard.service.set_local_profile(profile);
+
+    if let Err(e) = persist_identity(&mut guard.service) {
+        set_last_error(e.to_string());
+        return -1;
+    }
+    0
+}
+
+/// Import an identity from an encrypted backup.
+///
+/// `backup_json_ptr` is the JSON-serialised `EncryptedBackup` payload.
+/// `passphrase_ptr` is the passphrase used to decrypt it.
+///
+/// On success the new identity is persisted to disk and the service switches
+/// to it immediately.
+#[no_mangle]
+pub extern "C" fn mi_import_identity(
+    ctx: *mut MeshContext,
+    backup_json_ptr: *const c_char,
+    passphrase_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let backup_json = match read_cstr(backup_json_ptr, 1024 * 1024, "backup_json") {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    let passphrase = match read_cstr(passphrase_ptr, MAX_KEY_LEN, "passphrase") {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+
+    let backup: EncryptedBackup = match serde_json::from_str(&backup_json) {
+        Ok(b) => b,
+        Err(e) => {
+            set_last_error(format!("Invalid backup JSON: {}", e));
+            return -1;
+        }
+    };
+
+    let manager = BackupManager::new();
+    let (keypair_bytes, _trust_store, _network_map, settings) =
+        match manager.restore_backup(&backup, &passphrase) {
+            Ok(result) => result,
+            Err(e) => {
+                set_last_error(e.to_string());
+                return -1;
+            }
+        };
+
+    if keypair_bytes.len() < 32 {
+        set_last_error("Backup keypair too short");
+        return -1;
+    }
+
+    let ed25519: [u8; 32] = match keypair_bytes[..32].try_into() {
+        Ok(b) => b,
+        Err(_) => {
+            set_last_error("Failed to extract ed25519 secret key from backup");
+            return -1;
+        }
+    };
+
+    // Generate a fresh X25519 DH secret — the backup format does not preserve it.
+    let dh_secret = X25519StaticSecret::new(rand_core::OsRng);
+    let x25519 = dh_secret.to_bytes();
+
+    let name = settings.display_name.clone();
+    let profile = LocalProfile::default();
+
+    let service = match get_service() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(e.to_string());
+            return -1;
+        }
+    };
+    let mut guard = service.lock().unwrap();
+
+    if let Err(e) =
+        guard
+            .service
+            .load_identity_from_bytes(ed25519, x25519, name.clone(), profile.clone())
+    {
+        set_last_error(e.to_string());
+        return -1;
+    }
+
+    let persisted = PersistedIdentity {
+        ed25519_secret: ed25519.to_vec(),
+        x25519_secret: x25519.to_vec(),
+        name,
+        public_display_name: profile.public_display_name,
+        identity_is_public: profile.identity_is_public,
+        private_display_name: profile.private_display_name,
+        private_bio: profile.private_bio,
+    };
+
+    let store_guard = IDENTITY_STORE.lock().unwrap();
+    let store = match store_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            set_last_error("Identity store not initialised");
+            return -1;
+        }
+    };
+
+    if let Err(e) = store.save(&persisted) {
+        set_last_error(e.to_string());
+        return -1;
+    }
+
+    0
+}
+
+/// Killswitch: overwrite the keyfile with random bytes and remove all identity
+/// files, permanently destroying the on-disk identity.
+///
+/// The in-memory identity remains active until the next restart.
+#[no_mangle]
+pub extern "C" fn mi_reset_identity(ctx: *mut MeshContext) -> i32 {
+    if ctx.is_null() {
+        set_last_error("context was null");
+        return -1;
+    }
+
+    let store_guard = IDENTITY_STORE.lock().unwrap();
+    let store = match store_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            set_last_error("Identity store not initialised");
+            return -1;
+        }
+    };
+
+    if let Err(e) = store.destroy() {
+        set_last_error(e.to_string());
+        return -1;
+    }
+
+    if let Ok(service) = get_service() {
+        if let Ok(mut guard) = service.lock() {
+            guard.service.set_identity_persisted(false);
+        }
+    }
+
+    0
+}
+
+// Helper: serialise the current service identity + profile and re-save to disk.
+fn persist_identity(service: &mut MeshInfinityService) -> Result<()> {
+    let (ed25519, x25519) = service
+        .primary_secret_key_bytes()
+        .ok_or(MeshInfinityError::AuthError("No primary identity".to_string()))?;
+
+    let summary = service.local_identity_summary();
+    let name = summary.and_then(|s| s.name);
+    let profile = service.local_profile().clone();
+
+    let persisted = PersistedIdentity {
+        ed25519_secret: ed25519.to_vec(),
+        x25519_secret: x25519.to_vec(),
+        name,
+        public_display_name: profile.public_display_name,
+        identity_is_public: profile.identity_is_public,
+        private_display_name: profile.private_display_name,
+        private_bio: profile.private_bio,
+    };
+
+    let store_guard = IDENTITY_STORE
+        .lock()
+        .map_err(|_| MeshInfinityError::LockError("IDENTITY_STORE poisoned".to_string()))?;
+    let store = store_guard
+        .as_ref()
+        .ok_or(MeshInfinityError::InvalidConfiguration(
+            "Identity store not initialised".to_string(),
+        ))?;
+
+    store.save(&persisted)
 }
 
 /// Get service.

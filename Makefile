@@ -57,6 +57,7 @@ macos-debug macos-release: macos-%:
 	  --exclude=.flutter-plugins \
 	  --exclude=.flutter-plugins-dependencies \
 	  "$(FRONTEND_DIR)/" "$$src_dir/"; \
+	rsync -a "$(ROOT_DIR)/assets/" "$(BUILD_DIR)/intermediates/macos/$$profile/assets/"; \
 	mkdir -p "$$src_dir/macos"; \
 	\
 	flutter config --enable-macos-desktop; \
