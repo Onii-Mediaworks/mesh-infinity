@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   ffi: ^2.1.5
+  file_picker: ^8.1.2
   mobile_scanner: ^5.2.3
   provider: ^6.1.1
   qr_flutter: ^4.1.0
