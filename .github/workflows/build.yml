@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
 
   # ── macOS ──────────────────────────────────────────────────────────────────
@@ -39,4 +42,25 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-macos-${{ matrix.profile }}
-          path: build/output/macos/${{ matrix.profile }}/meshinfinity-*-${{ matrix.profile }}.dmg
+          path: build/output/macos/${{ matrix.profile }}/*.dmg
+
+  # ── Prerelease ─────────────────────────────────────────────────────────────
+
+  release:
+    name: prerelease
+    needs: [build-macos]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mesh-infinity-*
+          path: dist/
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build ${{ github.run_number }}"
+          prerelease: true
+          files: dist/*.dmg
