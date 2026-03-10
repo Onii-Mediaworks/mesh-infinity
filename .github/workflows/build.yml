@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: ["**"]
+    tags: ["v[0-9]*"]
   pull_request:
 
 # Cancel any in-progress run for the same branch/PR.
@@ -18,15 +19,37 @@ env:
 
 jobs:
 
-  # ── macOS ──────────────────────────────────────────────────────────────────
+  # ── Rust: Android ──────────────────────────────────────────────────────────
+  # Builds both debug and release .so files in a single job so the dependency
+  # graph and stdlib are compiled only once per ABI set.
 
-  build-macos:
-    name: macos-${{ matrix.profile }}
+  rust-android:
+    name: rust-android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo install cargo-ndk
+
+      - run: make android-rust-debug android-rust-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-android-jni
+          path: build/intermediates/android/jni/
+
+  # ── Rust: macOS ────────────────────────────────────────────────────────────
+  # Builds and lipo-merges both debug and release dylibs in one macOS job.
+
+  rust-macos:
+    name: rust-macos
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [debug, release]
     steps:
       - uses: actions/checkout@v4
 
@@ -36,21 +59,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - run: make macos-${{ matrix.profile }}
+      - run: make macos-rust-debug macos-rust-release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mesh-infinity-macos-${{ matrix.profile }}
-          path: build/output/macos/${{ matrix.profile }}/*.dmg
+          name: rust-macos-libs
+          path: build/intermediates/macos/rust/
 
-  # ── Android ────────────────────────────────────────────────────────────────
+  # ── Android: Gradle ────────────────────────────────────────────────────────
+  # Downloads pre-built .so files and runs the Gradle assembly step only.
 
   build-android:
     name: android-${{ matrix.profile }}
+    needs: rust-android
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -64,12 +85,6 @@ jobs:
           java-version: '17'
           distribution: temurin
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
-
-      - uses: Swatinem/rust-cache@v2
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -78,23 +93,222 @@ jobs:
         with:
           gradle-version: '8.14'
 
-      - run: cargo install cargo-ndk
+      - uses: actions/download-artifact@v4
+        with:
+          name: rust-android-jni
+          path: build/intermediates/android/jni/
 
-      - run: make android-${{ matrix.profile }}
+      - run: make android-gradle-${{ matrix.profile }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-android-${{ matrix.profile }}
           path: build/output/android/${{ matrix.profile }}/*.apk
 
-  # ── Prerelease ─────────────────────────────────────────────────────────────
+  # ── Rust: Linux ────────────────────────────────────────────────────────────
+  # Builds libmesh_infinity.so for x86_64 Linux in a single job so the
+  # dependency graph and stdlib are compiled only once.
 
-  release:
+  rust-linux:
+    name: rust-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: make linux-rust-debug linux-rust-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-linux-libs
+          path: build/intermediates/linux/rust/
+
+  # ── Rust: Windows ──────────────────────────────────────────────────────────
+  # Builds mesh_infinity.dll for x86_64 Windows in a single job.
+
+  rust-windows:
+    name: rust-windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: make windows-rust-debug windows-rust-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-windows-libs
+          path: build/intermediates/windows/rust/
+
+  # ── macOS: Xcode ───────────────────────────────────────────────────────────
+  # Downloads pre-built dylib and runs Flutter framework build + Xcode + DMG.
+
+  build-macos:
+    name: macos-${{ matrix.profile }}
+    needs: rust-macos
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rust-macos-libs
+          path: build/intermediates/macos/rust/
+
+      - run: make macos-xcode-${{ matrix.profile }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesh-infinity-macos-${{ matrix.profile }}
+          path: build/output/macos/${{ matrix.profile }}/*.dmg
+
+  # ── Linux: bundle + packaging ──────────────────────────────────────────────
+  # Downloads pre-built .so and runs Flutter build linux + packaging
+  # (AppImage, tar.gz, DEB, RPM).
+
+  build-linux:
+    name: linux-${{ matrix.profile }}
+    needs: rust-linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev libblkid-dev liblzma-dev ninja-build \
+            rpm ruby-dev
+          sudo gem install --no-document fpm
+          curl -Lo /usr/local/bin/appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /usr/local/bin/appimagetool
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rust-linux-libs
+          path: build/intermediates/linux/rust/
+
+      - run: make linux-bundle-${{ matrix.profile }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesh-infinity-linux-${{ matrix.profile }}
+          path: build/output/linux/${{ matrix.profile }}/
+
+  # ── Windows: bundle + packaging ────────────────────────────────────────────
+  # Downloads pre-built .dll and runs Flutter build windows + packaging
+  # (NSIS installer, portable zip).
+
+  build-windows:
+    name: windows-${{ matrix.profile }}
+    needs: rust-windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Windows packaging dependencies
+        shell: pwsh
+        run: choco install nsis 7zip --no-progress -y
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: rust-windows-libs
+          path: build/intermediates/windows/rust/
+
+      - run: make windows-bundle-${{ matrix.profile }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesh-infinity-windows-${{ matrix.profile }}
+          path: build/output/windows/${{ matrix.profile }}/
+
+  # ── Prerelease ─────────────────────────────────────────────────────────────
+  # Every push to main creates a prerelease tagged v<version>-r<run_number>.
+  # The release name is "V<version> - r<run_number>".
+  # Body contains the triggering commit message plus a changelog since the
+  # last version tag.
+
+  prerelease:
     name: prerelease
-    needs: [build-macos, build-android]
+    needs: [build-macos, build-android, build-linux, build-windows]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect release metadata
+        id: meta
+        run: |
+          VERSION=$(grep '^version:' frontend/pubspec.yaml \
+            | sed 's/version:[[:space:]]*//' | cut -d+ -f1)
+
+          COMMIT_MSG=$(git log -1 --pretty=format:"%B")
+
+          # Changelog: all commits since the last vX.Y.Z tag (no -r suffix).
+          LAST_TAG=$(git tag --sort=-version:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          if [ -n "$LAST_TAG" ]; then
+            CHANGELOG=$(git log "${LAST_TAG}..HEAD" \
+              --pretty=format:"- %h %s" 2>/dev/null || true)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %h %s" | head -50)
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "commit_msg<<__DELIM__"
+            echo "$COMMIT_MSG"
+            echo "__DELIM__"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "changelog<<__DELIM__"
+            echo "$CHANGELOG"
+            echo "__DELIM__"
+          } >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           pattern: mesh-infinity-*
@@ -103,9 +317,82 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: "Build ${{ github.run_number }}"
+          tag_name: v${{ steps.meta.outputs.version }}-r${{ github.run_number }}
+          name: "V${{ steps.meta.outputs.version }} - r${{ github.run_number }}"
           prerelease: true
+          body: |
+            ${{ steps.meta.outputs.commit_msg }}
+
+            ---
+
+            **Changes since last release:**
+            ${{ steps.meta.outputs.changelog }}
           files: |
             dist/*.dmg
             dist/*.apk
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.exe
+            dist/*.zip
+
+  # ── Full Release ───────────────────────────────────────────────────────────
+  # Triggered by pushing a version tag (e.g. git tag v0.3.0 && git push --tags).
+  # Creates a proper (non-prerelease) GitHub Release named "V<version>".
+  # One release per version number; pushing the same tag again overwrites it.
+
+  release:
+    name: release
+    needs: [build-macos, build-android, build-linux, build-windows]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-r')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect release metadata
+        id: meta
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          # Changelog: all commits since the previous vX.Y.Z tag.
+          PREV_TAG=$(git tag --sort=-version:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '2p' || true)
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %h %s")
+          else
+            CHANGELOG=$(git log --pretty=format:"- %h %s" | head -50)
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "changelog<<__DELIM__"
+            echo "$CHANGELOG"
+            echo "__DELIM__"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mesh-infinity-*
+          path: dist/
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.meta.outputs.version }}
+          name: "V${{ steps.meta.outputs.version }}"
+          prerelease: false
+          body: |
+            **Changelog:**
+            ${{ steps.meta.outputs.changelog }}
+          files: |
+            dist/*.dmg
+            dist/*.apk
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.exe
+            dist/*.zip

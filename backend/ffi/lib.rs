@@ -103,6 +103,7 @@ const MAX_EVENTS: usize = 256;
 static MESH_STATE: Mutex<Option<Arc<Mutex<ServiceHandle>>>> = Mutex::new(None);
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static IDENTITY_STORE: Mutex<Option<IdentityStore>> = Mutex::new(None);
+static CONFIG_DIR_OVERRIDE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 
 struct ServiceHandle {
     service: MeshInfinityService,
@@ -264,15 +265,29 @@ pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
 
     // Resolve config directory: use the caller-supplied path or fall back to
     // a platform default so identity persistence works without explicit config.
-    let config_dir = rust_config
-        .config_path
-        .as_deref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".mesh-infinity"))
-                .unwrap_or_else(|_| std::path::PathBuf::from(".mesh-infinity"))
-        });
+    let config_dir = if let Ok(override_guard) = CONFIG_DIR_OVERRIDE.lock() {
+        override_guard.clone().unwrap_or_else(|| {
+            rust_config
+                .config_path
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::var("HOME")
+                        .map(|h| std::path::PathBuf::from(h).join(".mesh-infinity"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from(".mesh-infinity"))
+                })
+        })
+    } else {
+        rust_config
+            .config_path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".mesh-infinity"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from(".mesh-infinity"))
+            })
+    };
 
     // Set up the identity store for later FFI operations.
     let store = IdentityStore::new(&config_dir);
@@ -343,6 +358,57 @@ pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
     *state = Some(arc_handle.clone());
 
     Arc::into_raw(arc_handle) as *mut MeshContext
+}
+
+/// Override the config directory for identity persistence.
+///
+/// This must be called before `mesh_init` to take effect.
+#[no_mangle]
+pub extern "C" fn mi_set_config_dir(path_ptr: *const c_char) -> i32 {
+    if path_ptr.is_null() {
+        set_last_error("config path pointer was null");
+        return -1;
+    }
+
+    let path = match read_cstr(path_ptr, 4096, "config_path") {
+        Ok(value) => value,
+        Err(err) => {
+            set_last_error(err.to_string());
+            return -1;
+        }
+    };
+
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        set_last_error("config path was empty");
+        return -1;
+    }
+
+    let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
+    *guard = Some(std::path::PathBuf::from(trimmed));
+    0
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeSetConfigDir(
+    env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    path: jni::objects::JString,
+) -> jni::sys::jint {
+    let Ok(path_str) = env.get_string(&path) else {
+        set_last_error("Failed to read config dir from Java");
+        return -1;
+    };
+    let trimmed = path_str.to_string_lossy();
+    let trimmed = trimmed.trim();
+    if trimmed.is_empty() {
+        set_last_error("config path was empty");
+        return -1;
+    }
+    let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
+    *guard = Some(std::path::PathBuf::from(trimmed));
+    0
 }
 
 #[no_mangle]
