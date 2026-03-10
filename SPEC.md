@@ -1,5 +1,18 @@
 # Mesh Infinity Technical Specification
 
+**Specification version:** 1.1
+**Date:** 2026-03-10
+**Status:** Active
+
+---
+
+## Revision History
+
+| Version | Date | Summary |
+|---------|------|---------|
+| 1.0 | 2026-03-09 | Initial specification. Covered identity model, cryptography, network map, transports (WireGuard/Tor/I2P/BLE/RF/clearnet), hop-by-hop routing, store-and-forward, 4-layer message encryption, key ratcheting, pairing and trust model, social profiles (`identity_is_public`, `address_is_associable`), Signal-parity messaging, file sharing, hosted services, VPN/exit nodes, notifications, platform architecture, FFI boundary, mesh address format, and Mesh DNS (Tailscale-style short-name approval). |
+| 1.1 | 2026-03-10 | Security hardening pass. (1) Bootstrap node integrity: pinned Ed25519 pubkey required for all bootstrap entries. (2) Key compromise recovery: new §3.8 `KeyRotationAnnouncement` protocol. (3) Argon2id minimum parameters specified (m=64 MB, t=3, p=4); weaker backups rejected on import. (4) Sequence numbers explicitly u64; 32-bit overflow risk documented. (5) Map timestamp validation: entries >1 hour in the future rejected. (6) Sybil/storage-exhaustion defence: map capped at 100k entries, gossip rate-limited to 500 entries/peer/hour, deduplication set persisted to disk. (7) WoT key-change corroborators must be pre-existing trusted peers, not newly paired. (8) Nonce counter re-handshake threshold specified at 2^48. (9) Padding buckets (256 B–1 MB) and timing jitter ranges (0–250 ms by priority level) defined. (10) Endorsement revocation: `TrustRevocation` record with sequence numbers. (11) Capability flags table (§8.1): `can_be_exit_node`, `can_be_wrapper_node`, etc. — trust level alone no longer sufficient for privileged roles. (12) Exit node DNS: forwarding mandatory in Exit Node mode; exit node uses DoH upstream. (13) Platform keyfile storage: Android Keystore / iOS Keychain / DPAPI / Secret Service per platform. (14) BLE advertisements: rotating ephemeral token only; full identity fetched over encrypted GATT. (15) Tor circuit rotation: explicit 10-minute / 200-message schedule. (16) Store-and-forward TTL: sender-signed expiry enforced by recipient regardless of server behaviour. (17) §17.4 Mesh DNS: replaced BIP39 word-phrase model with Tailscale-style short-name advertisement and per-peer approval. |
+
 ---
 
 ## 1. Overview
