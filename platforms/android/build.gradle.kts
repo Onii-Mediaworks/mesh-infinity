@@ -5,15 +5,13 @@ allprojects {
     }
 }
 
-val newBuildDir: Directory =
-    rootProject.layout.buildDirectory
-        .dir("../../build")
-        .get()
-rootProject.layout.buildDirectory.value(newBuildDir)
+// Resolve relative to rootDir (platforms/android/), not the build directory,
+// so the output lands at <repo-root>/build/ rather than platforms/build/.
+val newBuildDir: File = rootProject.rootDir.resolve("../../build")
+rootProject.layout.buildDirectory.set(newBuildDir)
 
 subprojects {
-    val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
-    project.layout.buildDirectory.value(newSubprojectBuildDir)
+    project.layout.buildDirectory.set(newBuildDir.resolve(project.name))
 }
 subprojects {
     project.evaluationDependsOn(":app")
