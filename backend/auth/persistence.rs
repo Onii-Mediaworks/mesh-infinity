@@ -4,9 +4,10 @@
 //! ciphertext keyed by a 32-byte random keyfile.
 //!
 //! To permanently destroy all identity data without leaving recoverable
-//! plaintext, call [`IdentityStore::destroy`]: it overwrites the keyfile with
-//! random bytes (making the existing ciphertext unreadable even if the file
-//! was copied elsewhere) before removing both files.
+//! plaintext, call [`IdentityStore::destroy`]: it deletes the encryption key
+//! from the platform keystore first (making the existing ciphertext permanently
+//! unreadable even if `identity.dat` was copied elsewhere), then removes any
+//! remaining files.
 
 use chacha20poly1305::aead::{Aead, NewAead};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
@@ -36,10 +37,13 @@ pub struct PersistedIdentity {
     pub private_bio: Option<String>,
 }
 
-/// Manages the on-disk files that protect a local identity:
+/// Manages the files that protect a local identity:
 ///
-/// * `identity.key` — 32-byte random keyfile (the encryption key).
-/// * `identity.key.wrap` — Android-only: keyfile bytes wrapped by the platform keystore.
+/// * Platform keystore (macOS Keychain / iOS Keychain / Windows Credential Manager /
+///   Linux Secret Service) — holds the 32-byte ChaCha20 encryption key.
+///   On Android the key is wrapped by the Android Keystore and stored as
+///   `identity.key.wrap`.  On headless Linux without a Secret Service daemon
+///   the key falls back to a 0600-restricted `identity.key` file.
 /// * `identity.dat` — 12-byte nonce followed by ChaCha20-Poly1305 ciphertext
 ///                    of the JSON-serialised [`PersistedIdentity`].
 pub struct IdentityStore {
@@ -76,7 +80,7 @@ impl IdentityStore {
 
     #[cfg(not(target_os = "android"))]
     fn key_exists(&self) -> bool {
-        self.key_path().exists()
+        keystore::key_in_keystore() || self.key_path().exists()
     }
 
     #[cfg(target_os = "android")]
@@ -100,7 +104,17 @@ impl IdentityStore {
 
     #[cfg(not(target_os = "android"))]
     fn load_key_bytes(&self) -> Result<Vec<u8>> {
-        std::fs::read(self.key_path()).map_err(MeshInfinityError::IoError)
+        // Try platform keystore first.
+        if let Ok(key) = keystore::load_key() {
+            return Ok(key);
+        }
+        // Fall back to legacy plain file (e.g. headless Linux, or pre-keystore install).
+        let key = std::fs::read(self.key_path()).map_err(MeshInfinityError::IoError)?;
+        // Opportunistically migrate to the keystore; ignore errors (headless Linux).
+        if keystore::store_key(&key).is_ok() {
+            let _ = std::fs::remove_file(self.key_path());
+        }
+        Ok(key)
     }
 
     /// Decrypt and deserialise the persisted identity from disk.
@@ -192,7 +206,18 @@ impl IdentityStore {
 
     #[cfg(not(target_os = "android"))]
     fn store_key_bytes(&self, key: &[u8]) -> Result<()> {
+        // Prefer the platform keystore; fall back to a 0600-restricted file on
+        // headless Linux where the Secret Service daemon is unavailable.
+        if keystore::store_key(key).is_ok() {
+            return Ok(());
+        }
+        // Fallback: write to filesystem with restrictive permissions.
         std::fs::write(self.key_path(), key)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(self.key_path(), std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 
@@ -216,6 +241,10 @@ impl IdentityStore {
 
     #[cfg(not(target_os = "android"))]
     fn destroy_keyfile(&self) -> Result<()> {
+        // Critical first step: remove the keystore entry.  Once gone, identity.dat
+        // is permanently unreadable even if a copy of it exists elsewhere.
+        keystore::delete_key()?;
+        // Clean up any legacy plain-file remnant.
         if self.key_path().exists() {
             let mut random_key = vec![0u8; 32];
             OsRng.fill_bytes(&mut random_key);

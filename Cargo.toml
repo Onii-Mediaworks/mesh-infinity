@@ -82,6 +82,13 @@ openssl = { version = "0.10", features = ["vendored"] }
 # Virtual network interface
 # tun-tap (Unix/Linux TUN) and pnet are POSIX-only.
 # wintun provides the equivalent Windows TUN driver (same library used by WireGuard).
+# Platform keystore — used on every platform except Android (which uses its own
+# JNI-based Android Keystore path in backend/auth/keystore.rs).
+# On Linux without a running Secret Service daemon this falls back gracefully to
+# the filesystem path inside persistence.rs.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = "3"
+
 [target.'cfg(unix)'.dependencies]
 pnet = "0.28"
 tun-tap = "0.1"
