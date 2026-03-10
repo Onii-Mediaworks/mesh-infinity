@@ -11,7 +11,7 @@ APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | se
 APP_VERSION      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
 
-.PHONY: clean macos-debug macos-release
+.PHONY: clean macos-debug macos-release android-debug android-release
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
@@ -121,3 +121,55 @@ macos-debug macos-release: macos-%:
 	  "$(BUILD_DIR)/output/macos/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.dmg"; \
 	rm -rf "$$dmg_stage"; \
 	echo "Output: $(BUILD_DIR)/output/macos/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.dmg"
+
+# ── Android ───────────────────────────────────────────────────────────────────
+#
+# Build order (Rust is the application; Flutter is an embedded UI library):
+#   1. Generate local.properties for Gradle
+#   2. flutter pub get  (resolve Dart dependencies)
+#   3. cargo-ndk       — build Rust .so for each ABI  ← primary artifact
+#   4. ./gradlew        — assemble APK, embedding Flutter + Rust libs
+#   5. Copy APK to build/output/android/<profile>/
+#
+# Rust .so files land in platforms/android/app/src/main/jniLibs/<abi>/
+# (generated, not committed).  APK build output is redirected to build/app/
+# by the root build.gradle.kts (../../build from platforms/android/).
+
+android-debug android-release: android-%:
+	@set -euo pipefail; \
+	profile="$*"; \
+	gradle_task="assembleDebug"; [[ "$$profile" == "release" ]] && gradle_task="assembleRelease"; \
+	cargo_flags=""; [[ "$$profile" == "release" ]] && cargo_flags="--release"; \
+	rust_target="$(BUILD_DIR)/intermediates/android/backend"; \
+	jni_out="$(PLATFORMS_DIR)/android/app/src/main/jniLibs"; \
+	\
+	mkdir -p "$$rust_target" "$(BUILD_DIR)/output/android/$$profile"; \
+	\
+	# ── 1. Generate local.properties (Gradle + Flutter SDK paths) ─────────────
+	flutter_root="$$(flutter --version --machine | jq -r .flutterRoot)"; \
+	{ \
+	  [[ -n "$${ANDROID_HOME:-}" ]] && printf "sdk.dir=%s\n" "$$ANDROID_HOME"; \
+	  printf "flutter.sdk=%s\n" "$$flutter_root"; \
+	} > "$(PLATFORMS_DIR)/android/local.properties"; \
+	\
+	# ── 2. Flutter pub get ─────────────────────────────────────────────────────
+	flutter config --enable-android; \
+	( cd "$(FRONTEND_DIR)" && flutter pub get ); \
+	\
+	# ── 3. Rust — build .so for all Android ABIs (primary application) ─────────
+	CARGO_TARGET_DIR="$$rust_target" \
+	  cargo ndk \
+	    -t arm64-v8a \
+	    -t armeabi-v7a \
+	    -t x86_64 \
+	    -o "$$jni_out" \
+	    -- build -p mesh-infinity $$cargo_flags; \
+	\
+	# ── 4. Gradle — assemble APK (embeds Flutter UI + Rust libs) ──────────────
+	( cd "$(PLATFORMS_DIR)/android" && ./gradlew $$gradle_task ); \
+	\
+	# ── 5. Copy APK to output ─────────────────────────────────────────────────
+	apk_src="$(BUILD_DIR)/app/outputs/apk/$$profile/app-$$profile.apk"; \
+	cp "$$apk_src" \
+	   "$(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.apk"; \
+	echo "Output: $(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.apk"
