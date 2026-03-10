@@ -43,9 +43,9 @@ mod trust;
 mod types;
 
 pub use types::{
-    FileTransferSummary, HostedServicePolicy, HostedServiceSummary, IdentitySummary, Message,
-    NetworkStatsSummary, NodeMode, PeerSummary, ReconnectSyncSnapshot, RoomSummary, ServiceConfig,
-    Settings,
+    FileTransferSummary, HostedServicePolicy, HostedServiceSummary, IdentitySummary, LocalProfile,
+    Message, NetworkStatsSummary, NodeMode, PeerSummary, PreloadedIdentity, ReconnectSyncSnapshot,
+    RoomSummary, ServiceConfig, Settings,
 };
 
 struct ServiceState {
@@ -82,8 +82,8 @@ const MAX_PASSIVE_ACK_HISTORY: usize = 256;
 pub struct MeshInfinityService {
     state: Arc<RwLock<ServiceState>>,
     peers: PeerManager,
-    identity_manager: IdentityManager,
-    web_of_trust: WebOfTrust,
+    pub(super) identity_manager: IdentityManager,
+    pub(super) web_of_trust: WebOfTrust,
     file_transfers: Arc<Mutex<FileTransferManager>>,
     transport_manager: TransportManagerImpl,
     message_router: Arc<MessageRouter>,
@@ -92,15 +92,37 @@ pub struct MeshInfinityService {
     running: Arc<AtomicBool>,
     routing_worker: Mutex<Option<JoinHandle<()>>>,
     discovery: Arc<Mutex<DiscoveryService>>,
+    /// `true` once an identity has been explicitly saved to disk.
+    pub(super) identity_persisted: bool,
+    /// Local profile fields (visibility prefs, private bio, etc.).
+    pub(super) local_profile: LocalProfile,
 }
 
 impl MeshInfinityService {
     /// Construct a fully wired service instance from caller configuration.
+    ///
+    /// If `config.preloaded_identity` is `Some`, the service restores the
+    /// existing identity from its serialised key material and marks it as
+    /// persisted.  Otherwise a fresh identity is generated in memory and
+    /// `identity_persisted` is set to `false` (onboarding will be shown).
     pub fn new(config: ServiceConfig) -> Self {
         let mut identity_manager = IdentityManager::new();
-        let identity_peer_id = identity_manager
-            .generate_identity(config.identity_name.clone())
-            .unwrap_or_else(|_| random_peer_id());
+        let (identity_peer_id, identity_persisted, local_profile) =
+            if let Some(ref preloaded) = config.preloaded_identity {
+                let peer_id = identity_manager
+                    .load_identity(
+                        &preloaded.ed25519_secret,
+                        &preloaded.x25519_secret,
+                        preloaded.name.clone(),
+                    )
+                    .unwrap_or_else(|_| random_peer_id());
+                (peer_id, true, preloaded.profile.clone())
+            } else {
+                let peer_id = identity_manager
+                    .generate_identity(config.identity_name.clone())
+                    .unwrap_or_else(|_| random_peer_id());
+                (peer_id, false, LocalProfile::default())
+            };
         let wot_identity = identity_manager
             .get_primary_identity()
             .map(|identity| WotIdentity {
@@ -177,6 +199,8 @@ impl MeshInfinityService {
             running: Arc::new(AtomicBool::new(false)),
             routing_worker: Mutex::new(None),
             discovery: Arc::new(Mutex::new(DiscoveryService::new())),
+            identity_persisted,
+            local_profile,
         };
 
         if matches!(config.initial_mode, NodeMode::Server | NodeMode::Dual) {
@@ -212,7 +236,7 @@ fn random_peer_id() -> PeerId {
 }
 
 /// Encode peer id as uppercase hexadecimal string.
-fn peer_id_string(peer_id: &PeerId) -> String {
+pub(super) fn peer_id_string(peer_id: &PeerId) -> String {
     hex_encode(peer_id)
 }
 
@@ -222,7 +246,7 @@ fn file_id_string(file_id: &[u8; 32]) -> String {
 }
 
 /// Derive short human-friendly pairing code from peer id prefix bytes.
-fn pairing_code_from_peer_id(peer_id: &PeerId) -> String {
+pub(super) fn pairing_code_from_peer_id(peer_id: &PeerId) -> String {
     let hex = hex_encode(peer_id);
     let short = &hex[..16];
     format!(

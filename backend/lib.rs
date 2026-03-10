@@ -4,9 +4,9 @@
 mod service;
 
 pub use service::{
-    FileTransferSummary, HostedServicePolicy, HostedServiceSummary, IdentitySummary,
-    MeshInfinityService, Message, NodeMode, PeerSummary, ReconnectSyncSnapshot, RoomSummary,
-    ServiceConfig, Settings,
+    FileTransferSummary, HostedServicePolicy, HostedServiceSummary, IdentitySummary, LocalProfile,
+    MeshInfinityService, Message, NetworkStatsSummary, NodeMode, PeerSummary, PreloadedIdentity,
+    ReconnectSyncSnapshot, RoomSummary, ServiceConfig, Settings,
 };
 
 pub use std::sync::mpsc::Receiver;

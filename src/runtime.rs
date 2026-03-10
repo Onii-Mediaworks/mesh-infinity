@@ -33,6 +33,7 @@ impl MeshInfinityRuntime {
             initial_mode,
             mesh_config: config.mesh_config,
             identity_name: config.identity_name,
+            preloaded_identity: None,
         });
 
         Self {

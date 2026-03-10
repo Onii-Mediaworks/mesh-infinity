@@ -257,6 +257,58 @@ class BackendBridge {
     return _bindings!.hasIdentity(_context) == 1;
   }
 
+  /// Persist the current in-memory identity to disk.
+  /// Call once during onboarding after the user chooses "Create New Identity".
+  bool createIdentity({String? name}) {
+    if (!isAvailable) return false;
+    final namePtr = name != null ? name.toNativeUtf8() : nullptr;
+    final result = _bindings!.createIdentity(_context, namePtr);
+    if (namePtr != nullptr) calloc.free(namePtr);
+    return result == 0;
+  }
+
+  /// Update the public profile fields and re-persist the identity.
+  bool setPublicProfile({String? displayName, bool isPublic = false}) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(<String, dynamic>{
+      'displayName': displayName ?? '',
+      'isPublic': isPublic,
+    }).toNativeUtf8();
+    final result = _bindings!.setPublicProfile(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Update the private profile fields and re-persist the identity.
+  bool setPrivateProfile({String? displayName, String? bio}) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(<String, dynamic>{
+      'displayName': displayName ?? '',
+      'bio': bio ?? '',
+    }).toNativeUtf8();
+    final result = _bindings!.setPrivateProfile(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Restore an identity from an encrypted backup payload + passphrase.
+  bool importIdentity({required String backupJson, required String passphrase}) {
+    if (!isAvailable) return false;
+    final backupPtr = backupJson.toNativeUtf8();
+    final passphrasePtr = passphrase.toNativeUtf8();
+    final result = _bindings!.importIdentity(_context, backupPtr, passphrasePtr);
+    calloc.free(backupPtr);
+    calloc.free(passphrasePtr);
+    return result == 0;
+  }
+
+  /// Killswitch: overwrite the keyfile and remove all identity files,
+  /// permanently destroying the on-disk identity.
+  bool resetIdentity() {
+    if (!isAvailable) return false;
+    return _bindings!.resetIdentity(_context) == 0;
+  }
+
   bool setNodeMode(int mode) {
     if (!isAvailable) return false;
     return _bindings!.setNodeMode(_context, mode) == 0;
@@ -540,6 +592,26 @@ class _BackendBindings {
       setClearnetRoute = _lib
           .lookupFunction<SetClearnetRouteNative, SetClearnetRouteDart>(
             'mi_set_clearnet_route',
+          ),
+      createIdentity = _lib
+          .lookupFunction<CreateIdentityNative, CreateIdentityDart>(
+            'mi_create_identity',
+          ),
+      setPublicProfile = _lib
+          .lookupFunction<SetPublicProfileNative, SetPublicProfileDart>(
+            'mi_set_public_profile',
+          ),
+      setPrivateProfile = _lib
+          .lookupFunction<SetPrivateProfileNative, SetPrivateProfileDart>(
+            'mi_set_private_profile',
+          ),
+      importIdentity = _lib
+          .lookupFunction<ImportIdentityNative, ImportIdentityDart>(
+            'mi_import_identity',
+          ),
+      resetIdentity = _lib
+          .lookupFunction<ResetIdentityNative, ResetIdentityDart>(
+            'mi_reset_identity',
           );
 
   // ignore: unused_field
@@ -578,6 +650,11 @@ class _BackendBindings {
   final ToggleTransportFlagDart toggleTransportFlag;
   final SetVpnRouteDart setVpnRoute;
   final SetClearnetRouteDart setClearnetRoute;
+  final CreateIdentityDart createIdentity;
+  final SetPublicProfileDart setPublicProfile;
+  final SetPrivateProfileDart setPrivateProfile;
+  final ImportIdentityDart importIdentity;
+  final ResetIdentityDart resetIdentity;
 }
 
 // ---------------------------------------------------------------------------
@@ -706,3 +783,15 @@ typedef SetVpnRouteNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetVpnRouteDart = int Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetClearnetRouteNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetClearnetRouteDart = int Function(Pointer<Void>, Pointer<Utf8>);
+typedef CreateIdentityNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef CreateIdentityDart = int Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetPublicProfileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetPublicProfileDart = int Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetPrivateProfileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetPrivateProfileDart = int Function(Pointer<Void>, Pointer<Utf8>);
+typedef ImportIdentityNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ImportIdentityDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ResetIdentityNative = Int32 Function(Pointer<Void>);
+typedef ResetIdentityDart = int Function(Pointer<Void>);
