@@ -473,6 +473,7 @@ windows-rust-debug windows-rust-release: windows-rust-%:
 	\
 	mkdir -p "$$rust_target" "$$rust_out"; \
 	\
+	unset MAKEFLAGS; \
 	CARGO_TARGET_DIR="$$rust_target" \
 	  cargo build -p mesh-infinity --target x86_64-pc-windows-msvc $$cargo_flags; \
 	cp "$$rust_target/x86_64-pc-windows-msvc/$$rust_subdir/mesh_infinity.dll" \
