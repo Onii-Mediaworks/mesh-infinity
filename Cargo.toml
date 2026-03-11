@@ -38,7 +38,7 @@ argon2 = "0.5"
 bip39 = "2.0"
 hkdf = "0.12"
 sha2 = "0.10"
-rand_core = "0.10"
+rand_core = "0.6"
 zeroize = "1.8"
 base64 = "0.22"
 

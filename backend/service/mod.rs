@@ -26,7 +26,7 @@ use crate::core::mesh::{
 use crate::crypto::{MessageCrypto, PfsManager};
 use crate::discovery::DiscoveryService;
 use crate::transport::TransportManagerImpl;
-use getrandom::getrandom;
+use getrandom::fill;
 use ring::digest::{digest, SHA256};
 use time::format_description;
 
@@ -224,14 +224,14 @@ impl MeshInfinityService {
 /// Generate a random id with stable `<prefix>-<HEX>` formatting.
 fn random_id(prefix: &str) -> String {
     let mut bytes = [0u8; 8];
-    getrandom(&mut bytes).expect("system RNG unavailable");
+    fill(&mut bytes).expect("system RNG unavailable");
     format!("{}-{}", prefix, hex_encode(&bytes))
 }
 
 /// Generate a random 32-byte peer identifier.
 fn random_peer_id() -> PeerId {
     let mut bytes = [0u8; 32];
-    getrandom(&mut bytes).expect("system RNG unavailable");
+    fill(&mut bytes).expect("system RNG unavailable");
     bytes
 }
 
