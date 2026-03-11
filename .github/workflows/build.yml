@@ -161,11 +161,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # openssl-sys vendored build requires a full Perl installation.
-      # Git Bash's MSYS2 perl is missing Locale::Maketext::Simple; Strawberry
-      # Perl (pre-installed on windows-latest) has everything needed.
-      - name: Put Strawberry Perl first in PATH
-        run: echo "C:/Strawberry/perl/bin" >> "$GITHUB_PATH"
+      # openssl-sys vendored build requires Strawberry Perl (pre-installed on
+      # windows-latest). Git Bash prepends /usr/bin to PATH, so MSYS2 perl
+      # shadows Strawberry Perl regardless of GITHUB_PATH ordering. Removing
+      # the MSYS2 binary forces all perl lookups to fall through to Strawberry.
+      - name: Remove MSYS2 perl (use Strawberry Perl for openssl-sys)
+        run: rm -f /usr/bin/perl /usr/bin/perl.exe
 
       - uses: subosito/flutter-action@v2
         with:

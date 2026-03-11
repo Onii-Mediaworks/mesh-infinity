@@ -215,6 +215,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  --exclude=.dart_tool/ \
 	  --exclude=.flutter-plugins \
 	  --exclude=.flutter-plugins-dependencies \
+	  --exclude=ios/Podfile \
 	  "$(FRONTEND_DIR)/" "$$src_dir/"; \
 	rsync -a "$(ROOT_DIR)/assets/" "$(BUILD_DIR)/intermediates/ios/$$profile/assets/"; \
 	mkdir -p "$$src_dir/ios"; \
