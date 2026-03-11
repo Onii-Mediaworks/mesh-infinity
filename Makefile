@@ -15,6 +15,9 @@ APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/
         macos-rust-debug macos-rust-release \
         macos-xcode-debug macos-xcode-release \
         macos-debug macos-release \
+        ios-rust-debug ios-rust-release \
+        ios-xcode-debug ios-xcode-release \
+        ios-debug ios-release \
         android-rust-debug android-rust-release \
         android-gradle-debug android-gradle-release \
         android-debug android-release \
@@ -157,6 +160,117 @@ macos-debug macos-release: macos-%:
 	$(MAKE) macos-rust-$*
 	$(MAKE) macos-xcode-$*
 
+# ── iOS: Rust only ────────────────────────────────────────────────────────────
+#
+# Builds libmesh_infinity.a (staticlib) for the device ABI (aarch64-apple-ios).
+# Output: build/intermediates/ios/rust/<profile>/libmesh_infinity.a
+#
+# Used by CI to pre-build Rust in a dedicated job before running Xcode.
+# For local full builds use ios-debug / ios-release instead.
+
+ios-rust-debug ios-rust-release: ios-rust-%:
+	@set -euo pipefail; \
+	profile="$*"; \
+	cargo_flags=""; [[ "$$profile" == "release" ]] && cargo_flags="--release"; \
+	rust_subdir="debug"; [[ "$$profile" == "release" ]] && rust_subdir="release"; \
+	rust_target="$(BUILD_DIR)/intermediates/ios/backend"; \
+	rust_out="$(BUILD_DIR)/intermediates/ios/rust/$$profile"; \
+	\
+	mkdir -p "$$rust_target" "$$rust_out"; \
+	\
+	CARGO_TARGET_DIR="$$rust_target" \
+	  cargo build -p mesh-infinity --target aarch64-apple-ios $$cargo_flags; \
+	cp "$$rust_target/aarch64-apple-ios/$$rust_subdir/libmesh_infinity.a" \
+	   "$$rust_out/libmesh_infinity.a"; \
+	echo "Rust output: $$rust_out/libmesh_infinity.a"
+
+# ── iOS: Xcode only ───────────────────────────────────────────────────────────
+#
+# Runs Flutter framework build + Xcode archive → unsigned IPA.
+# Requires Rust staticlib to already exist at:
+#   build/intermediates/ios/rust/<profile>/libmesh_infinity.a
+#
+# Used by CI after downloading the pre-built Rust artifact.
+# For local full builds use ios-debug / ios-release instead.
+
+ios-xcode-debug ios-xcode-release: ios-xcode-%:
+	@set -euo pipefail; \
+	profile="$*"; \
+	cfg="Debug"; [[ "$$profile" == "release" ]] && cfg="Release"; \
+	src_dir="$(BUILD_DIR)/intermediates/ios/$$profile/src"; \
+	fw_dir="$(BUILD_DIR)/intermediates/ios/$$profile/frontend"; \
+	rust_out="$(BUILD_DIR)/intermediates/ios/$$profile/backend"; \
+	rust_src="$(BUILD_DIR)/intermediates/ios/rust/$$profile/libmesh_infinity.a"; \
+	\
+	mkdir -p \
+	  "$$src_dir" \
+	  "$$fw_dir" \
+	  "$$rust_out" \
+	  "$(BUILD_DIR)/intermediates/ios/xcode" \
+	  "$(BUILD_DIR)/intermediates/apple/flutter" \
+	  "$(BUILD_DIR)/output/ios/$$profile"; \
+	\
+	rsync -a --delete \
+	  --exclude=build/ \
+	  --exclude=.dart_tool/ \
+	  --exclude=.flutter-plugins \
+	  --exclude=.flutter-plugins-dependencies \
+	  "$(FRONTEND_DIR)/" "$$src_dir/"; \
+	rsync -a "$(ROOT_DIR)/assets/" "$(BUILD_DIR)/intermediates/ios/$$profile/assets/"; \
+	mkdir -p "$$src_dir/ios"; \
+	\
+	cp "$$rust_src" "$$rust_out/libmesh_infinity.a"; \
+	\
+	flutter config --enable-ios; \
+	( cd "$$src_dir" && flutter pub get ); \
+	flutter_mode_flags="--$$profile"; \
+	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
+	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
+	[[ "$$profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
+	( cd "$$src_dir" && flutter build ios-framework $$flutter_mode_flags \
+	    --output "$$fw_dir" ); \
+	\
+	flutter_root="$$(flutter --version --machine | jq -r .flutterRoot)"; \
+	printf "%s\n" \
+	  "FLUTTER_ROOT=$$flutter_root" \
+	  "FLUTTER_APPLICATION_PATH=$$src_dir" \
+	  "FLUTTER_FRAMEWORK_BASE=$(BUILD_DIR)/intermediates/ios" \
+	  "FLUTTER_TARGET=lib/main.dart" \
+	  "FLUTTER_BUILD_DIR=build" \
+	  "FLUTTER_BUILD_NAME=$(APP_VERSION)" \
+	  "FLUTTER_BUILD_NUMBER=$(APP_BUILD_NUMBER)" \
+	  > "$(BUILD_DIR)/intermediates/apple/flutter/Flutter-Generated.xcconfig"; \
+	\
+	xcodebuild \
+	  -project "$(APPLE_PROJECT)" \
+	  -scheme RunnerIOS \
+	  -configuration "$$cfg" \
+	  -sdk iphoneos \
+	  -derivedDataPath "$(BUILD_DIR)/intermediates/ios/xcode" \
+	  ARCHS=arm64 \
+	  ONLY_ACTIVE_ARCH=NO \
+	  CODE_SIGNING_ALLOWED=NO \
+	  CODE_SIGNING_REQUIRED=NO \
+	  CODE_SIGN_IDENTITY="" \
+	  FLUTTER_FRAMEWORK_BASE="$(BUILD_DIR)/intermediates/ios" \
+	  archive \
+	  -archivePath "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive"; \
+	\
+	xcodebuild -exportArchive \
+	  -archivePath "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive" \
+	  -exportPath "$(BUILD_DIR)/output/ios/$$profile" \
+	  -exportOptionsPlist "$(PLATFORMS_DIR)/apple/policy.env" \
+	  COMPILER_INDEX_STORE_ENABLE=NO; \
+	echo "Output: $(BUILD_DIR)/output/ios/$$profile/"
+
+# ── iOS: full (Rust + Xcode) ──────────────────────────────────────────────────
+#
+# Convenience target for local development. Equivalent to the CI two-job split.
+
+ios-debug ios-release: ios-%:
+	$(MAKE) ios-rust-$*
+	$(MAKE) ios-xcode-$*
+
 # ── Android: Rust only ────────────────────────────────────────────────────────
 #
 # Builds libmesh_infinity.so for all Android ABIs via cargo-ndk.
@@ -283,11 +397,7 @@ linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	\
 	flutter config --enable-linux-desktop; \
 	( cd "$$src_dir" && flutter pub get ); \
-	flutter_mode_flags="--$$profile"; \
-	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
-	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
-	[[ "$$profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
-	( cd "$$src_dir" && flutter build linux $$flutter_mode_flags ); \
+	( cd "$$src_dir" && flutter build linux "--$$profile" ); \
 	\
 	bundle_dir="$$src_dir/build/linux/x64/$$profile/bundle"; \
 	mkdir -p "$$bundle_dir/lib"; \
@@ -402,11 +512,7 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	\
 	flutter config --enable-windows-desktop; \
 	( cd "$$src_dir" && flutter pub get ); \
-	flutter_mode_flags="--$$profile"; \
-	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
-	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
-	[[ "$$profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
-	( cd "$$src_dir" && flutter build windows $$flutter_mode_flags ); \
+	( cd "$$src_dir" && flutter build windows "--$$profile" ); \
 	\
 	bundle_dir="$$src_dir/build/windows/x64/runner/$$cfg"; \
 	cp "$$rust_dll" "$$bundle_dir/mesh_infinity.dll"; \

@@ -19,12 +19,10 @@ env:
 
 jobs:
 
-  # ── Rust: Android ──────────────────────────────────────────────────────────
-  # Builds both debug and release .so files in a single job so the dependency
-  # graph and stdlib are compiled only once per ABI set.
+  # ── Android ────────────────────────────────────────────────────────────────
 
-  rust-android:
-    name: rust-android
+  android:
+    name: android
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,45 +34,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo install cargo-ndk
-
-      - run: make -j2 android-rust-debug android-rust-release
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rust-android-jni
-          path: build/intermediates/android/jni/
-
-  # ── Rust: macOS ────────────────────────────────────────────────────────────
-  # Builds and lipo-merges both debug and release dylibs in one macOS job.
-
-  rust-macos:
-    name: rust-macos
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
-
-      - run: make -j2 macos-rust-debug macos-rust-release
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rust-macos-libs
-          path: build/intermediates/macos/rust/
-
-  # ── Android: Gradle ────────────────────────────────────────────────────────
-  # Downloads pre-built .so files and runs the Gradle assembly step only.
-
-  build-android:
-    name: android
-    needs: rust-android
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
       - uses: actions/setup-java@v4
         with:
@@ -89,24 +48,70 @@ jobs:
         with:
           gradle-version: '8.14'
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: rust-android-jni
-          path: build/intermediates/android/jni/
+      - name: Install Android CMake
+        run: echo "y" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
 
-      - run: make -j2 android-gradle-debug android-gradle-release
+      - run: make -j2 android-debug android-release
 
       - uses: actions/upload-artifact@v4
         with:
           name: mesh-infinity-android
           path: build/output/android/**/*.apk
 
-  # ── Rust: Linux ────────────────────────────────────────────────────────────
-  # Builds libmesh_infinity.so for x86_64 Linux in a single job so the
-  # dependency graph and stdlib are compiled only once.
+  # ── macOS ──────────────────────────────────────────────────────────────────
 
-  rust-linux:
-    name: rust-linux
+  macos:
+    name: macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: make -j2 macos-debug macos-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesh-infinity-macos
+          path: build/output/macos/**/*.dmg
+
+  # ── iOS ────────────────────────────────────────────────────────────────────
+
+  ios:
+    name: ios
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: make -j2 ios-debug ios-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesh-infinity-ios
+          path: build/output/ios/**/*.ipa
+
+  # ── Linux ──────────────────────────────────────────────────────────────────
+
+  linux:
+    name: linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,18 +122,32 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: make -j2 linux-rust-debug linux-rust-release
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev libblkid-dev liblzma-dev ninja-build \
+            rpm ruby-dev
+          sudo gem install --no-document fpm
+          curl -Lo /usr/local/bin/appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /usr/local/bin/appimagetool
+
+      - run: make -j2 linux-debug linux-release
 
       - uses: actions/upload-artifact@v4
         with:
-          name: rust-linux-libs
-          path: build/intermediates/linux/rust/
+          name: mesh-infinity-linux
+          path: build/output/linux/
 
-  # ── Rust: Windows ──────────────────────────────────────────────────────────
-  # Builds mesh_infinity.dll for x86_64 Windows in a single job.
+  # ── Windows ────────────────────────────────────────────────────────────────
 
-  rust-windows:
-    name: rust-windows
+  windows:
+    name: windows
     runs-on: windows-latest
     defaults:
       run:
@@ -148,91 +167,6 @@ jobs:
       - name: Put Strawberry Perl first in PATH
         run: echo "C:/Strawberry/perl/bin" >> "$GITHUB_PATH"
 
-      - run: make -j2 windows-rust-debug windows-rust-release
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rust-windows-libs
-          path: build/intermediates/windows/rust/
-
-  # ── macOS: Xcode ───────────────────────────────────────────────────────────
-  # Downloads pre-built dylib and runs Flutter framework build + Xcode + DMG.
-
-  build-macos:
-    name: macos
-    needs: rust-macos
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: rust-macos-libs
-          path: build/intermediates/macos/rust/
-
-      - run: make macos-xcode-debug macos-xcode-release
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-macos
-          path: build/output/macos/**/*.dmg
-
-  # ── Linux: bundle + packaging ──────────────────────────────────────────────
-  # Downloads pre-built .so and runs Flutter build linux + packaging
-  # (AppImage, tar.gz, DEB, RPM).
-
-  build-linux:
-    name: linux
-    needs: rust-linux
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-
-      - name: Install Linux packaging dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y \
-            libgtk-3-dev libblkid-dev liblzma-dev ninja-build \
-            rpm ruby-dev
-          sudo gem install --no-document fpm
-          curl -Lo /usr/local/bin/appimagetool \
-            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x /usr/local/bin/appimagetool
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: rust-linux-libs
-          path: build/intermediates/linux/rust/
-
-      - run: make linux-bundle-debug linux-bundle-release
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mesh-infinity-linux
-          path: build/output/linux/
-
-  # ── Windows: bundle + packaging ────────────────────────────────────────────
-  # Downloads pre-built .dll and runs Flutter build windows + packaging
-  # (NSIS installer, portable zip).
-
-  build-windows:
-    name: windows
-    needs: rust-windows
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -241,12 +175,7 @@ jobs:
         shell: pwsh
         run: choco install nsis 7zip --no-progress -y
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: rust-windows-libs
-          path: build/intermediates/windows/rust/
-
-      - run: make windows-bundle-debug windows-bundle-release
+      - run: make -j2 windows-debug windows-release
 
       - uses: actions/upload-artifact@v4
         with:
@@ -261,16 +190,17 @@ jobs:
 
   prerelease:
     name: prerelease
-    needs: [build-macos, build-android, build-linux, build-windows]
+    needs: [macos, ios, android, linux, windows]
     if: |
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       (
-        needs.build-macos.result == 'success' ||
-        needs.build-android.result == 'success' ||
-        needs.build-linux.result == 'success' ||
-        needs.build-windows.result == 'success'
+        needs.macos.result == 'success' ||
+        needs.ios.result == 'success' ||
+        needs.android.result == 'success' ||
+        needs.linux.result == 'success' ||
+        needs.windows.result == 'success'
       )
     runs-on: ubuntu-latest
     steps:
@@ -328,6 +258,7 @@ jobs:
             ${{ steps.meta.outputs.changelog }}
           files: |
             dist/*.dmg
+            dist/*.ipa
             dist/*.apk
             dist/*.AppImage
             dist/*.tar.gz
@@ -343,17 +274,18 @@ jobs:
 
   release:
     name: release
-    needs: [build-macos, build-android, build-linux, build-windows]
+    needs: [macos, ios, android, linux, windows]
     if: |
       always() &&
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/v') &&
       !contains(github.ref, '-r') &&
       (
-        needs.build-macos.result == 'success' ||
-        needs.build-android.result == 'success' ||
-        needs.build-linux.result == 'success' ||
-        needs.build-windows.result == 'success'
+        needs.macos.result == 'success' ||
+        needs.ios.result == 'success' ||
+        needs.android.result == 'success' ||
+        needs.linux.result == 'success' ||
+        needs.windows.result == 'success'
       )
     runs-on: ubuntu-latest
     steps:
@@ -398,6 +330,7 @@ jobs:
             ${{ steps.meta.outputs.changelog }}
           files: |
             dist/*.dmg
+            dist/*.ipa
             dist/*.apk
             dist/*.AppImage
             dist/*.tar.gz
