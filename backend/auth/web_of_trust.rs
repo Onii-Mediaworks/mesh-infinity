@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
-use ed25519_dalek::{PublicKey, Signature, Verifier};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -110,7 +110,10 @@ impl TrustAttestation {
             ));
         }
 
-        let public_key = PublicKey::from_bytes(&self.endorser_public_key)
+        let key_bytes: [u8; 32] = self.endorser_public_key[..32]
+            .try_into()
+            .map_err(|_| MeshInfinityError::CryptoError("Invalid public key length".to_string()))?;
+        let public_key = VerifyingKey::from_bytes(&key_bytes)
             .map_err(|e| MeshInfinityError::CryptoError(format!("Invalid public key: {}", e)))?;
 
         if self.signature.len() != 64 {
@@ -120,8 +123,7 @@ impl TrustAttestation {
         let sig_bytes: [u8; 64] = self.signature[..64]
             .try_into()
             .map_err(|_| MeshInfinityError::CryptoError("Invalid signature bytes".to_string()))?;
-        let signature = Signature::from_bytes(&sig_bytes)
-            .map_err(|_| MeshInfinityError::CryptoError("Invalid signature bytes".to_string()))?;
+        let signature = Signature::from_bytes(&sig_bytes);
 
         let message = self.signable_message();
         Ok(public_key.verify(&message, &signature).is_ok())
@@ -846,7 +848,7 @@ fn attestation_fingerprint(attestation: &TrustAttestation) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Keypair, Signer};
+    use ed25519_dalek::{Signer, SigningKey};
     use rand_core::OsRng;
 
     fn peer_id_from_key(pk: &[u8; 32]) -> PeerId {
@@ -855,8 +857,8 @@ mod tests {
 
     #[test]
     fn add_attestation_rejects_replay_duplicate() {
-        let keypair = Keypair::generate(&mut OsRng);
-        let endorser = peer_id_from_key(&keypair.public.to_bytes());
+        let keypair = SigningKey::generate(&mut OsRng);
+        let endorser = peer_id_from_key(&keypair.verifying_key().to_bytes());
         let target = [9u8; 32];
 
         let wot = WebOfTrust::new();
@@ -868,7 +870,7 @@ mod tests {
             target,
             TrustLevel::Trusted,
             VerificationMethod::TrustedIntroduction,
-            keypair.public.to_bytes(),
+            keypair.verifying_key().to_bytes(),
         );
         att.signature = keypair.sign(&att.signable_message()).to_bytes().to_vec();
 
@@ -879,9 +881,9 @@ mod tests {
 
     #[test]
     fn add_attestation_rejects_public_key_identity_mismatch() {
-        let signer = Keypair::generate(&mut OsRng);
-        let wrong = Keypair::generate(&mut OsRng);
-        let endorser = peer_id_from_key(&wrong.public.to_bytes());
+        let signer = SigningKey::generate(&mut OsRng);
+        let wrong = SigningKey::generate(&mut OsRng);
+        let endorser = peer_id_from_key(&wrong.verifying_key().to_bytes());
         let target = [7u8; 32];
 
         let wot = WebOfTrust::new();
@@ -893,7 +895,7 @@ mod tests {
             target,
             TrustLevel::Trusted,
             VerificationMethod::TrustedIntroduction,
-            signer.public.to_bytes(),
+            signer.verifying_key().to_bytes(),
         );
         att.signature = signer.sign(&att.signable_message()).to_bytes().to_vec();
 

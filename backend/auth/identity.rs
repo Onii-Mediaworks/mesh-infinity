@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
@@ -16,7 +16,7 @@ use crate::core::PeerId;
 
 pub struct Identity {
     pub peer_id: PeerId,
-    pub keypair: Keypair,
+    pub signing_key: SigningKey,
     pub dh_secret: StaticSecret,
     pub dh_public: [u8; 32],
     pub name: Option<String>,
@@ -50,16 +50,16 @@ impl IdentityManager {
     /// The first generated identity is automatically marked as primary.
     pub fn generate_identity(&mut self, name: Option<String>) -> Result<PeerId> {
         let mut rng = OsRng;
-        let keypair = Keypair::generate(&mut rng);
-        let dh_secret = StaticSecret::new(rng);
+        let signing_key = SigningKey::generate(&mut rng);
+        let dh_secret = StaticSecret::random_from_rng(&mut rng);
         let dh_public = X25519PublicKey::from(&dh_secret).to_bytes();
 
-        let peer_id = derive_peer_id(&keypair.public);
+        let peer_id = derive_peer_id(&signing_key.verifying_key());
         let now = SystemTime::now();
 
         let identity = Identity {
             peer_id,
-            keypair,
+            signing_key,
             dh_secret,
             dh_public,
             name,
@@ -106,7 +106,7 @@ impl IdentityManager {
     /// Sign arbitrary message bytes with the selected local identity.
     pub fn sign(&self, peer_id: &PeerId, message: &[u8]) -> Result<Vec<u8>> {
         if let Some(identity) = self.identities.get(peer_id) {
-            Ok(identity.keypair.sign(message).to_bytes().to_vec())
+            Ok(identity.signing_key.sign(message).to_bytes().to_vec())
         } else {
             Err(MeshInfinityError::AuthError(
                 "Identity not found".to_string(),
@@ -120,9 +120,8 @@ impl IdentityManager {
             let signature_bytes: [u8; 64] = signature.try_into().map_err(|_| {
                 MeshInfinityError::AuthError("Invalid signature length".to_string())
             })?;
-            let signature = Signature::from_bytes(&signature_bytes)
-                .map_err(|_| MeshInfinityError::AuthError("Invalid signature bytes".to_string()))?;
-            Ok(identity.keypair.public.verify(message, &signature).is_ok())
+            let signature = Signature::from_bytes(&signature_bytes);
+            Ok(identity.signing_key.verifying_key().verify(message, &signature).is_ok())
         } else {
             Err(MeshInfinityError::AuthError(
                 "Identity not found".to_string(),
@@ -134,7 +133,7 @@ impl IdentityManager {
     pub fn public_signing_key(&self, peer_id: &PeerId) -> Result<[u8; 32]> {
         self.identities
             .get(peer_id)
-            .map(|identity| identity.keypair.public.to_bytes())
+            .map(|identity| identity.signing_key.verifying_key().to_bytes())
             .ok_or_else(|| MeshInfinityError::AuthError("Identity not found".to_string()))
     }
 
@@ -149,7 +148,7 @@ impl IdentityManager {
     /// Reconstruct and register an identity from stored secret key bytes.
     ///
     /// This is the inverse of [`primary_secret_key_bytes`]: it rebuilds the
-    /// Ed25519 keypair and X25519 DH keypair from their serialised scalar
+    /// Ed25519 signing key and X25519 DH keypair from their serialised scalar
     /// representations.  The first loaded identity is automatically set as
     /// primary.
     pub fn load_identity(
@@ -165,19 +164,15 @@ impl IdentityManager {
             MeshInfinityError::AuthError("X25519 secret key must be 32 bytes".to_string())
         })?;
 
-        let secret = SecretKey::from_bytes(secret_bytes)
-            .map_err(|e: ed25519_dalek::SignatureError| MeshInfinityError::AuthError(e.to_string()))?;
-        let public = PublicKey::from(&secret);
-        let keypair = Keypair { secret, public };
-
+        let signing_key = SigningKey::from_bytes(secret_bytes);
         let dh_secret = StaticSecret::from(dh_bytes);
         let dh_public = X25519PublicKey::from(&dh_secret).to_bytes();
-        let peer_id = derive_peer_id(&keypair.public);
+        let peer_id = derive_peer_id(&signing_key.verifying_key());
         let now = SystemTime::now();
 
         let identity = Identity {
             peer_id,
-            keypair,
+            signing_key,
             dh_secret,
             dh_public,
             name,
@@ -213,18 +208,18 @@ impl IdentityManager {
     pub fn primary_secret_key_bytes(&self) -> Option<([u8; 32], [u8; 32])> {
         self.primary_identity.and_then(|peer_id| {
             self.identities.get(&peer_id).map(|identity| {
-                (identity.keypair.secret.to_bytes(), identity.dh_secret.to_bytes())
+                (identity.signing_key.to_bytes(), identity.dh_secret.to_bytes())
             })
         })
     }
 }
 
 /// Derive stable peer id from public signing key with domain separation.
-fn derive_peer_id(public_key: &PublicKey) -> PeerId {
+fn derive_peer_id(verifying_key: &VerifyingKey) -> PeerId {
     const DOMAIN: &str = "meshinfinity-peer-id-v1";
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN.as_bytes());
-    hasher.update(public_key.as_bytes());
+    hasher.update(verifying_key.as_bytes());
     let digest = hasher.finalize();
     let mut peer_id = [0u8; 32];
     peer_id.copy_from_slice(&digest);

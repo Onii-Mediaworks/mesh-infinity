@@ -7,7 +7,7 @@ use crate::core::core::{PeerInfo, TransportQuality, TransportType};
 use crate::core::error::{MeshInfinityError, Result};
 use crate::transport::traits::{Connection, Listener, Transport};
 
-use chacha20poly1305::aead::{Aead, NewAead};
+use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use hkdf::Hkdf;
 use rand_core::OsRng;
@@ -113,7 +113,7 @@ impl HandshakeState {
     fn client_handshake(stream: &mut TcpStream) -> Result<Self> {
         stream.write_all(HANDSHAKE_TAG)?;
 
-        let client_secret = StaticSecret::new(OsRng);
+        let client_secret = StaticSecret::random_from_rng(OsRng);
         let client_pub = X25519PublicKey::from(&client_secret);
         stream.write_all(client_pub.as_bytes())?;
 
@@ -146,7 +146,7 @@ impl HandshakeState {
         stream.read_exact(&mut client_pub_bytes)?;
         let client_pub = X25519PublicKey::from(client_pub_bytes);
 
-        let server_secret = StaticSecret::new(OsRng);
+        let server_secret = StaticSecret::random_from_rng(OsRng);
         let server_pub = X25519PublicKey::from(&server_secret);
 
         stream.write_all(HANDSHAKE_TAG)?;

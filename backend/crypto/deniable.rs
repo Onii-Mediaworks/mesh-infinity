@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
 use crate::core::error::{MeshInfinityError, Result};
-use ed25519_dalek::{Keypair, PublicKey, Signature, Signer, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha512};
@@ -13,9 +13,9 @@ use sha2::{Digest, Sha512};
 /// Provides ring signatures so users can plausibly deny sending messages
 /// Even if forced to reveal keys, cannot prove which ring member actually signed
 pub struct DeniableAuth {
-    identity_keypair: Keypair,
+    identity_signing_key: SigningKey,
     ephemeral_keys: HashMap<SessionId, EphemeralKeyPair>,
-    ring_members: Vec<PublicKey>,
+    ring_members: Vec<VerifyingKey>,
     max_ring_size: usize,
 }
 
@@ -23,7 +23,7 @@ const EPHEMERAL_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 const DEFAULT_MAX_RING_SIZE: usize = 16;
 
 pub struct EphemeralKeyPair {
-    keypair: Keypair,
+    signing_key: SigningKey,
     created_at: SystemTime,
 }
 
@@ -32,9 +32,9 @@ pub struct SessionId([u8; 32]);
 
 impl DeniableAuth {
     /// Construct a new instance.
-    pub fn new(identity_keypair: Keypair) -> Self {
+    pub fn new(identity_signing_key: SigningKey) -> Self {
         Self {
-            identity_keypair,
+            identity_signing_key,
             ephemeral_keys: HashMap::new(),
             ring_members: Vec::new(),
             max_ring_size: DEFAULT_MAX_RING_SIZE,
@@ -48,15 +48,15 @@ impl DeniableAuth {
     }
 
     /// Generate ephemeral key.
-    pub fn generate_ephemeral_key(&mut self, session_id: SessionId) -> Result<PublicKey> {
+    pub fn generate_ephemeral_key(&mut self, session_id: SessionId) -> Result<VerifyingKey> {
         let mut rng = OsRng;
-        let keypair = Keypair::generate(&mut rng);
-        let public_key = keypair.public;
+        let signing_key = SigningKey::generate(&mut rng);
+        let public_key = signing_key.verifying_key();
 
         self.ephemeral_keys.insert(
             session_id,
             EphemeralKeyPair {
-                keypair,
+                signing_key,
                 created_at: std::time::SystemTime::now(),
             },
         );
@@ -65,7 +65,7 @@ impl DeniableAuth {
     }
 
     /// Add ring member.
-    pub fn add_ring_member(&mut self, public_key: PublicKey) {
+    pub fn add_ring_member(&mut self, public_key: VerifyingKey) {
         if !self.ring_members.contains(&public_key) {
             self.ring_members.push(public_key);
         }
@@ -82,7 +82,7 @@ impl DeniableAuth {
                     "Ephemeral key expired".to_string(),
                 ));
             }
-            Ok(ephemeral.keypair.sign(message))
+            Ok(ephemeral.signing_key.sign(message))
         } else {
             Err(crate::core::error::MeshInfinityError::CryptoError(
                 "No ephemeral key for session".to_string(),
@@ -93,7 +93,7 @@ impl DeniableAuth {
     /// Verify signature.
     pub fn verify_signature(
         &self,
-        public_key: &PublicKey,
+        public_key: &VerifyingKey,
         message: &[u8],
         signature: &Signature,
     ) -> Result<bool> {
@@ -105,7 +105,7 @@ impl DeniableAuth {
         &self,
         session_id: &SessionId,
         message: &[u8],
-        ring: &[PublicKey],
+        ring: &[VerifyingKey],
     ) -> Result<RingSignature> {
         // Linkable Spontaneous Anonymous Group (LSAG) Ring Signature
         // Provides anonymity within the ring while preventing double-signing
@@ -116,12 +116,12 @@ impl DeniableAuth {
 
         let ring_members = if ring.is_empty() {
             // Include identity to ensure at least one member
-            vec![self.identity_keypair.public]
+            vec![self.identity_signing_key.verifying_key()]
         } else {
             let mut members = ring.to_vec();
             // Ensure our key is in the ring
-            if !members.contains(&ephemeral.keypair.public) {
-                members.push(ephemeral.keypair.public);
+            if !members.contains(&ephemeral.signing_key.verifying_key()) {
+                members.push(ephemeral.signing_key.verifying_key());
             }
             // Limit ring size for performance
             if members.len() > self.max_ring_size {
@@ -139,11 +139,11 @@ impl DeniableAuth {
         // Find our position in the ring
         let signer_index = ring_members
             .iter()
-            .position(|pk| pk == &ephemeral.keypair.public)
+            .position(|pk| pk == &ephemeral.signing_key.verifying_key())
             .ok_or_else(|| MeshInfinityError::CryptoError("Signer not in ring".to_string()))?;
 
         // Generate the ring signature
-        let ring_sig = self.lsag_sign(&ephemeral.keypair, &ring_members, signer_index, message)?;
+        let ring_sig = self.lsag_sign(&ephemeral.signing_key, &ring_members, signer_index, message)?;
 
         Ok(ring_sig)
     }
@@ -153,8 +153,8 @@ impl DeniableAuth {
     /// by Joseph K. Liu, Victor K. Wei, and Duncan S. Wong
     fn lsag_sign(
         &self,
-        keypair: &Keypair,
-        ring: &[PublicKey],
+        signing_key: &SigningKey,
+        ring: &[VerifyingKey],
         signer_idx: usize,
         message: &[u8],
     ) -> Result<RingSignature> {
@@ -163,7 +163,7 @@ impl DeniableAuth {
 
         // Generate key image (linkability tag)
         // H_p(P) where P is our public key
-        let key_image = self.hash_to_point(keypair.public.as_bytes())?;
+        let key_image = self.hash_to_point(signing_key.verifying_key().as_bytes())?;
 
         // Random scalar for our position
         let alpha = {
@@ -223,7 +223,7 @@ impl DeniableAuth {
         // while removing placeholder behavior.
         let transcript =
             Self::signature_transcript(message, &key_image, ring, &c_values, &r_values);
-        let binding_sig = keypair.sign(&transcript);
+        let binding_sig = signing_key.sign(&transcript);
 
         Ok(RingSignature {
             signature: binding_sig,
@@ -247,7 +247,7 @@ impl DeniableAuth {
     fn signature_transcript(
         message: &[u8],
         key_image: &[u8; 32],
-        ring: &[PublicKey],
+        ring: &[VerifyingKey],
         c_values: &[[u8; 32]],
         r_values: &[[u8; 32]],
     ) -> Vec<u8> {
@@ -283,7 +283,7 @@ impl DeniableAuth {
 /// Contains the signature data and the anonymity set (ring)
 pub struct RingSignature {
     pub signature: Signature, // Legacy field, may be removed
-    pub ring: Vec<PublicKey>,
+    pub ring: Vec<VerifyingKey>,
     pub key_image: Option<[u8; 32]>, // Linkability tag (prevents double-signing)
     pub c_values: Option<Vec<[u8; 32]>>, // Challenge values
     pub r_values: Option<Vec<[u8; 32]>>, // Response values

@@ -5,7 +5,7 @@
 //! not weakened by backup files.
 
 use argon2::{Argon2, ParamsBuilder};
-use chacha20poly1305::aead::{Aead, NewAead};
+use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};

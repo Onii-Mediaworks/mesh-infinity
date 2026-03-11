@@ -127,7 +127,7 @@ impl MeshInfinityService {
             .get_primary_identity()
             .map(|identity| WotIdentity {
                 peer_id: identity.peer_id,
-                public_key: identity.keypair.public.to_bytes(),
+                public_key: identity.signing_key.verifying_key().to_bytes(),
                 name: identity.name.clone(),
             })
             .unwrap_or_else(|| WotIdentity {
@@ -149,8 +149,8 @@ impl MeshInfinityService {
             // Deterministic fallback only for service bootstrap resilience.
             let mut seed = [0u8; 32];
             seed[..identity_peer_id.len()].copy_from_slice(&identity_peer_id);
-            let keypair = ed25519_dalek::Keypair::generate(&mut rand_core::OsRng);
-            MessageCrypto::new(keypair, seed)
+            let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+            MessageCrypto::new(signing_key, seed)
         })));
         let message_router = Arc::new(MessageRouter::new(
             transport_manager.get_manager(),

@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use argon2::{Algorithm, Argon2, Params as ArgonParams, Version};
 use base64::{engine::general_purpose, Engine as _};
 use bip39::{Language, Mnemonic};
-use chacha20poly1305::aead::{Aead, NewAead};
+use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};

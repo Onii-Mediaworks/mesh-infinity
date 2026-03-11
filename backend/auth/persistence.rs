@@ -9,7 +9,7 @@
 //! unreadable even if `identity.dat` was copied elsewhere), then removes any
 //! remaining files.
 
-use chacha20poly1305::aead::{Aead, NewAead};
+use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
