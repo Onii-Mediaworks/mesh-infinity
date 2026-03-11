@@ -73,7 +73,7 @@ impl MessageCrypto {
         let signing_keypair = SigningKey::generate(&mut OsRng);
 
         let mut dh_secret_bytes = [0u8; 32];
-        getrandom::getrandom(&mut dh_secret_bytes).map_err(|_| {
+        getrandom::fill(&mut dh_secret_bytes).map_err(|_| {
             MeshInfinityError::CryptoError("Failed to generate random bytes".into())
         })?;
 
@@ -291,7 +291,7 @@ impl MessageCrypto {
         self.nonce_counter = self.nonce_counter.wrapping_add(1);
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         nonce_bytes[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
-        getrandom::getrandom(&mut nonce_bytes[8..])
+        getrandom::fill(&mut nonce_bytes[8..])
             .map_err(|_| MeshInfinityError::CryptoError("Failed to generate nonce".into()))?;
 
         let nonce = Nonce::from_slice(&nonce_bytes);
