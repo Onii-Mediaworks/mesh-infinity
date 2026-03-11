@@ -1,5 +1,5 @@
 // Trust graph persistence and storage
-use ed25519_dalek::{PublicKey, Signature, Verifier};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -153,13 +153,12 @@ impl RevocationCertificate {
             return Ok(false);
         }
 
-        let public_key = PublicKey::from_bytes(revoker_public_key)
+        let public_key = VerifyingKey::from_bytes(revoker_public_key)
             .map_err(|e| MeshInfinityError::CryptoError(format!("Invalid public key: {}", e)))?;
         let sig_bytes: [u8; 64] = self.signature[..64]
             .try_into()
             .map_err(|_| MeshInfinityError::CryptoError("Invalid signature bytes".to_string()))?;
-        let signature = Signature::from_bytes(&sig_bytes)
-            .map_err(|_| MeshInfinityError::CryptoError("Invalid signature bytes".to_string()))?;
+        let signature = Signature::from_bytes(&sig_bytes);
 
         Ok(public_key
             .verify(&self.signable_message(), &signature)

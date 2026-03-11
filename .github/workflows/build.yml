@@ -76,6 +76,9 @@ jobs:
         with:
           channel: stable
 
+      - name: Install rsync
+        run: brew install rsync
+
       - run: make -j2 macos-debug macos-release
 
       - uses: actions/upload-artifact@v4
@@ -100,6 +103,9 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+
+      - name: Install rsync
+        run: brew install rsync
 
       - run: make -j2 ios-debug ios-release
 
@@ -131,7 +137,7 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y \
             libgtk-3-dev libblkid-dev liblzma-dev ninja-build \
-            rpm ruby-dev
+            rpm ruby-dev rsync
           sudo gem install --no-document fpm
           curl -Lo /usr/local/bin/appimagetool \
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
@@ -162,11 +168,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # openssl-sys vendored build requires Strawberry Perl (pre-installed on
-      # windows-latest). Git Bash prepends /usr/bin to PATH, so MSYS2 perl
-      # shadows Strawberry Perl regardless of GITHUB_PATH ordering. Removing
-      # the MSYS2 binary forces all perl lookups to fall through to Strawberry.
+      # windows-latest). Git Bash's MSYS2 perl shadows Strawberry even with
+      # GITHUB_PATH ordering. Remove it via PowerShell using its Windows path.
       - name: Remove MSYS2 perl (use Strawberry Perl for openssl-sys)
-        run: rm -f /usr/bin/perl /usr/bin/perl.exe
+        shell: pwsh
+        run: Remove-Item -Path "C:\Program Files\Git\usr\bin\perl.exe" -ErrorAction SilentlyContinue
 
       - uses: subosito/flutter-action@v2
         with:
@@ -174,7 +180,7 @@ jobs:
 
       - name: Install Windows packaging dependencies
         shell: pwsh
-        run: choco install nsis 7zip --no-progress -y
+        run: choco install nsis 7zip rsync --no-progress -y
 
       - run: make -j2 windows-debug windows-release
 

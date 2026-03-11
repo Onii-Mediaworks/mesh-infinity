@@ -15,10 +15,10 @@
 use std::collections::HashMap;
 
 use chacha20poly1305::{
-    aead::{Aead, NewAead},
-    ChaCha20Poly1305, Nonce,
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Key, Nonce,
 };
-use ed25519_dalek::{Keypair, PublicKey, Signature, Signer, Verifier, SIGNATURE_LENGTH};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey, SIGNATURE_LENGTH};
 use hkdf::Hkdf;
 use rand_core::OsRng;
 use sha2::Sha256;
@@ -36,8 +36,8 @@ const TAG_SIZE: usize = 16;
 
 /// Message crypto handler for the multi-layer encryption scheme
 pub struct MessageCrypto {
-    /// Our Ed25519 signing keypair
-    signing_keypair: Keypair,
+    /// Our Ed25519 signing key
+    signing_keypair: SigningKey,
 
     /// Our X25519 static key for Diffie-Hellman
     static_dh_key: StaticSecret,
@@ -55,7 +55,7 @@ pub struct MessageCrypto {
 
 impl MessageCrypto {
     /// Create a new MessageCrypto instance from existing keys
-    pub fn new(signing_keypair: Keypair, dh_secret: [u8; 32]) -> Self {
+    pub fn new(signing_keypair: SigningKey, dh_secret: [u8; 32]) -> Self {
         let static_dh_key = StaticSecret::from(dh_secret);
         let static_dh_public = X25519PublicKey::from(&static_dh_key);
 
@@ -70,7 +70,7 @@ impl MessageCrypto {
 
     /// Generate a new MessageCrypto with random keys
     pub fn generate() -> Result<Self> {
-        let signing_keypair = Keypair::generate(&mut OsRng);
+        let signing_keypair = SigningKey::generate(&mut OsRng);
 
         let mut dh_secret_bytes = [0u8; 32];
         getrandom::getrandom(&mut dh_secret_bytes).map_err(|_| {
@@ -82,7 +82,7 @@ impl MessageCrypto {
 
     /// Get our public signing key
     pub fn public_signing_key(&self) -> [u8; 32] {
-        self.signing_keypair.public.to_bytes()
+        self.signing_keypair.verifying_key().to_bytes()
     }
 
     /// Get our public DH key
@@ -150,7 +150,7 @@ impl MessageCrypto {
         double_signed.extend_from_slice(&outer_signature.to_bytes());
 
         // Step 4: Encrypt with recipient's public key (ephemeral ECDH)
-        let ephemeral_secret = EphemeralSecret::new(OsRng);
+        let ephemeral_secret = EphemeralSecret::random_from(OsRng);
         let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
 
         let recipient_public = X25519PublicKey::from(*recipient_public_dh);
@@ -216,13 +216,12 @@ impl MessageCrypto {
         let trust_encrypted = &double_signed[..outer_sig_start];
         let outer_signature_bytes = &double_signed[outer_sig_start..];
 
-        let sender_public = PublicKey::from_bytes(sender_public_signing)
+        let sender_public = VerifyingKey::from_bytes(sender_public_signing)
             .map_err(|_| MeshInfinityError::CryptoError("Invalid sender public key".into()))?;
 
         let mut outer_sig_array = [0u8; SIGNATURE_LENGTH];
         outer_sig_array.copy_from_slice(outer_signature_bytes);
-        let outer_signature = Signature::from_bytes(&outer_sig_array)
-            .map_err(|_| MeshInfinityError::CryptoError("Invalid outer signature bytes".into()))?;
+        let outer_signature = Signature::from_bytes(&outer_sig_array);
 
         sender_public
             .verify(trust_encrypted, &outer_signature)
@@ -250,8 +249,7 @@ impl MessageCrypto {
 
         let mut inner_sig_array = [0u8; SIGNATURE_LENGTH];
         inner_sig_array.copy_from_slice(inner_signature_bytes);
-        let inner_signature = Signature::from_bytes(&inner_sig_array)
-            .map_err(|_| MeshInfinityError::CryptoError("Invalid inner signature bytes".into()))?;
+        let inner_signature = Signature::from_bytes(&inner_sig_array);
 
         sender_public
             .verify(message, &inner_signature)
@@ -287,7 +285,7 @@ impl MessageCrypto {
 
     /// Internal AEAD encryption using ChaCha20-Poly1305
     fn aead_encrypt(&mut self, key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>> {
-        let cipher = ChaCha20Poly1305::new(key.into());
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
 
         // Generate nonce from counter + random
         self.nonce_counter = self.nonce_counter.wrapping_add(1);
@@ -318,7 +316,7 @@ impl MessageCrypto {
             ));
         }
 
-        let cipher = ChaCha20Poly1305::new(key.into());
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
 
         let nonce = Nonce::from_slice(&ciphertext[..NONCE_SIZE]);
         let actual_ciphertext = &ciphertext[NONCE_SIZE..];

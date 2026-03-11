@@ -2556,7 +2556,7 @@ pub extern "C" fn mi_import_identity(
     };
 
     // Generate a fresh X25519 DH secret — the backup format does not preserve it.
-    let dh_secret = X25519StaticSecret::new(rand_core::OsRng);
+    let dh_secret = X25519StaticSecret::random_from_rng(rand_core::OsRng);
     let x25519 = dh_secret.to_bytes();
 
     let name = settings.display_name.clone();

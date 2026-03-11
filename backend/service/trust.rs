@@ -33,7 +33,7 @@ impl MeshInfinityService {
             .get_primary_identity()
             .map(|identity| IdentitySummary {
                 peer_id: identity.peer_id,
-                public_key: identity.keypair.public.to_bytes(),
+                public_key: identity.signing_key.verifying_key().to_bytes(),
                 dh_public: identity.dh_public,
                 name: identity.name.clone(),
             })
@@ -57,11 +57,11 @@ impl MeshInfinityService {
             *target_peer_id,
             trust_level,
             method,
-            identity.keypair.public.to_bytes(),
+            identity.signing_key.verifying_key().to_bytes(),
         );
 
         let message = attestation.signable_message();
-        let signature = identity.keypair.sign(&message);
+        let signature = identity.signing_key.sign(&message);
         attestation.signature = signature.to_bytes().to_vec();
 
         self.web_of_trust.add_attestation(attestation)
