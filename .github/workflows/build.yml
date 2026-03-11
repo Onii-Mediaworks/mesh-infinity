@@ -258,15 +258,15 @@ jobs:
             **Changes since last release:**
             ${{ steps.meta.outputs.changelog }}
           files: |
-            dist/*.dmg
-            dist/*.ipa
-            dist/*.apk
-            dist/*.AppImage
-            dist/*.tar.gz
-            dist/*.deb
-            dist/*.rpm
-            dist/*.exe
-            dist/*.zip
+            dist/**/*.dmg
+            dist/**/*.ipa
+            dist/**/*.apk
+            dist/**/*.AppImage
+            dist/**/*.tar.gz
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.exe
+            dist/**/*.zip
 
   # ── Full Release ───────────────────────────────────────────────────────────
   # Triggered by pushing a version tag (e.g. git tag v0.3.0 && git push --tags).
@@ -330,12 +330,12 @@ jobs:
             **Changelog:**
             ${{ steps.meta.outputs.changelog }}
           files: |
-            dist/*.dmg
-            dist/*.ipa
-            dist/*.apk
-            dist/*.AppImage
-            dist/*.tar.gz
-            dist/*.deb
-            dist/*.rpm
-            dist/*.exe
-            dist/*.zip
+            dist/**/*.dmg
+            dist/**/*.ipa
+            dist/**/*.apk
+            dist/**/*.AppImage
+            dist/**/*.tar.gz
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.exe
+            dist/**/*.zip
