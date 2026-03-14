@@ -1394,6 +1394,7 @@ mod tests {
     // private types without going through the public API.
     use super::*;
     use crate::core::mesh::VerificationMethod;
+    }
 
     /// When all transports are disabled, routing fails and the message should be
     /// queued in the passive outbox rather than dropped on the floor.
