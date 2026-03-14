@@ -395,7 +395,7 @@ class _SectionRail extends StatelessWidget {
   final AppSection selected;
 
   /// Callback fired when the user taps a rail destination.
-  /// ValueChanged<T> is Dart shorthand for `void Function(T value)`.
+  /// `ValueChanged<T>` is Dart shorthand for `void Function(T value)`.
   final ValueChanged<AppSection> onSelect;
 
   @override

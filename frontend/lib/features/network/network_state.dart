@@ -106,7 +106,7 @@ import '../../backend/models/settings_models.dart';
 /// 1. NetworkState extends ChangeNotifier.
 /// 2. Provider registers it at the top of the widget tree (in app.dart).
 /// 3. NetworkScreen (and any other network-related widget) calls
-///    context.watch<NetworkState>() to subscribe.
+///    `context.watch<NetworkState>()` to subscribe.
 /// 4. Every time NetworkState calls notifyListeners(), Flutter rebuilds
 ///    those subscribed widgets with the latest data.
 class NetworkState extends ChangeNotifier {

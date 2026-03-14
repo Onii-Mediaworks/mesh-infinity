@@ -153,7 +153,11 @@ mod android {
     //            obtain its own.
     // `JavaVM`  — the Rust-level wrapper around the raw JVM pointer
     //             (`SysJavaVM`).  It provides methods like `attach_current_thread()`.
-    use jni::{JNIEnv, JavaVM};
+    // In jni 0.22, `JNIEnv` was split into `EnvUnowned` (FFI-safe raw pointer,
+    // used as function parameters) and `Env` (the full API with find_class,
+    // call_static_method, etc.).  We import `JavaVM` for attach, and use
+    // `jni::Env` (fully qualified) for the environment type in helpers below.
+    use jni::JavaVM;
 
     // The fully-qualified Java class name of our Kotlin bridge class.
     //
@@ -243,12 +247,9 @@ mod android {
         // `vm` is a valid JVM pointer — which we have just verified above.
         // (The JNI spec guarantees `JNI_GetCreatedJavaVMs` only writes valid
         // non-null pointers when it reports count >= 1.)
-        let java_vm = unsafe { JavaVM::from_raw(vm) }.map_err(|e| {
-            MeshInfinityError::CryptoError(format!(
-                "Failed to access Android JVM for keystore: {}",
-                e
-            ))
-        })?;
+        // In jni 0.22, `JavaVM::from_raw` is infallible — it returns `JavaVM`
+        // directly rather than `Result<JavaVM>`.  We just assert validity via `unsafe`.
+        let java_vm = unsafe { JavaVM::from_raw(vm) };
 
         // Return the JVM wrapped in ManuallyDrop to prevent accidental shutdown.
         // The caller will use this only briefly to attach the current thread.
@@ -283,25 +284,42 @@ mod android {
     // The `with_env` helper abstracts this pattern: find the JVM, attach
     // the thread, pass a `JNIEnv` to the closure `f`, then clean up automatically.
     //
-    // The type signature `impl FnOnce(&mut JNIEnv) -> Result<T>` means:
+    // The type signature `impl FnOnce(&mut jni::Env) -> Result<T>` means:
     //   - `f` is a closure (anonymous function) that can only be called once.
-    //   - It receives a mutable reference to a `JNIEnv`.
+    //   - It receives a mutable reference to a `jni::Env` (the full-API env).
     //   - It returns a `Result<T>` (success or error).
     //   - `<T>` is a generic type parameter — the return type can be anything.
-    fn with_env<T>(f: impl FnOnce(&mut JNIEnv) -> Result<T>) -> Result<T> {
+    //
+    // In jni 0.22, `attach_current_thread` changed to a callback-based API:
+    // instead of returning an `AttachGuard`, it takes a `FnOnce(&mut Env) -> Result<T,E>`
+    // and calls it while the thread is attached, detaching automatically afterward.
+    // We route the callback's Result out via a local variable to bridge the types.
+    fn with_env<T>(f: impl FnOnce(&mut jni::Env) -> Result<T>) -> Result<T> {
         // Find the already-running JVM.
         let vm = get_vm()?;
-        // Attach the current thread to the JVM and get a JNIEnv handle.
-        // `attach_current_thread()` is idempotent: if the thread is already
-        // attached (e.g. we are on the main Flutter thread), it is a no-op
-        // that still returns a valid JNIEnv.
-        let mut env = vm
-            .attach_current_thread()
-            .map_err(|e| MeshInfinityError::CryptoError(format!("JNI attach failed: {}", e)))?;
-        // Call the provided closure with our JNI environment handle.
-        // When `env` (the AttachGuard) drops at the end of this function,
-        // the thread is automatically detached from the JVM.
-        f(&mut env)
+        // Wrap `f` in Option so we can `take()` it inside the closure without
+        // moving it into the closure (which would prevent us from reading the result).
+        let mut opt_f = Some(f);
+        // Where we store the result that `f` produces.
+        let mut retval: Result<T> = Err(MeshInfinityError::CryptoError(
+            "JNI attach_current_thread did not invoke callback".into(),
+        ));
+        // jni 0.22 callback-based attach: the closure receives `&mut jni::Env`,
+        // which has all the JNI methods (find_class, call_static_method, etc.).
+        // The outer Result uses `jni::errors::Error` as its error type so that
+        // any failure during attach itself is propagated correctly.
+        let attach_result: std::result::Result<(), jni::errors::Error> =
+            vm.attach_current_thread(|env| {
+                if let Some(cb) = opt_f.take() {
+                    retval = cb(env);
+                }
+                Ok(())
+            });
+        // Translate any attach-level JNI error into our own error type.
+        attach_result.map_err(|e| {
+            MeshInfinityError::CryptoError(format!("JNI attach failed: {}", e))
+        })?;
+        retval
     }
 
     // ------------------------------------------------------------------------
@@ -337,7 +355,7 @@ mod android {
     //     J — long            F — float       D — double
     //     L<classname>; — an object of class <classname>
     //     [<type> — an array of <type>
-    fn call_static_wrap(env: &mut JNIEnv, method: &str, input: &[u8]) -> Result<Vec<u8>> {
+    fn call_static_wrap(env: &mut jni::Env, method: &str, input: &[u8]) -> Result<Vec<u8>> {
         // Step 1: find the class.  JNI needs the class object before it can
         // call any methods on it.
         //
@@ -444,7 +462,7 @@ mod android {
     // We separate this from `call_static_wrap` because the argument list and
     // return type are fundamentally different — sharing would require more
     // complex generic machinery than the clarity savings would justify.
-    fn call_static_delete(env: &mut JNIEnv) -> Result<()> {
+    fn call_static_delete(env: &mut jni::Env) -> Result<()> {
         let class: JClass = env
             .find_class(KEYSTORE_CLASS)
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI class lookup failed: {}", e)))?;

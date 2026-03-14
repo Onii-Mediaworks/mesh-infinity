@@ -162,7 +162,7 @@ class BackendBridge {
   /// Dart Isolates (background threads — see event_bus.dart) cannot share
   /// Dart objects between them.  But they CAN share plain integers.  So we
   /// expose the raw memory address of the context pointer as an int.  The
-  /// background isolate then reconstructs a Pointer<Void> from that integer
+  /// background isolate then reconstructs a `Pointer<Void>` from that integer
   /// and uses it to call Rust functions on its own DynamicLibrary handle.
   ///
   /// This is safe here because:
@@ -653,7 +653,7 @@ class BackendBridge {
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  /// Read a string from a Rust-allocated Pointer<Utf8> and immediately free
+  /// Read a string from a Rust-allocated `Pointer<Utf8>` and immediately free
   /// that memory via mi_string_free().
   ///
   /// WHY MUST WE FREE THE STRING?
