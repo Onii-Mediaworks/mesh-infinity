@@ -48,8 +48,11 @@ btleplug = { version = "0.12", optional = true }
 meshtastic = { version = "0.1.8", optional = true }
 
 # Tor integration
-arti-client = { version = "0.40", features = ["tokio", "native-tls"] }
-tor-rtcompat = { version = "0.40", features = ["tokio", "native-tls"] }
+# rustls is used instead of native-tls to avoid OpenSSL static-init issues on
+# Android (native-tls/OpenSSL runs constructor code at dlopen time that fails
+# before the splash screen appears on Android devices).
+arti-client = { version = "0.40", features = ["tokio", "rustls"] }
+tor-rtcompat = { version = "0.40", features = ["tokio", "rustls"] }
 
 # File transfer
 tokio-stream = "0.1"

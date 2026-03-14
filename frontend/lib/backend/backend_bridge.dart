@@ -484,6 +484,7 @@ Pointer<Void> _initContext(
     ..allowRelays = 1
     ..enableI2p = 0
     ..enableBluetooth = 0
+    ..enableRf = 0
     ..wireguardPort =
         (wireguardPort != null && wireguardPort > 0 && wireguardPort <= 65535)
         ? wireguardPort
@@ -690,6 +691,8 @@ base class FfiMeshConfig extends Struct {
   external int enableI2p;
   @Uint8()
   external int enableBluetooth;
+  @Uint8()
+  external int enableRf;
   @Uint16()
   external int wireguardPort;
   @Uint32()

@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent, ServiceInfo};
 
 use crate::core::error::{MeshInfinityError, Result};
 use crate::core::{PeerId, PeerInfo, TransportType, TrustLevel};
@@ -176,7 +176,7 @@ impl MdnsDiscovery {
 
     /// Handle a newly resolved service
     fn handle_service_resolved(
-        info: ServiceInfo,
+        info: Box<ResolvedService>,
         discovered_peers: &Arc<RwLock<HashMap<PeerId, DiscoveredPeer>>>,
         local_peer_id: &PeerId,
     ) -> Result<()> {

@@ -32,36 +32,53 @@ use crate::transport::traits::{Connection, Listener, Transport};
 
 /// Tor transport backed by arti-client.
 ///
-/// Constructed via [`TorTransport::bootstrap`]; holds the bootstrapped
-/// [`TorClient`] and a handle to the active Tokio runtime for bridging
-/// async Tor operations into the synchronous [`Transport`] trait.
+/// Construct via [`TorTransport::new`] (unbootstrapped) or
+/// [`TorTransport::bootstrap`] (fully ready).  Until bootstrapped,
+/// [`Transport::connect`] returns an error and [`Transport::is_available`]
+/// returns `false`.  The transport manager creates it synchronously via
+/// `new()`; the service layer bootstraps it asynchronously when the user
+/// enables Tor.
 pub struct TorTransport {
-    client: Arc<TorClient<PreferredRuntime>>,
-    handle: Handle,
+    client: Option<Arc<TorClient<PreferredRuntime>>>,
+    handle: Option<Handle>,
+}
+
+impl Default for TorTransport {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TorTransport {
-    /// Bootstrap a Tor client and return a ready transport.
+    /// Create an unbootstrapped transport placeholder.
     ///
-    /// Performs real Tor network bootstrapping — builds circuits, fetches
-    /// directory info — and may take several seconds on first call.  Must
-    /// be called from within a Tokio runtime.
+    /// `is_available()` returns `false` until [`bootstrap`] is called.
+    pub fn new() -> Self {
+        Self {
+            client: None,
+            handle: Handle::try_current().ok(),
+        }
+    }
+
+    /// Bootstrap a Tor client in place, making the transport usable.
+    ///
+    /// Must be called from within a Tokio runtime.
     pub async fn bootstrap() -> Result<Self> {
         let config = TorClientConfig::default();
         let client = TorClient::create_bootstrapped(config)
             .await
             .map_err(|e| MeshInfinityError::TransportError(format!("Tor bootstrap failed: {e}")))?;
         Ok(Self {
-            client: Arc::new(client),
-            handle: Handle::current(),
+            client: Some(Arc::new(client)),
+            handle: Some(Handle::current()),
         })
     }
 
     /// Wrap an already-bootstrapped [`TorClient`].
     pub fn from_client(client: TorClient<PreferredRuntime>) -> Self {
         Self {
-            client: Arc::new(client),
-            handle: Handle::current(),
+            client: Some(Arc::new(client)),
+            handle: Some(Handle::current()),
         }
     }
 
@@ -95,10 +112,19 @@ impl Transport for TorTransport {
     /// The target address may be a clearnet host (routed through a Tor exit
     /// node) or a `.onion` v3 hidden service address.
     fn connect(&self, peer_info: &PeerInfo) -> Result<Box<dyn Connection>> {
+        let client = self.client.as_ref().ok_or_else(|| {
+            MeshInfinityError::TransportError(
+                "Tor transport not bootstrapped — call bootstrap() first".to_string(),
+            )
+        })?;
+        let handle = self.handle.as_ref().ok_or_else(|| {
+            MeshInfinityError::TransportError("Tor transport has no runtime handle".to_string())
+        })?;
+
         let (host, port) = Self::resolve_target(peer_info)?;
-        let client = Arc::clone(&self.client);
+        let client = Arc::clone(client);
+        let handle_conn = handle.clone();
         let peer = peer_info.clone();
-        let handle = self.handle.clone();
 
         let stream = tokio::task::block_in_place(|| {
             handle.block_on(async move {
@@ -113,11 +139,7 @@ impl Transport for TorTransport {
             })
         })?;
 
-        Ok(Box::new(TorConnection::new(
-            stream,
-            peer,
-            self.handle.clone(),
-        )))
+        Ok(Box::new(TorConnection::new(stream, peer, handle_conn)))
     }
 
     /// Inbound connections require a v3 onion service — not yet implemented.
@@ -137,7 +159,7 @@ impl Transport for TorTransport {
     }
 
     fn is_available(&self) -> bool {
-        true
+        self.client.is_some()
     }
 
     fn measure_quality(&self, _target: &PeerInfo) -> Result<TransportQuality> {
