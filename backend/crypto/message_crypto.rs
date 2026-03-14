@@ -150,7 +150,7 @@ impl MessageCrypto {
         double_signed.extend_from_slice(&outer_signature.to_bytes());
 
         // Step 4: Encrypt with recipient's public key (ephemeral ECDH)
-        let ephemeral_secret = EphemeralSecret::random_from(OsRng);
+        let ephemeral_secret = EphemeralSecret::random_from_rng(OsRng);
         let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
 
         let recipient_public = X25519PublicKey::from(*recipient_public_dh);
