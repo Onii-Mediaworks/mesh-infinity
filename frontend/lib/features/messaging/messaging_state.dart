@@ -90,7 +90,7 @@ import '../../backend/models/room_models.dart';
 ///   - notifyListeners() — fires all registered callbacks, triggering rebuilds.
 ///
 /// We never call addListener/removeListener directly.  Provider does it for us
-/// when widgets call context.watch<MessagingState>().
+/// when widgets call `context.watch<MessagingState>()`.
 class MessagingState extends ChangeNotifier {
   /// [bridge] is the FFI gateway to the Rust backend.  It is passed in from
   /// outside (dependency injection) so that tests can provide a fake bridge.
@@ -473,7 +473,7 @@ class MessagingState extends ChangeNotifier {
   ///
   /// WHY create a new list instead of mutating in-place?
   /// ----------------------------------------------------
-  /// _rooms is typed as List<RoomSummary>.  Mutating a single element in-place
+  /// _rooms is typed as `List<RoomSummary>`.  Mutating a single element in-place
   /// would NOT trigger notifyListeners() to produce a meaningful diff — the
   /// reference to _rooms itself would be unchanged and some optimisations in
   /// the Flutter rebuild system could skip the update.  By replacing _rooms

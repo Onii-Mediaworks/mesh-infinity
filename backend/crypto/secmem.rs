@@ -41,6 +41,10 @@ impl<T: Zeroize> SecureMemory<T> {
     pub fn new(value: T) -> Result<Self, SecureMemoryError> {
         init_panic_handler();
 
+        // `mut` is required by the `#[cfg(unix)]` block below (calls `data.as_mut()`).
+        // On non-unix platforms (Windows) that block is compiled out, so the compiler
+        // warns that `mut` is unnecessary.  We suppress that platform-specific warning.
+        #[allow(unused_mut)]
         let mut data = Box::new(value);
 
         #[cfg(unix)]

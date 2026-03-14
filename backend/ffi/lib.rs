@@ -918,25 +918,32 @@ pub extern "C" fn mi_set_config_dir(path_ptr: *const c_char) -> i32 {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeSetConfigDir(
-    mut env: jni::JNIEnv,
+    env: jni::JNIEnv,
     _class: jni::objects::JClass,
     path: jni::objects::JString,
 ) -> jni::sys::jint {
-    // `env.get_string` converts the Java `String` object into a Rust string.
-    // Java strings are UTF-16 internally; the JNI library handles the conversion.
-    let Ok(path_str) = env.get_string(&path) else {
-        set_last_error("Failed to read config dir from Java");
-        return -1;
-    };
-    let trimmed = path_str.to_string_lossy();
-    let trimmed = trimmed.trim();
-    if trimmed.is_empty() {
-        set_last_error("config path was empty");
-        return -1;
-    }
-    let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
-    *guard = Some(std::path::PathBuf::from(trimmed));
-    0
+    // In jni 0.22, the `env` parameter is `EnvUnowned` (an FFI-safe raw pointer
+    // wrapper) which does NOT expose the full JNI method API directly.
+    // To call methods like `get_string`, we must upgrade it to `jni::Env` using
+    // `with_env()`.  The closure receives `&mut jni::Env`, which has all the APIs.
+    env.with_env(|env| {
+        // `env.get_string` converts the Java `String` object into a Rust-compatible
+        // string view.  Java strings are UTF-16 internally; the JNI library
+        // handles the conversion to a C-style null-terminated string.
+        let Ok(path_str) = env.get_string(&path) else {
+            set_last_error("Failed to read config dir from Java");
+            return -1;
+        };
+        let cow: std::borrow::Cow<str> = path_str.to_string_lossy();
+        let trimmed = cow.trim();
+        if trimmed.is_empty() {
+            set_last_error("config path was empty");
+            return -1;
+        }
+        let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
+        *guard = Some(std::path::PathBuf::from(trimmed));
+        0
+    })
 }
 
 /// Send a chat message in the currently-active room.

@@ -321,6 +321,6 @@ class _PollMessage {
 
   /// The raw memory address (as an integer) of the Rust MeshContext pointer.
   /// The background isolate calls Pointer.fromAddress(contextAddress) to
-  /// reconstruct a usable Pointer<Void> from this integer.
+  /// reconstruct a usable `Pointer<Void>` from this integer.
   final int contextAddress;
 }
