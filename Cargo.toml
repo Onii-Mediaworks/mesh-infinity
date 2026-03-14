@@ -1,16 +1,112 @@
+# =============================================================================
+# Cargo.toml — the project manifest for Mesh Infinity's Rust backend
+# =============================================================================
+#
+# What is Cargo.toml?
+# -------------------
+# This file is the single source of truth for the Rust portion of the project.
+# It serves the same purpose as:
+#   - package.json  in a Node.js/JavaScript project
+#   - requirements.txt / pyproject.toml  in a Python project
+#   - build.gradle  in an Android/Kotlin project
+#
+# Cargo (Rust's build tool and package manager) reads this file to know:
+#   1. What this project is called and what version it is.
+#   2. Which external libraries ("crates" in Rust terminology) it depends on.
+#   3. How to compile the code for different platforms and use-cases.
+#   4. What optional features can be switched on at build time.
+#
+# When you run `cargo build`, Cargo downloads all listed dependencies from
+# crates.io (Rust's package registry), compiles them, and links them together
+# with our code.
+
 [package]
+# The crate name.  This becomes the library name used by Cargo internally.
+# Other Rust projects that depend on this crate would reference it by this name.
 name = "mesh-infinity"
+
+# Semantic version: MAJOR.MINOR.PATCH
+#   MAJOR — incremented on breaking API changes
+#   MINOR — incremented when new features are added in a backwards-compatible way
+#   PATCH — incremented for backwards-compatible bug fixes
 version = "0.2.0"
+
+# The Rust "edition" determines which version of the language specification to use.
+# Edition 2021 is the most recent stable edition and enables features like
+# improved closure captures and more ergonomic pattern matching.
 edition = "2021"
 
+# =============================================================================
+# [lib] — library output configuration
+# =============================================================================
+#
+# Rust uses underscores in its internal crate name (mesh_infinity) even though
+# the package name above uses a hyphen (mesh-infinity).  These are the same
+# crate — Cargo converts hyphens to underscores automatically.
 [lib]
 name = "mesh_infinity"
+
+# crate-type controls what kind of compiled output Cargo produces.
+# We request THREE types so that the same source compiles into whatever
+# format the host platform needs:
+#
+#   "cdylib"    — C-compatible Dynamic Library
+#                 Produces: libmesh_infinity.so   (Android / Linux)
+#                           libmesh_infinity.dll  (Windows)
+#                           libmesh_infinity.dylib (macOS, dev only)
+#                 This is what Flutter/Dart loads at runtime on mobile and
+#                 desktop.  The "c" prefix means it exports symbols using the
+#                 C ABI, which Dart's FFI layer understands.
+#
+#   "staticlib" — Static Library
+#                 Produces: libmesh_infinity.a    (iOS / macOS)
+#                 On Apple platforms, App Store policy discourages embedding
+#                 unsigned dynamic libraries.  A static library is linked
+#                 directly into the final .app bundle at compile time, so
+#                 there is no separate .dylib file to worry about.
+#
+#   "rlib"      — Rust Library (Rust-internal format)
+#                 Produces: libmesh_infinity.rlib
+#                 This format is only understood by the Rust compiler itself.
+#                 It's used when running `cargo test` so the test harness can
+#                 link against the library without needing a cdylib or staticlib.
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+# =============================================================================
+# [features] — optional compile-time feature flags
+# =============================================================================
+#
+# Features let you include or exclude entire chunks of code at compile time.
+# Think of them like compiler #define switches in C/C++.
+#
+# Usage:
+#   cargo build                          # builds with only the default features
+#   cargo build --features vpn-routing   # also enables the VPN routing code
+#   cargo build --all-features           # enables every optional feature
+#
+# Why are some things optional?
+#   - Some dependencies are large and slow to compile.
+#   - Some require special hardware (Bluetooth, LoRa radio).
+#   - Some require runtime privileges (VPN/TUN access needs root or CAP_NET_ADMIN).
+#   Shipping them all unconditionally would bloat the binary and could cause
+#   permission errors on devices that don't have the hardware.
+
 [features]
+# By default, no optional features are enabled.  The core app (Tor, I2P,
+# clearnet, mDNS, messaging) works without any of the optional features.
 default = []
+
+# Enables real Bluetooth Low Energy (BLE) transport using the btleplug crate.
+# "dep:btleplug" is Cargo syntax meaning "activate the btleplug dependency when
+# this feature is selected".  Without this feature the Bluetooth code path
+# compiles to stubs that report the transport as unavailable.
 transport-bluetooth-native = ["dep:btleplug"]
+
+# Enables LoRa/RF mesh transport via Meshtastic-compatible radios.
+# Requires a connected Meshtastic device (e.g. a TTGO T-Beam board).
+# Like Bluetooth, compiles to stubs without this feature.
 transport-rf-meshtastic = ["dep:meshtastic"]
+
 # Enables TUN/VPN system-wide routing (routes all OS traffic through the mesh).
 # Requires elevated privileges at runtime: root/CAP_NET_ADMIN on Linux/macOS,
 # Administrator + wintun.dll on Windows.
@@ -18,86 +114,464 @@ transport-rf-meshtastic = ["dep:meshtastic"]
 # is gated behind it.  Enable with: cargo build --features vpn-routing
 vpn-routing = []
 
+# =============================================================================
+# [dependencies] — external libraries this project requires
+# =============================================================================
+#
+# Each entry here tells Cargo to download and compile an external crate.
+# The version string (e.g. "1.0") is a "semantic version requirement" meaning
+# "any 1.x.y version that is >= 1.0.0".  Cargo picks the highest compatible
+# version and records the exact version chosen in Cargo.lock so builds are
+# reproducible across machines.
+#
+# Some entries have a `features` list: these are optional capabilities within
+# that crate that we explicitly opt in to.
+
 [dependencies]
-# Core networking
+
+# --- Core async runtime and utilities ----------------------------------------
+
+# tokio — the async runtime for Rust.
+#
+# Rust's async/await syntax (like JavaScript's async/await or Python's asyncio)
+# needs an "executor" — a scheduler that runs async tasks.  tokio is the
+# de-facto standard executor for Rust networking code.
+#
+# features = ["full"] enables every tokio subsystem: the thread-pool scheduler,
+# timers, I/O, network sockets, file I/O, process spawning, etc.  We use "full"
+# because networking code touches many of these simultaneously.
 tokio = { version = "1.0", features = ["full"] }
+
+# serde — serialisation / deserialisation framework.
+#
+# serde lets you annotate a Rust struct with `#[derive(Serialize, Deserialize)]`
+# and then automatically convert it to/from any supported format (JSON, TOML,
+# MessagePack, …) without writing manual conversion code.
+#
+# features = ["derive"] enables the procedural macros (`#[derive(...)]`).
+# Without this, serde is just the core trait definitions — not useful on their own.
 serde = { version = "1.0", features = ["derive"] }
+
+# serde_json — JSON support for serde.
+#
+# Used everywhere strings cross the FFI boundary (Rust → Dart).  JSON is chosen
+# over binary formats because:
+#   1. It's human-readable, making debugging much easier.
+#   2. Dart's jsonDecode() can parse it natively.
+#   3. Complex nested structs can be passed as a single *const c_char pointer,
+#      which is trivial to pass across the FFI boundary.
 serde_json = "1.0"
+
+# log — the standard Rust logging facade.
+#
+# Provides the `log::info!`, `log::warn!`, `log::error!` macros.  The "facade"
+# design means this crate just defines the macros; a separate backend crate
+# (tracing, env_logger, etc.) decides where the messages actually go.
 log = "0.4"
+
+# tracing — structured, context-aware diagnostic logging.
+#
+# An upgrade over plain `log`: tracing records not just a message but also
+# structured key-value data ("spans") that let you trace a single request
+# across multiple async tasks.  Particularly valuable for debugging the mesh
+# routing logic where a packet may hop through many layers.
 tracing = "0.1"
+
+# anyhow — ergonomic error handling with automatic context chaining.
+#
+# Instead of writing `Result<T, Box<dyn std::error::Error>>` everywhere,
+# `anyhow::Result<T>` is shorter and can hold any error type.  The `.context()`
+# method appends a human-readable explanation to any error, building a chain
+# like "Failed to send message: connection refused: peer unreachable".
 anyhow = "1.0"
+
+# thiserror — derive macros for creating typed, structured error enums.
+#
+# While anyhow is used for "I don't care about the exact type, just give me
+# a message", thiserror is used to define the app's own error types (e.g.
+# `MeshInfinityError`) where the caller needs to match on the variant and
+# take different actions.
 thiserror = "2.0"
+
+# config — layered configuration loading.
+#
+# Reads settings from files (TOML, JSON, YAML), environment variables, and
+# code-level defaults, merging them in priority order.  Used to load the
+# mesh node's configuration from disk on startup.
 config = "0.15"
 
-# Cryptography
+# --- Cryptography ------------------------------------------------------------
+#
+# Mesh Infinity is a privacy-focused application; all peer-to-peer communication
+# is end-to-end encrypted.  The crates below implement the cryptographic
+# primitives used throughout the backend.
+
+# ring — fast, safe cryptographic primitives (AEAD, hashing, HMAC, RSA, EC).
+#
+# ring is a Rust wrapper around BoringSSL's hand-optimised assembly routines.
+# It is one of the most audited Rust crypto libraries available.  Used for
+# low-level operations where raw performance matters.
 ring = "0.17"
+
+# x25519-dalek — Diffie-Hellman key agreement on Curve25519.
+#
+# X25519 is used for the initial key exchange between two peers: both parties
+# compute a shared secret without ever transmitting it.  That shared secret
+# seeds the session encryption keys.
+#
+# features = ["static_secrets"] lets us construct an X25519 private key from
+# raw bytes (needed when loading a saved identity from disk).
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+
+# ed25519-dalek — digital signatures using EdDSA on Curve25519.
+#
+# Ed25519 is used for peer identity: each node has an Ed25519 keypair.  The
+# public key is the node's unique identifier (peer ID).  Nodes sign messages
+# so recipients can verify authenticity.
+#
+# features = ["rand_core"] allows generating new keypairs with a random-number
+# generator (needed when creating a fresh identity on first run).
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
+
+# chacha20poly1305 — authenticated symmetric encryption (AEAD cipher).
+#
+# After a shared secret is established via X25519, all subsequent messages are
+# encrypted with ChaCha20-Poly1305.  "AEAD" means the cipher simultaneously
+# encrypts AND authenticates the data — an attacker cannot flip bits without
+# being detected.  ChaCha20 is chosen over AES because it's constant-time
+# on CPUs that lack AES hardware acceleration (many low-power mobile CPUs).
 chacha20poly1305 = "0.10"
+
+# argon2 — memory-hard password hashing.
+#
+# Used to derive encryption keys from user-supplied passphrases (e.g. for
+# encrypted key storage).  argon2id is resistant to GPU and ASIC brute-force
+# attacks because it requires a large amount of RAM, not just CPU cycles.
 argon2 = "0.5"
+
+# bip39 — BIP-39 mnemonic seed phrases.
+#
+# Converts a cryptographic seed (random bytes) into a human-readable word list
+# (e.g. "abandon ability able about…").  Users can write down their 24-word
+# phrase to back up or transfer their mesh identity between devices.
 bip39 = "2.0"
+
+# hkdf — HMAC-based key derivation function (RFC 5869).
+#
+# Derives multiple purpose-specific keys from a single master secret.
+# Example: from one X25519 shared secret we derive separate keys for
+# message encryption, message authentication, and header encryption.
 hkdf = "0.12"
+
+# sha2 — SHA-2 family hash functions (SHA-256, SHA-512).
+#
+# Used for content addressing (hashing messages/files to create unique IDs),
+# HMAC computation, and as the underlying hash in HKDF.
 sha2 = "0.10"
+
+# rand_core — core random-number-generator traits.
+#
+# A thin abstraction layer that lets crypto crates (ed25519-dalek, etc.)
+# generate random numbers without depending on a specific RNG implementation.
 rand_core = "0.6"
+
+# zeroize — securely erase secrets from memory when they go out of scope.
+#
+# In a normal program, when a variable goes out of scope the memory is marked
+# as free but the bytes remain on the heap until overwritten by something else.
+# An attacker with memory read access could recover private keys this way.
+# zeroize overwrites the bytes with zeros before releasing them.
 zeroize = "1.8"
+
+# base64 — encode/decode binary data as ASCII text.
+#
+# Cryptographic keys and signatures are raw bytes that cannot be stored in
+# JSON strings directly.  base64 encoding converts them to printable ASCII
+# so they can be embedded in JSON, config files, and QR codes.
 base64 = "0.22"
 
-# Network utilities
+# --- Network utilities -------------------------------------------------------
+
+# socket2 — low-level socket configuration.
+#
+# Rust's standard library provides basic TCP/UDP sockets, but socket2 exposes
+# OS-level socket options that the standard library hides: setting socket
+# buffer sizes, enabling IP_MULTICAST_TTL for mDNS, configuring SO_REUSEPORT
+# for multiple listeners on the same port, etc.
 socket2 = "0.6"
+
+# btleplug — cross-platform Bluetooth Low Energy (BLE) library.
+#
+# Optional (only compiled when the `transport-bluetooth-native` feature is on).
+# Provides a unified API for BLE on Windows (WinRT), macOS/iOS (CoreBluetooth),
+# Linux (BlueZ), and Android.  Used for direct peer discovery and data transfer
+# over BLE without requiring an internet connection.
 btleplug = { version = "0.12", optional = true }
+
+# meshtastic — LoRa/RF mesh radio protocol client.
+#
+# Optional (only compiled when the `transport-rf-meshtastic` feature is on).
+# Meshtastic is an open-source protocol for long-range (1–10 km) mesh
+# networking over LoRa radio hardware.  This crate communicates with a
+# connected Meshtastic device over serial/BLE.
 meshtastic = { version = "0.1.8", optional = true }
 
-# Tor integration
-# rustls is used instead of native-tls to avoid OpenSSL static-init issues on
-# Android (native-tls/OpenSSL runs constructor code at dlopen time that fails
-# before the splash screen appears on Android devices).
+# --- Tor integration ---------------------------------------------------------
+#
+# Arti is the official Tor Project implementation of the Tor protocol, written
+# entirely in Rust (as opposed to the original C implementation "tor").
+# Mesh Infinity embeds Arti directly so the user doesn't need to install Tor
+# separately — the app is self-contained.
+
+# arti-client — high-level Tor client API.
+#
+# Provides `TorClient`, which lets us open TCP streams routed through the Tor
+# network.  All clearnet connections can optionally be tunnelled through Tor
+# for anonymity.
+#
+# Why rustls instead of native-tls?
+#   native-tls links against the OS's TLS library (OpenSSL on Linux/Android,
+#   Secure Transport on macOS/iOS, SChannel on Windows).  On Android, OpenSSL
+#   runs initialization code at dlopen() time (when our .so is first loaded)
+#   that calls into Android APIs not yet available during early app startup.
+#   This crashes the app before the Flutter engine even starts.
+#
+#   rustls is a pure-Rust TLS implementation with zero external C dependencies.
+#   It has no dlopen-time initialization, so it works safely on Android.
 arti-client = { version = "0.40", features = ["tokio", "rustls"] }
+
+# tor-rtcompat — runtime compatibility layer for Arti.
+#
+# Arti supports multiple async runtimes.  This crate provides the glue that
+# lets Arti use tokio (our chosen runtime) instead of its default async-std.
+# Must use the same runtime features ("tokio", "rustls") as arti-client.
 tor-rtcompat = { version = "0.40", features = ["tokio", "rustls"] }
 
-# File transfer
+# --- File transfer -----------------------------------------------------------
+
+# tokio-stream — async streams (infinite sequences of values) for tokio.
+#
+# File transfers are implemented as streams: the file is broken into chunks and
+# each chunk is yielded one at a time, allowing progress reporting and
+# cancellation without loading the entire file into memory.
 tokio-stream = "0.1"
+
+# bytes — zero-copy byte buffer abstraction.
+#
+# Efficient representation of byte slices that can be cheaply cloned (via
+# reference counting) without copying the underlying data.  Used in file
+# transfer pipelines where the same chunk may be forwarded to multiple peers.
 bytes = "1.0"
+
+# crc32fast — fast CRC-32 checksum computation.
+#
+# File chunks are checksummed before transmission and verified on receipt.
+# CRC-32 is not cryptographically secure, but it's fast and sufficient for
+# detecting accidental corruption (bit flips, truncation).  The end-to-end
+# ChaCha20-Poly1305 encryption provides the cryptographic integrity guarantee.
 crc32fast = "1.3"
 
-# DNS
+# --- DNS and local discovery -------------------------------------------------
+
+# trust-dns-resolver — async DNS resolver.
+#
+# Used to resolve hostnames to IP addresses via the OS's configured DNS
+# servers.  The async API is important here: a DNS lookup that takes 2 seconds
+# should not block the entire application while waiting.
 trust-dns-resolver = "0.23"
+
+# trust-dns-server — embedded DNS server.
+#
+# Mesh Infinity can optionally run a local DNS server to map mesh peer names
+# (e.g. "alice.mesh") to their current IP addresses on the virtual mesh
+# network interface, without needing an external DNS provider.
 trust-dns-server = "0.23"
+
+# mdns-sd — multicast DNS service discovery (mDNS / DNS-SD).
+#
+# mDNS (also known as Bonjour/Zeroconf) lets devices on a local network
+# announce and discover services without a central DNS server.  We use it
+# to find other Mesh Infinity nodes on the same Wi-Fi network without any
+# prior configuration.  This is the "mesh discovery" feature in Settings.
 mdns-sd = "0.18"
 
-# Performance
+# --- Performance -------------------------------------------------------------
+
+# flate2 — zlib/gzip/deflate compression and decompression.
+#
+# Large messages and file chunks are compressed before encryption to reduce
+# bandwidth usage.  Compression before encryption is intentional: encrypting
+# first would eliminate the patterns that compression relies on, making
+# compression useless.
 flate2 = "1.0"
+
+# lru — Least-Recently-Used cache with bounded memory.
+#
+# Used for caching decrypted message content and resolved peer addresses.
+# The LRU eviction policy ensures the cache never grows beyond a fixed size:
+# when full, the least-recently-accessed entry is evicted to make room.
 lru = "0.16"
 
-# Backend services
+# --- Backend services --------------------------------------------------------
+
+# getrandom — access to the OS cryptographically-secure random number source.
+#
+# Wraps /dev/urandom on Linux, CryptGenRandom on Windows, and the equivalent
+# on other platforms.  Used wherever unpredictable random bytes are needed
+# (key generation, nonces, challenge values).
 getrandom = "0.4"
+
+# time — date and time handling with formatting support.
+#
+# Used to attach timestamps to messages and events.  The "formatting" feature
+# enables converting timestamps to human-readable strings (e.g. "14:32") for
+# display in the Flutter UI.
 time = { version = "0.3", features = ["formatting"] }
+
+# crossbeam-channel — high-performance multi-producer/multi-consumer channels.
+#
+# Rust's standard library provides basic channels (std::sync::mpsc), but
+# crossbeam's channels are faster, support multiple producers AND consumers,
+# and provide select! (wait on multiple channels simultaneously).  Used for
+# internal communication between the mesh routing threads and the FFI layer.
 crossbeam-channel = "0.5"
 
-# FFI
+# --- FFI (Foreign Function Interface) bridge ---------------------------------
+
+# flutter_rust_bridge — code-generation tool for Flutter ↔ Rust FFI.
+#
+# Normally writing FFI requires a lot of manual boilerplate: declaring types
+# on both sides, handling memory lifetimes, converting between Rust types and
+# C types.  flutter_rust_bridge can auto-generate this boilerplate from Rust
+# function signatures.  Even where we write our own FFI functions manually
+# (as in backend/ffi/lib.rs), this crate provides useful utilities.
 flutter_rust_bridge = "1.80.0"
+
+# libc — Rust bindings to the C standard library types and functions.
+#
+# Provides types like `c_char`, `c_int`, `c_void` that are used in FFI
+# function signatures.  These are the C types that Dart's `dart:ffi` expects
+# to see on the other side of the boundary.
 libc = "0.2"
+
+# jni — Java Native Interface bindings for Android.
+#
+# On Android, the entry point for native code is the JNI (Java Native Interface),
+# not plain C FFI.  This crate provides safe Rust wrappers for JNI types
+# (JNIEnv, JString, etc.) used in the Android-specific entry points in lib.rs.
 jni = "0.22"
 
+# openssl — Rust bindings to OpenSSL.
+#
+# Some of our transitive dependencies (libraries that our dependencies depend
+# on) use OpenSSL under the hood.  We don't use it directly, but we must
+# configure it here for cross-compilation to work.
+#
+# Why features = ["vendored"]?
+#   Without "vendored", the openssl crate tries to find a pre-installed OpenSSL
+#   on the build machine (via pkg-config).  This works fine on a developer's
+#   laptop that has OpenSSL installed, but fails in CI and when cross-compiling
+#   for Android (the NDK doesn't include OpenSSL).
+#
+#   "vendored" tells openssl-sys to download and compile OpenSSL from source
+#   as part of the build.  The compiled OpenSSL is statically linked into our
+#   binary.  This makes builds self-contained and reproducible regardless of
+#   what is installed on the build machine.
+#
 # Force vendored OpenSSL so cross-compilation (Android NDK, etc.) works without
 # requiring a pre-installed OpenSSL for each target.
 openssl = { version = "0.10", features = ["vendored"] }
 
-# Virtual network interface
-# tun-tap (Unix/Linux TUN) and pnet are POSIX-only.
-# wintun provides the equivalent Windows TUN driver (same library used by WireGuard).
+# =============================================================================
+# Platform-conditional dependencies
+# =============================================================================
+#
+# Not every dependency is needed on every platform.  Cargo supports
+# `[target.'cfg(...)'.dependencies]` sections that are only active when
+# compiling for a specific target.
+#
+# The `cfg(...)` syntax is the same as Rust's `#[cfg(...)]` attributes.
+# Common predicates:
+#   target_os = "android"    — true only when building for Android
+#   target_os = "windows"    — true only when building for Windows
+#   unix                     — true on Linux, macOS, iOS, Android, FreeBSD, etc.
+#   not(target_os = "android") — true everywhere EXCEPT Android
+#
+# Why split dependencies this way instead of making them all optional features?
+#   Because the split follows the platform's constraints, not the user's choice.
+#   A Windows user cannot use tun-tap (it doesn't compile on Windows).
+#   An Android user cannot use keyring (there is no OS keychain accessible
+#   the same way — Android has its own Keystore API).
+
 # Platform keystore — used on every platform except Android (which uses its own
 # JNI-based Android Keystore path in backend/auth/keystore.rs).
 # On Linux without a running Secret Service daemon this falls back gracefully to
 # the filesystem path inside persistence.rs.
+#
+# keyring — cross-platform OS secret storage.
+#
+# Stores the user's encrypted identity key in the OS's native secret storage:
+#   - macOS: Keychain
+#   - Windows: Credential Manager
+#   - Linux: libsecret / Secret Service (GNOME Keyring, KWallet)
+#
+# Android is excluded because it has its own JNI-based keystore (see
+# backend/auth/keystore.rs).  Android's keystore is hardware-backed and
+# accessed through a completely different API.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 keyring = "3"
 
+# Unix-only: virtual network interface libraries.
+# These are only needed when the `vpn-routing` feature is used, but they are
+# only compilable on Unix systems in the first place.
 [target.'cfg(unix)'.dependencies]
+
+# pnet — raw packet crafting and capture (like libpcap/Scapy for Rust).
+#
+# Provides access to raw network sockets and Ethernet/IP/TCP/UDP packet
+# structures.  Used to build and parse mesh routing packets at the IP layer
+# when the VPN routing feature is active.
 pnet = "0.35"
+
+# tun-tap — TUN/TAP virtual network interface driver for Linux/macOS.
+#
+# A TUN device is a virtual network interface that routes IP packets through
+# user-space code instead of real hardware.  WireGuard, OpenVPN, and Tailscale
+# all use TUN devices.  Mesh Infinity uses one to intercept and route traffic
+# through the mesh when VPN routing is enabled.
 tun-tap = "0.1"
 
+# Windows-only: virtual network interface library.
 [target.'cfg(windows)'.dependencies]
+
+# wintun — Windows TUN driver (same driver used by WireGuard for Windows).
+#
+# The Windows equivalent of the Unix tun-tap crate.  Provides a virtual
+# network adapter that lets user-space code handle IP packets.  Ships as a
+# .dll (wintun.dll) that must be present alongside the application binary.
+# Virtual network interface
+# tun-tap (Unix/Linux TUN) and pnet are POSIX-only.
+# wintun provides the equivalent Windows TUN driver (same library used by WireGuard).
 wintun = "0.5"
 
+# =============================================================================
+# [dev-dependencies] — dependencies used ONLY during testing
+# =============================================================================
+#
+# Dev-dependencies are downloaded and compiled only when running:
+#   cargo test          — unit and integration tests
+#   cargo bench         — benchmarks
+#
+# They are NOT included in the final library binary shipped to users.
+# This keeps release builds lean — a large testing library like `proptest`
+# won't add megabytes to the distributed .so/.dll.
+
 [dev-dependencies]
+
+# tempfile — create temporary files and directories for tests.
+#
+# Many backend tests need to write files (e.g. test that identity persistence
+# works correctly) but must not pollute the developer's filesystem.  tempfile
+# creates a uniquely-named temporary directory and automatically deletes it
+# when the test finishes, even if the test panics.
 tempfile = "3.24"
