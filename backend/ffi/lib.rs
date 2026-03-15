@@ -934,7 +934,7 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeS
     // closure's direct return value, we communicate the result via a captured
     // mutable variable (`result`) and return that after `with_env` completes.
     let mut result: jni::sys::jint = -1;
-    let _ = env.with_env(|env| {
+    let _ = env.with_env(|env| -> jni::errors::Result<()> {
         // `env.get_string` converts the Java String into a modified-UTF-8 char
         // sequence (MUTF8Chars).  `.to_string()` produces an owned String so the
         // borrow on `env` ends before any subsequent JNI calls.
@@ -942,17 +942,18 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeS
             Ok(s) => s.to_string(),
             Err(_) => {
                 set_last_error("Failed to read config dir from Java");
-                return;
+                return Ok(());
             }
         };
         let trimmed = path_string.trim();
         if trimmed.is_empty() {
             set_last_error("config path was empty");
-            return;
+            return Ok(());
         }
         let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
         *guard = Some(std::path::PathBuf::from(trimmed));
         result = 0;
+        Ok(())
     });
     result
 }

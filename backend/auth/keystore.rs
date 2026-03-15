@@ -130,7 +130,7 @@ mod android {
     //                We use `JValue::Object` to wrap our byte array argument.
     use jni::objects::{JByteArray, JClass, JValue};
     use jni::strings::JNIString;
-    use jni::signature::MethodSignature;
+    use jni::signature::{MethodSignature, RuntimeMethodSignature};
 
     // Low-level JNI system types (from the C-level JNI header translated to Rust).
     //
@@ -393,11 +393,15 @@ mod android {
         // JNI object handle; `&` then re-borrows it as an object reference.
         //
         // The call returns a `JValueOwned` (an owned JNI value variant).
+        // In jni 0.22, MethodSignature cannot be created directly from &str.
+        // We parse via RuntimeMethodSignature (owned) then borrow as MethodSignature.
+        let sig_rt = "([B)[B".parse::<RuntimeMethodSignature>()
+            .expect("([B)[B is a valid JNI descriptor");
         let output = env
             .call_static_method(
                 class,
                 JNIString::from(method),
-                MethodSignature::from("([B)[B"),   // descriptor: (byte[]) -> byte[]
+                MethodSignature::from(&sig_rt),    // descriptor: (byte[]) -> byte[]
                 &[JValue::Object(&*input_array)],  // one argument: the input byte[]
             )
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI call failed: {}", e)))?
@@ -473,8 +477,12 @@ mod android {
 
         // Call the static `deleteKey()` method with no arguments.
         // The empty slice `&[]` means "no arguments".
+        // RuntimeMethodSignature must outlive the MethodSignature borrow, so it
+        // is defined here in the enclosing scope.
+        let delete_sig_rt = "()Z".parse::<RuntimeMethodSignature>()
+            .expect("()Z is a valid JNI descriptor");
         let result = env
-            .call_static_method(class, JNIString::from("deleteKey"), MethodSignature::from("()Z"), &[])
+            .call_static_method(class, JNIString::from("deleteKey"), MethodSignature::from(&delete_sig_rt), &[])
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI call failed: {}", e)))?
             // `.z()` extracts the return value as a Java `boolean`.
             // This is a primitive type extractor — it returns `bool` directly.

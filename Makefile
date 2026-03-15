@@ -225,6 +225,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	flutter config --enable-ios; \
 	( cd "$$src_dir" && flutter pub get ); \
 	cp "$(FRONTEND_DIR)/ios/Podfile" "$$src_dir/ios/Podfile"; \
+	ln -sfn "$(ROOT_DIR)/platforms/apple/Runner.xcodeproj" "$$src_dir/ios/Runner.xcodeproj"; \
 	flutter_mode_flags="--$$profile"; \
 	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
 	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
