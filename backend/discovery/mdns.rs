@@ -377,10 +377,9 @@ impl MdnsDiscovery {
         // mDNS resolution can theoretically complete without a usable address
         // (e.g. IPv6-only host on an IPv4-only network).  Guard against that.
         // ScopedIp wraps an IpAddr with an optional scope ID (e.g. link-local IPv6 scope).
-        // It does not implement Copy, so we dereference each ScopedIp to get a plain IpAddr.
-        // The `*` dereferences ScopedIp -> IpAddr (via Deref impl), then the outer `*` copies
-        // the IpAddr value (IpAddr is Copy) so we own it rather than borrowing.
-        let addresses: Vec<IpAddr> = info.get_addresses().iter().map(|sip| **sip).collect();
+        // It does not implement Copy or Deref, so we clone each ScopedIp and convert it
+        // into a plain IpAddr via the From impl provided by mdns-sd.
+        let addresses: Vec<IpAddr> = info.get_addresses().iter().cloned().map(IpAddr::from).collect();
         if addresses.is_empty() {
             return Err(MeshInfinityError::InvalidInput(
                 "No addresses in mDNS service".to_string(),

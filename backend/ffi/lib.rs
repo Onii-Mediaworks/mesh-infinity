@@ -917,33 +917,38 @@ pub extern "C" fn mi_set_config_dir(path_ptr: *const c_char) -> i32 {
 /// correct because JNI is Android-specific.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeSetConfigDir(
-    env: jni::JNIEnv,
-    _class: jni::objects::JClass,
-    path: jni::objects::JString,
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeSetConfigDir<
+    'local,
+>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    path: jni::objects::JString<'local>,
 ) -> jni::sys::jint {
-    // In jni 0.22, the `env` parameter is `EnvUnowned` (an FFI-safe raw pointer
-    // wrapper) which does NOT expose the full JNI method API directly.
-    // To call methods like `get_string`, we must upgrade it to `jni::Env` using
-    // `with_env()`.  The closure receives `&mut jni::Env`, which has all the APIs.
-    env.with_env(|env| {
-        // `env.get_string` converts the Java `String` object into a Rust-compatible
-        // string view.  Java strings are UTF-16 internally; the JNI library
-        // handles the conversion to a C-style null-terminated string.
-        let Ok(path_str) = env.get_string(&path) else {
+    // In jni 0.22, `JNIEnv<'local>` is the full environment type (alias for
+    // `Env<'local>`).  It is used directly — no need for `with_env`.
+    //
+    // `env.get_string` converts the Java `String` object into a Rust-compatible
+    // modified-UTF-8 char sequence.  Java strings are UTF-16 internally; the JNI
+    // library handles the conversion transparently.
+    //
+    // In jni 0.22 the return type is `MUTF8Chars`, which has `.to_string()` to
+    // produce an owned `String`.  We convert to an owned String immediately so
+    // that the mutable borrow on `env` ends before any subsequent JNI calls.
+    let path_string = match env.get_string(&path) {
+        Ok(s) => s.to_string(),
+        Err(_) => {
             set_last_error("Failed to read config dir from Java");
             return -1;
-        };
-        let cow: std::borrow::Cow<str> = path_str.to_string_lossy();
-        let trimmed = cow.trim();
-        if trimmed.is_empty() {
-            set_last_error("config path was empty");
-            return -1;
         }
-        let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
-        *guard = Some(std::path::PathBuf::from(trimmed));
-        0
-    })
+    };
+    let trimmed = path_string.trim();
+    if trimmed.is_empty() {
+        set_last_error("config path was empty");
+        return -1;
+    }
+    let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
+    *guard = Some(std::path::PathBuf::from(trimmed));
+    0
 }
 
 /// Send a chat message in the currently-active room.
