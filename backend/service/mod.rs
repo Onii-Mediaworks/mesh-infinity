@@ -1393,19 +1393,45 @@ mod tests {
     // the test module's scope, so tests can call private helpers and access
     // private types without going through the public API.
     use super::*;
+    // `VerificationMethod` is an enum that describes HOW a trust upgrade was
+    // verified — for example, `SharedSecret` means the user confirmed a shared
+    // secret (like a pairing code), `OutOfBand` means the trust was established
+    // outside the app (e.g. face-to-face). Used here to call
+    // `update_trust_level(...)` in tests that need to promote a peer to Trusted.
     use crate::core::mesh::VerificationMethod;
+    // NOTE: The closing `}` here ends the `use` / import region of the test
+    // module. The `#[test]` functions below are defined at the same nesting level
+    // as `mod tests { ... }` (i.e. they are free functions within the `tests`
+    // module). This is a Rust formatting choice — it is valid because Rust
+    // collects all items at the same module level together regardless of their
+    // physical position in the file.
     }
 
     /// When all transports are disabled, routing fails and the message should be
     /// queued in the passive outbox rather than dropped on the floor.
+    ///
+    /// This test verifies the "passive fallback" guarantee: messages are NEVER
+    /// silently dropped when the peer is unreachable — they are held in storage
+    /// until the peer reconnects.
+    //
+    // `#[test]` is a Rust attribute that marks this function as a unit test.
+    // Running `cargo test` compiles and runs every function marked `#[test]`
+    // in the codebase. The test passes if the function returns without panicking;
+    // it fails if it panics (e.g. from an `assert!` that evaluates to `false`,
+    // or an `.expect(...)` on an `Err` value).
     #[test]
     fn passive_fallback_queues_when_no_transport_paths() {
+        // --- ARRANGE: Create a service with ALL transports disabled. ---
+        // When no transports are available, any attempt to route a message
+        // will immediately fail. The test relies on this to force passive fallback.
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
         service.set_enable_clearnet(false);
         service.set_enable_bluetooth(false);
 
+        // Pair a peer using a pairing code. Because all transports are disabled,
+        // any message to this peer cannot be delivered immediately.
         let _ = service.pair_peer("A1B2-C3D4-E5F6-1122");
         let peer_id = service
             .peers
@@ -1414,11 +1440,15 @@ mod tests {
             .map(|p| p.peer_id)
             .expect("peer should exist");
 
+        // --- ACT: Send a message into a room that includes this peer. ---
         let room_id = service.create_room("fallback-room").expect("room create");
         service
             .send_message_to_room(&room_id, "hello fallback")
             .expect("send message");
 
+        // --- ASSERT: The passive outbox for this peer must have at least one entry. ---
+        // If the message were dropped instead of queued, `pending` would be 0
+        // and the `assert!` would panic, failing the test.
         let state = service.state.read().unwrap();
         let pending = state
             .passive_outbox
@@ -1430,8 +1460,12 @@ mod tests {
 
     /// When a peer reconnects and we drain the passive outbox, the queue should
     /// be empty afterwards — messages have been delivered, not just removed.
+    ///
+    /// This test verifies that `drain_passive_for_peer` both delivers the queued
+    /// messages AND clears the queue (rather than leaving stale copies behind).
     #[test]
     fn passive_fallback_drains_on_reconciliation() {
+        // --- ARRANGE: Queue at least one message to an offline peer. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1451,11 +1485,17 @@ mod tests {
             .send_message_to_room(&room_id, "reconcile me")
             .expect("send message");
 
+        // --- ACT: Drain the passive outbox (simulates the peer reconnecting). ---
+        // `drain_passive_for_peer` returns the number of envelopes that were
+        // delivered. We assert it is at least 1 to confirm there was something to drain.
         let delivered = service
             .drain_passive_for_peer(&peer_id)
             .expect("drain passive queue");
         assert!(delivered >= 1);
 
+        // --- ASSERT: Queue is now empty (nothing left to re-deliver). ---
+        // `assert_eq!(remaining, 0)` panics if any envelopes remain, which would
+        // mean drain didn't actually clear the queue.
         let state = service.state.read().unwrap();
         let remaining = state
             .passive_outbox
@@ -1468,8 +1508,13 @@ mod tests {
     /// Envelopes in the passive outbox must contain ciphertext, not plaintext.
     /// This ensures that inspecting process memory or a crash dump does not
     /// reveal message content.
+    ///
+    /// This is a security property: even if an attacker can read the process's
+    /// heap memory (e.g. through a memory-inspection exploit), they must NOT be
+    /// able to find the original message text in the passive outbox.
     #[test]
     fn passive_fallback_stores_ciphertext_not_plaintext() {
+        // --- ARRANGE: Queue a message with a known plaintext string. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1485,11 +1530,13 @@ mod tests {
             .expect("peer should exist");
 
         let room_id = service.create_room("cipher-room").expect("room create");
+        // The known plaintext. We will verify it does NOT appear verbatim in the stored bytes.
         let plain = b"origin-hidden-payload";
         service
             .send_message_to_room(&room_id, std::str::from_utf8(plain).unwrap())
             .expect("send message");
 
+        // --- ACT + ASSERT: Inspect the stored ciphertext. ---
         let state = service.state.read().unwrap();
         let queued = state
             .passive_outbox
@@ -1497,7 +1544,11 @@ mod tests {
             .and_then(|v| v.first())
             .expect("queued envelope should exist");
 
+        // The stored bytes must not equal the plaintext byte-for-byte.
         assert_ne!(queued._ciphertext, plain);
+        // The plaintext must not appear as a substring anywhere in the ciphertext.
+        // `.windows(n)` iterates every n-byte sliding window of the ciphertext slice.
+        // If ANY window matches `plain`, the test fails — the plaintext leaked.
         assert!(!queued
             ._ciphertext
             .windows(plain.len())
@@ -1509,8 +1560,13 @@ mod tests {
     /// outboxes should not be able to link the two envelopes as containing the
     /// same message, nor should they be able to extract peer identity bytes
     /// from the ciphertext.
+    ///
+    /// This tests the "per-peer session key" property of `enqueue_passive_fallback`:
+    /// a different encryption key is derived for each (sender, recipient) pair,
+    /// so identical plaintexts become unrelated ciphertexts in each peer's outbox.
     #[test]
     fn passive_fallback_observer_cannot_link_origin_beyond_previous_hop() {
+        // --- ARRANGE: Two peers, both with all transports disabled. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1525,16 +1581,19 @@ mod tests {
         let peer_a = peers[0].peer_id;
         let peer_b = peers[1].peer_id;
 
+        // --- ACT: Send the SAME plaintext to a room that includes both peers. ---
         let room_id = service.create_room("observer-room").expect("room create");
         service
             .send_message_to_room(&room_id, "same payload")
             .expect("send message");
 
+        // Read the local node's peer ID for the identity-leakage check below.
         let local_peer = {
             let state = service.state.read().unwrap();
             parse_peer_id_hex(&state.settings.local_peer_id).expect("local peer id parse")
         };
 
+        // --- ASSERT: The ciphertexts must differ AND must not expose peer IDs. ---
         let state = service.state.read().unwrap();
         let env_a = state
             .passive_outbox
@@ -1547,10 +1606,13 @@ mod tests {
             .and_then(|items| items.first())
             .expect("peer B should have passive envelope");
 
-        // Same plaintext to different peers must not produce linkable ciphertexts.
+        // Ciphertexts for the same plaintext must differ when keys are per-peer.
+        // If they were equal, an observer could link the messages by comparison.
         assert_ne!(env_a._ciphertext, env_b._ciphertext);
 
-        // Observer-visible ciphertext should not directly expose peer identities.
+        // The raw bytes of any peer ID must NOT appear verbatim inside the
+        // ciphertext stored for peer A. If they did, an observer could extract
+        // peer identities from the encrypted blob without decrypting it.
         assert!(!env_a
             ._ciphertext
             .windows(peer_a.len())
@@ -1568,8 +1630,16 @@ mod tests {
     /// Even when clearnet is enabled on the device, a peer at "Caution" trust
     /// level must NOT be reachable via clearnet. Only privacy transports (Tor, I2P)
     /// should be offered to untrusted or cautious peers.
+    ///
+    /// This tests the trust-gating layer of `preferred_paths_for_peer`. Even if
+    /// the user has switched clearnet on globally, the per-peer trust check should
+    /// strip it from the path list for any peer below `Trusted`.
     #[test]
     fn preferred_paths_gate_clearnet_for_low_trust_even_if_enabled() {
+        // --- ARRANGE: Only clearnet is enabled; Tor and I2P are off. ---
+        // The key insight: clearnet is ON at the device level, but the peer's
+        // trust level is Caution (set automatically by `pair_peer`), so clearnet
+        // must still be withheld.
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1584,15 +1654,23 @@ mod tests {
             .map(|p| p.peer_id)
             .expect("peer should exist");
 
-        // pair_peer assigns Caution trust by default.
+        // --- ACT + ASSERT ---
+        // `pair_peer` assigns Caution trust by default (one step above Untrusted).
+        // `allowed_transports_for_trust(Caution)` returns only [Tor, I2P].
+        // Since both Tor and I2P are disabled, the intersection is empty.
+        // An empty `paths` list means: no route available → message goes to passive queue.
         let paths = service.preferred_paths_for_peer(peer_id);
         assert!(paths.is_empty(), "clearnet must be gated for caution peers");
     }
 
     /// Once a peer is explicitly promoted to "Trusted", clearnet should be
     /// offered as a path (when it is the only enabled transport).
+    ///
+    /// This is the counterpart to the previous test: it verifies that the trust
+    /// gate OPENS for trusted peers, not just that it blocks low-trust peers.
     #[test]
     fn preferred_paths_allow_clearnet_for_trusted_when_privacy_transports_disabled() {
+        // --- ARRANGE: Same transport setup (only clearnet enabled). ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1607,6 +1685,9 @@ mod tests {
             .map(|p| p.peer_id)
             .expect("peer should exist");
 
+        // Explicitly upgrade the peer's trust from Caution → Trusted.
+        // `VerificationMethod::SharedSecret` means the upgrade was done by
+        // confirming a shared secret code, which is the standard pairing flow.
         service
             .peers
             .update_trust_level(
@@ -1616,6 +1697,9 @@ mod tests {
             )
             .expect("update trust");
 
+        // --- ACT + ASSERT: Now clearnet should appear in the path list. ---
+        // `allowed_transports_for_trust(Trusted)` includes all transports.
+        // Clearnet is enabled and the peer's trust allows it → exactly one path.
         let paths = service.preferred_paths_for_peer(peer_id);
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].transport, TransportType::Clearnet);
@@ -1623,68 +1707,99 @@ mod tests {
 
     /// Switching between node modes must correctly start and stop the routing
     /// worker thread. Client mode → no worker; Server/Dual mode → worker running.
+    ///
+    /// This verifies that `set_node_mode` is wired correctly to `start()`/`stop()`,
+    /// and that `is_running()` accurately reflects the worker's state after each transition.
     #[test]
     fn node_mode_transitions_toggle_routing_worker_lifecycle() {
+        // --- ARRANGE: Start in Client mode — worker should NOT be running. ---
+        // The `..ServiceConfig::default()` syntax fills all other fields with their
+        // default values (all transports off, no preloaded identity).
         let service = MeshInfinityService::new(ServiceConfig {
             initial_mode: NodeMode::Client,
             ..ServiceConfig::default()
         });
 
+        // Client mode should have no background routing worker.
         assert!(!service.is_running());
 
+        // --- ACT + ASSERT: Transition through all modes and verify each time. ---
+
+        // Client → Dual: should start the routing worker.
         service.set_node_mode(NodeMode::Dual);
         assert!(service.is_running());
 
+        // Dual → Client: should stop the routing worker.
         service.set_node_mode(NodeMode::Client);
         assert!(!service.is_running());
 
+        // Client → Server: should start the routing worker again.
         service.set_node_mode(NodeMode::Server);
         assert!(service.is_running());
     }
 
     /// Calling `start()` multiple times must not spawn duplicate threads, and
     /// calling `stop()` multiple times must not panic.
+    ///
+    /// "Idempotent" means calling the function multiple times has the same
+    /// effect as calling it once. This test verifies that property for both
+    /// `start()` and `stop()` — defensive callers shouldn't have to track
+    /// whether the service is already started before calling these functions.
     #[test]
     fn start_stop_are_idempotent_across_role_transitions() {
+        // --- ARRANGE: Start in Server mode (worker running from construction). ---
         let service = MeshInfinityService::new(ServiceConfig {
             initial_mode: NodeMode::Server,
             ..ServiceConfig::default()
         });
 
+        // Construction with Server mode calls start() automatically.
         assert!(service.is_running());
 
+        // --- Calling start() again must be a safe no-op. ---
         service.start().expect("start should be idempotent");
-        assert!(service.is_running());
+        assert!(service.is_running()); // Still running — not double-started.
 
+        // --- Stopping works the first time. ---
         service.stop().expect("stop should succeed");
         assert!(!service.is_running());
 
+        // --- Calling stop() again on an already-stopped service must not panic. ---
         service.stop().expect("stop should be idempotent");
-        assert!(!service.is_running());
+        assert!(!service.is_running()); // Still stopped — not double-stopped.
 
+        // --- Restarting after stop must work. ---
         service.start().expect("restart should succeed");
         assert!(service.is_running());
     }
 
     /// Two peers whose peer IDs share the same first 3 bytes must still get
     /// distinct DM room IDs, because `dm_room_id` uses the full 32-byte identity.
+    ///
+    /// This would regress if `dm_room_id` were ever shortened to use just a
+    /// prefix (like the pairing code, which is only 8 bytes). This test
+    /// ensures the full 32-byte peer ID is always used for room IDs.
     #[test]
     fn receive_message_uses_collision_resistant_dm_room_ids() {
         let service = MeshInfinityService::new(ServiceConfig::default());
 
+        // Build two peer IDs that share the first 3 bytes exactly (same hex prefix)
+        // but differ in byte index 3. A short room-ID scheme would collide on these.
         let mut peer_a = [0u8; 32];
         let mut peer_b = [0u8; 32];
         // Same first 3 bytes (same 6-hex prefix), different full identities.
         peer_a[0] = 0xAA;
         peer_a[1] = 0xBB;
         peer_a[2] = 0xCC;
-        peer_a[3] = 0x01;
+        peer_a[3] = 0x01; // peer_a ends in ...01...
 
         peer_b[0] = 0xAA;
         peer_b[1] = 0xBB;
         peer_b[2] = 0xCC;
-        peer_b[3] = 0x02;
+        peer_b[3] = 0x02; // peer_b ends in ...02... — one byte different.
 
+        // Simulate receiving one message from each peer. `receive_message`
+        // will automatically create a DM room for each peer if one doesn't exist.
         service
             .receive_message(peer_a, None, "hello from a")
             .expect("receive A");
@@ -1692,6 +1807,7 @@ mod tests {
             .receive_message(peer_b, None, "hello from b")
             .expect("receive B");
 
+        // Both rooms should exist and their IDs must be different.
         let rooms = service.rooms();
         assert!(rooms.iter().any(|room| room.id == dm_room_id(&peer_a)));
         assert!(rooms.iter().any(|room| room.id == dm_room_id(&peer_b)));
@@ -1699,16 +1815,28 @@ mod tests {
     }
 
     /// Attempting to select a room that does not exist must return an error.
+    ///
+    /// This guards against calling UI code that passes a stale or fabricated
+    /// room ID. The error variant is `InvalidConfiguration` (a programming
+    /// error, not a network error).
     #[test]
     fn select_room_requires_existing_room() {
         let service = MeshInfinityService::new(ServiceConfig::default());
+        // `.expect_err(msg)` asserts that the result is `Err(...)` and returns
+        // the inner error value. If the result is `Ok(...)`, it panics with `msg`.
         let err = service
             .select_room("room-does-not-exist")
             .expect_err("select must fail for unknown room");
+        // `matches!(value, Pattern)` returns `true` if `value` matches the pattern.
+        // Here we verify the error is specifically `InvalidConfiguration`, not some
+        // other error type (e.g. a network failure or crypto error).
         assert!(matches!(err, MeshInfinityError::InvalidConfiguration(_)));
     }
 
     /// Attempting to send to a room that does not exist must return an error.
+    ///
+    /// Symmetrical to `select_room_requires_existing_room` — the same guard
+    /// must exist on the send path to prevent orphaned messages.
     #[test]
     fn send_message_requires_existing_room() {
         let service = MeshInfinityService::new(ServiceConfig::default());
@@ -1719,16 +1847,25 @@ mod tests {
     }
 
     /// Pairing with the same code twice must not produce a duplicate peer entry.
+    ///
+    /// A user might accidentally tap "Pair" twice, or the UI might call `pair_peer`
+    /// on reconnection even if the peer was already known. The peer list must stay
+    /// deduplicated in all these cases.
     #[test]
     fn pair_peer_is_idempotent_for_same_code_summary() {
         let service = MeshInfinityService::new(ServiceConfig::default());
         let code = "ABCD-1234-EEEE-9999";
 
+        // Call pair_peer twice with the identical code.
         service.pair_peer(code).expect("first pair");
         service.pair_peer(code).expect("second pair");
 
+        // Derive the expected peer ID string from the pairing code so we can
+        // count exactly how many summary entries in `state.peers` have that ID.
         let peer_id = peer_id_string(&peer_id_from_pairing_code(code).expect("peer id from code"));
         let state = service.state.read().unwrap();
+        // `filter(...)` counts how many `PeerSummary` entries match this ID.
+        // It must be exactly 1 — not 0 (peer wasn't added) and not 2 (duplicated).
         let count = state.peers.iter().filter(|peer| peer.id == peer_id).count();
         assert_eq!(
             count, 1,
@@ -1738,8 +1875,13 @@ mod tests {
 
     /// Sending the exact same message text twice to the same offline peer must
     /// result in only ONE envelope in the passive outbox, not two.
+    ///
+    /// Deduplication is important because: without it, if a user accidentally
+    /// taps "Send" twice or the UI retries on a timeout, the peer would receive
+    /// the same message multiple times on reconnection — confusing and noisy.
     #[test]
     fn passive_fallback_dedupes_identical_payloads() {
+        // --- ARRANGE: All transports off → every send goes to passive outbox. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1754,14 +1896,18 @@ mod tests {
             .map(|p| p.peer_id)
             .expect("peer should exist");
 
+        // --- ACT: Send the SAME text twice. ---
         let room_id = service.create_room("dedupe-room").expect("room create");
         service
             .send_message_to_room(&room_id, "same payload")
             .expect("first send");
         service
-            .send_message_to_room(&room_id, "same payload")
+            .send_message_to_room(&room_id, "same payload") // identical text
             .expect("second send");
 
+        // --- ASSERT: Only one envelope in the queue. ---
+        // The SHA-256 dedupe key for (peer_id, "same payload") is the same both times,
+        // so the second call should be a no-op.
         let state = service.state.read().unwrap();
         let pending = state
             .passive_outbox
@@ -1773,8 +1919,14 @@ mod tests {
 
     /// Sending more messages than the per-peer queue limit allows must cap the
     /// queue at `MAX_PASSIVE_ENVELOPES_PER_PEER`, dropping the oldest entries.
+    ///
+    /// Without this bound, an offline peer that is never reachable again could
+    /// cause the passive outbox to grow without limit, eventually exhausting
+    /// the device's memory. The cap discards the oldest messages first (a
+    /// "sliding window" of the most recent `MAX_PASSIVE_ENVELOPES_PER_PEER`).
     #[test]
     fn passive_fallback_queue_is_bounded() {
+        // --- ARRANGE: All transports off; send more messages than the cap allows. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1790,12 +1942,18 @@ mod tests {
             .expect("peer should exist");
 
         let room_id = service.create_room("bound-room").expect("room create");
+        // Send MAX + 12 unique messages (unique text → unique dedupe keys → all
+        // different payloads, so deduplication does not reduce the count here).
+        // The loop variable `i` makes each message text unique.
         for i in 0..(MAX_PASSIVE_ENVELOPES_PER_PEER + 12) {
             service
                 .send_message_to_room(&room_id, &format!("payload-{}", i))
                 .expect("send");
         }
 
+        // --- ASSERT: Queue is capped at MAX_PASSIVE_ENVELOPES_PER_PEER. ---
+        // Even though we sent MAX+12 messages, the queue should hold exactly MAX.
+        // The oldest 12 messages were silently discarded to make room.
         let state = service.state.read().unwrap();
         let pending = state
             .passive_outbox
@@ -1807,8 +1965,14 @@ mod tests {
 
     /// After a passive envelope is delivered (acked), re-sending the same payload
     /// must NOT re-enqueue it. The ack history prevents replay.
+    ///
+    /// "Replay" here means: the same message being delivered twice to a peer.
+    /// This can happen if the user resends a message or the UI retries after
+    /// a transient error. The ack history ensures the peer only ever receives
+    /// each distinct payload once, no matter how many times it is sent.
     #[test]
     fn passive_fallback_replay_is_rejected_after_ack() {
+        // --- ARRANGE: Queue a message (all transports off → goes to passive outbox). ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1828,15 +1992,22 @@ mod tests {
             .send_message_to_room(&room_id, "replay-safe-payload")
             .expect("first send");
 
+        // --- ACT 1: Drain the outbox (simulates peer reconnecting and receiving). ---
+        // After draining, the dedupe key of the delivered envelope is moved to
+        // the `passive_acked` history for this peer.
         let delivered = service
             .drain_passive_for_peer(&peer_id)
             .expect("drain should succeed");
         assert!(delivered >= 1);
 
+        // --- ACT 2: Re-send the SAME payload text. ---
+        // The dedupe key matches one already in `passive_acked`, so `enqueue_passive_fallback`
+        // should silently discard this call without adding anything to the queue.
         service
             .send_message_to_room(&room_id, "replay-safe-payload")
             .expect("second send with same payload");
 
+        // --- ASSERT: Queue must still be empty (replay was rejected). ---
         let state = service.state.read().unwrap();
         let pending = state
             .passive_outbox
@@ -1848,8 +2019,14 @@ mod tests {
 
     /// After draining the passive outbox, the ack checkpoint must reflect the
     /// dedupe key of the last delivered envelope.
+    ///
+    /// The "ack checkpoint" is the dedupe key of the most recently delivered
+    /// envelope for a given peer. It is used by the reconnect-sync flow to let
+    /// a peer tell us "I've received up to key X; only send me newer envelopes."
+    /// This test verifies that the checkpoint is correctly set after a drain.
     #[test]
     fn passive_ack_checkpoint_advances_after_drain() {
+        // --- ARRANGE: Queue a message, record its dedupe key before draining. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1869,6 +2046,10 @@ mod tests {
             .send_message_to_room(&room_id, "checkpoint-payload")
             .expect("send");
 
+        // Read the dedupe key of the envelope that was just queued. This is the
+        // expected value of the checkpoint after we drain the queue.
+        // The block `{ }` ensures the read lock is released before `drain_passive_for_peer`
+        // tries to acquire a write lock on the same state.
         let expected = {
             let state = service.state.read().unwrap();
             state
@@ -1879,11 +2060,14 @@ mod tests {
                 .expect("queued envelope")
         };
 
+        // --- ACT: Drain the passive outbox. ---
         let delivered = service
             .drain_passive_for_peer(&peer_id)
             .expect("drain should succeed");
         assert!(delivered >= 1);
 
+        // --- ASSERT: The checkpoint now equals the dedupe key we recorded above. ---
+        // `passive_ack_checkpoint` returns the dedupe key of the last delivered envelope.
         let checkpoint = service
             .passive_ack_checkpoint(&peer_id)
             .expect("checkpoint should exist");
@@ -1892,8 +2076,14 @@ mod tests {
 
     /// Envelopes whose expiry timestamp has passed must be removed by compaction,
     /// even if they were never delivered.
+    ///
+    /// Compaction is a periodic cleanup pass. Without it, envelopes for peers
+    /// who never reconnect would sit in memory forever. After `PASSIVE_RETENTION_SECS`
+    /// (7 days), an undelivered message is presumed too stale to be useful and
+    /// should be discarded to reclaim memory.
     #[test]
     fn passive_compaction_removes_expired_envelopes() {
+        // --- ARRANGE: Queue a message, then backdate its expiry to the past. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         service.set_enable_tor(false);
         service.set_enable_i2p(false);
@@ -1915,6 +2105,11 @@ mod tests {
 
         // Forcibly backdate the expiry to the Unix epoch (1970-01-01T00:00:00Z)
         // so all envelopes appear expired.
+        // `SystemTime::UNIX_EPOCH` is the epoch: January 1, 1970, 00:00:00 UTC.
+        // Any `SystemTime::now() <= UNIX_EPOCH` comparison returns false, meaning
+        // every envelope appears expired immediately.
+        // The `{ }` block ensures the write lock is released before compaction
+        // tries to acquire its own write lock on the same state.
         {
             let mut state = service.state.write().unwrap();
             if let Some(queue) = state.passive_outbox.get_mut(&peer_id) {
@@ -1924,9 +2119,13 @@ mod tests {
             }
         }
 
+        // --- ACT: Run compaction. ---
+        // `compact_passive_state` scans all queues and removes expired envelopes.
+        // It returns the total count of envelopes it removed.
         let removed = service.compact_passive_state();
         assert!(removed >= 1);
 
+        // --- ASSERT: Queue is now empty (expired envelope was removed). ---
         let state = service.state.read().unwrap();
         let remaining = state
             .passive_outbox
@@ -1938,8 +2137,13 @@ mod tests {
 
     /// `sync_room_messages_since` given a cursor message ID must return only the
     /// messages AFTER that cursor (i.e. the ones the UI hasn't seen yet).
+    ///
+    /// The "cursor" is a bookmark: the ID of the last message the UI has already
+    /// displayed. By passing it to `sync_room_messages_since`, the UI says:
+    /// "I have seen up to this point — give me everything newer."
     #[test]
     fn reconnect_sync_room_since_returns_only_newer_messages() {
+        // --- ARRANGE: Send three messages to a room. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         let room_id = service.create_room("sync-room").expect("room create");
 
@@ -1953,9 +2157,14 @@ mod tests {
             .send_message_to_room(&room_id, "m3")
             .expect("send m3");
 
+        // The cursor is the ID of the FIRST message (m1).
+        // This simulates a UI that has seen m1 but missed m2 and m3.
         let all = service.messages_for_room(&room_id);
         let cursor = all.first().expect("m1 exists").id.clone();
 
+        // --- ACT + ASSERT: Only m2 and m3 should be in the delta. ---
+        // `sync_room_messages_since` returns messages AFTER the cursor, so m1
+        // is excluded (we already have it) and only m2, m3 are returned.
         let delta = service
             .sync_room_messages_since(&room_id, Some(&cursor))
             .expect("sync since cursor");
@@ -1967,8 +2176,14 @@ mod tests {
     /// If the given cursor is not found in the room's history (the UI is too far
     /// behind or the history was trimmed), return the entire room history as a
     /// safe fallback.
+    ///
+    /// This handles the edge case where a cursor is stale or invalid — for example
+    /// if the backend pruned old messages while the UI was disconnected. Rather than
+    /// returning an error (which would leave the UI blank), the full history is
+    /// returned so the UI can display something meaningful.
     #[test]
     fn reconnect_sync_room_with_unknown_cursor_returns_full_room() {
+        // --- ARRANGE: Two messages in a room. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         let room_id = service.create_room("sync-room-full").expect("room create");
         service
@@ -1978,6 +2193,9 @@ mod tests {
             .send_message_to_room(&room_id, "x2")
             .expect("send x2");
 
+        // --- ACT + ASSERT: A completely unknown cursor returns the full history. ---
+        // `"cursor-that-does-not-exist"` will never match any message ID, so
+        // the function should fall back to returning ALL messages (both x1 and x2).
         let synced = service
             .sync_room_messages_since(&room_id, Some("cursor-that-does-not-exist"))
             .expect("sync full fallback");
@@ -1986,11 +2204,18 @@ mod tests {
 
     /// `resumable_file_transfers()` must exclude completed and cancelled transfers
     /// and include only those in Queued or InProgress state.
+    ///
+    /// "Resumable" means: could be re-tried if the connection was interrupted.
+    /// A Completed transfer is done — there is nothing to resume.
+    /// A Canceled transfer was explicitly stopped — resuming it would be wrong.
+    /// Only Queued and InProgress transfers make sense to offer in a "Resume" UI.
     #[test]
     fn resumable_file_transfers_excludes_completed_and_canceled() {
+        // --- ARRANGE: Queue three transfers and put each in a different terminal state. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         let peer = "1111-2222-3333-4444";
 
+        // Three transfers start in `Queued` state.
         let completed_id = service
             .queue_file_send(peer, "done.bin", 10)
             .expect("queue completed candidate");
@@ -2001,23 +2226,35 @@ mod tests {
             .queue_file_send(peer, "queued.bin", 10)
             .expect("queue resumable candidate");
 
+        // Move the first to `Completed` by reporting that all 10 bytes transferred.
         service
             .update_file_transfer_progress(&completed_id, 10)
             .expect("complete transfer");
+        // Move the second to `Canceled` explicitly.
         service
             .cancel_file_transfer(&canceled_id)
             .expect("cancel transfer");
+        // The third stays in `Queued` — this is the one we expect to find in resumable.
 
+        // --- ASSERT: Only the still-queued transfer appears in the resumable list. ---
         let resumable = service.resumable_file_transfers();
+        // The queued transfer MUST be in the list.
         assert!(resumable.iter().any(|t| t.id == queued_id));
+        // The completed transfer must NOT be in the list.
         assert!(!resumable.iter().any(|t| t.id == completed_id));
+        // The canceled transfer must NOT be in the list.
         assert!(!resumable.iter().any(|t| t.id == canceled_id));
     }
 
     /// A reconnect sync snapshot must bundle both the message delta (messages
     /// after the cursor) AND the set of resumable file transfers into one struct.
+    ///
+    /// This tests that `reconnect_sync_snapshot` correctly combines results from
+    /// `sync_room_messages_since` and `resumable_file_transfers` into one atomic
+    /// bundle — the struct a Flutter UI receives when a peer reconnects.
     #[test]
     fn reconnect_sync_snapshot_includes_message_delta_and_transfer_resume_set() {
+        // --- ARRANGE: Two messages in a room; cursor points to the first. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
         let room_id = service.create_room("sync-snap").expect("room create");
 
@@ -2028,6 +2265,7 @@ mod tests {
             .send_message_to_room(&room_id, "s2")
             .expect("send s2");
 
+        // The cursor is at s1, so the delta should contain only s2.
         let cursor = service
             .messages_for_room(&room_id)
             .first()
@@ -2035,15 +2273,19 @@ mod tests {
             .id
             .clone();
 
+        // Also queue a file transfer that should appear in `resumable_transfers`.
         let queued_id = service
             .queue_file_send("AAAA-BBBB-CCCC-DDDD", "resume.bin", 42)
             .expect("queue transfer");
 
+        // --- ACT + ASSERT: The snapshot must contain BOTH the message delta and the transfer. ---
         let snapshot = service
             .reconnect_sync_snapshot(&room_id, Some(&cursor))
             .expect("build snapshot");
+        // Message delta: only s2 (s1 was before the cursor).
         assert_eq!(snapshot.missed_messages.len(), 1);
         assert_eq!(snapshot.missed_messages[0].text, "s2");
+        // Resumable transfers: the queued_id should be present.
         assert!(snapshot
             .resumable_transfers
             .iter()
@@ -2055,10 +2297,23 @@ mod tests {
     /// - Deny access to a peer with Caution trust.
     /// - Allow access to a peer with Trusted trust over Tor.
     /// - Deny access to a Trusted peer attempting to connect over clearnet.
+    ///
+    /// This covers the two independent access-control axes of a hosted service:
+    /// 1. The peer's trust level must meet or exceed `min_trust_level`.
+    /// 2. The transport used to make the request must be in `allowed_transports`.
+    /// BOTH conditions must be satisfied simultaneously.
     #[test]
     fn hosted_service_access_policy_enforces_trust_and_transport() {
+        // --- ARRANGE: Configure a service that requires Trusted peers over Tor only. ---
         let service = MeshInfinityService::new(ServiceConfig::default());
 
+        // `configure_hosted_service_with_policy` registers a service with:
+        //   - id: "svc-work" — used to look it up in subsequent access checks
+        //   - name: "Work API" — display name (not used by policy logic)
+        //   - path: "/work" — the URL path prefix on the mesh
+        //   - address: "10.0.0.10:8443" — the private local network target
+        //   - enabled: true — service is active
+        //   - policy: Trusted trust level minimum; only Tor transport allowed
         service
             .configure_hosted_service_with_policy(
                 "svc-work",
@@ -2073,6 +2328,7 @@ mod tests {
             )
             .expect("configure hosted service");
 
+        // Pair a peer (starts at Caution trust by default — below Trusted).
         let _ = service.pair_peer("ABCD-EF01-2345-6789");
         let peer_id = service
             .peers
@@ -2081,12 +2337,14 @@ mod tests {
             .map(|p| p.peer_id)
             .expect("peer should exist");
 
-        // Default pairing trust is Caution, below Trusted requirement.
+        // --- CHECK 1: Caution trust → access denied (trust level too low). ---
+        // Even though Tor is the allowed transport, Caution < Trusted, so no access.
         let denied_low_trust = service
             .hosted_service_access_allowed("svc-work", &peer_id, TransportType::Tor)
             .expect("policy check");
         assert!(!denied_low_trust);
 
+        // Promote the peer to Trusted.
         service
             .peers
             .update_trust_level(
@@ -2096,13 +2354,16 @@ mod tests {
             )
             .expect("raise trust");
 
-        // Trusted peer + allowed transport should pass.
+        // --- CHECK 2: Trusted trust + Tor transport → access granted. ---
+        // Both conditions satisfied: trust level ≥ Trusted AND transport is Tor.
         let allowed = service
             .hosted_service_access_allowed("svc-work", &peer_id, TransportType::Tor)
             .expect("policy check trusted tor");
         assert!(allowed);
 
-        // Trusted peer but disallowed transport should fail.
+        // --- CHECK 3: Trusted trust but Clearnet transport → access denied. ---
+        // Trust level is fine, but Clearnet is not in the allowed_transports list.
+        // This enforces the transport policy even for highly trusted peers.
         let denied_transport = service
             .hosted_service_access_allowed("svc-work", &peer_id, TransportType::Clearnet)
             .expect("policy check trusted clearnet");

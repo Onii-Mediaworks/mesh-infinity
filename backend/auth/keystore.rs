@@ -129,6 +129,7 @@ mod android {
     //                (boolean, int, long, float, double, or Object reference).
     //                We use `JValue::Object` to wrap our byte array argument.
     use jni::objects::{JByteArray, JClass, JValue};
+    use jni::strings::{JNIString, MethodSignature};
 
     // Low-level JNI system types (from the C-level JNI header translated to Rust).
     //
@@ -364,7 +365,7 @@ mod android {
         // found — this would happen if the APK was built without including
         // KeystoreBridge.kt, or if the class name constant above is wrong.
         let class: JClass = env
-            .find_class(KEYSTORE_CLASS)
+            .find_class(JNIString::from(KEYSTORE_CLASS))
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI class lookup failed: {}", e)))?;
 
         // Step 2: convert &[u8] → Java byte[].
@@ -394,8 +395,8 @@ mod android {
         let output = env
             .call_static_method(
                 class,
-                method,
-                "([B)[B",                          // descriptor: (byte[]) -> byte[]
+                JNIString::from(method),
+                MethodSignature::from("([B)[B"),   // descriptor: (byte[]) -> byte[]
                 &[JValue::Object(&*input_array)],  // one argument: the input byte[]
             )
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI call failed: {}", e)))?
@@ -422,9 +423,8 @@ mod android {
         // `exception_clear` — resets the pending exception flag so future JNI
         //                     calls on this thread will not fail due to the old exception.
         //
-        // `.unwrap_or(false)` — if even `exception_check` itself fails somehow,
-        // treat it as "no exception" to avoid a panic in exception-handling code.
-        if env.exception_check().unwrap_or(false) {
+        // In jni 0.22, `exception_check()` returns `bool` directly (no Result).
+        if env.exception_check() {
             let _ = env.exception_describe();
             let _ = env.exception_clear();
             return Err(MeshInfinityError::CryptoError(
@@ -434,12 +434,12 @@ mod android {
 
         // Step 5: convert the returned Java byte[] back to a Rust Vec<u8>.
         //
-        // `JByteArray::from(output)` reinterprets the generic object reference
-        // (returned by `.l()` above) as a typed `JByteArray` handle.
-        // `convert_byte_array` copies the Java array's contents into a newly
-        // allocated Rust `Vec<u8>`.  After this, the Java array can be
-        // garbage-collected (we no longer hold a reference to it).
-        let output_array = JByteArray::from(output);
+        // Reinterpret the generic JObject as a typed JByteArray.
+        // In jni 0.22, there is no From<JObject> for JPrimitiveArray, so we use
+        // the unsafe from_raw conversion to reinterpret the raw JNI pointer.
+        // Safety: the Kotlin method is declared to return byte[], so the object
+        // reference is guaranteed to be a valid Java byte array.
+        let output_array: JByteArray = unsafe { JByteArray::from_raw(output.into_raw()) };
         let bytes = env
             .convert_byte_array(output_array)
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI read bytes failed: {}", e)))?;
@@ -464,13 +464,13 @@ mod android {
     // complex generic machinery than the clarity savings would justify.
     fn call_static_delete(env: &mut jni::Env) -> Result<()> {
         let class: JClass = env
-            .find_class(KEYSTORE_CLASS)
+            .find_class(JNIString::from(KEYSTORE_CLASS))
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI class lookup failed: {}", e)))?;
 
         // Call the static `deleteKey()` method with no arguments.
         // The empty slice `&[]` means "no arguments".
         let result = env
-            .call_static_method(class, "deleteKey", "()Z", &[])
+            .call_static_method(class, JNIString::from("deleteKey"), MethodSignature::from("()Z"), &[])
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI call failed: {}", e)))?
             // `.z()` extracts the return value as a Java `boolean`.
             // This is a primitive type extractor — it returns `bool` directly.
@@ -480,7 +480,8 @@ mod android {
         // Check for exceptions thrown by the Kotlin side.
         // Same pattern as in `call_static_wrap` — see the comments there for
         // a full explanation of why this check is necessary.
-        if env.exception_check().unwrap_or(false) {
+        // In jni 0.22, `exception_check()` returns `bool` directly (no Result).
+        if env.exception_check() {
             let _ = env.exception_describe();
             let _ = env.exception_clear();
             return Err(MeshInfinityError::CryptoError(
