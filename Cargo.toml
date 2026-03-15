@@ -340,6 +340,13 @@ meshtastic = { version = "0.1.8", optional = true }
 #   It has no dlopen-time initialization, so it works safely on Android.
 arti-client = { version = "0.40", features = ["tokio", "rustls"] }
 
+# rusqlite — SQLite bindings, pulled in transitively by arti-client for its
+# directory cache.  We list it here explicitly to enable the "bundled" feature,
+# which compiles SQLite from source as part of the crate build.  Without this,
+# the linker looks for a system sqlite3.lib / libsqlite3, which is absent on
+# Windows CI runners (and potentially other minimal build environments).
+rusqlite = { version = "0.38", features = ["bundled"] }
+
 # tor-rtcompat — runtime compatibility layer for Arti.
 #
 # Arti supports multiple async runtimes.  This crate provides the glue that
