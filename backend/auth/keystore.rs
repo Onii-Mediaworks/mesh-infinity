@@ -129,7 +129,8 @@ mod android {
     //                (boolean, int, long, float, double, or Object reference).
     //                We use `JValue::Object` to wrap our byte array argument.
     use jni::objects::{JByteArray, JClass, JValue};
-    use jni::strings::{JNIString, MethodSignature};
+    use jni::strings::JNIString;
+    use jni::signature::MethodSignature;
 
     // Low-level JNI system types (from the C-level JNI header translated to Rust).
     //
@@ -439,7 +440,10 @@ mod android {
         // the unsafe from_raw conversion to reinterpret the raw JNI pointer.
         // Safety: the Kotlin method is declared to return byte[], so the object
         // reference is guaranteed to be a valid Java byte array.
-        let output_array: JByteArray = unsafe { JByteArray::from_raw(output.into_raw()) };
+        // In jni 0.22, from_raw takes (&Env, raw_ptr) to tie the lifetime to the env frame.
+        // Safety: the Kotlin method is declared to return byte[], so the object
+        // reference is guaranteed to be a valid Java byte array.
+        let output_array: JByteArray = unsafe { JByteArray::from_raw(env, output.into_raw()) };
         let bytes = env
             .convert_byte_array(output_array)
             .map_err(|e| MeshInfinityError::CryptoError(format!("JNI read bytes failed: {}", e)))?;

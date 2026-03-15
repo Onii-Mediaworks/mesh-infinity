@@ -917,38 +917,44 @@ pub extern "C" fn mi_set_config_dir(path_ptr: *const c_char) -> i32 {
 /// correct because JNI is Android-specific.
 #[cfg(target_os = "android")]
 #[no_mangle]
+#[allow(deprecated)] // jni::JNIEnv is now an alias for EnvUnowned in jni 0.22
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeSetConfigDir<
     'local,
 >(
-    mut env: jni::JNIEnv<'local>,
+    env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     path: jni::objects::JString<'local>,
 ) -> jni::sys::jint {
-    // In jni 0.22, `JNIEnv<'local>` is the full environment type (alias for
-    // `Env<'local>`).  It is used directly — no need for `with_env`.
+    // In jni 0.22, `jni::JNIEnv` is a deprecated alias for `EnvUnowned` — the
+    // FFI-safe raw-pointer wrapper used as the parameter type in native methods.
+    // EnvUnowned does NOT expose the full JNI API (e.g. get_string, find_class).
     //
-    // `env.get_string` converts the Java `String` object into a Rust-compatible
-    // modified-UTF-8 char sequence.  Java strings are UTF-16 internally; the JNI
-    // library handles the conversion transparently.
-    //
-    // In jni 0.22 the return type is `MUTF8Chars`, which has `.to_string()` to
-    // produce an owned `String`.  We convert to an owned String immediately so
-    // that the mutable borrow on `env` ends before any subsequent JNI calls.
-    let path_string = match env.get_string(&path) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            set_last_error("Failed to read config dir from Java");
-            return -1;
+    // To call those methods we must upgrade it to `&mut Env` using `with_env()`.
+    // Because `with_env` returns an opaque `EnvOutcome` type rather than the
+    // closure's direct return value, we communicate the result via a captured
+    // mutable variable (`result`) and return that after `with_env` completes.
+    let mut result: jni::sys::jint = -1;
+    let _ = env.with_env(|env| {
+        // `env.get_string` converts the Java String into a modified-UTF-8 char
+        // sequence (MUTF8Chars).  `.to_string()` produces an owned String so the
+        // borrow on `env` ends before any subsequent JNI calls.
+        let path_string = match env.get_string(&path) {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                set_last_error("Failed to read config dir from Java");
+                return;
+            }
+        };
+        let trimmed = path_string.trim();
+        if trimmed.is_empty() {
+            set_last_error("config path was empty");
+            return;
         }
-    };
-    let trimmed = path_string.trim();
-    if trimmed.is_empty() {
-        set_last_error("config path was empty");
-        return -1;
-    }
-    let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
-    *guard = Some(std::path::PathBuf::from(trimmed));
-    0
+        let mut guard = CONFIG_DIR_OVERRIDE.lock().unwrap();
+        *guard = Some(std::path::PathBuf::from(trimmed));
+        result = 0;
+    });
+    result
 }
 
 /// Send a chat message in the currently-active room.
