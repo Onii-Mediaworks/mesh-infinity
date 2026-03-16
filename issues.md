@@ -3,11 +3,29 @@
 Independently verified findings only. Every item here was confirmed by a separate
 verification agent reading the actual source lines, not just the description.
 Unverified findings live in issues-unverified.md.
-Last updated: 2026-03-15
+Last updated: 2026-03-16
 
 ---
 
 ## CRITICAL
+
+### C5 — WireGuard mesh uses XOR stream cipher — not WireGuard, not ChaCha20
+**File:** `backend/core/mesh/wireguard.rs:511`
+**Verified at:** `fn xor_stream(input: &[u8], key: &[u8; 32], nonce_counter: u64)` — home-rolled XOR loop over `key[i % key.len()] ^ counter_bytes[i % counter_bytes.len()]`. No ChaCha20, no Poly1305 authentication, no WireGuard Noise protocol handshake.
+**Scenario:** The cipher is trivially broken. An attacker who observes two ciphertexts with the same key can XOR them to recover `P1 XOR P2`. The `nonce_counter` does not prevent this — both sides generate independent random session keys and never exchange them (C6), so the counter resets on every session. Named "WireGuard" but shares nothing with it.
+**Fix:** Replace with a real AEAD (ChaCha20-Poly1305 via the `chacha20poly1305` crate already in `Cargo.toml`) after session keys are properly exchanged (C6).
+
+### C6 — Session keys generated independently on each side — nodes cannot decrypt each other's traffic
+**File:** `backend/core/mesh/wireguard.rs:371`
+**Verified at:** `PeerSession::new()` fills `key` with `rng.fill(&mut key)` independently; no key exchange mechanism exists in the entire codebase. Both sides produce different random keys for the same session.
+**Scenario:** This is a complete communication failure. Every message sent is encrypted with a key the recipient does not have. All decryption produces garbage. This affects every transport that goes through `WireGuardMesh`. Two nodes cannot exchange a single readable message.
+**Fix:** Implement a real X25519 DH handshake (Noise IK or equivalent) before the first packet. Derive the shared session key from `X25519(my_ephemeral, their_static)`. This is a prerequisite for everything else.
+
+### C7 — Double Ratchet send path wired but X3DH initiation never called — Signal sessions never active
+**File:** `backend/service/messaging.rs` (signal_encode_outbound), `backend/crypto/signal_session.rs`
+**Verified at:** `signal_encode_outbound()` branches on `sessions.has_session(&peer_id)` — true path uses the Double Ratchet, false path falls through to raw bytes. No code path anywhere calls `sessions.initiate_session()` or `sessions.receive_session_init()`. `has_session()` is always false in practice.
+**Scenario:** The Signal encryption layer is scaffolded but never activates. Every message is sent as raw bytes regardless of whether a Double Ratchet implementation exists. The X3DH session establishment flow (fetch PreKeyBundle → run X3DH → init ratchet) is fully absent.
+**Fix:** Implement PreKeyBundle publication in the network map, and call `initiate_session()` when first sending to a peer whose bundle is available. This is the missing link between the scaffolding and the working encryption.
 
 ### C4 — I2P transport allocates 4 GB heap buffer from untrusted 4-byte length prefix — OOM DoS
 **File:** `backend/transport/i2p.rs:898-909`
@@ -36,6 +54,18 @@ Last updated: 2026-03-15
 ---
 
 ## HIGH
+
+### H14 — `EncryptedPayload.data` is raw plaintext — struct name is misleading
+**File:** `backend/service/mod.rs:952-955`
+**Verified at:** `EncryptedPayload { data: payload.to_vec(), encryption_key_id: session.encryption_key, mac: session.mac_key }` — `data` is the unmodified plaintext bytes. `encryption_key_id` and `mac` hold real PFS key material but no AEAD cipher is applied to `data` before enqueuing.
+**Scenario:** Every message queued for delivery travels as plaintext inside an `EncryptedPayload` wrapper that provides no encryption. The PFS keys in `encryption_key_id`/`mac` are generated and discarded without use. Any relay node or network observer reading the packet can read message content. (Distinct from C6 — this is the service layer, not the WireGuard layer.)
+**Fix:** Apply `ChaCha20Poly1305::encrypt(session_key, nonce, aad, plaintext)` and store the ciphertext in `data`. This is the minimal fix; the full fix is C7 (Signal Double Ratchet).
+
+### H15 — Tor inbound unimplemented — all nodes expose real IP to receive connections
+**File:** `backend/transport/tor.rs:434-438`
+**Verified at:** `listen()` returns `Err(MeshInfinityError::TransportError("Tor inbound listener requires onion service configuration (not yet implemented)"))`.
+**Scenario:** Tor is the highest-priority transport. Without `.onion` inbound support, a node can send anonymously over Tor but cannot *receive* without advertising its real IP address. Server nodes and always-on peers are fully deanonymised on the receiving side regardless of outbound transport choice.
+**Fix:** Generate a persistent Ed25519 onion service key at first run, store it in the Vault, register an onion service via the arti onion-service API, and include the `.onion` address in `transport_endpoints` in the network map.
 
 ### H8 — Key file permissions race window on non-Android write
 **File:** `backend/auth/persistence.rs:921-946`
@@ -159,6 +189,12 @@ Last updated: 2026-03-15
 **Scenario:** A malformed, expired, or wrong-version pairing code produces a random peer ID that is stored as a trusted peer. Two failed pairing attempts with the same legitimate peer create two different phantom identities in the peer store. A malicious peer can deliberately send bad codes to pollute the peer database.
 **Fix:** Return an error on parse failure. Never silently substitute a random identity for a failed cryptographic verification.
 
+### P5 — `clearnet_fallback` flag enforced at wrong layer — bypassable at path construction
+**File:** `backend/transport/manager.rs` (`enabled_transport_order_for_available_as_origin`), `backend/service/mod.rs` (`preferred_paths_for_peer`)
+**Verified at:** `enabled_transport_order_for_available_as_origin()` correctly filters clearnet when the flag is false; however `route_outbound_message()` populates `preferred_paths` via `preferred_paths_for_peer()` before the filtered function is consulted, and the paths are passed directly to `MessageRouter` which processes them without re-checking the flag.
+**Scenario:** When real path construction is implemented, any code path that builds `preferred_paths` without calling `enabled_transport_order_for_available_as_origin()` will silently include clearnet paths for origin nodes, violating the user's privacy preference with no error or warning.
+**Fix:** Enforce the flag inside `preferred_paths_for_peer()` itself, not only in the transport-order helper. Make it impossible to construct a path that includes clearnet for an origin node when the flag is false.
+
 ### P4 — Trust level is monotonically non-decreasing — no downgrade or revocation path
 **File:** `backend/auth/web_of_trust.rs:458-466`
 **Verified at:** lines 461-465 use `max(existing_trust, attested_trust)` — trust can only increase. No downgrade path exists anywhere in the trust system.
@@ -204,6 +240,24 @@ Last updated: 2026-03-15
 **Verified at:** `discovered_peers` HashMap has no size limit; `known_peers.extend(peers)` is unbounded. TTL eviction at 5 minutes provides partial mitigation but is not a substitute for a hard cap.
 **Scenario:** A malicious mDNS responder announces 1 unique peer ID per second. After 5 minutes the first entries evict, but the attacker stays ahead by announcing faster. No enforcement prevents 1,000+ entries during a sustained attack.
 **Fix:** Cap `discovered_peers` at a reasonable maximum. Drop new entries beyond the cap. Add per-source-IP rate limiting.
+
+### M11 — Trust revocation certificates never leave the local node
+**File:** `backend/auth/web_of_trust.rs:782`, `backend/service/trust.rs`
+**Verified at:** `drain_pending_revocation_broadcasts()` exists at line 782 and returns queued `RevocationCertificate` items; a search of all service-layer files confirms it is never called from `service/mod.rs`, `service/trust.rs`, or any other consumer.
+**Scenario:** When a user revokes a peer's trust, the revocation certificate is queued locally and never sent. All other nodes in the mesh continue to treat the revoked peer as trusted indefinitely. A compromised peer that has been revoked remains active on every other node.
+**Fix:** Call `drain_pending_revocation_broadcasts()` from the service layer after any trust revocation and deliver the certificates to all reachable trusted peers.
+
+### M12 — PFS session keys not zeroized on drop — linger in freed heap
+**File:** `backend/crypto/pfs.rs:15-16`
+**Verified at:** `pub encryption_key: [u8; 32]` and `pub mac_key: [u8; 32]` — plain arrays, not `Zeroizing<[u8; 32]>`. `SessionKeys` does not derive or implement `ZeroizeOnDrop`.
+**Scenario:** When a PFS session rotates, the old `SessionKeys` is dropped but the key bytes remain in freed heap memory until overwritten by a later allocation. A live-process memory dump (device seizure, crash dump) exposes all recently-used session keys.
+**Fix:** Wrap both fields in `Zeroizing<[u8; 32]>`. One-line change per field; `zeroize` is already in `Cargo.toml`.
+
+### M13 — Identity secret keys held in plain `HashMap` without `SecureMemory`
+**File:** `backend/auth/identity.rs:28`
+**Verified at:** `IdentityManager.identities: HashMap<PeerId, Identity>` where `Identity.signing_key: SigningKey` and `Identity.dh_secret: StaticSecret` are ordinary struct fields on the heap, not wrapped in `SecureMemory` and not `mlock`-protected.
+**Scenario:** The long-term Ed25519 and X25519 secret keys live in ordinary allocator memory for the entire app session. A memory dump exposes them. These are the highest-value key material in the system — compromise enables indefinite impersonation and decryption of all past messages.
+**Fix:** Wrap `Identity` in `SecureMemory<Identity>` using the existing `secmem.rs` infrastructure. Alternatively, wrap individual key fields in `Zeroizing<>` at minimum.
 
 ### M7 — `parse_peer_id_hex` fallback to all-zeros peer ID — collision across failed nodes
 **File:** `backend/service/mod.rs:1017`
