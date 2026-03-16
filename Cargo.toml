@@ -263,6 +263,9 @@ bip39 = "2.0"
 # message encryption, message authentication, and header encryption.
 hkdf = "0.12"
 
+# hmac — HMAC-based MAC, used directly in the Double Ratchet KDF chain.
+hmac = "0.12"
+
 # sha2 — SHA-2 family hash functions (SHA-256, SHA-512).
 #
 # Used for content addressing (hashing messages/files to create unique IDs),

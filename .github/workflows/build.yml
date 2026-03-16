@@ -178,6 +178,15 @@ jobs:
         with:
           channel: stable
 
+      - name: Install rsync via MSYS2
+        shell: pwsh
+        run: |
+          # Git for Windows does NOT ship rsync. Install from the MSYS2 toolchain
+          # that is pre-installed on windows-latest at C:\msys64. This rsync
+          # understands MSYS2 POSIX paths (/d/a/...) unlike cwRsync (choco).
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm rsync
+          "C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Install Windows packaging dependencies
         shell: pwsh
         run: choco install nsis 7zip --no-progress -y

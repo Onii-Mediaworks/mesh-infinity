@@ -5,8 +5,9 @@ SHELL := bash
 # $(shell pwd) instead always yields a POSIX path (/d/a/...) in bash.
 # NOTE: Do NOT install rsync via choco on the Windows CI runner.  Chocolatey's
 # cwRsync uses Cygwin conventions (/cygdrive/d/...) and does not understand
-# MSYS2-style POSIX paths (/d/a/...).  Git for Windows ships its own rsync at
-# /usr/bin/rsync which understands MSYS2 paths and must be used instead.
+# MSYS2-style POSIX paths (/d/a/...).  Git for Windows does NOT ship rsync.
+# Use MSYS2 pacman (pre-installed at C:\msys64 on windows-latest) to install
+# rsync and prepend C:\msys64\usr\bin to PATH before running make.
 ROOT_DIR      := $(shell pwd)
 FRONTEND_DIR  := $(ROOT_DIR)/frontend
 PLATFORMS_DIR := $(ROOT_DIR)/platforms
@@ -266,12 +267,16 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  archive \
 	  -archivePath "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive"; \
 	\
-	xcodebuild -exportArchive \
-	  -archivePath "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive" \
-	  -exportPath "$(BUILD_DIR)/output/ios/$$profile" \
-	  -exportOptionsPlist "$(PLATFORMS_DIR)/apple/policy.env" \
-	  COMPILER_INDEX_STORE_ENABLE=NO; \
-	echo "Output: $(BUILD_DIR)/output/ios/$$profile/"
+	ipa_payload="$(BUILD_DIR)/output/ios/$$profile/Payload"; \
+	rm -rf "$$ipa_payload"; \
+	mkdir -p "$$ipa_payload"; \
+	cp -R \
+	  "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive/Products/Applications/"*.app \
+	  "$$ipa_payload/"; \
+	( cd "$(BUILD_DIR)/output/ios/$$profile" \
+	  && zip -qr "$(APP_NAME)-$(APP_VERSION)-$$profile.ipa" Payload ); \
+	rm -rf "$$ipa_payload"; \
+	echo "Output: $(BUILD_DIR)/output/ios/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.ipa"
 
 # ── iOS: full (Rust + Xcode) ──────────────────────────────────────────────────
 #
