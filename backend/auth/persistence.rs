@@ -358,6 +358,7 @@ impl IdentityStore {
     ///
     /// The `.wrap` extension signals that this is not a plain key — it is an
     /// opaque blob that must be "unwrapped" (hardware-decrypted) before use.
+    #[cfg(target_os = "android")]
     fn wrapped_key_path(&self) -> PathBuf {
         self.dir.join("identity.key.wrap")
     }
