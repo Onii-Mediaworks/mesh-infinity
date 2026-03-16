@@ -147,6 +147,14 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  build; \
 	\
 	app_src="$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/$(APP_NAME).app"; \
+	for xcfw in "$$fw_dir/$$cfg"/*.xcframework; do \
+	  _n="$$(basename "$$xcfw" .xcframework)"; \
+	  [ "$$_n" = "FlutterMacOS" ] && continue; \
+	  [ "$$_n" = "App" ] && continue; \
+	  _slice="$$(find "$$xcfw" -maxdepth 1 -name 'macos-*' -type d | head -1)"; \
+	  [ -n "$$_slice" ] && [ -d "$$_slice/$$_n.framework" ] && \
+	    cp -R "$$_slice/$$_n.framework" "$$app_src/Contents/Frameworks/"; \
+	done; \
 	dmg_stage="$(BUILD_DIR)/intermediates/macos/$$profile/dmg-stage"; \
 	rm -rf "$$dmg_stage"; \
 	mkdir "$$dmg_stage"; \
