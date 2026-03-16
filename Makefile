@@ -3,6 +3,10 @@ SHELL := bash
 # $(CURDIR) on Windows returns a path like D:/a/... which rsync misreads as a
 # remote host:path pair (the drive letter looks like a hostname).  Using
 # $(shell pwd) instead always yields a POSIX path (/d/a/...) in bash.
+# NOTE: Do NOT install rsync via choco on the Windows CI runner.  Chocolatey's
+# cwRsync uses Cygwin conventions (/cygdrive/d/...) and does not understand
+# MSYS2-style POSIX paths (/d/a/...).  Git for Windows ships its own rsync at
+# /usr/bin/rsync which understands MSYS2 paths and must be used instead.
 ROOT_DIR      := $(shell pwd)
 FRONTEND_DIR  := $(ROOT_DIR)/frontend
 PLATFORMS_DIR := $(ROOT_DIR)/platforms

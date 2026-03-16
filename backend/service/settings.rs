@@ -70,6 +70,17 @@ impl MeshInfinityService {
         self.transport_manager.set_rf_enabled(value);
     }
 
+    /// Enable/disable clearnet fallback for originating connections.
+    ///
+    /// When `false`, this node will not use clearnet as a last resort when
+    /// routing messages it originated.  Relay hops are unaffected.
+    pub fn set_clearnet_fallback(&self, value: bool) {
+        let mut state = self.state.write().unwrap();
+        state.mesh_config.clearnet_fallback = value;
+        state.settings.clearnet_fallback = value;
+        self.transport_manager.set_clearnet_fallback_enabled(value);
+    }
+
     /// Return current mesh configuration snapshot.
     pub fn mesh_config(&self) -> MeshConfig {
         self.state.read().unwrap().mesh_config.clone()
@@ -95,4 +106,5 @@ pub(super) fn sync_settings_from_mesh(settings: &mut Settings, mesh_config: &Mes
     settings.enable_i2p = mesh_config.enable_i2p;
     settings.enable_bluetooth = mesh_config.enable_bluetooth;
     settings.enable_rf = mesh_config.enable_rf;
+    settings.clearnet_fallback = mesh_config.clearnet_fallback;
 }

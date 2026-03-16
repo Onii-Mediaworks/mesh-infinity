@@ -3,6 +3,7 @@ class SettingsModel {
     this.nodeMode = 0,
     this.enableTor = false,
     this.enableClearnet = false,
+    this.clearnetFallback = false,
     this.meshDiscovery = false,
     this.allowRelays = false,
     this.enableI2p = false,
@@ -15,6 +16,9 @@ class SettingsModel {
   final int nodeMode;
   final bool enableTor;
   final bool enableClearnet;
+  /// Whether this node (as message originator) may fall back to clearnet when
+  /// all privacy-preserving transports have failed.  Relay hops are unaffected.
+  final bool clearnetFallback;
   final bool meshDiscovery;
   final bool allowRelays;
   final bool enableI2p;
@@ -34,6 +38,7 @@ class SettingsModel {
     nodeMode: json['nodeMode'] as int? ?? 0,
     enableTor: json['enableTor'] as bool? ?? false,
     enableClearnet: json['enableClearnet'] as bool? ?? false,
+    clearnetFallback: json['clearnetFallback'] as bool? ?? false,
     meshDiscovery: json['meshDiscovery'] as bool? ?? false,
     allowRelays: json['allowRelays'] as bool? ?? false,
     enableI2p: json['enableI2p'] as bool? ?? false,
@@ -47,6 +52,7 @@ class SettingsModel {
     int? nodeMode,
     bool? enableTor,
     bool? enableClearnet,
+    bool? clearnetFallback,
     bool? meshDiscovery,
     bool? allowRelays,
     bool? enableI2p,
@@ -58,6 +64,7 @@ class SettingsModel {
     nodeMode: nodeMode ?? this.nodeMode,
     enableTor: enableTor ?? this.enableTor,
     enableClearnet: enableClearnet ?? this.enableClearnet,
+    clearnetFallback: clearnetFallback ?? this.clearnetFallback,
     meshDiscovery: meshDiscovery ?? this.meshDiscovery,
     allowRelays: allowRelays ?? this.allowRelays,
     enableI2p: enableI2p ?? this.enableI2p,

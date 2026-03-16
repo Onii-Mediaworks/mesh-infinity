@@ -156,6 +156,14 @@ pub struct TransportManagerImpl {
     /// Similar to Bluetooth, but using longer-range radio hardware.  Also
     /// works without internet connectivity.
     rf_enabled: Arc<AtomicBool>,
+
+    /// Whether clearnet may be used as a last resort by the **originating** node.
+    ///
+    /// When `false`, `enabled_transport_order_for_origin()` omits `Clearnet`
+    /// from the returned list.  Relay hops (forwarding other nodes' traffic)
+    /// should call `enabled_transport_order()` / `enabled_transport_order_for_available()`
+    /// which are unaffected by this flag.
+    clearnet_fallback: Arc<AtomicBool>,
 }
 
 impl Default for TransportManagerImpl {
@@ -240,6 +248,10 @@ impl TransportManagerImpl {
             .initialize_transports()
             .expect("Failed to initialize transports");
 
+        // Default to false; the service layer overrides this at init time based
+        // on node mode (Client → false, Server/Dual → true).
+        let clearnet_fallback = Arc::new(AtomicBool::new(false));
+
         Self {
             inner: Arc::new(manager),
             tor_enabled,
@@ -247,6 +259,7 @@ impl TransportManagerImpl {
             i2p_enabled,
             bluetooth_enabled,
             rf_enabled,
+            clearnet_fallback,
         }
     }
 
@@ -346,6 +359,15 @@ impl TransportManagerImpl {
         self.rf_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    /// Enable or disable clearnet fallback for originating connections.
+    ///
+    /// When `false`, `enabled_transport_order_for_available_as_origin()` will
+    /// not include `Clearnet` in its output, preventing the originating node
+    /// from using clearnet even as a last resort.
+    pub fn set_clearnet_fallback_enabled(&self, enabled: bool) {
+        self.clearnet_fallback.store(enabled, Ordering::Relaxed);
+    }
+
     /// Return the list of currently-enabled transports in anti-downgrade order.
     ///
     /// "Anti-downgrade order" means privacy-preserving transports always come
@@ -415,33 +437,36 @@ impl TransportManagerImpl {
     ///
     /// Crucially, the filter preserves anti-downgrade order: our own ordering
     /// takes precedence over the order the peer listed its capabilities.
-    ///
-    /// # Example
-    ///
-    /// We have [Tor, I2P, Clearnet] enabled.
-    /// The peer says it supports [Clearnet, Tor] (peer's order doesn't matter).
-    /// Result: [Tor, Clearnet]
-    ///   - I2P is dropped because the peer doesn't support it.
-    ///   - Tor comes before Clearnet because of our anti-downgrade policy.
-    ///
-    /// # Iterator chain explained
-    ///
-    /// `.into_iter()` consumes the Vec from `enabled_transport_order()` and
-    /// produces an iterator over its elements one by one.
-    ///
-    /// `.filter(|t| available.contains(t))` keeps only elements where the
-    /// closure returns `true`.  The `|t|` syntax declares a closure parameter
-    /// named `t`; `available.contains(t)` returns true if `t` is in `available`.
-    ///
-    /// `.collect()` gathers the surviving elements back into a new Vec.
     pub fn enabled_transport_order_for_available(
         &self,
         available: &[TransportType],
     ) -> Vec<TransportType> {
         self.enabled_transport_order()
             .into_iter()
-            // Keep only transports that the peer's capability list includes.
             .filter(|t| available.contains(t))
+            .collect()
+    }
+
+    /// Like `enabled_transport_order_for_available`, but for use when THIS node
+    /// is the **originator** of a message (not a relay hop).
+    ///
+    /// If `clearnet_fallback` is disabled, `Clearnet` is excluded from the
+    /// returned list even if it would otherwise appear.  This prevents the
+    /// originating node from using clearnet as a last resort when the user has
+    /// opted out of clearnet-origin connections.
+    ///
+    /// Relay nodes forwarding other nodes' traffic should call
+    /// `enabled_transport_order_for_available` instead — they are allowed to
+    /// use clearnet regardless of this flag.
+    pub fn enabled_transport_order_for_available_as_origin(
+        &self,
+        available: &[TransportType],
+    ) -> Vec<TransportType> {
+        let fallback_ok = self.clearnet_fallback.load(Ordering::Relaxed);
+        self.enabled_transport_order()
+            .into_iter()
+            .filter(|t| available.contains(t))
+            .filter(|t| fallback_ok || *t != TransportType::Clearnet)
             .collect()
     }
 }

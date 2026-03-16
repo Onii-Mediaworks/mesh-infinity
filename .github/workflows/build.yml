@@ -180,7 +180,7 @@ jobs:
 
       - name: Install Windows packaging dependencies
         shell: pwsh
-        run: choco install nsis 7zip rsync --no-progress -y
+        run: choco install nsis 7zip --no-progress -y
 
       - run: make -j2 windows-debug windows-release
 
