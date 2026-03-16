@@ -1,6 +1,13 @@
 SHELL := bash
 
+# On Windows, $(CURDIR) returns a path like D:/a/... which rsync misreads as a
+# remote host:path pair (the drive letter looks like a hostname).  cygpath -u
+# converts it to /d/a/... so rsync treats it as a local path.
+ifeq ($(OS),Windows_NT)
+ROOT_DIR      := $(shell cygpath -u "$(CURDIR)")
+else
 ROOT_DIR      := $(CURDIR)
+endif
 FRONTEND_DIR  := $(ROOT_DIR)/frontend
 PLATFORMS_DIR := $(ROOT_DIR)/platforms
 BUILD_DIR     := $(ROOT_DIR)/build

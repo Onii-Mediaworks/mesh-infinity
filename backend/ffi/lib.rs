@@ -921,7 +921,7 @@ pub extern "C" fn mi_set_config_dir(path_ptr: *const c_char) -> i32 {
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_MainActivity_nativeSetConfigDir<
     'local,
 >(
-    env: jni::JNIEnv<'local>,
+    mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     path: jni::objects::JString<'local>,
 ) -> jni::sys::jint {
