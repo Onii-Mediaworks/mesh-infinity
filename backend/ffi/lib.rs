@@ -721,6 +721,10 @@ pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
         } else {
             config.max_connections as usize
         },
+        // clearnet_fallback is not part of FfiMeshConfig (it is a runtime toggle,
+        // not an init-time parameter).  Default to true; the user can change it
+        // via mi_toggle_transport_flag("clearnet_fallback", ...) after init.
+        clearnet_fallback: defaults.clearnet_fallback,
     };
 
     // --- Resolve the config directory ----------------------------------------
@@ -3536,6 +3540,7 @@ pub extern "C" fn mi_toggle_transport_flag(
     match transport_name.to_ascii_lowercase().as_str() {
         "tor" => guard.service.set_enable_tor(enabled),
         "clearnet" => guard.service.set_enable_clearnet(enabled),
+        "clearnet_fallback" => guard.service.set_clearnet_fallback(enabled),
         "mesh_discovery" | "mdns" | "discovery" => guard.service.set_mesh_discovery(enabled),
         "relay" | "relays" => guard.service.set_allow_relays(enabled),
         "i2p" => guard.service.set_enable_i2p(enabled),
@@ -4256,6 +4261,7 @@ fn settings_to_json(settings: &Settings) -> Value {
         "nodeMode": node_mode_label(settings.node_mode),
         "enableTor": settings.enable_tor,
         "enableClearnet": settings.enable_clearnet,
+        "clearnetFallback": settings.clearnet_fallback,
         "meshDiscovery": settings.mesh_discovery,
         "allowRelays": settings.allow_relays,
         "enableI2p": settings.enable_i2p,

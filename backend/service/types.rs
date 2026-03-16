@@ -490,6 +490,17 @@ pub struct Settings {
     /// Used when a remote peer needs to address messages directly to this device,
     /// and displayed on the Identity screen as a long hex string or QR code.
     pub local_peer_id: String,
+
+    /// Whether this node (as the **originator** of a message) may fall back to
+    /// clearnet when all privacy-preserving transports have failed.
+    ///
+    /// When `false`, the originating node will never initiate a direct clearnet
+    /// hop to the destination peer — it will return `NoAvailableTransport` instead.
+    /// Relay nodes (intermediate hops forwarding other nodes' traffic) are not
+    /// affected; they may always use clearnet for routing.
+    ///
+    /// This setting has no effect if `enable_clearnet` is `false`.
+    pub clearnet_fallback: bool,
 }
 
 // ---------------------------------------------------------------------------

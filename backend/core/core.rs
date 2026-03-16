@@ -93,6 +93,13 @@ pub struct MeshConfig {
     pub wireguard_port: u16,
     pub max_peers: usize,
     pub max_connections: usize,
+    /// Whether the originating node is allowed to use clearnet as a last-resort
+    /// transport when all privacy-preserving transports (Tor, I2P, Bluetooth, RF)
+    /// have failed.  Relay nodes (intermediate hops) may still use clearnet
+    /// regardless of this flag — only the originating connection is affected.
+    ///
+    /// Default: `true` (clearnet fallback permitted).
+    pub clearnet_fallback: bool,
 }
 
 impl Default for MeshConfig {
@@ -113,6 +120,9 @@ impl Default for MeshConfig {
             wireguard_port: 51820,
             max_peers: 100,
             max_connections: 50,
+            // Conservative default: false. The service layer sets this based
+            // on node mode at init time (Client → false, Server/Dual → true).
+            clearnet_fallback: false,
         }
     }
 }

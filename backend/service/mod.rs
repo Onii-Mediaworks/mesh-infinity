@@ -646,6 +646,16 @@ impl MeshInfinityService {
                 enable_i2p: mesh_config.enable_i2p,
                 enable_bluetooth: mesh_config.enable_bluetooth,
                 enable_rf: mesh_config.enable_rf,
+                // Client nodes default to NO clearnet fallback: a client is
+                // typically a phone/laptop where leaking the origin IP via
+                // clearnet is more sensitive.  Server and Dual nodes act as
+                // routing infrastructure and may legitimately use clearnet
+                // for intermediate hops, so they default to true.
+                // The user can override this via the network settings toggle.
+                clearnet_fallback: match config.initial_mode {
+                    NodeMode::Client => false,
+                    NodeMode::Server | NodeMode::Dual => mesh_config.clearnet_fallback,
+                },
                 pairing_code,
                 // Convert the 32-byte peer ID to a 64-character uppercase hex string.
                 local_peer_id: peer_id_string(&identity_peer_id),
@@ -1137,8 +1147,12 @@ impl MeshInfinityService {
         //    (`enabled_transport_order_for_available` handles step 1 + 2 combined.)
         // 3. Filter by `trust_allowed` (step 3 above).
         // 4. Convert each passing transport into a `PathInfo` with a default endpoint.
+        // Use the origin-aware variant: if clearnet_fallback is disabled, Clearnet
+        // is excluded here so this node (as the message originator) never falls
+        // back to clearnet.  Relay hops use enabled_transport_order_for_available
+        // which is unaffected by the clearnet_fallback setting.
         self.transport_manager
-            .enabled_transport_order_for_available(&available)
+            .enabled_transport_order_for_available_as_origin(&available)
             .into_iter()
             .filter(|transport| trust_allowed.contains(transport))
             .map(|transport| default_path(target, transport))

@@ -62,9 +62,19 @@ class NetworkScreen extends StatelessWidget {
                   TransportToggleRow(
                     icon: Icons.public_outlined,
                     label: 'Clearnet',
-                    description: 'Direct internet connections',
+                    description: 'WireGuard over direct internet (lowest priority)',
                     value: settings?.enableClearnet ?? false,
                     onChanged: (v) => net.toggleTransport('clearnet', v),
+                  ),
+                  TransportToggleRow(
+                    icon: Icons.public_off_outlined,
+                    label: 'Clearnet Fallback',
+                    description:
+                        'Allow this node to originate clearnet hops when all '
+                        'privacy transports fail. Disable to prevent this node '
+                        'from being the clearnet origin; relay hops are unaffected.',
+                    value: settings?.clearnetFallback ?? true,
+                    onChanged: (v) => net.toggleTransport('clearnet_fallback', v),
                   ),
                   TransportToggleRow(
                     icon: Icons.vpn_lock_outlined,
