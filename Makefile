@@ -287,6 +287,15 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	cp -R \
 	  "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive/Products/Applications/"*.app \
 	  "$$ipa_payload/"; \
+	for _app in "$$ipa_payload/"*.app; do \
+	  for _fw in "$$_app/Frameworks/"*.framework; do \
+	    _bin="$$_fw/$$(basename $$_fw .framework)"; \
+	    if [ -f "$$_bin" ] && file "$$_bin" | grep -q "ar archive"; then \
+	      echo "Removing static framework from bundle: $$(basename $$_fw)"; \
+	      rm -rf "$$_fw"; \
+	    fi; \
+	  done; \
+	done; \
 	( cd "$(BUILD_DIR)/output/ios/$$profile" \
 	  && zip -qr "$(APP_NAME)-$(APP_VERSION)-$$profile.ipa" Payload ); \
 	rm -rf "$$ipa_payload"; \
