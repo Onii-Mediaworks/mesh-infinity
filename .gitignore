@@ -16,6 +16,7 @@ build/
 target/
 **/target/
 Cargo.lock
+.cargo/
 
 # ============================================
 # Flutter/Dart
