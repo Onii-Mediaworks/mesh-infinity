@@ -22,9 +22,17 @@
   !define PROFILE "release"
 !endif
 
+; ── Path defines (override via /D on command line with absolute Windows paths) ─
+!ifndef BUNDLE_DIR
+  !define BUNDLE_DIR "..\..\build\intermediates\windows\bundle\${PROFILE}"
+!endif
+!ifndef OUT_FILE
+  !define OUT_FILE "..\..\build\output\windows\${PROFILE}\${APP_NAME}-${APP_VERSION}-${PROFILE}-setup.exe"
+!endif
+
 ; ── Installer metadata ────────────────────────────────────────────────────────
 Name            "Mesh Infinity ${APP_VERSION}"
-OutFile         "..\..\build\output\windows\${PROFILE}\${APP_NAME}-${APP_VERSION}-${PROFILE}-setup.exe"
+OutFile         "${OUT_FILE}"
 InstallDir      "$PROGRAMFILES64\Mesh Infinity"
 InstallDirRegKey HKLM "Software\MeshInfinity" "InstallDir"
 RequestExecutionLevel admin
@@ -45,7 +53,7 @@ Unicode True
 ; ── Install section ───────────────────────────────────────────────────────────
 Section "MainSection" SEC01
   SetOutPath "$INSTDIR"
-  File /r "..\..\build\intermediates\windows\bundle\${PROFILE}\*.*"
+  File /r "${BUNDLE_DIR}\*.*"
 
   ; Write uninstaller
   WriteUninstaller "$INSTDIR\Uninstall.exe"
