@@ -135,10 +135,7 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  "$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/Runner.app/Contents/Frameworks/App.framework/App" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/FlutterOutputs.xcfilelist"; \
 	\
-	FLUTTER_APPLICATION_PATH="$$src_dir" \
-	  pod install \
-	  --project-directory "$(PLATFORMS_DIR)/apple" \
-	  --silent; \
+	(cd "$(PLATFORMS_DIR)/apple" && FLUTTER_APPLICATION_PATH="$$src_dir" pod install --silent); \
 	\
 	xcodebuild \
 	  -workspace "$(APPLE_WORKSPACE)" \
