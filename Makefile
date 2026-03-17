@@ -118,14 +118,6 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	( cd "$$src_dir" && flutter build macos-framework $$flutter_mode_flags \
 	    --output "$$fw_dir" ); \
 	\
-	flutter_ephemeral="$$src_dir/Flutter/ephemeral"; \
-	mkdir -p "$$flutter_ephemeral"; \
-	cp -R "$$fw_dir/$$cfg/FlutterMacOS.xcframework" "$$flutter_ephemeral/"; \
-	printf "Pod::Spec.new do |s|\n  s.name             = 'FlutterMacOS'\n  s.version          = '1.0.0'\n  s.summary          = 'High-performance, high-fidelity Flutter components for macOS.'\n  s.homepage         = 'https://flutter.dev'\n  s.license          = { :type => 'BSD' }\n  s.author           = { 'Flutter Dev Team' => 'flutter-dev@googlegroups.com' }\n  s.source           = { :path => '.' }\n  s.vendored_frameworks = 'FlutterMacOS.xcframework'\n  s.osx.deployment_target = '10.15'\n  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }\nend\n" \
-	  > "$$flutter_ephemeral/FlutterMacOS.podspec"; \
-	echo "=== FlutterMacOS.podspec ==="; \
-	cat "$$flutter_ephemeral/FlutterMacOS.podspec"; \
-	echo "================================="; \
 	\
 	flutter_root="$$(flutter --version --machine | jq -r .flutterRoot)"; \
 	printf "%s\n" \
@@ -146,7 +138,8 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  "$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/Runner.app/Contents/Frameworks/App.framework/App" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/FlutterOutputs.xcfilelist"; \
 	\
-	(cd "$(PLATFORMS_DIR)/apple" && FLUTTER_APPLICATION_PATH="$$src_dir" pod install); \
+	mkdir -p "$(PLATFORMS_DIR)/apple/Flutter/ephemeral"; \
+	(cd "$(PLATFORMS_DIR)/apple" && pod install); \
 	\
 	xcodebuild \
 	  -workspace "$(APPLE_WORKSPACE)" \
@@ -566,12 +559,16 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	\
 	rsync -a --delete "$$bundle_dir/" "$$bundle_stage/"; \
 	\
-	(cd "$(PLATFORMS_DIR)/windows" && \
-	 MSYS2_ARG_CONV_EXCL="/D" makensis \
-	   /DAPP_NAME="$(APP_NAME)" \
-	   /DAPP_VERSION="$(APP_VERSION)" \
-	   /DPROFILE="$$profile" \
-	   installer.nsi); \
+	bundle_stage_win="$$(cygpath -w "$$bundle_stage")"; \
+	out_dir_win="$$(cygpath -w "$$out_dir")"; \
+	nsi_script="$$(cygpath -w "$(PLATFORMS_DIR)/windows/installer.nsi")"; \
+	MSYS2_ARG_CONV_EXCL="/D" makensis \
+	  /DAPP_NAME="$(APP_NAME)" \
+	  /DAPP_VERSION="$(APP_BUILD_LABEL)" \
+	  /DPROFILE="$$profile" \
+	  "/DBUNDLE_DIR=$$bundle_stage_win" \
+	  "/DOUT_FILE=$$out_dir_win\\$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-setup.exe" \
+	  "$$nsi_script"; \
 	\
 	7z a -tzip \
 	  "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-windows-portable.zip" \
