@@ -51,7 +51,7 @@ jobs:
       - name: Install Android CMake
         run: echo "y" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
 
-      - run: make -j2 android-debug android-release
+      - run: make -j2 android-debug android-release CI_RUN_NUMBER=${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -79,7 +79,7 @@ jobs:
       - name: Install rsync
         run: brew install rsync
 
-      - run: make -j2 macos-debug macos-release
+      - run: make -j2 macos-debug macos-release CI_RUN_NUMBER=${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -107,7 +107,7 @@ jobs:
       - name: Install rsync
         run: brew install rsync
 
-      - run: make -j2 ios-debug ios-release
+      - run: make -j2 ios-debug ios-release CI_RUN_NUMBER=${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -143,7 +143,7 @@ jobs:
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x /usr/local/bin/appimagetool
 
-      - run: make -j2 linux-debug linux-release
+      - run: make -j2 linux-debug linux-release CI_RUN_NUMBER=${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -202,7 +202,7 @@ jobs:
           C:\msys64\usr\bin\pacman.exe -S --noconfirm mingw-w64-x86_64-nsis
           "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - run: make -j2 windows-debug windows-release
+      - run: make -j2 windows-debug windows-release CI_RUN_NUMBER=${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -210,7 +210,7 @@ jobs:
           path: build/output/windows/
 
   # ── Prerelease ─────────────────────────────────────────────────────────────
-  # Every push to main creates a prerelease tagged v<version>-r<run_number>.
+  # Every push to main creates a public release tagged v<version>-r<run_number>.
   # The release name is "V<version> - r<run_number>".
   # Body contains the triggering commit message plus a changelog since the
   # last version tag.
@@ -275,7 +275,7 @@ jobs:
         with:
           tag_name: v${{ steps.meta.outputs.version }}-r${{ github.run_number }}
           name: "V${{ steps.meta.outputs.version }} - r${{ github.run_number }}"
-          prerelease: true
+          prerelease: false
           body: |
             ${{ steps.meta.outputs.commit_msg }}
 

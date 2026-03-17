@@ -19,6 +19,8 @@ APPLE_WORKSPACE := $(PLATFORMS_DIR)/apple/Runner.xcworkspace
 APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | sed 's/[-[:space:]]//g')
 APP_VERSION      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
+# CI passes CI_RUN_NUMBER=${{ github.run_number }}; local builds leave it unset.
+APP_BUILD_LABEL  := $(APP_VERSION)$(if $(CI_RUN_NUMBER),-r$(CI_RUN_NUMBER),)
 
 .PHONY: clean \
         macos-rust-debug macos-rust-release \
@@ -116,6 +118,22 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	( cd "$$src_dir" && flutter build macos-framework $$flutter_mode_flags \
 	    --output "$$fw_dir" ); \
 	\
+	flutter_ephemeral="$$src_dir/Flutter/ephemeral"; \
+	mkdir -p "$$flutter_ephemeral"; \
+	cp -R "$$fw_dir/$$cfg/FlutterMacOS.xcframework" "$$flutter_ephemeral/"; \
+	printf '%s\n' \
+	  "Pod::Spec.new do |s|" \
+	  "  s.name             = 'FlutterMacOS'" \
+	  "  s.version          = '1.0.0'" \
+	  "  s.homepage         = 'https://flutter.dev'" \
+	  "  s.license          = { :type => 'BSD' }" \
+	  "  s.author           = { 'Flutter Dev Team' => 'flutter-dev@googlegroups.com' }" \
+	  "  s.source           = { :git => '', :tag => s.version.to_s }" \
+	  "  s.platform         = :osx, '10.15'" \
+	  "  s.vendored_frameworks = 'FlutterMacOS.xcframework'" \
+	  "end" \
+	  > "$$flutter_ephemeral/FlutterMacOS.podspec"; \
+	\
 	flutter_root="$$(flutter --version --machine | jq -r .flutterRoot)"; \
 	printf "%s\n" \
 	  "FLUTTER_ROOT=$$flutter_root" \
@@ -167,9 +185,9 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  -volname "$(APP_NAME)" \
 	  -srcfolder "$$dmg_stage" \
 	  -ov -format UDZO \
-	  "$(BUILD_DIR)/output/macos/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.dmg"; \
+	  "$(BUILD_DIR)/output/macos/$$profile/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.dmg"; \
 	rm -rf "$$dmg_stage"; \
-	echo "Output: $(BUILD_DIR)/output/macos/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.dmg"
+	echo "Output: $(BUILD_DIR)/output/macos/$$profile/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.dmg"
 
 # ── macOS: full (Rust + Xcode) ────────────────────────────────────────────────
 #
@@ -294,9 +312,9 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  done; \
 	done; \
 	( cd "$(BUILD_DIR)/output/ios/$$profile" \
-	  && zip -qr "$(APP_NAME)-$(APP_VERSION)-$$profile.ipa" Payload ); \
+	  && zip -qr "$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.ipa" Payload ); \
 	rm -rf "$$ipa_payload"; \
-	echo "Output: $(BUILD_DIR)/output/ios/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.ipa"
+	echo "Output: $(BUILD_DIR)/output/ios/$$profile/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.ipa"
 
 # ── iOS: full (Rust + Xcode) ──────────────────────────────────────────────────
 #
@@ -359,8 +377,8 @@ android-gradle-debug android-gradle-release: android-gradle-%:
 	( cd "$(PLATFORMS_DIR)/android" && gradle $$gradle_task ); \
 	apk_src="$(BUILD_DIR)/app/outputs/apk/$$profile/app-$$profile.apk"; \
 	cp "$$apk_src" \
-	   "$(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.apk"; \
-	echo "Output: $(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_VERSION)-$$profile.apk"
+	   "$(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.apk"; \
+	echo "Output: $(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.apk"
 
 # ── Android: full (Rust + Gradle) ─────────────────────────────────────────────
 #
@@ -456,9 +474,9 @@ linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	  touch "$$appimage_dir/meshinfinity.png"; \
 	fi; \
 	APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$$appimage_dir" \
-	  "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$$profile-x86_64.AppImage"; \
+	  "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-x86_64.AppImage"; \
 	\
-	tar -czf "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$$profile-linux-x86_64.tar.gz" \
+	tar -czf "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-linux-x86_64.tar.gz" \
 	  -C "$(BUILD_DIR)/intermediates/linux/$$profile/src/build/linux/x64/$$profile" bundle; \
 	\
 	fpm -s dir -t deb \
@@ -467,7 +485,7 @@ linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	  --architecture amd64 \
 	  --description "Mesh Infinity — decentralised mesh networking" \
 	  --maintainer "Onii Media Works" \
-	  --package "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$$profile-amd64.deb" \
+	  --package "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-amd64.deb" \
 	  "$$bundle_dir/=/opt/mesh-infinity"; \
 	\
 	fpm -s dir -t rpm \
@@ -476,7 +494,7 @@ linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	  --architecture x86_64 \
 	  --description "Mesh Infinity — decentralised mesh networking" \
 	  --maintainer "Onii Media Works" \
-	  --package "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$$profile-x86_64.rpm" \
+	  --package "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-x86_64.rpm" \
 	  "$$bundle_dir/=/opt/mesh-infinity"; \
 	\
 	echo "Output: $$out_dir/"
@@ -555,14 +573,14 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	\
 	rsync -a --delete "$$bundle_dir/" "$$bundle_stage/"; \
 	\
-	makensis \
+	MSYS2_ARG_CONV_EXCL="/D" makensis \
 	  /DAPP_NAME="$(APP_NAME)" \
 	  /DAPP_VERSION="$(APP_VERSION)" \
 	  /DPROFILE="$$profile" \
 	  "$(PLATFORMS_DIR)/windows/installer.nsi"; \
 	\
 	7z a -tzip \
-	  "$$out_dir/$(APP_NAME)-$(APP_VERSION)-$$profile-windows-portable.zip" \
+	  "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-windows-portable.zip" \
 	  "$$bundle_stage/*"; \
 	\
 	echo "Output: $$out_dir/"
