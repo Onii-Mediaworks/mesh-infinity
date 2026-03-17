@@ -128,8 +128,8 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  "  s.homepage         = 'https://flutter.dev'" \
 	  "  s.license          = { :type => 'BSD' }" \
 	  "  s.author           = { 'Flutter Dev Team' => 'flutter-dev@googlegroups.com' }" \
-	  "  s.source           = { :git => '', :tag => s.version.to_s }" \
-	  "  s.platform         = :osx, '10.15'" \
+	  "  s.source           = { :path => '.' }" \
+	  "  s.osx.deployment_target = '10.15'" \
 	  "  s.vendored_frameworks = 'FlutterMacOS.xcframework'" \
 	  "end" \
 	  > "$$flutter_ephemeral/FlutterMacOS.podspec"; \
@@ -573,11 +573,12 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	\
 	rsync -a --delete "$$bundle_dir/" "$$bundle_stage/"; \
 	\
+	nsi_script="$$(cygpath -w "$(PLATFORMS_DIR)/windows/installer.nsi")"; \
 	MSYS2_ARG_CONV_EXCL="/D" makensis \
 	  /DAPP_NAME="$(APP_NAME)" \
 	  /DAPP_VERSION="$(APP_VERSION)" \
 	  /DPROFILE="$$profile" \
-	  "$(PLATFORMS_DIR)/windows/installer.nsi"; \
+	  "$$nsi_script"; \
 	\
 	7z a -tzip \
 	  "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-windows-portable.zip" \
