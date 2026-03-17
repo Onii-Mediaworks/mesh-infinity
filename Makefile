@@ -12,7 +12,8 @@ ROOT_DIR      := $(shell pwd)
 FRONTEND_DIR  := $(ROOT_DIR)/frontend
 PLATFORMS_DIR := $(ROOT_DIR)/platforms
 BUILD_DIR     := $(ROOT_DIR)/build
-APPLE_PROJECT := $(PLATFORMS_DIR)/apple/Runner.xcodeproj
+APPLE_PROJECT   := $(PLATFORMS_DIR)/apple/Runner.xcodeproj
+APPLE_WORKSPACE := $(PLATFORMS_DIR)/apple/Runner.xcworkspace
 
 # App identity comes from the Rust project (Cargo.toml / pubspec.yaml).
 APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | sed 's/[-[:space:]]//g')
@@ -134,8 +135,13 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  "$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/Runner.app/Contents/Frameworks/App.framework/App" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/FlutterOutputs.xcfilelist"; \
 	\
+	FLUTTER_APPLICATION_PATH="$$src_dir" \
+	  pod install \
+	  --project-directory "$(PLATFORMS_DIR)/apple" \
+	  --silent; \
+	\
 	xcodebuild \
-	  -project "$(APPLE_PROJECT)" \
+	  -workspace "$(APPLE_WORKSPACE)" \
 	  -scheme Runner \
 	  -configuration "$$cfg" \
 	  -derivedDataPath "$(BUILD_DIR)/intermediates/macos/xcode" \

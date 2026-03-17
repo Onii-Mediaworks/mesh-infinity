@@ -1,0 +1,52 @@
+platform :osx, '10.15'
+
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  # The Makefile writes Flutter-Generated.xcconfig to build/intermediates/apple/flutter/
+  # (not to the standard Flutter/ephemeral/ location), so we read it from there.
+  generated_xcode_build_settings_path = File.expand_path(
+    File.join('..', '..', '..', 'build', 'intermediates', 'apple', 'flutter', 'Flutter-Generated.xcconfig'),
+    __FILE__
+  )
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. Run the Makefile build first to generate it."
+  end
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}."
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_macos_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  # FLUTTER_APPLICATION_PATH is set by the Makefile to the build-time src_dir
+  # (the directory where flutter pub get was run, which holds .flutter-plugins).
+  # Falls back to frontend/ for local manual runs.
+  flutter_app_path = ENV['FLUTTER_APPLICATION_PATH'] ||
+                     File.expand_path(File.join('..', '..', 'frontend'), __FILE__)
+  flutter_install_all_macos_pods flutter_app_path
+
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_macos_build_settings(target)
+  end
+end
