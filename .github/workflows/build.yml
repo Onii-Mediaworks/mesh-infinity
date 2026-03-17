@@ -193,7 +193,14 @@ jobs:
 
       - name: Install Windows packaging dependencies
         shell: pwsh
-        run: choco install nsis 7zip --no-progress -y
+        run: |
+          choco install 7zip --no-progress -y
+          # Install NSIS via MSYS2 mingw64 so makensis lands in C:\msys64\mingw64\bin\
+          # and is visible to the MSYS2 bash shell that runs make. Choco's NSIS installs
+          # to "C:\Program Files (x86)\NSIS" which MSYS2 bash cannot resolve due to the
+          # space in the path.
+          C:\msys64\usr\bin\pacman.exe -S --noconfirm mingw-w64-x86_64-nsis
+          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - run: make -j2 windows-debug windows-release
 
