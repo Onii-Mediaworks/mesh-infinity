@@ -139,7 +139,7 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/FlutterOutputs.xcfilelist"; \
 	\
 	mkdir -p "$(PLATFORMS_DIR)/apple/Flutter/ephemeral"; \
-	(cd "$(PLATFORMS_DIR)/apple" && pod install); \
+	(cd "$(PLATFORMS_DIR)/apple" && FLUTTER_APPLICATION_PATH="$(PLATFORMS_DIR)/apple" pod install); \
 	\
 	xcodebuild \
 	  -workspace "$(APPLE_WORKSPACE)" \
@@ -571,8 +571,8 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	  "$$nsi_script"; \
 	\
 	7z a -tzip \
-	  "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-windows-portable.zip" \
-	  "$$bundle_stage/*"; \
+	  "$$out_dir_win\\$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-windows-portable.zip" \
+	  "$$bundle_stage_win\\*"; \
 	\
 	echo "Output: $$out_dir/"
 
