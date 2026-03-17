@@ -3,7 +3,7 @@
 Independently verified findings only. Every item here was confirmed by a separate
 verification agent reading the actual source lines, not just the description.
 Unverified findings live in issues-unverified.md.
-Last updated: 2026-03-16
+Last updated: 2026-03-17
 
 ---
 
@@ -26,6 +26,18 @@ Last updated: 2026-03-16
 **Verified at:** `signal_encode_outbound()` branches on `sessions.has_session(&peer_id)` — true path uses the Double Ratchet, false path falls through to raw bytes. No code path anywhere calls `sessions.initiate_session()` or `sessions.receive_session_init()`. `has_session()` is always false in practice.
 **Scenario:** The Signal encryption layer is scaffolded but never activates. Every message is sent as raw bytes regardless of whether a Double Ratchet implementation exists. The X3DH session establishment flow (fetch PreKeyBundle → run X3DH → init ratchet) is fully absent.
 **Fix:** Implement PreKeyBundle publication in the network map, and call `initiate_session()` when first sending to a peer whose bundle is available. This is the missing link between the scaffolding and the working encryption.
+
+### C8 — Message decryption failure displays raw bytes as chat text — fail-open inbound
+**File:** `backend/service/messaging.rs:322`
+**Verified at:** `receive_message()` attempts `signal_decode_inbound()` on Signal-prefixed frames; on `Err(_)` at line 342 it falls through to `trimmed_raw` (the raw undecrypted bytes). Comment reads "display raw text so the message is not silently lost."
+**Scenario:** A decryption failure — caused by a missing session, corrupt ciphertext, or an active attacker sending a forged Signal-prefixed frame — surfaces as readable chat text in the UI. Recipients may trust attacker-supplied content. Combined with C7 (sessions never active), every message in the current codebase takes this path.
+**Fix:** Reject/quarantine undecryptable messages. Store as a "⚠ undecryptable message" placeholder. Never display raw ciphertext bytes as message content. Require an established session before accepting message text.
+
+### C9 — Outbound Signal encode returns raw plaintext on missing session or error — fail-open outbound
+**File:** `backend/service/messaging.rs:424`
+**Verified at:** `signal_encode_outbound()` returns `plaintext.to_vec()` at three points: no `signal_sessions` store (line 435), no session for peer (line 439), and encryption error (line 455). Comment reads "fall through to unencrypted to avoid message loss."
+**Scenario:** Every outbound message is sent unencrypted at the application layer. Combined with C7 (X3DH never initiated), `has_session()` is always false so the second bail-out (line 439) is hit on every send. The 4-layer routing envelope wraps plaintext, not ciphertext.
+**Fix:** Block sending until an X3DH session is established. On encryption failure, surface an error to the UI. Never transmit plaintext when encryption is expected.
 
 ### C4 — I2P transport allocates 4 GB heap buffer from untrusted 4-byte length prefix — OOM DoS
 **File:** `backend/transport/i2p.rs:898-909`
@@ -66,6 +78,36 @@ Last updated: 2026-03-16
 **Verified at:** `listen()` returns `Err(MeshInfinityError::TransportError("Tor inbound listener requires onion service configuration (not yet implemented)"))`.
 **Scenario:** Tor is the highest-priority transport. Without `.onion` inbound support, a node can send anonymously over Tor but cannot *receive* without advertising its real IP address. Server nodes and always-on peers are fully deanonymised on the receiving side regardless of outbound transport choice.
 **Fix:** Generate a persistent Ed25519 onion service key at first run, store it in the Vault, register an onion service via the arti onion-service API, and include the `.onion` address in `transport_endpoints` in the network map.
+
+### H16 — Obfuscation "TLS" mode falls back to XOR with timestamp-derived key
+**File:** `backend/core/mesh/obfuscation.rs:74`
+**Verified at:** `ObfuscationMode::Tls` match arm (lines 74–96) falls through to `XorObfuscator` when no key is set. `generate_key()` (lines 139–158) derives the 32-byte key from `SystemTime::now().as_nanos()` — a comment in the code explicitly notes "In production, use a proper CSPRNG."
+**Scenario:** "TLS obfuscation" provides no TLS properties. The XOR key is predictable from system time to within nanosecond precision, trivially recoverable by any observer who knows approximately when the connection was made. Traffic fingerprinting is unaffected. The label misleads operators into believing they have transport camouflage.
+**Fix:** Remove the TLS mode stub or implement real TLS wrapping. Replace the timestamp-based keygen with `OsRng`. Label the mode accurately.
+
+### H17 — Traffic shaping pads to 512-byte boundary, not spec's 256B–1MB buckets
+**File:** `backend/core/mesh/obfuscation.rs:172`
+**Verified at:** `TrafficShaper::shape_packet()` line 184: `let target_size = shaped.len().div_ceil(512) * 512`. Spec §15.4 requires bucketed padding (256 B, 512 B, 1 KB, 4 KB, 16 KB, 64 KB, 256 KB, 1 MB).
+**Scenario:** Fixed 512-byte padding is a recognisable fingerprint. An observer who knows the padding strategy can infer approximate plaintext sizes. The spec's variable-bucket approach is designed to prevent this inference — the current implementation defeats it.
+**Fix:** Implement the spec's bucket ladder. Choose the smallest bucket that fits the packet. Pad to that bucket size.
+
+### H18 — Inner message authentication uses Ed25519 signature — non-deniable
+**File:** `backend/crypto/message_crypto.rs:648`
+**Verified at:** Step 1 docstring: "Sign the plaintext with our Ed25519 signing key." Line 665: `let inner_signature = self.signing_keypair.sign(message)`. Spec §7.1 and §3.5 require HMAC keyed by the Double Ratchet `msg_key` for deniability — an Ed25519 signature is cryptographically binding proof of authorship.
+**Scenario:** Every message produces a permanent, court-admissible proof that the sender wrote it. The deniability property claimed in the spec (and required for a Signal-class chat system) does not exist. Any recipient or relay that stores the inner signature can prove authorship.
+**Fix:** Replace the inner Ed25519 signature with `HMAC-SHA256(msg_key, message)` where `msg_key` is the Double Ratchet message key. Retain the outer Ed25519 signature (Step 3) only for forwarding authenticity.
+
+### H19 — Backup serializes identity private key — violates spec §3.7
+**File:** `backend/crypto/backup.rs:42`
+**Verified at:** `BackupContents` struct line 44: `identity_private_key: Vec<u8>`. `create_backup()` line 172: `identity_private_key: secret_key.to_vec()`. Spec §3.7 explicitly lists private keys in the backup exclusion list.
+**Scenario:** Any backup file — exported to cloud storage, a sync service, or an email draft — contains the raw long-term identity private key. A compromised backup enables full identity impersonation, decryption of all past messages, and indefinite silent MITM. The vault encrypts the backup, but the key material is present in plaintext inside the decrypted payload.
+**Fix:** Remove `identity_private_key` from `BackupContents`. On restore, require the user to re-pair with trusted peers using the existing pairing flow, per spec §3.7. Identity keypairs must be regenerated on a new device, never transported.
+
+### H20 — PreKeyBundles never published to network map — X3DH first contact impossible
+**File:** `backend/crypto/signal_session.rs:84`
+**Verified at:** `our_bundle()` exists at line 89 and is called only in tests (line 236 in `#[test] fn full_handshake_and_exchange()`). No production call site in `backend/ffi/`, `backend/service/`, or anywhere else publishes the bundle. No network map schema includes PreKeyBundle fields.
+**Scenario:** Even if X3DH initiation were wired (C7), Alice cannot fetch Bob's PreKeyBundle because Bob never publishes one. First contact via X3DH is structurally impossible. All nodes are permanently without session keys, compounding C7, C8, and C9.
+**Fix:** Add `PreKeyBundle` fields to the network map peer record. Call `our_bundle()` on startup and on key rotation. Publish the bundle into the network map. Refresh the signed pre-key every 7 days per spec §7.0.
 
 ### H8 — Key file permissions race window on non-Android write
 **File:** `backend/auth/persistence.rs:921-946`
@@ -258,6 +300,30 @@ Last updated: 2026-03-16
 **Verified at:** `IdentityManager.identities: HashMap<PeerId, Identity>` where `Identity.signing_key: SigningKey` and `Identity.dh_secret: StaticSecret` are ordinary struct fields on the heap, not wrapped in `SecureMemory` and not `mlock`-protected.
 **Scenario:** The long-term Ed25519 and X25519 secret keys live in ordinary allocator memory for the entire app session. A memory dump exposes them. These are the highest-value key material in the system — compromise enables indefinite impersonation and decryption of all past messages.
 **Fix:** Wrap `Identity` in `SecureMemory<Identity>` using the existing `secmem.rs` infrastructure. Alternatively, wrap individual key fields in `Zeroizing<>` at minimum.
+
+### M14 — Frontend defaults clearnet enabled — violates spec's privacy-first posture
+**File:** `frontend/lib/backend/backend_bridge.dart:739`
+**Verified at:** `_initContext()` line 739: `..enableClearnet = 1`. Spec §5.4 and §2 require clearnet disabled by default; users must explicitly opt in.
+**Scenario:** Every new install sends traffic over clearnet until the user discovers the network settings and disables it. Users who do not read the settings never get the anonymity the spec promises. This is the highest-impact default misconfiguration in the codebase.
+**Fix:** Set `enableClearnet = 0` in `_initContext()`. Add a first-run prompt explaining transport choices if clearnet is enabled.
+
+### M15 — Environment variables override network configuration with no UI visibility
+**File:** `frontend/lib/backend/backend_bridge.dart:702, 710`
+**Verified at:** Line 702 reads `MESH_CONFIG_PATH`; lines 710–712 read `MESH_WIREGUARD_PORT`. Both silently override the user-configured values with no indication in the UI.
+**Scenario:** In packaged production builds, an attacker who can inject environment variables (e.g., via a compromised shell profile, MDM policy, or a parent process) can redirect config paths or change the WireGuard port without the user knowing. This also makes production builds non-deterministic: the same APK/IPA behaves differently depending on the launch environment.
+**Fix:** Gate env-var overrides behind a compile-time `debug` flag (`kDebugMode`). Remove from release builds entirely, or document and require explicit user acknowledgement.
+
+### M16 — Capability flags (wrapper/exit/store-forward/endorse) absent from peer model and UI
+**File:** `frontend/lib/backend/models/peer_models.dart:21`
+**Verified at:** `PeerModel` fields: `id`, `name`, `trustLevel`, `status` only. No `canWrap`, `canExit`, `canStoreForward`, or `canEndorse` fields. Spec §8.1 requires these capability flags to gate privileged peer roles in the UI.
+**Scenario:** The UI cannot display or enforce any of the capability-based roles defined in the spec. A peer cannot be assigned as a store-and-forward relay, exit node, or wrapper in the UI regardless of backend configuration. The capability system is entirely invisible to the user.
+**Fix:** Add capability flag fields to `PeerModel` and the FFI JSON schema. Add UI toggles in peer detail. Ensure backend enforces the flags before granting privileged roles.
+
+### M17 — `Message.text` is plaintext with no decryption/authenticity status field
+**File:** `backend/service/types.rs:181`
+**Verified at:** `Message` struct has no `auth_status`, `decryption_status`, or equivalent field. Comment at lines 195–200 says content is "safe to display" — but given C8, fail-open decryption means it may be attacker-supplied ciphertext bytes rendered as text.
+**Scenario:** The UI has no way to distinguish a properly decrypted and authenticated message from one that fell through the fail-open path (C8). Users cannot tell which messages are trusted. A UI showing ⚠ for unauthenticated messages requires this field to exist.
+**Fix:** Add `auth_status: AuthStatus` (enum: `Authenticated`, `Unauthenticated`, `DecryptionFailed`) to `Message`. Set it in `receive_message()`. Surface the status in the message bubble UI.
 
 ### M7 — `parse_peer_id_hex` fallback to all-zeros peer ID — collision across failed nodes
 **File:** `backend/service/mod.rs:1017`
