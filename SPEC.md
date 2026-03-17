@@ -1,7 +1,6 @@
 # Mesh Infinity Technical Specification
 
-**Specification version:** 1.2
-**Date:** 2026-03-16
+**Specification version:** 1.3
 **Status:** Active
 
 ---
@@ -12,6 +11,7 @@
 |---------|------|---------|
 | 1.0 | 2026-03-09 | Initial specification. Covered identity model, cryptography, network map, transports (WireGuard/Tor/I2P/BLE/RF/clearnet), hop-by-hop routing, store-and-forward, 4-layer message encryption, key ratcheting, pairing and trust model, social profiles (`identity_is_public`, `address_is_associable`), Signal-parity messaging, file sharing, hosted services, VPN/exit nodes, notifications, platform architecture, FFI boundary, mesh address format, and Mesh DNS (Tailscale-style short-name approval). |
 | 1.1 | 2026-03-10 | Security hardening pass. (1) Bootstrap node integrity: pinned Ed25519 pubkey required for all bootstrap entries. (2) Key compromise recovery: new §3.8 `KeyRotationAnnouncement` protocol. (3) Argon2id minimum parameters specified (m=64 MB, t=3, p=4); weaker backups rejected on import. (4) Sequence numbers explicitly u64; 32-bit overflow risk documented. (5) Map timestamp validation: entries >1 hour in the future rejected. (6) Sybil/storage-exhaustion defence: map capped at 100k entries, gossip rate-limited to 500 entries/peer/hour, deduplication set persisted to disk. (7) WoT key-change corroborators must be pre-existing trusted peers, not newly paired. (8) Nonce counter re-handshake threshold specified at 2^48. (9) Padding buckets (256 B–1 MB) and timing jitter ranges (0–250 ms by priority level) defined. (10) Endorsement revocation: `TrustRevocation` record with sequence numbers. (11) Capability flags table (§8.1): `can_be_exit_node`, `can_be_wrapper_node`, etc. — trust level alone no longer sufficient for privileged roles. (12) Exit node DNS: forwarding mandatory in Exit Node mode; exit node uses DoH upstream. (13) Platform keyfile storage: Android Keystore / iOS Keychain / DPAPI / Secret Service per platform. (14) BLE advertisements: rotating ephemeral token only; full identity fetched over encrypted GATT. (15) Tor circuit rotation: explicit 10-minute / 200-message schedule. (16) Store-and-forward TTL: sender-signed expiry enforced by recipient regardless of server behaviour. (17) §17.4 Mesh DNS: replaced BIP39 word-phrase model with Tailscale-style short-name advertisement and per-peer approval. |
+| 1.3 | 2026-03-17 | **Security baseline principle and LoSec transport mode.** §2 renumbered; new §2.1 establishes the maximally-hostile-observer baseline as the primary design principle. New §6.7 defines LoSec mode: a WireGuard-only (no onion layers), 0–2 hop transport for high-bandwidth connections (voice/video/arbitrary streams/services). Three-gate consent model: host-side `ServiceLoSecConfig` toggles (`allow_losec`, `allow_direct`) must be explicitly enabled, initiator must explicitly request, and remote peer must explicitly accept (default policy: deny). Direct mode (0-hop) requires WoT depth-1 peer and noisy connection graph; full-screen terror warning required. Relay nodes automatically participate subject to per-node bandwidth budget and metered-connection check. `ServiceRecord` extended with `losec_config: ServiceLoSecConfig`. §10.6 updated with LoSec call negotiation via `CallSignal.losec_requested`. |
 | 1.2 | 2026-03-16 | **Signal crypto embedded in Step 2 of the 4-layer scheme.** The 4-layer routing envelope is preserved — it handles forwarding authenticity, sender privacy from relay nodes, and outer recipient encryption. The Step 2 static `channel_key` is replaced with a **Double Ratchet** session key, established via **X3DH** on first contact. This gives the existing scheme per-message forward secrecy and break-in recovery without changing the routing layer. §7.0 added: X3DH pre-key material and session initiation. §7.1 Step 2 updated to use the ratchet-derived `msg_key`. §7.4 ratcheting updated: timer-based rotation replaced with the Double Ratchet algorithm. Group encryption updated to Signal Sender Keys (replacing static group channel key). |
 
 ---
@@ -36,15 +36,17 @@ A note on the trust model: **anonymization in Mesh Infinity is directed at adver
 
 ## 2. Design Principles
 
-1. **Every known attack vector must have a mitigation.** If a design choice creates a deanonymization, correlation, or censorship risk, a countermeasure must exist — not necessarily mandatory, but available. No feature ships if its only known mitigation is "don't use it."
+1. **Assume a maximally hostile observer.** Every design decision must be evaluated against the threat model: all activity is surveilled, all metadata is retained, all exposures carry the highest possible consequence. "Probably fine in practice" is not acceptable reasoning. The question to ask when designing any feature is: *if every byte of metadata this produces were handed to the most hostile imaginable authority, what would they learn, and who would be harmed?* Default settings must reflect this worst case. Reduced-security modes exist only as explicit, informed opt-ins layered on top of a safe baseline — never the other way around.
 
-2. **If you can do it on the open internet, you must be able to do it on Mesh Infinity.** Chat, file sharing, web browsing, hosting services, VPN routing, social profiles — all must have a mesh equivalent. This is the feature completeness bar.
+2. **Every known attack vector must have a mitigation.** If a design choice creates a deanonymization, correlation, or censorship risk, a countermeasure must exist — not necessarily mandatory, but available. No feature ships if its only known mitigation is "don't use it."
 
-3. **Complexity belongs to the system, not the user.** The average user's mental model is: add friends, chat, it's secure. Advanced features exist and are accessible, but never required to achieve safety or functionality. Default settings must be safe defaults.
+3. **If you can do it on the open internet, you must be able to do it on Mesh Infinity.** Chat, file sharing, web browsing, hosting services, VPN routing, social profiles — all must have a mesh equivalent. This is the feature completeness bar.
 
-4. **No cloud dependencies for core function.** Google Play Services, Apple cloud, Microsoft cloud, and equivalent vendor-specific services are prohibited from the critical path. Cloud notifications are permitted only as a ping-only wake transport carrying zero message content (see §14).
+4. **Complexity belongs to the system, not the user.** The average user's mental model is: add friends, chat, it's secure. Advanced features exist and are accessible, but never required to achieve safety or functionality. Default settings must be safe defaults.
 
-5. **Trust is explicit and user-controlled.** No system makes automatic trust decisions on behalf of the user. Trust levels are set by the user; propagated trust is advisory and always overridable.
+5. **No cloud dependencies for core function.** Google Play Services, Apple cloud, Microsoft cloud, and equivalent vendor-specific services are prohibited from the critical path. Cloud notifications are permitted only as a ping-only wake transport carrying zero message content (see §14).
+
+6. **Trust is explicit and user-controlled.** No system makes automatic trust decisions on behalf of the user. Trust levels are set by the user; propagated trust is advisory and always overridable.
 
 ---
 
@@ -635,6 +637,97 @@ When the destination is unreachable and a server-mode node in the routing path s
 
 The store-and-forward mechanism operates above the routing layer. The hop-by-hop router handles live delivery; store-and-forward is invoked only when live delivery fails and a capable server node is reachable.
 
+### 6.7 LoSec Mode (Low-Security, High-Bandwidth Transport)
+
+**LoSec mode** is an opt-in transport path that trades anonymity for bandwidth and latency. It is applicable to any connection type — voice/video calls, file transfers, TCP/UDP tunnels, hosted services, or arbitrary streams. It is not a messaging-layer feature; it is a routing-layer feature that any service or connection can elect to use.
+
+#### Security properties
+
+| Property | Standard mesh path | LoSec (1–2 hops) | LoSec (direct) |
+|---|---|---|---|
+| Confidentiality | ✓ 4-layer onion | ✓ WireGuard | ✓ WireGuard |
+| Authentication | ✓ | ✓ | ✓ |
+| Forward secrecy | ✓ | ✓ | ✓ |
+| Sender anonymity | Strong | Weak | None |
+| Traffic analysis resistance | Strong | Weak | None |
+| Relationship hiding | Strong | Weak | None |
+| Bandwidth | Low | High | Maximum |
+| Latency | High | Low | Minimum |
+
+LoSec connections are protected by WireGuard only: authenticated encryption, forward secrecy, and replay protection. The onion layers of §7.1 are not applied. Intermediate relay nodes cannot read content, but can observe that two identities are communicating and approximately how much data is exchanged.
+
+**Users must be informed of this tradeoff before and during any LoSec connection.** See UI requirements below.
+
+#### Hop counts
+
+- **1–2 hop mode** (standard LoSec): traffic passes through one or two relay nodes selected from the local peer graph. This is the default LoSec path. Hops are selected from trusted peers where available; the hop count is fixed (not "up to N") so latency is predictable.
+- **Direct mode** (0 hops): traffic goes peer-to-peer with no relay. This is the most privacy-compromising option and is subject to strict availability requirements (see below).
+
+#### Direct mode availability requirements
+
+Direct mode is only offered when **both** of the following conditions are met:
+
+1. **The remote peer is directly trusted** (WoT depth 1 — a peer the local user has explicitly paired with). Optionally, the user may enable "trust friends-of-friends" in settings (WoT depth 2), which extends direct mode eligibility to peers trusted by directly trusted peers. No further extension is permitted; beyond depth 2, the standard LoSec relay path is used.
+2. **The local connection graph is sufficiently noisy** — a configurable threshold of active mesh peers and concurrent traffic flows must be exceeded so that a direct link does not stand out as an anomaly. The exact threshold is an implementation constant subject to tuning; it must not be user-reducible below the compiled default.
+
+When direct mode would be used but condition 2 is not met, the UI does not offer the option at all. It is not shown as disabled — it is simply absent.
+
+When direct mode is available and the user selects it, a **full-screen modal** is displayed before the connection is established:
+
+> **⚠ DIRECT CONNECTION — SEVERE PRIVACY RISK**
+>
+> A direct connection exposes your network location to the remote peer and to any observer on your network path. There is no relay, no anonymization, and no protection against traffic analysis. Your IP address will be visible to the other party.
+>
+> This mode should only be used when both parties are fully trusted and network privacy is not a concern (e.g., a local home network with no threat model).
+>
+> **[I understand the risks — connect directly]** &nbsp;&nbsp; **[Cancel]**
+
+The checkbox must be actively clicked; the confirm button is disabled until it is. During the connection, a **persistent red banner** is displayed: "Direct connection — no anonymization."
+
+For 1–2 hop LoSec (not direct), a **persistent amber indicator** is displayed during the connection: "Low-security mode active — your network location may be visible to relay nodes."
+
+#### Negotiation for peer-to-peer connections
+
+For any connection involving two peers (calls, tunnels, transfers), LoSec requires **three conditions** to all be true before it activates:
+
+1. **The service or context has the relevant host-side toggle enabled** (`allow_losec` or `allow_direct` in `ServiceLoSecConfig`, §12.4). For the built-in chat application, the local node acts as its own service host; users control this toggle in settings. If the host-side toggle is off, the mode is unavailable regardless of what the other party wants — the UI does not offer it.
+
+2. **The initiator explicitly requests it.** The initiator sends `LoSecRequest { session_id, mode: LoSecOrDirect, hop_count, reason }` to the remote peer over the standard full-security mesh channel. The initiator must have affirmatively chosen the mode; it is never selected automatically.
+
+3. **The remote peer explicitly accepts it.** The remote peer's node checks its local policy:
+   - **Deny** (default): the request is silently auto-declined — `LoSecResponse { accepted: false }`. No UI prompt is shown to the remote user.
+   - **Prompt**: the remote user is shown a notification explaining the request, with Accept / Deny options.
+   - **Allow**: the request is auto-accepted.
+
+Only when all three conditions are satisfied does the LoSec path activate. If the request is declined at any stage, the connection proceeds over the standard mesh path (or fails if the initiator explicitly requires LoSec and the caller chooses not to fall back).
+
+The default peer policy is **deny** for both LoSec and direct. Users enable prompting or auto-allow in settings under "Allow incoming LoSec / Direct connection requests." These are two separate toggles. The chat application's toggles are independent of hosted service toggles.
+
+`LoSecRequest` messages are always delivered over the full-security mesh channel — the negotiation itself produces no observable metadata outside the existing trusted session.
+
+#### Service host permissions
+
+Services registered in §12.4 include two independent host-side toggles that must each be **explicitly enabled** by the service operator before clients may use the corresponding mode:
+
+```
+ServiceLoSecConfig {
+    allow_losec:   bool,   // Permit clients to request 1–2 hop LoSec routing (default: false)
+    allow_direct:  bool,   // Permit clients to request 0-hop direct routing (default: false)
+}
+```
+
+Both default to `false`. A service operator must consciously set `allow_losec = true` before any client can negotiate LoSec for that service, and separately set `allow_direct = true` before any client can negotiate a direct connection. `allow_direct = true` without `allow_losec = true` is valid (direct only, no relay-reduced path).
+
+Even with host-side toggles enabled, the connection is not established in LoSec or direct mode unless the **client also explicitly requests it** and the **remote peer's policy accepts it**. The host enabling the mode is a necessary but not sufficient condition — mutual consent is always required.
+
+#### Relay node behaviour
+
+Nodes acting as LoSec relay hops do **not** need to explicitly opt in. Relaying is a standard part of mesh participation. However, the following protections apply by default:
+
+- **Relay bandwidth budget**: each node enforces a configurable cap on total bandwidth consumed by forwarding LoSec streams (default: 2 Mbps aggregate). When the budget is exhausted, new LoSec relay requests are declined; in-progress relays are not interrupted.
+- **Metered connection detection**: before accepting a LoSec relay request, the node queries the OS network API to determine if the active connection is metered (mobile data, capped ISP plan, etc.). On a metered connection, relay requests are declined by default. Users may override this in settings ("Allow LoSec relaying on metered connections").
+- **No content visibility**: relay nodes forward encrypted WireGuard packets and have no access to stream content. They observe only: source peer ID, destination peer ID, approximate throughput, and session duration.
+
 ---
 
 ## 7. Message Encryption Scheme
@@ -1082,11 +1175,12 @@ Message {
 End-to-end encrypted voice and video calls:
 
 - **Call signalling** is performed over the existing mesh messaging channel — a `CallSignal` message type is used for offer/answer/ice-candidate/hangup
-- **Media streams** are transported over a dedicated WireGuard session established for the call, direct between the two peers where possible
+- **Media streams** are transported over a dedicated WireGuard session established for the call, routed through the standard mesh path by default
 - **Codec negotiation** is part of the call signalling: Opus for audio, VP8/VP9/AV1 for video
 - **Group calls** are supported for trusted groups; each participant establishes individual WireGuard sessions to every other participant (mesh calls, no central media server)
 - **Fallback to audio-only** when bandwidth or CPU is insufficient; the UI notifies the user
 - **Call encryption** uses the same session key derivation as file transfer sessions, separate from the messaging session key
+- **LoSec for calls**: either party may request LoSec mode (§6.7) during call setup. The `CallSignal` offer includes an optional `losec_requested: bool` field. The remote party's LoSec policy (§6.7 negotiation) governs whether the request is accepted. If accepted, the media WireGuard session is routed via the agreed LoSec path for the duration of the call. The persistent amber or red indicator (§6.7 UI requirements) is displayed in the call UI throughout.
 
 ### 10.7 Presence and Status
 
@@ -1195,6 +1289,7 @@ ServiceRecord {
     access_policy:    AccessPolicy,
     min_trust_level:  TrustLevel,
     allowed_peers:    Option<Vec<[u8; 32]>>, // Specific peer IDs if restricted
+    losec_config:     ServiceLoSecConfig, // Host-side LoSec/direct toggles (both default false)
 }
 
 AccessPolicy {
