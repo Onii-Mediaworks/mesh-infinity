@@ -1,7 +1,7 @@
 # Mesh Infinity Technical Specification
 
-**Specification version:** 1.1
-**Date:** 2026-03-10
+**Specification version:** 1.2
+**Date:** 2026-03-16
 **Status:** Active
 
 ---
@@ -12,6 +12,7 @@
 |---------|------|---------|
 | 1.0 | 2026-03-09 | Initial specification. Covered identity model, cryptography, network map, transports (WireGuard/Tor/I2P/BLE/RF/clearnet), hop-by-hop routing, store-and-forward, 4-layer message encryption, key ratcheting, pairing and trust model, social profiles (`identity_is_public`, `address_is_associable`), Signal-parity messaging, file sharing, hosted services, VPN/exit nodes, notifications, platform architecture, FFI boundary, mesh address format, and Mesh DNS (Tailscale-style short-name approval). |
 | 1.1 | 2026-03-10 | Security hardening pass. (1) Bootstrap node integrity: pinned Ed25519 pubkey required for all bootstrap entries. (2) Key compromise recovery: new §3.8 `KeyRotationAnnouncement` protocol. (3) Argon2id minimum parameters specified (m=64 MB, t=3, p=4); weaker backups rejected on import. (4) Sequence numbers explicitly u64; 32-bit overflow risk documented. (5) Map timestamp validation: entries >1 hour in the future rejected. (6) Sybil/storage-exhaustion defence: map capped at 100k entries, gossip rate-limited to 500 entries/peer/hour, deduplication set persisted to disk. (7) WoT key-change corroborators must be pre-existing trusted peers, not newly paired. (8) Nonce counter re-handshake threshold specified at 2^48. (9) Padding buckets (256 B–1 MB) and timing jitter ranges (0–250 ms by priority level) defined. (10) Endorsement revocation: `TrustRevocation` record with sequence numbers. (11) Capability flags table (§8.1): `can_be_exit_node`, `can_be_wrapper_node`, etc. — trust level alone no longer sufficient for privileged roles. (12) Exit node DNS: forwarding mandatory in Exit Node mode; exit node uses DoH upstream. (13) Platform keyfile storage: Android Keystore / iOS Keychain / DPAPI / Secret Service per platform. (14) BLE advertisements: rotating ephemeral token only; full identity fetched over encrypted GATT. (15) Tor circuit rotation: explicit 10-minute / 200-message schedule. (16) Store-and-forward TTL: sender-signed expiry enforced by recipient regardless of server behaviour. (17) §17.4 Mesh DNS: replaced BIP39 word-phrase model with Tailscale-style short-name advertisement and per-peer approval. |
+| 1.2 | 2026-03-16 | **Signal crypto embedded in Step 2 of the 4-layer scheme.** The 4-layer routing envelope is preserved — it handles forwarding authenticity, sender privacy from relay nodes, and outer recipient encryption. The Step 2 static `channel_key` is replaced with a **Double Ratchet** session key, established via **X3DH** on first contact. This gives the existing scheme per-message forward secrecy and break-in recovery without changing the routing layer. §7.0 added: X3DH pre-key material and session initiation. §7.1 Step 2 updated to use the ratchet-derived `msg_key`. §7.4 ratcheting updated: timer-based rotation replaced with the Double Ratchet algorithm. Group encryption updated to Signal Sender Keys (replacing static group channel key). |
 
 ---
 
@@ -638,16 +639,95 @@ The store-and-forward mechanism operates above the routing layer. The hop-by-hop
 
 ## 7. Message Encryption Scheme
 
+### 7.0 Inner Session Key Establishment — X3DH + Double Ratchet
+
+The 4-layer scheme (§7.1) uses a per-peer **session key** for Step 2 (trusted-channel encryption). This session key is not static — it is established via **X3DH** on first contact and advanced with every message via the **Double Ratchet**. This gives the chat layer the same cryptographic properties as Signal: authenticated key agreement, per-message forward secrecy, and break-in recovery.
+
+#### Pre-Key Material
+
+Each node maintains and publishes in the network map:
+
+```
+PreKeyBundle {
+    identity_key_pub:    [u8; 32],   // X25519 IK public (same as §3.1 X25519 static pub)
+    signed_prekey_pub:   [u8; 32],   // X25519 SPK public (rotated every 7 days)
+    signed_prekey_id:    u32,
+    signed_prekey_sig:   [u8; 64],   // Ed25519 sig over signed_prekey_pub by IK's Ed25519 key
+    one_time_prekey_pub: Option<[u8; 32]>,  // OPK (single-use; absent when pool is empty)
+    one_time_prekey_id:  Option<u32>,
+}
+```
+
+OPK pool: minimum threshold 10, refill target 50. SPK rotation: 7-day default.
+
+#### X3DH Session Initiation (first message to a peer)
+
+Alice fetches Bob's `PreKeyBundle`, verifies `signed_prekey_sig`, then:
+
+```
+EK_A = generate_x25519_keypair()          // ephemeral key, discarded after
+
+DH1 = X25519(IK_A_secret,  SPK_B_pub)
+DH2 = X25519(EK_A_secret,  IK_B_pub)
+DH3 = X25519(EK_A_secret,  SPK_B_pub)
+DH4 = X25519(EK_A_secret,  OPK_B_pub)    // omitted if no OPK
+
+master_secret = HKDF-SHA256(
+    salt = 0x00 * 32,
+    ikm  = 0xFF * 32 || DH1 || DH2 || DH3 [|| DH4],
+    info = "MeshInfinity_X3DH_v1",
+    len  = 32
+)
+```
+
+Alice then initialises the Double Ratchet as sender (`master_secret`, `SPK_B_pub` as initial ratchet pub). The first message includes an `X3dhInitHeader { ik_pub, eph_pub, opk_id }` so Bob can reproduce the same `master_secret` and initialise the ratchet as receiver.
+
+#### Double Ratchet
+
+After X3DH the session key advances with every message:
+
+```
+// KDF chain (symmetric ratchet — advances per message)
+msg_key       = HMAC-SHA256(chain_key, 0x01)
+new_chain_key = HMAC-SHA256(chain_key, 0x02)
+
+// Root key ratchet (DH step — triggered by each new DH ratchet public key received)
+(new_root_key, new_chain_key) = HKDF-SHA256(
+    salt = root_key,
+    ikm  = X25519(my_ratchet_secret, their_new_ratchet_pub),
+    info = "MeshInfinity_DR_v1",
+    len  = 64                         // first 32: new root; last 32: new chain key
+)
+
+// Message key expansion (key + nonce for AEAD)
+keys       = HKDF-SHA256(salt=0*32, ikm=msg_key, info="MeshInfinity_MK_v1", len=76)
+cipher_key = keys[0..32]
+nonce      = keys[32..44]             // 12 bytes for ChaCha20-Poly1305
+```
+
+The `msg_key` derived here is what Step 2 below uses as `session_key`. Out-of-order delivery is handled by caching up to 1,000 skipped message keys indexed by `(ratchet_pub, msg_number)`.
+
+#### Group Encryption — Sender Keys
+
+Group chats use **Signal Sender Keys** rather than a static group channel key:
+
+- Each member has a per-group **Sender Key**: `(chain_key: [u8; 32], iteration: u32, signing_key: Ed25519)`
+- On joining, the new member's Sender Key is distributed to each existing member via individual X3DH-encrypted direct messages (the same X3DH path as §7.0 above)
+- Group messages are encrypted with `msg_key` from a single KDF_CK step on the sender's chain — one encryption, decryptable by all members who hold the sender's current chain state
+- Member departure triggers Sender Key rekeying: the admin distributes new Sender Keys to all remaining members; the departed member's key is discarded
+
+---
+
 ### 7.1 Four-Layer Encryption
 
-All messages use a **multi-layer signing and encryption scheme** that provides authenticity at every hop, privacy of sender identity from routing nodes, and optionally trust-channel encryption for messages between trusted peers:
+All messages use a **multi-layer signing and encryption scheme** that provides authenticity at every hop, privacy of sender identity from routing nodes, and trust-channel encryption for messages between trusted peers. The inner session key (Step 2) is derived from the Double Ratchet (§7.0), not a static key.
 
 ```
 Input: plaintext message
 
 Step 1 — Inner authentication:
   For trusted-channel messages:
-    mac = HMAC-SHA256(channel_key, plaintext)    ← deniable (both parties can produce)
+    mac = HMAC-SHA256(ratchet_msg_key, plaintext)  ← deniable; both parties can produce
     authenticated = plaintext || mac
   For untrusted messages:
     sig = Ed25519_Sign(sender_privkey, plaintext)
@@ -655,9 +735,10 @@ Step 1 — Inner authentication:
 
 Step 2 — Trust-channel encryption (trusted peers only):
   If mutual_trust:
-    nonce = random_12_bytes()
-    trust_encrypted = ChaCha20Poly1305_Encrypt(channel_key, nonce, authenticated)
-    payload = nonce || trust_encrypted
+    // session_key is the cipher_key derived from the Double Ratchet msg_key (§7.0)
+    // nonce is the 12-byte nonce derived from the same msg_key expansion
+    trust_encrypted = ChaCha20Poly1305_Encrypt(session_key, nonce, authenticated)
+    payload = dr_header || trust_encrypted   // dr_header carries ratchet_pub, prev_n, msg_n
   Else:
     payload = authenticated
 
@@ -677,13 +758,15 @@ Step 4 — Recipient encryption:
 
 | Property | Mechanism |
 |----------|-----------|
-| Sender authenticity (to recipient) | Inner signature / HMAC (Step 1) |
-| Message deniability | HMAC in Step 1: both parties can produce valid MACs |
-| Trust channel privacy | Step 2 encryption hides content from non-trusted forwarders |
-| Forwarding authenticity | Outer Ed25519 signature (Step 3) — intermediate nodes verify this |
-| Sender privacy from routing nodes | Step 4 encryption: routing nodes see only the encrypted blob and outer sig |
+| Sender authenticity (to recipient) | Inner HMAC with ratchet key (Step 1) — deniable; both parties can produce |
+| Authenticated key agreement | X3DH (§7.0): both IK keys contribute; SPK signature verified before first message |
+| Per-message forward secrecy | Double Ratchet KDF chain: each message advances the chain; old keys deleted |
+| Break-in recovery | DH ratchet step on every inbound ratchet key; future messages use fresh DH material |
+| Trust channel privacy | Step 2 Double Ratchet encryption hides content from relay nodes |
+| Forwarding authenticity | Outer Ed25519 signature (Step 3) — relay nodes verify before forwarding |
+| Sender privacy from routing nodes | Step 4 encryption: relay nodes see only the encrypted blob and outer sig |
 | Recipient privacy | Only the holder of `recipient_x25519_secret` can decrypt Step 4 |
-| Forward secrecy | Ephemeral X25519 key in Step 4; ephemeral keys discarded after session |
+| Out-of-order delivery | Skipped message key cache, bounded at 1,000 entries per peer |
 
 ### 7.3 Session Keys for Ongoing Connections
 
@@ -706,16 +789,17 @@ Subsequent data in the session uses:
 ChaCha20Poly1305_Encrypt(session_key, counter_nonce, data)
 ```
 
-where `counter_nonce` is a monotonically incrementing counter (12 bytes, big-endian) to prevent nonce reuse.
+where `counter_nonce` is a monotonically incrementing u64 (12 bytes, big-endian) to prevent nonce reuse. Rekeying occurs at counter 2^48 or 1 hour, whichever comes first, by repeating the handshake via the Double Ratchet channel.
 
 ### 7.4 Key Ratcheting
 
-Session keys are ratcheted forward periodically to provide **perfect forward secrecy** within a session:
+The Double Ratchet (§7.0) is the ratcheting mechanism for chat messages. It advances automatically with every message — no timer, no message-count threshold. Properties:
 
-- After every N messages (configurable; default: 100) or T seconds (default: 60s), a new ephemeral DH exchange is performed
-- The new session key is derived from `HKDF(new_shared_secret || old_session_key)`
-- The old session key is discarded and zeroed from memory
-- An out-of-sync ratchet triggers an automatic re-handshake
+- **Per-message forward secrecy**: every message uses a unique `msg_key` derived by advancing the KDF chain; the chain key from step N cannot recover step N−1
+- **Break-in recovery**: the DH ratchet step, triggered on each inbound ratchet key change, mixes fresh Diffie-Hellman output into the root key; an adversary who captured a chain key cannot predict future chain keys after the next DH step
+- **No re-handshake required**: the ratchet is self-healing; a missed DH ratchet step is caught up automatically on the next received message carrying a new ratchet public key
+
+For streaming sessions (§7.3), rekeying is counter- and time-bounded as specified above.
 
 ### 7.5 Reconnect and Sync
 
