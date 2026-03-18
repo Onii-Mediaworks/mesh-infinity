@@ -163,6 +163,13 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  [ -n "$$_slice" ] && [ -d "$$_slice/$$_n.framework" ] && \
 	    cp -R "$$_slice/$$_n.framework" "$$app_src/Contents/Frameworks/"; \
 	done; \
+	native_assets_dir="$$src_dir/build/native_assets/macos"; \
+	if [ -d "$$native_assets_dir" ]; then \
+	  for na_fw in "$$native_assets_dir"/*.framework; do \
+	    [ -d "$$na_fw" ] || continue; \
+	    cp -R "$$na_fw" "$$app_src/Contents/Frameworks/"; \
+	  done; \
+	fi; \
 	dmg_stage="$(BUILD_DIR)/intermediates/macos/$$profile/dmg-stage"; \
 	rm -rf "$$dmg_stage"; \
 	mkdir "$$dmg_stage"; \
