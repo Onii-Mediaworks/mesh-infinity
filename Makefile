@@ -151,6 +151,7 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  CODE_SIGNING_ALLOWED=NO \
 	  CODE_SIGNING_REQUIRED=NO \
 	  CODE_SIGN_IDENTITY="" \
+	  MESH_RUST_DYLIB_PATH="$$rust_src" \
 	  build; \
 	\
 	app_src="$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/$(APP_NAME).app"; \
