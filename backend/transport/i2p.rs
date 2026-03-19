@@ -897,9 +897,10 @@ impl Connection for I2pConnection {
         // `from_be_bytes` converts big-endian bytes back to a u32 integer.
         let total_len = u32::from_be_bytes(len_bytes) as usize;
 
-        // Step 2: sanity check — frame must be at least 12 bytes (just the nonce).
-        // A frame smaller than 12 bytes is definitively malformed.
-        if total_len < 12 {
+        // Step 2: sanity check — frame must be at least 12 bytes (nonce) and at
+        // most 65 536 bytes.  Without an upper bound a malicious peer can send
+        // [0xFF,0xFF,0xFF,0xFF] and force a 4 GB allocation → instant OOM.
+        if total_len < 12 || total_len > 65_536 {
             return Err(MeshInfinityError::InvalidMessageFormat);
         }
 

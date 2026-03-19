@@ -135,6 +135,11 @@ class MessagingState extends ChangeNotifier {
   /// after the state object is removed from memory.
   StreamSubscription<BackendEvent>? _sub;
 
+  /// Guard flag to prevent notifyListeners() after dispose().
+  /// Stream cancellation is asynchronous — an event can arrive between
+  /// cancel() and actual teardown, causing a "used after dispose" exception.
+  bool _disposed = false;
+
   /// The list of all rooms (conversations) the local node is a member of.
   /// Displayed in ConversationListScreen.  Starts empty; populated by loadRooms().
   /// `const []` is an immutable empty list — safe as a default value.
@@ -218,7 +223,7 @@ class MessagingState extends ChangeNotifier {
     // Tell every watching widget to rebuild with the new data.
     // At this point _rooms has new content, so ConversationListScreen will
     // render the updated list on its next build() call.
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   /// Fetches the messages for [roomId] and stores them in _messages.
@@ -239,13 +244,13 @@ class MessagingState extends ChangeNotifier {
   /// but it is correct behaviour and important for future async implementations.
   Future<void> loadMessages(String roomId) async {
     _loadingMessages = true;
-    notifyListeners(); // Rebuild now so the spinner appears immediately.
+    if (!_disposed) notifyListeners(); // Rebuild now so the spinner appears immediately.
 
     final msgs = _bridge.fetchMessages(roomId);
     _messages = msgs;
 
     _loadingMessages = false;
-    notifyListeners(); // Rebuild again to replace the spinner with actual messages.
+    if (!_disposed) notifyListeners(); // Rebuild again to replace the spinner with actual messages.
   }
 
   // -------------------------------------------------------------------------
@@ -261,7 +266,7 @@ class MessagingState extends ChangeNotifier {
   Future<void> selectRoom(String roomId) async {
     _bridge.selectRoom(roomId); // Tell Rust "this is the focused room".
     _activeRoomId = roomId;
-    notifyListeners(); // Update ConversationListScreen's highlighted row.
+    if (!_disposed) notifyListeners(); // Update ConversationListScreen's highlighted row.
     await loadMessages(roomId); // Load and display messages.
   }
 
@@ -341,7 +346,7 @@ class MessagingState extends ChangeNotifier {
       // We REPLACE _messages (new list object) rather than mutating it
       // in-place, so notifyListeners triggers a proper rebuild diff.
       _messages = _messages.where((m) => m.id != messageId).toList();
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
     return ok;
   }
@@ -395,7 +400,7 @@ class MessagingState extends ChangeNotifier {
           // creates a new List that contains all elements of _messages
           // followed by the new message at the end.
           _messages = [..._messages, message];
-          notifyListeners();
+          if (!_disposed) notifyListeners();
         }
         // Regardless of which room the message is for, update the room's
         // preview line in the conversation list (shows the last message snippet).
@@ -423,7 +428,7 @@ class MessagingState extends ChangeNotifier {
         if (!_rooms.any((r) => r.id == room.id)) {
           _rooms = [..._rooms, room];
         }
-        notifyListeners();
+        if (!_disposed) notifyListeners();
 
       // A room was deleted (by us or by a room admin on another device).
       case RoomDeletedEvent(:final roomId):
@@ -436,7 +441,7 @@ class MessagingState extends ChangeNotifier {
           _activeRoomId = null;
           _messages = const [];
         }
-        notifyListeners();
+        if (!_disposed) notifyListeners();
 
       // A specific message was deleted (e.g. user deleted from another device).
       case MessageDeletedEvent(:final roomId, :final messageId):
@@ -444,7 +449,7 @@ class MessagingState extends ChangeNotifier {
           // Only update _messages if the deletion is in the currently open room.
           // Messages in other rooms are not in _messages anyway.
           _messages = _messages.where((m) => m.id != messageId).toList();
-          notifyListeners();
+          if (!_disposed) notifyListeners();
         }
 
       // The backend changed its notion of which room is "active" (e.g. the
@@ -455,7 +460,7 @@ class MessagingState extends ChangeNotifier {
         // `if (roomId != null)` is necessary because roomId is nullable —
         // a null value means "no active room", in which case we don't load.
         if (roomId != null) loadMessages(roomId); // Load the new room's messages.
-        notifyListeners();
+        if (!_disposed) notifyListeners();
 
       // Ignore all other event types (peer changes, file transfers, etc.).
       // MessagingState only cares about messaging events; other ChangeNotifiers
@@ -485,7 +490,7 @@ class MessagingState extends ChangeNotifier {
         // all other fields (id, name, unreadCount, etc.) are preserved.
         if (r.id == roomId) r.copyWith(lastMessage: preview) else r,
     ];
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   // -------------------------------------------------------------------------
@@ -494,6 +499,7 @@ class MessagingState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     // Cancel the EventBus subscription so we stop receiving events after
     // this state object is removed from the tree.  Without this cancellation
     // the closure inside listen() would retain a reference to this object and

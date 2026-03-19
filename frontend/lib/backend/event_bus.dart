@@ -102,6 +102,24 @@ class EventBus {
   // Closing this port effectively signals that we no longer want messages.
   ReceivePort? _receivePort;
 
+  // Ports for monitoring isolate errors and exit.
+  ReceivePort? _errorPort;
+  ReceivePort? _exitPort;
+
+  // The context address is stored so we can restart the isolate if it dies.
+  int? _contextAddress;
+
+  // Whether stop() was called intentionally (suppresses auto-restart).
+  bool _stopped = false;
+
+  // Timestamps of recent restarts for rate-limiting.  If more than
+  // _maxRestartsInWindow restarts happen within _restartWindow, we stop
+  // retrying to avoid a rapid crash loop.
+  final List<DateTime> _restartTimestamps = [];
+  static const int _maxRestartsInWindow = 5;
+  static const Duration _restartWindow = Duration(seconds: 60);
+  static const Duration _restartDelay = Duration(seconds: 2);
+
   // ---------------------------------------------------------------------------
   // start()
   //
@@ -114,6 +132,23 @@ class EventBus {
   //   reconstructs the pointer from the integer using Pointer.fromAddress().
   // ---------------------------------------------------------------------------
   void start(int contextAddress) {
+    _contextAddress = contextAddress;
+    _stopped = false;
+    _spawnIsolate();
+  }
+
+  // ---------------------------------------------------------------------------
+  // _spawnIsolate()
+  //
+  // Internal helper that creates the background isolate with error and exit
+  // monitoring.  Extracted from start() so that the restart logic can reuse it.
+  // ---------------------------------------------------------------------------
+  void _spawnIsolate() {
+    // Clean up any previous ports (relevant on restart).
+    _receivePort?.close();
+    _errorPort?.close();
+    _exitPort?.close();
+
     // Create a port that will receive messages FROM the background isolate.
     _receivePort = ReceivePort();
 
@@ -121,27 +156,87 @@ class EventBus {
     // a message, _onMessage() will be called on the main isolate's thread.
     _receivePort!.listen(_onMessage);
 
+    // Port for receiving uncaught errors from the background isolate.
+    // Errors arrive as a two-element list: [errorDescription, stackTrace].
+    _errorPort = ReceivePort();
+    _errorPort!.listen((dynamic error) {
+      // Log the error but do not restart here — the onExit handler fires
+      // after the error when the isolate actually terminates.
+      print('[EventBus] Background isolate error: $error');
+    });
+
+    // Port for detecting when the background isolate terminates.
+    // The message is null when the isolate exits.
+    _exitPort = ReceivePort();
+    _exitPort!.listen((_) {
+      _onIsolateExit();
+    });
+
     // Spawn the background isolate.
     //
-    // Isolate.spawn() takes:
-    //   1. A top-level (or static) function to run in the new isolate.
-    //      It MUST be a top-level or static function — closures that capture
-    //      state from the enclosing scope cannot cross isolate boundaries.
-    //   2. A single argument to pass to that function.  Complex objects must
-    //      be serialisable; here we use a simple data class _PollMessage.
+    // errorsAreFatal: true — if the poll loop throws an unhandled exception the
+    // isolate terminates, which triggers _exitPort so we can restart it.
+    // The old behaviour (errorsAreFatal: false) silently swallowed errors and
+    // left the UI permanently stale.
     //
-    // errorsAreFatal: false means if the poll loop crashes with an unhandled
-    // exception, the isolate dies silently rather than bringing down the
-    // whole app.  This is acceptable because the worst case is that events
-    // stop arriving (the UI goes stale) rather than the app crashing.
+    // onError / onExit — receive ports that let us detect crashes and exits.
     Isolate.spawn(
-      _pollLoop,                    // the function to run in the new isolate
+      _pollLoop,
       _PollMessage(
-        sendPort: _receivePort!.sendPort, // how the isolate sends messages back
-        contextAddress: contextAddress,   // the Rust context address (as int)
+        sendPort: _receivePort!.sendPort,
+        contextAddress: _contextAddress!,
       ),
-      errorsAreFatal: false,
-    ).then((isolate) => _isolate = isolate); // save reference for later cleanup
+      errorsAreFatal: true,
+      onError: _errorPort!.sendPort,
+      onExit: _exitPort!.sendPort,
+    ).then((isolate) => _isolate = isolate);
+  }
+
+  // ---------------------------------------------------------------------------
+  // _onIsolateExit()
+  //
+  // Called when the background isolate terminates (crash or kill).
+  // If the exit was not intentional (i.e. stop() was not called), attempt an
+  // automatic restart after a short delay.
+  //
+  // Rate-limiting: if the isolate has restarted more than 5 times within the
+  // last 60 seconds, stop retrying — something is fundamentally broken and
+  // rapid restarts would just waste resources.
+  // ---------------------------------------------------------------------------
+  void _onIsolateExit() {
+    _isolate = null;
+
+    // Intentional shutdown — do nothing.
+    if (_stopped) return;
+
+    // Prune restart timestamps outside the window.
+    final now = DateTime.now();
+    _restartTimestamps.removeWhere(
+      (t) => now.difference(t) > _restartWindow,
+    );
+
+    if (_restartTimestamps.length >= _maxRestartsInWindow) {
+      print(
+        '[EventBus] Isolate restarted $_maxRestartsInWindow times in '
+        '${_restartWindow.inSeconds}s — giving up. UI events will not update.',
+      );
+      return;
+    }
+
+    _restartTimestamps.add(now);
+    print(
+      '[EventBus] Background isolate exited unexpectedly. '
+      'Restarting in ${_restartDelay.inSeconds}s '
+      '(${_restartTimestamps.length}/$_maxRestartsInWindow)...',
+    );
+
+    // Delay before restarting to avoid a tight crash loop.
+    Future<void>.delayed(_restartDelay, () {
+      // Re-check — stop() may have been called during the delay.
+      if (!_stopped && _contextAddress != null) {
+        _spawnIsolate();
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -151,12 +246,17 @@ class EventBus {
   // Called when the app widget is disposed (closing the app).
   // ---------------------------------------------------------------------------
   void stop() {
+    _stopped = true;
     // Isolate.immediate means "kill it now, don't wait for current task to
     // finish".  Safe here because the isolate only does FFI calls and sleeps.
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
-    _receivePort?.close(); // Stop accepting messages.
+    _receivePort?.close();
     _receivePort = null;
+    _errorPort?.close();
+    _errorPort = null;
+    _exitPort?.close();
+    _exitPort = null;
   }
 
   // ---------------------------------------------------------------------------

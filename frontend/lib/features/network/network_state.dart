@@ -134,6 +134,11 @@ class NetworkState extends ChangeNotifier {
   /// after this object is destroyed.
   StreamSubscription<BackendEvent>? _sub;
 
+  /// Guard flag to prevent notifyListeners() after dispose().
+  /// Stream cancellation is asynchronous — an event can arrive between
+  /// cancel() and actual teardown, causing a "used after dispose" exception.
+  bool _disposed = false;
+
   /// The full settings model fetched from the backend.
   /// Null until the first loadAll() call completes.
   /// Contains: which transports are enabled, node mode, pairing code, peer ID, etc.
@@ -224,7 +229,7 @@ class NetworkState extends ChangeNotifier {
         .map(DiscoveredPeerModel.fromJson) // Decode each JSON blob.
         .toList();
 
-    notifyListeners(); // Rebuild the NetworkScreen with fresh data.
+    if (!_disposed) notifyListeners(); // Rebuild the NetworkScreen with fresh data.
   }
 
   // -------------------------------------------------------------------------
@@ -267,14 +272,12 @@ class NetworkState extends ChangeNotifier {
   /// Returns true if the backend accepted the change, false if it rejected it.
   Future<bool> toggleTransport(String name, bool enabled) async {
     final ok = _bridge.toggleTransport(name, enabled);
-    if (ok) {
-      // Re-fetch to get the authoritative post-change settings from Rust.
-      // We do a targeted fetch of settings only (not full loadAll) because
-      // toggling a transport doesn't change stats or discovered peers.
-      final raw = _bridge.fetchSettings();
-      _settings = raw;
-      notifyListeners();
-    }
+    // Always re-fetch the authoritative settings from Rust, regardless of
+    // whether the toggle succeeded.  If the backend rejected the change the
+    // UI must revert to the actual state, not show the intended state.
+    final raw = _bridge.fetchSettings();
+    _settings = raw;
+    if (!_disposed) notifyListeners();
     return ok; // Return false if the backend rejected the change.
   }
 
@@ -297,12 +300,11 @@ class NetworkState extends ChangeNotifier {
   /// being able to read them.
   Future<bool> setNodeMode(int mode) async {
     final ok = _bridge.setNodeMode(mode);
-    if (ok) {
-      // Re-fetch settings to confirm the mode change.
-      final raw = _bridge.fetchSettings();
-      _settings = raw;
-      notifyListeners();
-    }
+    // Always re-fetch settings so the UI reflects the actual backend state,
+    // even if the mode change was rejected.
+    final raw = _bridge.fetchSettings();
+    _settings = raw;
+    if (!_disposed) notifyListeners();
     return ok;
   }
 
@@ -354,12 +356,10 @@ class NetworkState extends ChangeNotifier {
   ///   - Notifies listeners so the toggle in NetworkScreen flips to "on".
   Future<bool> enableMdns({int port = 51820}) async {
     final ok = _bridge.enableMdns(port: port);
-    if (ok) {
-      _mdnsRunning = true;
-      // We do NOT clear _discoveredPeers here — any previously discovered
-      // peers are still valid as the listener just restarted.
-      notifyListeners();
-    }
+    // Always re-fetch mDNS state from the backend so the UI reflects reality,
+    // even if the enable call was rejected.
+    _mdnsRunning = _bridge.isMdnsRunning();
+    if (!_disposed) notifyListeners();
     return ok;
   }
 
@@ -377,11 +377,16 @@ class NetworkState extends ChangeNotifier {
   /// Dart can reuse the same empty list instance everywhere `const []` appears.
   Future<bool> disableMdns() async {
     final ok = _bridge.disableMdns();
-    if (ok) {
-      _mdnsRunning = false;
+    // Always re-fetch mDNS state and discovered peers from the backend so the
+    // UI reflects reality, even if the disable call was rejected.
+    _mdnsRunning = _bridge.isMdnsRunning();
+    if (!_mdnsRunning) {
       _discoveredPeers = const []; // Clear stale discovery data.
-      notifyListeners();
+    } else {
+      final rawPeers = _bridge.getDiscoveredPeers();
+      _discoveredPeers = rawPeers.map(DiscoveredPeerModel.fromJson).toList();
     }
+    if (!_disposed) notifyListeners();
     return ok;
   }
 
@@ -410,7 +415,7 @@ class NetworkState extends ChangeNotifier {
     // Replace our local copy of settings with the authoritative version from
     // the backend event payload.
     _settings = event.settings;
-    notifyListeners(); // Rebuild NetworkScreen with the confirmed settings.
+    if (!_disposed) notifyListeners(); // Rebuild NetworkScreen with the confirmed settings.
   }
 
   // -------------------------------------------------------------------------
@@ -419,6 +424,7 @@ class NetworkState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     // Cancel the EventBus subscription so this object can be garbage-collected.
     // Without cancellation the stream listener closure would keep a reference
     // to this NetworkState alive indefinitely, leaking memory.

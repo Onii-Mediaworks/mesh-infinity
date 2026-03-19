@@ -15,6 +15,7 @@ class SettingsState extends ChangeNotifier {
 
   final BackendBridge _bridge;
   StreamSubscription<BackendEvent>? _sub;
+  bool _disposed = false;
 
   SettingsModel? _settings;
   LocalIdentitySummary? _identity;
@@ -28,7 +29,7 @@ class SettingsState extends ChangeNotifier {
     _settings = _bridge.fetchSettings();
     _identity = _bridge.fetchLocalIdentity();
     _services = _bridge.fetchServices();
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<bool> configureService(String serviceId, Map<String, dynamic> config) async {
@@ -48,11 +49,13 @@ class SettingsState extends ChangeNotifier {
   void _onEvent(BackendEvent event) {
     if (event is! SettingsUpdatedEvent) return;
     _settings = event.settings;
-    notifyListeners();
+    _identity = _bridge.fetchLocalIdentity();
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _sub?.cancel();
     super.dispose();
   }

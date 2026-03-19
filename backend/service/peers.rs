@@ -5,7 +5,7 @@
 use std::time::SystemTime;
 
 use crate::core::core::{PeerInfo, TransportType};
-use crate::core::error::Result;
+use crate::core::error::{MeshInfinityError, Result};
 use crate::core::mesh::VerificationMethod;
 use crate::core::TrustLevel as CoreTrustLevel;
 
@@ -23,7 +23,9 @@ impl MeshInfinityService {
             return Ok(());
         }
 
-        let peer_id = peer_id_from_pairing_code(trimmed).unwrap_or_else(random_peer_id);
+        let peer_id = peer_id_from_pairing_code(trimmed).ok_or_else(|| {
+            MeshInfinityError::InvalidInput("Invalid pairing code".into())
+        })?;
         let peer_info = PeerInfo {
             peer_id,
             public_key: [0u8; 32],
