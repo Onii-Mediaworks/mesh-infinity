@@ -67,7 +67,12 @@ impl MeshInfinityService {
         let key = {
             let local_peer = {
                 let state = self.state.read().unwrap();
-                parse_peer_id_hex(&state.settings.local_peer_id).unwrap_or([0u8; 32])
+                match parse_peer_id_hex(&state.settings.local_peer_id) {
+                    Some(id) => id,
+                    None => return Err(crate::core::error::MeshInfinityError::InvalidInput(
+                        "local peer ID is not set or invalid".into(),
+                    )),
+                }
             };
             derive_passive_session_key(&local_peer, peer_id)
         };

@@ -88,6 +88,12 @@ sealed class BackendEvent {
   static BackendEvent? fromJson(Map<String, dynamic> json) {
     final type = json['type'] as String?; // The event type discriminator.
     final data = json['data'];            // The event payload (structure varies by type).
+
+    // Safely cast `data` to a Map when the event type expects an object payload.
+    // Returns null if `data` is not a Map, which will cause the corresponding
+    // event arm to return null (skipping the event) rather than throwing.
+    final dataMap = data is Map<String, dynamic> ? data : null;
+
     try {
       // Dart's `switch` expression (introduced in Dart 3) evaluates to a value.
       // Each arm matches the type string and constructs the right event object.
@@ -99,9 +105,9 @@ sealed class BackendEvent {
         // successfully sent (from the local user).  The UI should append this
         // message to the conversation thread.
         // -----------------------------------------------------------------------
-        'MessageAdded' => MessageAddedEvent(
-          MessageModel.fromJson(data as Map<String, dynamic>),
-        ),
+        'MessageAdded' => dataMap != null
+          ? MessageAddedEvent(MessageModel.fromJson(dataMap))
+          : null,
 
         // -----------------------------------------------------------------------
         // 'RoomUpdated'
@@ -109,9 +115,9 @@ sealed class BackendEvent {
         // updated the preview snippet, or the unread count changed.
         // The UI should refresh that room's entry in the conversation list.
         // -----------------------------------------------------------------------
-        'RoomUpdated' => RoomUpdatedEvent(
-          RoomSummary.fromJson(data as Map<String, dynamic>),
-        ),
+        'RoomUpdated' => dataMap != null
+          ? RoomUpdatedEvent(RoomSummary.fromJson(dataMap))
+          : null,
 
         // -----------------------------------------------------------------------
         // 'RoomDeleted'
@@ -120,7 +126,9 @@ sealed class BackendEvent {
         // and close any open conversation thread for that room.
         // The data contains only the room ID string.
         // -----------------------------------------------------------------------
-        'RoomDeleted' => RoomDeletedEvent(data['roomId'] as String),
+        'RoomDeleted' => dataMap != null && dataMap['roomId'] is String
+          ? RoomDeletedEvent(dataMap['roomId'] as String)
+          : null,
 
         // -----------------------------------------------------------------------
         // 'MessageDeleted'
@@ -128,10 +136,14 @@ sealed class BackendEvent {
         // ID are provided so the UI can find and remove the exact message from
         // the displayed thread.
         // -----------------------------------------------------------------------
-        'MessageDeleted' => MessageDeletedEvent(
-          roomId: data['roomId'] as String,
-          messageId: data['messageId'] as String,
-        ),
+        'MessageDeleted' => dataMap != null
+            && dataMap['roomId'] is String
+            && dataMap['messageId'] is String
+          ? MessageDeletedEvent(
+              roomId: dataMap['roomId'] as String,
+              messageId: dataMap['messageId'] as String,
+            )
+          : null,
 
         // -----------------------------------------------------------------------
         // 'PeerUpdated'
@@ -139,9 +151,9 @@ sealed class BackendEvent {
         // their display name changed, or their trust level was updated.
         // The UI should refresh that peer's entry in the peer list.
         // -----------------------------------------------------------------------
-        'PeerUpdated' => PeerUpdatedEvent(
-          PeerModel.fromJson(data as Map<String, dynamic>),
-        ),
+        'PeerUpdated' => dataMap != null
+          ? PeerUpdatedEvent(PeerModel.fromJson(dataMap))
+          : null,
 
         // -----------------------------------------------------------------------
         // 'TransferUpdated'
@@ -149,9 +161,9 @@ sealed class BackendEvent {
         // updates), and also when a transfer completes, fails, or is cancelled.
         // The UI should update the transfer progress bar or status badge.
         // -----------------------------------------------------------------------
-        'TransferUpdated' => TransferUpdatedEvent(
-          FileTransferModel.fromJson(data as Map<String, dynamic>),
-        ),
+        'TransferUpdated' => dataMap != null
+          ? TransferUpdatedEvent(FileTransferModel.fromJson(dataMap))
+          : null,
 
         // -----------------------------------------------------------------------
         // 'SettingsUpdated'
@@ -160,9 +172,9 @@ sealed class BackendEvent {
         // (in future) because a sync from another device updated them.
         // The UI should reload the settings screen.
         // -----------------------------------------------------------------------
-        'SettingsUpdated' => SettingsUpdatedEvent(
-          SettingsModel.fromJson(data as Map<String, dynamic>),
-        ),
+        'SettingsUpdated' => dataMap != null
+          ? SettingsUpdatedEvent(SettingsModel.fromJson(dataMap))
+          : null,
 
         // -----------------------------------------------------------------------
         // 'ActiveRoomChanged'
@@ -171,9 +183,11 @@ sealed class BackendEvent {
         // closed all conversations).  The UI should highlight the correct room
         // in the sidebar and show the right conversation thread.
         // -----------------------------------------------------------------------
-        'ActiveRoomChanged' => ActiveRoomChangedEvent(
-          data['roomId'] as String?, // nullable — no room may be active
-        ),
+        'ActiveRoomChanged' => dataMap != null
+          ? ActiveRoomChangedEvent(
+              dataMap['roomId'] is String ? dataMap['roomId'] as String : null,
+            )
+          : null,
 
         // -----------------------------------------------------------------------
         // 'TrustUpdated'
@@ -183,10 +197,14 @@ sealed class BackendEvent {
         // other peers.
         // The UI should update the trust badge shown next to the peer.
         // -----------------------------------------------------------------------
-        'TrustUpdated' => TrustUpdatedEvent(
-          peerId: data['peerId'] as String,
-          trustLevel: TrustLevel.fromInt(data['trustLevel'] as int),
-        ),
+        'TrustUpdated' => dataMap != null
+            && dataMap['peerId'] is String
+            && dataMap['trustLevel'] is int
+          ? TrustUpdatedEvent(
+              peerId: dataMap['peerId'] as String,
+              trustLevel: TrustLevel.fromInt(dataMap['trustLevel'] as int),
+            )
+          : null,
 
         // -----------------------------------------------------------------------
         // Catch-all: any event type we don't recognise is silently dropped.

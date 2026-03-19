@@ -17,6 +17,7 @@ class FilesState extends ChangeNotifier {
 
   final BackendBridge _bridge;
   StreamSubscription<BackendEvent>? _sub;
+  bool _disposed = false;
 
   List<FileTransferModel> _transfers = const [];
   List<ServiceModel> _services = const [];
@@ -30,12 +31,12 @@ class FilesState extends ChangeNotifier {
 
   Future<void> loadTransfers() async {
     _transfers = _bridge.fetchFileTransfers();
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> _loadServices() async {
     _services = _bridge.fetchServices();
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<bool> sendFile({
@@ -79,11 +80,12 @@ class FilesState extends ChangeNotifier {
     if (!_transfers.any((t) => t.id == updated.id)) {
       _transfers = [..._transfers, updated];
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _sub?.cancel();
     super.dispose();
   }

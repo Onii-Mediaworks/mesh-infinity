@@ -15,6 +15,7 @@ class PeersState extends ChangeNotifier {
 
   final BackendBridge _bridge;
   StreamSubscription<BackendEvent>? _sub;
+  bool _disposed = false;
 
   List<PeerModel> _peers = const [];
   bool _loading = false;
@@ -24,10 +25,10 @@ class PeersState extends ChangeNotifier {
 
   Future<void> loadPeers() async {
     _loading = true;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
     _peers = _bridge.fetchPeers();
     _loading = false;
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   Future<bool> pairPeer(String code) async {
@@ -69,14 +70,14 @@ class PeersState extends ChangeNotifier {
         if (!_peers.any((p) => p.id == peer.id)) {
           _peers = [..._peers, peer];
         }
-        notifyListeners();
+        if (!_disposed) notifyListeners();
 
       case TrustUpdatedEvent(:final peerId, :final trustLevel):
         _peers = [
           for (final p in _peers)
             if (p.id == peerId) p.copyWith(trustLevel: trustLevel) else p,
         ];
-        notifyListeners();
+        if (!_disposed) notifyListeners();
 
       default:
         break;
@@ -85,6 +86,7 @@ class PeersState extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _sub?.cancel();
     super.dispose();
   }

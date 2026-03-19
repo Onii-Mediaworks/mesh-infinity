@@ -1024,7 +1024,12 @@ impl MeshInfinityService {
         // Read our own peer ID from settings (needed to derive the session key).
         let local_peer = {
             let state = self.state.read().unwrap();
-            parse_peer_id_hex(&state.settings.local_peer_id).unwrap_or([0u8; 32])
+            match parse_peer_id_hex(&state.settings.local_peer_id) {
+                Some(id) => id,
+                None => return Err(crate::core::error::MeshInfinityError::InvalidInput(
+                    "local peer ID is not set or invalid".into(),
+                )),
+            }
         };
 
         // Compute the dedupe key: a SHA-256 hash of (target_peer_id || payload).

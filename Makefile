@@ -168,6 +168,8 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  for na_fw in "$$native_assets_dir"/*.framework; do \
 	    [ -d "$$na_fw" ] || continue; \
 	    cp -R "$$na_fw" "$$app_src/Contents/Frameworks/"; \
+	    na_name=$$(basename "$$na_fw"); \
+	    codesign --force --sign - "$$app_src/Contents/Frameworks/$$na_name"; \
 	  done; \
 	fi; \
 	dmg_stage="$(BUILD_DIR)/intermediates/macos/$$profile/dmg-stage"; \
@@ -287,6 +289,8 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  CODE_SIGNING_REQUIRED=NO \
 	  CODE_SIGN_IDENTITY="" \
 	  FLUTTER_FRAMEWORK_BASE="$(BUILD_DIR)/intermediates/ios" \
+	  LIBRARY_SEARCH_PATHS="$$rust_out" \
+	  OTHER_LDFLAGS="-lmesh_infinity -lresolv" \
 	  archive \
 	  -archivePath "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive"; \
 	\
@@ -296,6 +300,18 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	cp -R \
 	  "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive/Products/Applications/"*.app \
 	  "$$ipa_payload/"; \
+	native_assets_dir="$$src_dir/build/native_assets/ios"; \
+	if [ -d "$$native_assets_dir" ]; then \
+	  for na_fw in "$$native_assets_dir"/*.framework; do \
+	    [ -d "$$na_fw" ] || continue; \
+	    for _app in "$$ipa_payload/"*.app; do \
+	      mkdir -p "$$_app/Frameworks"; \
+	      cp -R "$$na_fw" "$$_app/Frameworks/"; \
+	      na_name=$$(basename "$$na_fw"); \
+	      codesign --force --sign - "$$_app/Frameworks/$$na_name"; \
+	    done; \
+	  done; \
+	fi; \
 	for _app in "$$ipa_payload/"*.app; do \
 	  for _fw in "$$_app/Frameworks/"*.framework; do \
 	    _bin="$$_fw/$$(basename $$_fw .framework)"; \

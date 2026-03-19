@@ -915,35 +915,25 @@ impl IdentityStore {
         }
 
         // Fallback: write a plain 0600-restricted file.
-        // `std::fs::write` creates the file if it does not exist.
-        // On creation, the file inherits the process's umask — typically 0644
-        // (readable by group and others).  We explicitly set 0600 below.
-        std::fs::write(self.key_path(), key)?;
-
-        // On Unix systems, set the file permissions to 0600 (owner read+write only).
-        // This `#[cfg(unix)]` block is compiled only on Unix-like systems
-        // (Linux, macOS, etc.).  On Windows, file permissions work differently
-        // and we rely on NTFS ACLs and the user's account security.
-        //
-        // WHY IS THIS A SEPARATE STEP INSTEAD OF CREATING THE FILE WITH 0600?
-        //   Rust's `std::fs::write` does not accept a mode argument (unlike
-        //   the POSIX `open(2)` syscall).  After creation, we change the mode.
-        //   There is a tiny race window between creation (default mode) and
-        //   `set_permissions` (0600) where the file might briefly be readable
-        //   by others.  This is acceptable in practice because: a) the write is
-        //   fast, b) no other processes are expected to race on this file, and
-        //   c) the file might not even contain valid data yet at the moment it
-        //   is created (the write and set_permissions happen atomically enough
-        //   for our threat model).
+        // On Unix we create the file with 0600 from the start using
+        // OpenOptions to eliminate the race window between creation
+        // and chmod.  On other platforms we fall back to std::fs::write.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            // `from_mode(0o600)` creates a permissions object for octal 600:
-            //   6 = read + write for owner (binary 110)
-            //   0 = no access for group  (binary 000)
-            //   0 = no access for others (binary 000)
-            // The `0o` prefix is Rust's syntax for octal literals.
-            std::fs::set_permissions(self.key_path(), std::fs::Permissions::from_mode(0o600))?;
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(self.key_path())?;
+            f.write_all(key)?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(self.key_path(), key)?;
         }
         Ok(())
     }
