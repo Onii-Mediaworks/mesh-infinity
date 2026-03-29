@@ -1695,3 +1695,710 @@ impl MeshRuntime {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Room and message management operations
+// ---------------------------------------------------------------------------
+
+impl MeshRuntime {
+    // -----------------------------------------------------------------------
+    // Room operations
+    // -----------------------------------------------------------------------
+
+    /// Return the full room list as a JSON string.
+    ///
+    /// Each entry includes group/DM metadata: `id`, `name`, `lastMessage`,
+    /// `unreadCount`, `timestamp`, `isArchived`, `isPinned`, `isMuted`,
+    /// `securityMode`, `conversationType`, `groupId`, `otherPeerId`.
+    pub fn get_room_list(&self) -> String {
+        use crate::identity::peer_id::PeerId;
+        use crate::messaging::message::ConversationType;
+
+        let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        // Build group-id lookup keyed by group peer_id for annotation.
+        let groups_guard = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        let group_lookup: std::collections::HashMap<PeerId, String> = groups_guard
+            .iter()
+            .map(|g| (PeerId::from_ed25519_pub(&g.ed25519_public), hex::encode(g.group_id)))
+            .collect();
+        drop(groups_guard);
+
+        let json: Vec<serde_json::Value> = rooms
+            .iter()
+            .map(|r| {
+                let is_group = r.conversation_type == ConversationType::Group;
+                let group_id = if is_group {
+                    r.participants
+                        .first()
+                        .and_then(|pid| group_lookup.get(pid))
+                        .cloned()
+                } else {
+                    None
+                };
+                // For DM rooms expose the other peer's ID.
+                let other_peer_id = if !is_group && r.participants.len() >= 2 {
+                    Some(hex::encode(r.participants[1].0))
+                } else {
+                    None
+                };
+                serde_json::json!({
+                    "id":               hex::encode(r.id),
+                    "name":             r.name,
+                    "lastMessage":      r.last_message_preview,
+                    "unreadCount":      r.unread_count,
+                    "timestamp":        r.last_message_at,
+                    "isArchived":       r.is_archived,
+                    "isPinned":         r.is_pinned,
+                    "isMuted":          r.is_muted,
+                    "securityMode":     r.security_mode,
+                    "conversationType": if is_group { "group" } else { "dm" },
+                    "groupId":          group_id,
+                    "otherPeerId":      other_peer_id,
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&json).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Create a new room (DM or standalone).
+    ///
+    /// If `peer_id_hex` is `Some`, creates a DM room with the named peer.
+    /// If `peer_id_hex` is `None`, creates a standalone group room.
+    ///
+    /// Returns `Ok(room_id_hex)` on success, `Err(reason)` on failure.
+    pub fn create_room(
+        &mut self,
+        name: &str,
+        peer_id_hex: Option<&str>,
+    ) -> Result<String, String> {
+        use crate::identity::peer_id::PeerId;
+
+        let room = if let Some(pid_hex) = peer_id_hex {
+            // DM room — look up the contact.
+            let peer_bytes: [u8; 32] = hex::decode(pid_hex)
+                .ok()
+                .filter(|b| b.len() == 32)
+                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+                .ok_or("invalid peer_id_hex")?;
+            let peer_id = PeerId(peer_bytes);
+
+            let our_peer_id = self
+                .identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|id| id.peer_id())
+                .unwrap_or(PeerId([0u8; 32]));
+
+            let room_name = if name.is_empty() {
+                // Fall back to peer's display name.
+                self.contacts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&peer_id)
+                    .and_then(|c| c.display_name.clone())
+                    .unwrap_or_else(|| pid_hex[..8].to_string())
+            } else {
+                name.to_string()
+            };
+
+            crate::messaging::room::Room::new_dm(our_peer_id, peer_id, &room_name)
+        } else {
+            // Standalone group room.
+            let room_name = if name.is_empty() { "New Chat".to_string() } else { name.to_string() };
+            crate::messaging::room::Room::new_group(&room_name, vec![])
+        };
+
+        let id_hex = hex::encode(room.id);
+        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).push(room.clone());
+        self.save_rooms();
+
+        self.push_event("RoomCreated", serde_json::json!({
+            "id":   id_hex,
+            "name": room.name,
+        }));
+
+        Ok(id_hex)
+    }
+
+    /// Delete a room and its messages.
+    ///
+    /// Returns `true` if the room was found and removed.
+    pub fn delete_room(&self, room_id_hex: &str) -> bool {
+        let before = self.rooms.lock().unwrap_or_else(|e| e.into_inner()).len();
+        self.rooms.lock().unwrap_or_else(|e| e.into_inner())
+            .retain(|r| hex::encode(r.id) != room_id_hex);
+        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+            .remove(room_id_hex);
+        let after = self.rooms.lock().unwrap_or_else(|e| e.into_inner()).len();
+
+        if after < before {
+            self.push_event("RoomDeleted", serde_json::json!({ "roomId": room_id_hex }));
+            self.save_rooms();
+            self.save_messages();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Return messages for a room as a JSON array string.
+    pub fn get_messages(&self, room_id_hex: &str) -> String {
+        let msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+        match msgs.get(room_id_hex) {
+            Some(m) => serde_json::to_string(m).unwrap_or_else(|_| "[]".into()),
+            None => "[]".into(),
+        }
+    }
+
+    /// Return the active conversation room ID as a JSON string (`"null"` if none).
+    pub fn active_room_id(&self) -> String {
+        let active = self.active_conversation.lock().unwrap_or_else(|e| e.into_inner());
+        match *active {
+            Some(id) => format!("\"{}\"", hex::encode(id)),
+            None => "null".into(),
+        }
+    }
+
+    /// Return the current file transfers as a JSON array string.
+    pub fn get_file_transfers(&self) -> String {
+        let transfers = self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+        serde_json::to_string(&*transfers).unwrap_or_else(|_| "[]".into())
+    }
+
+    // -----------------------------------------------------------------------
+    // Message operations
+    // -----------------------------------------------------------------------
+
+    /// Delete a message from local storage (local-only; not broadcast).
+    pub fn delete_message(&self, msg_id: &str) {
+        let mut msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+        for room_msgs in msgs.values_mut() {
+            room_msgs.retain(|m| m.get("id").and_then(|v| v.as_str()) != Some(msg_id));
+        }
+    }
+
+    /// Send a reaction to a message and broadcast it to room participants.
+    ///
+    /// Emits `ReactionAdded` and sends a `reaction` frame to each connected peer.
+    pub fn send_reaction(&self, room_id_hex: &str, msg_id: &str, emoji: &str) -> bool {
+        if emoji.is_empty() { return false; }
+
+        self.push_event("ReactionAdded", serde_json::json!({
+            "roomId": room_id_hex,
+            "msgId":  msg_id,
+            "emoji":  emoji,
+        }));
+
+        let (recipients, our_hex) = {
+            let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            let room_id_bytes = match hex::decode(room_id_hex) {
+                Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+                _ => return true, // event emitted; wire-send best-effort
+            };
+            let room = match rooms.iter().find(|r| r.id == room_id_bytes) {
+                Some(r) => r,
+                None => return true,
+            };
+            let our = self.identity.lock().unwrap_or_else(|e| e.into_inner())
+                .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_default();
+            let peers: Vec<String> = room.participants.iter()
+                .map(|p| hex::encode(p.0)).filter(|h| *h != our).collect();
+            (peers, our)
+        };
+
+        let frame = serde_json::json!({
+            "type":   "reaction",
+            "sender": our_hex,
+            "roomId": room_id_hex,
+            "msgId":  msg_id,
+            "emoji":  emoji,
+        });
+        for peer_hex in &recipients {
+            self.send_raw_frame(peer_hex, &frame);
+        }
+        true
+    }
+
+    /// Mark a room as read and emit a `ReadReceipt` event.
+    pub fn send_read_receipt(&self, room_id_hex: &str, msg_id: &str) {
+        {
+            let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(room) = rooms.iter_mut().find(|r| hex::encode(r.id) == room_id_hex) {
+                room.mark_read();
+            }
+        }
+        self.push_event("ReadReceipt", serde_json::json!({"roomId": room_id_hex, "msgId": msg_id}));
+        self.save_rooms();
+    }
+
+    /// Emit a typing indicator event and broadcast to room participants.
+    pub fn send_typing_indicator(&self, room_id_hex: &str, active: bool) {
+        self.push_event("TypingIndicator", serde_json::json!({
+            "roomId": room_id_hex,
+            "active": active,
+        }));
+
+        let (recipients, our_hex) = {
+            let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            let room_id_bytes = match hex::decode(room_id_hex) {
+                Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+                _ => return,
+            };
+            let room = match rooms.iter().find(|r| r.id == room_id_bytes) {
+                Some(r) => r,
+                None => return,
+            };
+            let our = self.identity.lock().unwrap_or_else(|e| e.into_inner())
+                .as_ref().map(|id| hex::encode(id.peer_id().0)).unwrap_or_default();
+            let peers: Vec<String> = room.participants.iter()
+                .map(|p| hex::encode(p.0)).filter(|h| *h != our).collect();
+            (peers, our)
+        };
+
+        let frame = serde_json::json!({
+            "type":   "typing_indicator",
+            "sender": our_hex,
+            "roomId": room_id_hex,
+            "active": active,
+        });
+        for peer_hex in &recipients {
+            self.send_raw_frame(peer_hex, &frame);
+        }
+    }
+
+    /// Send a reply message that quotes an earlier message.
+    ///
+    /// Returns `true` on success.
+    pub fn reply_to_message(
+        &mut self,
+        room_id_hex: &str,
+        reply_to_id: &str,
+        text: &str,
+    ) -> bool {
+        use crate::service::runtime::try_random_fill;
+        if text.is_empty() { return false; }
+
+        let mut msg_id_bytes = [0u8; 16];
+        if !try_random_fill(&mut msg_id_bytes) { return false; }
+        let msg_id = hex::encode(msg_id_bytes);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let sender = self.identity.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_else(|| "local".into());
+
+        let msg = serde_json::json!({
+            "id":         msg_id,
+            "roomId":     room_id_hex,
+            "sender":     sender,
+            "text":       text,
+            "timestamp":  timestamp,
+            "isOutgoing": true,
+            "authStatus": "outgoing",
+            "replyTo":    reply_to_id,
+        });
+
+        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+            .entry(room_id_hex.to_string()).or_default().push(msg.clone());
+        {
+            let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(room) = rooms.iter_mut().find(|r| hex::encode(r.id) == room_id_hex) {
+                let preview = if text.len() > 80 {
+                    format!("\u{21a9} {}…", &text[..77])
+                } else {
+                    format!("\u{21a9} {text}")
+                };
+                room.last_message_preview = Some(preview);
+                room.last_message_at = Some(timestamp);
+            }
+        }
+        self.push_event("MessageAdded", msg);
+        self.save_messages();
+        self.save_rooms();
+        true
+    }
+
+    /// Edit the text of a previously sent message (own messages only).
+    ///
+    /// Returns `true` if the message was found and updated.
+    pub fn edit_message(&self, msg_id: &str, new_text: &str) -> bool {
+        if new_text.is_empty() { return false; }
+        let edited_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+
+        let mut found = false;
+        {
+            let mut all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+            for msgs in all_msgs.values_mut() {
+                for msg in msgs.iter_mut() {
+                    if msg.get("id").and_then(|v| v.as_str()) == Some(msg_id) {
+                        if msg.get("isOutgoing").and_then(|v| v.as_bool()) == Some(true) {
+                            if let Some(obj) = msg.as_object_mut() {
+                                obj.insert("text".into(), serde_json::json!(new_text));
+                                obj.insert("editedAt".into(), serde_json::json!(edited_at));
+                            }
+                            found = true;
+                        }
+                        break;
+                    }
+                }
+                if found { break; }
+            }
+        }
+
+        if found {
+            self.push_event("MessageEdited", serde_json::json!({
+                "msgId":    msg_id,
+                "newText":  new_text,
+                "editedAt": edited_at,
+            }));
+            self.save_messages();
+        }
+        found
+    }
+
+    /// Delete a message for all participants (marks it deleted in place).
+    ///
+    /// Returns `Some(room_id_hex)` of the containing room, or `None` if not found.
+    pub fn delete_for_everyone(&self, msg_id: &str) -> Option<String> {
+        let mut found_room: Option<String> = None;
+        {
+            let mut all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+            for (room_id, msgs) in all_msgs.iter_mut() {
+                for msg in msgs.iter_mut() {
+                    if msg.get("id").and_then(|v| v.as_str()) == Some(msg_id) {
+                        if let Some(obj) = msg.as_object_mut() {
+                            obj.insert("text".into(), serde_json::json!(""));
+                            obj.insert("deleted".into(), serde_json::json!(true));
+                        }
+                        found_room = Some(room_id.clone());
+                        break;
+                    }
+                }
+                if found_room.is_some() { break; }
+            }
+        }
+
+        if let Some(ref room_id) = found_room {
+            self.push_event("MessageDeleted", serde_json::json!({"msgId": msg_id, "roomId": room_id}));
+            self.save_messages();
+        }
+        found_room
+    }
+
+    /// Forward a message to a different room.
+    ///
+    /// Returns `true` on success.
+    pub fn forward_message(&mut self, msg_id: &str, target_room_hex: &str) -> bool {
+        use crate::service::runtime::try_random_fill;
+
+        let original_text = {
+            let all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+            all_msgs.values().flat_map(|msgs| msgs.iter()).find(|msg| {
+                msg.get("id").and_then(|v| v.as_str()) == Some(msg_id)
+            }).and_then(|msg| msg.get("text").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        };
+
+        let text = match original_text { Some(t) if !t.is_empty() => t, _ => return false };
+
+        let mut new_id_bytes = [0u8; 16];
+        if !try_random_fill(&mut new_id_bytes) { return false; }
+        let new_id = hex::encode(new_id_bytes);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let sender = self.identity.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_else(|| "local".into());
+
+        let fwd = serde_json::json!({
+            "id":          new_id,
+            "roomId":      target_room_hex,
+            "sender":      sender,
+            "text":        text,
+            "timestamp":   timestamp,
+            "isOutgoing":  true,
+            "authStatus":  "outgoing",
+            "isForwarded": true,
+        });
+
+        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+            .entry(target_room_hex.to_string()).or_default().push(fwd.clone());
+        self.push_event("MessageAdded", fwd);
+        self.save_messages();
+        true
+    }
+
+    /// Pin a message (marks `pinned = true`).
+    ///
+    /// Returns `true` if the message was found.
+    pub fn pin_message(&self, msg_id: &str) -> bool {
+        self.set_message_pin(msg_id, true)
+    }
+
+    /// Unpin a previously pinned message.
+    ///
+    /// Returns `true` if the message was found.
+    pub fn unpin_message(&self, msg_id: &str) -> bool {
+        self.set_message_pin(msg_id, false)
+    }
+
+    /// Internal helper: set the `pinned` flag on a message.
+    fn set_message_pin(&self, msg_id: &str, pinned: bool) -> bool {
+        let mut found = false;
+        {
+            let mut all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+            for msgs in all_msgs.values_mut() {
+                for msg in msgs.iter_mut() {
+                    if msg.get("id").and_then(|v| v.as_str()) == Some(msg_id) {
+                        if let Some(obj) = msg.as_object_mut() {
+                            obj.insert("pinned".into(), serde_json::json!(pinned));
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if found { break; }
+            }
+        }
+
+        if found {
+            let event = if pinned { "MessagePinned" } else { "MessageUnpinned" };
+            self.push_event(event, serde_json::json!({"msgId": msg_id}));
+            self.save_messages();
+        }
+        found
+    }
+
+    /// Set the disappearing-message timer for a room.
+    ///
+    /// Pass `secs = 0` to disable. Returns `true` if the room was found.
+    pub fn set_disappearing_timer(&self, room_id_hex: &str, secs: u64) -> bool {
+        let mut found = false;
+        {
+            let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(room) = rooms.iter_mut().find(|r| hex::encode(r.id) == room_id_hex) {
+                room.disappearing_timer = if secs == 0 { None } else { Some(secs) };
+                found = true;
+            }
+        }
+
+        if found {
+            self.push_event("DisappearingTimerChanged", serde_json::json!({
+                "roomId": room_id_hex,
+                "secs":   secs,
+            }));
+            self.save_rooms();
+        }
+        found
+    }
+
+    /// Full-text search across all in-memory messages (case-insensitive).
+    ///
+    /// Returns a JSON array of matching message objects.
+    pub fn search_messages(&self, query: &str) -> String {
+        if query.is_empty() { return "[]".into(); }
+        let lower = query.to_lowercase();
+        let all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+        let results: Vec<&serde_json::Value> = all_msgs
+            .values()
+            .flat_map(|msgs| msgs.iter())
+            .filter(|msg| {
+                msg.get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|t| t.to_lowercase().contains(&lower))
+                    .unwrap_or(false)
+            })
+            .collect();
+        serde_json::to_string(&results).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Remove messages whose `expiresAt` timestamp is in the past.
+    ///
+    /// Should be called periodically to enforce disappearing-message timers.
+    /// Emits `MessagesExpired` if any were pruned.
+    pub fn prune_expired_messages(&self) -> usize {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+
+        let mut pruned = 0usize;
+        {
+            let mut all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
+            for msgs in all_msgs.values_mut() {
+                let before = msgs.len();
+                msgs.retain(|msg| {
+                    if let Some(exp) = msg.get("expiresAt").and_then(|v| v.as_u64()) {
+                        exp > now
+                    } else {
+                        true
+                    }
+                });
+                pruned += before - msgs.len();
+            }
+        }
+
+        if pruned > 0 {
+            self.push_event("MessagesExpired", serde_json::json!({"count": pruned}));
+            self.save_messages();
+        }
+        pruned
+    }
+}
+
+
+impl crate::service::runtime::MeshRuntime {
+    // -----------------------------------------------------------------------
+    // Group-specific helpers (§10.1.2)
+    // -----------------------------------------------------------------------
+
+    /// Create a named group room with an initial member list.
+    ///
+    /// `members_json` is a JSON array of hex-encoded peer IDs, e.g. `["aabb…","ccdd…"]`.
+    /// Returns `Ok(room_id_hex)` on success, `Err(reason)` on failure.
+    pub fn create_group(&mut self, name: &str, members_json: &str) -> Result<String, String> {
+        use crate::identity::peer_id::PeerId;
+
+        // Parse the optional member list; tolerate an empty or absent array.
+        let member_hexes: Vec<String> = if members_json.is_empty() || members_json == "[]" {
+            vec![]
+        } else {
+            serde_json::from_str(members_json).map_err(|e| e.to_string())?
+        };
+
+        let mut members: Vec<PeerId> = Vec::with_capacity(member_hexes.len() + 1);
+
+        // Always include ourselves.
+        let our_peer_id = self
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|id| id.peer_id())
+            .unwrap_or(PeerId([0u8; 32]));
+        members.push(our_peer_id);
+
+        for hex_str in &member_hexes {
+            let bytes: [u8; 32] = hex::decode(hex_str)
+                .ok()
+                .filter(|b| b.len() == 32)
+                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+                .ok_or_else(|| format!("invalid peer_id_hex: {hex_str}"))?;
+            members.push(PeerId(bytes));
+        }
+
+        let group_name = if name.is_empty() { "New Group" } else { name };
+        let room = crate::messaging::room::Room::new_group(group_name, members);
+        let id_hex = hex::encode(room.id);
+
+        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).push(room.clone());
+        self.save_rooms();
+
+        self.push_event("GroupCreated", serde_json::json!({
+            "id":   id_hex,
+            "name": room.name,
+        }));
+
+        Ok(id_hex)
+    }
+
+    /// Return a JSON array of all group rooms (conversation_type == Group).
+    pub fn list_groups(&self) -> String {
+        use crate::messaging::message::ConversationType;
+        let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        let groups: Vec<serde_json::Value> = rooms
+            .iter()
+            .filter(|r| r.conversation_type == ConversationType::Group)
+            .map(|r| serde_json::json!({
+                "id":           hex::encode(r.id),
+                "name":         r.name,
+                "memberCount":  r.participants.len(),
+                "unreadCount":  r.unread_count,
+                "lastMessage":  r.last_message_preview,
+                "timestamp":    r.last_message_at,
+            }))
+            .collect();
+        serde_json::to_string(&groups).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Return the member list for a group room as a JSON array of hex peer IDs.
+    pub fn group_members(&self, group_id_hex: &str) -> String {
+        let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(room) = rooms.iter().find(|r| hex::encode(r.id) == group_id_hex) {
+            let members: Vec<String> = room.participants.iter().map(|p| hex::encode(p.0)).collect();
+            serde_json::to_string(&members).unwrap_or_else(|_| "[]".into())
+        } else {
+            "[]".into()
+        }
+    }
+
+    /// Remove ourselves from a group room and notify other members.
+    ///
+    /// Returns `Ok(())` if found, `Err(reason)` if the room does not exist.
+    pub fn leave_group(&mut self, group_id_hex: &str) -> Result<(), String> {
+        use crate::messaging::message::ConversationType;
+
+        let our_peer_id = self
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|id| id.peer_id())
+            .ok_or("no identity")?;
+
+        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        let room = rooms
+            .iter_mut()
+            .find(|r| hex::encode(r.id) == group_id_hex
+                && r.conversation_type == ConversationType::Group)
+            .ok_or_else(|| format!("group not found: {group_id_hex}"))?;
+
+        // Remove self from participant list.
+        room.participants.retain(|p| p != &our_peer_id);
+        drop(rooms);
+
+        self.save_rooms();
+        self.push_event("GroupLeft", serde_json::json!({ "groupId": group_id_hex }));
+        Ok(())
+    }
+
+    /// Send a text message to a group room.
+    ///
+    /// Returns `true` if the message was queued successfully.
+    pub fn group_send_message(&mut self, group_id_hex: &str, text: &str) -> bool {
+        // Groups are ordinary rooms — delegate to send_text_message.
+        self.send_text_message(group_id_hex, text)
+    }
+
+    /// Invite a peer to an existing group room.
+    ///
+    /// Returns `true` if the peer was added (or was already a member).
+    pub fn group_invite_peer(&mut self, group_id_hex: &str, peer_id_hex: &str) -> bool {
+        use crate::identity::peer_id::PeerId;
+
+        let peer_bytes: [u8; 32] = match hex::decode(peer_id_hex)
+            .ok()
+            .filter(|b| b.len() == 32)
+            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+        {
+            Some(arr) => arr,
+            None => return false,
+        };
+        let new_member = PeerId(peer_bytes);
+
+        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(room) = rooms.iter_mut().find(|r| hex::encode(r.id) == group_id_hex) {
+            // Idempotent: skip if already a member.
+            if room.participants.contains(&new_member) {
+                return true;
+            }
+            room.participants.push(new_member);
+            drop(rooms);
+            self.save_rooms();
+            self.push_event("GroupMemberAdded", serde_json::json!({
+                "groupId": group_id_hex,
+                "peerId":  peer_id_hex,
+            }));
+            true
+        } else {
+            false
+        }
+    }
+}
