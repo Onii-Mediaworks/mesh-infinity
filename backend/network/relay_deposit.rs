@@ -172,8 +172,12 @@ pub fn unpad_payload(padded: &[u8]) -> Option<Vec<u8>> {
 ///
 /// Returns the 32-byte HMAC that the retriever must present.
 pub fn compute_gate_hmac(secret_key: &[u8], relay_id: &[u8; 32]) -> [u8; 32] {
+    // HMAC-SHA256 accepts keys of any length — new_from_slice is infallible
+    // for this implementation (HMAC does not impose a minimum key length).
+    // The expect message is kept as a compile-time invariant note; this branch
+    // is unreachable in practice.
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret_key)
-        .expect("HMAC accepts any key length");
+        .expect("HMAC-SHA256 accepts any key length — this is infallible");
     mac.update(relay_id);
     let result = mac.finalize().into_bytes();
     let mut out = [0u8; 32];
@@ -343,8 +347,15 @@ impl RelayServer {
             }
         }
 
-        // Remove and return the deposit.
-        let deposit = self.deposits.remove(&request.relay_id).unwrap();
+        // Remove and return the deposit.  We verified existence in the
+        // `deposits.get()` call above and hold `&mut self` throughout, so
+        // no other code path can concurrently remove the entry.  The key
+        // must still be present; treat a missing entry as an internal
+        // invariant violation rather than a user-visible error.
+        let deposit = self
+            .deposits
+            .remove(&request.relay_id)
+            .expect("deposit must still exist after existence check in the same exclusive borrow");
         self.total_bytes -= deposit.payload.len() as u64;
         Ok(deposit)
     }
