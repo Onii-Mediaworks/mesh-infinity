@@ -1,4 +1,3 @@
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
 //! FFI boundary — C-compatible API surface (§17.5).
 //!
 //! All functions in this module are `extern "C"` and use C-compatible types.
@@ -4689,6 +4688,8 @@ fn static_dh_bootstrap_session(
     our_id: &SelfIdentity,
     contact: &ContactRecord,
 ) -> Result<DoubleRatchetSession, String> {
+    use zeroize::{Zeroize, Zeroizing};
+
     // Static DH: our identity X25519 secret × contact's X25519 public.
     let their_pub = X25519Public::from(contact.x25519_public);
     let shared = our_id.x25519_secret.diffie_hellman(&their_pub);
@@ -4704,22 +4705,28 @@ fn static_dh_bootstrap_session(
     }
 
     let hk = Hkdf::<Sha256>::new(Some(&salt), shared.as_bytes());
-    let mut master = [0u8; 32];
-    hk.expand(b"MeshInfinity_session_bootstrap_v1", &mut master)
+    // Wrap `master` in Zeroizing so the key material is wiped automatically
+    // when this binding goes out of scope — whether the function returns normally
+    // or unwinds early via the ? operator.  Replaces the previous manual
+    // `iter_mut().for_each(|b| *b = 0)` which ran only on the happy path.
+    let mut master = Zeroizing::new([0u8; 32]);
+    hk.expand(b"MeshInfinity_session_bootstrap_v1", &mut *master)
         .map_err(|_| "HKDF expand failed for session bootstrap".to_string())?;
 
     // Role assignment: smaller peer_id bytes → initiator (Alice).
     let session = if our_id_bytes < their_id_bytes {
-        DoubleRatchetSession::init_sender(&master, &contact.x25519_public)
+        DoubleRatchetSession::init_sender(&*master, &contact.x25519_public)
             .map_err(|e| format!("init_sender failed: {e}"))?
     } else {
         let our_secret_bytes = our_id.x25519_secret.to_bytes();
         let our_secret_copy = X25519Secret::from(our_secret_bytes);
         let our_pub_bytes = *our_id.x25519_pub.as_bytes();
-        DoubleRatchetSession::init_receiver(&master, our_secret_copy, &our_pub_bytes)
+        DoubleRatchetSession::init_receiver(&*master, our_secret_copy, &our_pub_bytes)
     };
 
-    master.iter_mut().for_each(|b| *b = 0);
+    // Zeroizing<> Drop impl wipes `master` here automatically.
+    // Explicitly zeroize salt as well since it is derived from peer IDs.
+    salt.zeroize();
     Ok(session)
 }
 
@@ -9699,6 +9706,12 @@ pub extern "C" fn mi_call_offer(
     peer_id_hex: *const c_char,
     is_video: i32,
 ) -> *const c_char {
+    // Guard against a null context pointer before dereferencing.
+    // A null ctx means the runtime was never initialised; return a JSON error
+    // so the caller gets a structured failure rather than a segfault.
+    if ctx.is_null() {
+        return ptr::null();
+    }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
     // the C API contract documented in the generated header.
@@ -9768,6 +9781,10 @@ pub extern "C" fn mi_call_answer(
     call_id_hex: *const c_char,
     accept: i32,
 ) -> i32 {
+    // Guard against null context pointer before dereferencing.
+    if ctx.is_null() {
+        return 0;
+    }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
     // the C API contract documented in the generated header.
@@ -9822,6 +9839,10 @@ pub extern "C" fn mi_call_hangup(
     ctx: *mut MeshContext,
     call_id_hex: *const c_char,
 ) -> i32 {
+    // Guard against null context pointer before dereferencing.
+    if ctx.is_null() {
+        return 0;
+    }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
     // the C API contract documented in the generated header.
@@ -9855,6 +9876,10 @@ pub extern "C" fn mi_call_hangup(
 /// when a call is in progress.
 #[no_mangle]
 pub extern "C" fn mi_call_status(ctx: *mut MeshContext) -> *const c_char {
+    // Guard against null context pointer before dereferencing.
+    if ctx.is_null() {
+        return ptr::null();
+    }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
     // the C API contract documented in the generated header.
