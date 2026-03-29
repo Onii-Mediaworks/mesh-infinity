@@ -129,8 +129,13 @@ pub fn step1_verify(authenticated: &[u8], msg_key: &[u8; 32]) -> Result<Vec<u8>,
     }
     let (plaintext, mac_bytes) = authenticated.split_at(authenticated.len() - MAC_SIZE);
 
+    // Propagate rather than panic: HMAC-SHA256 new_from_slice fails only for
+    // zero-length keys, and msg_key is always [u8; 32] — so this is infallible
+    // in practice. We use map_err + ? anyway because the function already
+    // returns Result, and panicking through a Result boundary is never acceptable
+    // in security-critical code reachable from FFI.
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(msg_key)
-        .expect("HMAC-SHA256 accepts 32-byte key");
+        .map_err(|_| MessageCryptoError::HmacMismatch)?;
     mac.update(plaintext);
     mac.verify_slice(mac_bytes)
         .map_err(|_| MessageCryptoError::HmacMismatch)?;
