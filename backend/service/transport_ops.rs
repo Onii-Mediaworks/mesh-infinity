@@ -1199,4 +1199,297 @@ impl MeshRuntime {
             ),
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Service list and module configuration (§17.13)
+    // -----------------------------------------------------------------------
+
+    /// Return the full service list as a JSON array string.
+    ///
+    /// Each entry includes `id`, `name`, `path`, `address`, `enabled`,
+    /// `minTrustLevel`, and `allowedTransports`.
+    pub fn get_service_list(&self) -> String {
+        let mc = self.module_config.lock().unwrap_or_else(|e| e.into_inner());
+        serde_json::json!([
+            {"id":"gardens",      "name":"Gardens",          "path":"/gardens",    "address":"","enabled":mc.social.gardens,            "minTrustLevel":1,"allowedTransports":["mesh","clearnet"]},
+            {"id":"file_sharing", "name":"File Sharing",     "path":"/files",      "address":"","enabled":mc.social.file_sharing,        "minTrustLevel":1,"allowedTransports":["mesh","clearnet"]},
+            {"id":"store_forward","name":"Store & Forward",  "path":"/sf",         "address":"","enabled":mc.social.store_forward,       "minTrustLevel":2,"allowedTransports":["mesh"]},
+            {"id":"notifications","name":"Notifications",    "path":"/notify",     "address":"","enabled":mc.social.notifications,       "minTrustLevel":1,"allowedTransports":["mesh","clearnet","tor"]},
+            {"id":"infinet",      "name":"Infinet",          "path":"/infinet",    "address":"","enabled":mc.network.infinet,            "minTrustLevel":2,"allowedTransports":["mesh"]},
+            {"id":"exit_nodes",   "name":"Exit Nodes",       "path":"/exit",       "address":"","enabled":mc.network.exit_nodes,         "minTrustLevel":3,"allowedTransports":["clearnet","tor"]},
+            {"id":"vpn_mode",     "name":"VPN Mode",         "path":"/vpn",        "address":"","enabled":mc.network.vpn_mode,           "minTrustLevel":2,"allowedTransports":["clearnet","tor"]},
+            {"id":"app_connector","name":"App Connector",    "path":"/connector",  "address":"","enabled":mc.network.app_connector,      "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+            {"id":"funnel",       "name":"Funnel",           "path":"/funnel",     "address":"","enabled":mc.network.funnel,             "minTrustLevel":3,"allowedTransports":["clearnet"]},
+            {"id":"mnrdp_server", "name":"Remote Desktop",   "path":"/rdp",        "address":"","enabled":mc.protocols.mnrdp_server,     "minTrustLevel":3,"allowedTransports":["mesh","clearnet"]},
+            {"id":"mnsp_server",  "name":"Screen Share",     "path":"/screencast", "address":"","enabled":mc.protocols.screen_share,     "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+            {"id":"api_gateway",  "name":"API Gateway",      "path":"/api",        "address":"","enabled":mc.protocols.api_gateway,      "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+            {"id":"print_service","name":"Print Service",    "path":"/print",      "address":"","enabled":mc.protocols.print_service,    "minTrustLevel":2,"allowedTransports":["mesh"]},
+            {"id":"plugins",      "name":"Plugin Runtime",   "path":"/plugins",    "address":"","enabled":mc.plugins.runtime_enabled,    "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+        ]).to_string()
+    }
+
+    /// Toggle or configure a service/module by ID.
+    ///
+    /// `config_json` must contain at minimum `{"enabled": bool}`.
+    /// Returns `true` if the service ID was recognised.
+    pub fn configure_service(&self, service_id: &str, config_json: &str) -> bool {
+        let parsed: serde_json::Value = match serde_json::from_str(config_json) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let enabled = match parsed.get("enabled").and_then(|v| v.as_bool()) {
+            Some(b) => b,
+            None => return false,
+        };
+        let mut mc = self.module_config.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = match service_id {
+            "gardens"       => { mc.social.gardens          = enabled; true }
+            "file_sharing"  => { mc.social.file_sharing      = enabled; true }
+            "store_forward" => { mc.social.store_forward     = enabled; true }
+            "notifications" => { mc.social.notifications     = enabled; true }
+            "infinet"       => { mc.network.infinet          = enabled; true }
+            "exit_nodes"    => { mc.network.exit_nodes       = enabled; true }
+            "vpn_mode"      => { mc.network.vpn_mode         = enabled; true }
+            "app_connector" => { mc.network.app_connector    = enabled; true }
+            "funnel"        => { mc.network.funnel           = enabled; true }
+            "mnrdp_server"  => { mc.protocols.mnrdp_server   = enabled; true }
+            "mnsp_server"   => { mc.protocols.screen_share   = enabled; true }
+            "api_gateway"   => { mc.protocols.api_gateway    = enabled; true }
+            "print_service" => { mc.protocols.print_service  = enabled; true }
+            "plugins"       => { mc.plugins.runtime_enabled  = enabled; true }
+            _               => false,
+        };
+        drop(mc);
+        if changed { self.save_settings(); }
+        changed
+    }
+
+    // -----------------------------------------------------------------------
+    // Backup (§3.7)
+    // -----------------------------------------------------------------------
+
+    /// Create an encrypted backup of social state (contacts, rooms, messages).
+    ///
+    /// `backup_type`: 0 = Standard (contacts + rooms), 1 = Extended (+ messages).
+    /// Returns JSON `{"ok":true,"backup_b64":"..."}` or `{"ok":false,"error":"..."}`.
+    pub fn create_backup(&self, passphrase: &str, backup_type: u8) -> String {
+        use crate::crypto::backup::{create_backup, BackupType};
+        use base64::Engine as _;
+
+        if passphrase.is_empty() {
+            return r#"{"ok":false,"error":"passphrase required"}"#.into();
+        }
+        {
+            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_none() {
+                return r#"{"ok":false,"error":"no identity loaded"}"#.into();
+            }
+        }
+
+        let is_extended = backup_type == 1;
+        let btype = if is_extended { BackupType::Extended } else { BackupType::Standard };
+
+        // Collect contacts + rooms (no private key material, §3.7).
+        let contacts: Vec<crate::pairing::contact::ContactRecord> = self
+            .contacts.lock().unwrap_or_else(|e| e.into_inner())
+            .all().into_iter().cloned().collect();
+        let rooms: Vec<crate::messaging::room::Room> =
+            self.rooms.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let messages = if is_extended {
+            self.messages.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        #[derive(serde::Serialize)]
+        struct BackupContents {
+            version:  u8,
+            contacts: Vec<crate::pairing::contact::ContactRecord>,
+            rooms:    Vec<crate::messaging::room::Room>,
+            messages: std::collections::HashMap<String, Vec<serde_json::Value>>,
+        }
+
+        let contents = BackupContents { version: 1, contacts, rooms, messages };
+        let payload = match serde_json::to_vec(&contents) {
+            Ok(b) => b,
+            Err(e) => return serde_json::json!({"ok":false,"error":e.to_string()}).to_string(),
+        };
+
+        match create_backup(&payload, passphrase.as_bytes(), btype, is_extended) {
+            Ok(encrypted) => {
+                match serde_json::to_vec(&encrypted) {
+                    Ok(json_bytes) => {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&json_bytes);
+                        serde_json::json!({"ok":true,"backup_b64":b64}).to_string()
+                    }
+                    Err(e) => serde_json::json!({"ok":false,"error":e.to_string()}).to_string(),
+                }
+            }
+            Err(e) => serde_json::json!({"ok":false,"error":format!("{e:?}")}).to_string(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Routing table queries (§6)
+    // -----------------------------------------------------------------------
+
+    /// Return routing table statistics as a JSON string.
+    ///
+    /// Fields: `directPeers`, `totalRoutes`.
+    pub fn routing_table_stats(&self) -> String {
+        let table = self.routing_table.lock().unwrap_or_else(|e| e.into_inner());
+        serde_json::json!({
+            "directPeers": table.direct_peer_count(),
+            "totalRoutes": table.total_route_count(),
+        }).to_string()
+    }
+
+    /// Look up the best route to a destination peer.
+    ///
+    /// Returns JSON `{"found":true,"nextHop":"...","hopCount":N,"latencyMs":N}`
+    /// or `{"found":false}` if no route exists.
+    pub fn routing_lookup(&self, dest_peer_id_hex: &str) -> String {
+        use crate::routing::table::DeviceAddress;
+
+        let dest_bytes: [u8; 32] = match hex::decode(dest_peer_id_hex) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return r#"{"found":false}"#.into(),
+        };
+        let dest = DeviceAddress(dest_bytes);
+        let table = self.routing_table.lock().unwrap_or_else(|e| e.into_inner());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+
+        match table.lookup(&dest, None, now) {
+            Some(entry) => serde_json::json!({
+                "found":     true,
+                "nextHop":   hex::encode(entry.next_hop.0),
+                "hopCount":  entry.hop_count,
+                "latencyMs": entry.latency_ms,
+                "direct":    entry.is_direct(),
+            }).to_string(),
+            None => r#"{"found":false}"#.into(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Notification configuration (§14)
+    // -----------------------------------------------------------------------
+
+    /// Return the current notification configuration as a JSON string.
+    pub fn get_notification_config(&self) -> String {
+        let notif = self.notifications.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg = &notif.config;
+        let tc = self.threat_context;
+        let effective = cfg.effective_tier(tc) as u8;
+        let suppressed = cfg.is_suppressed_by_threat(tc);
+        let tier_label = match cfg.tier {
+            crate::notifications::NotificationTier::MeshTunnel  => "MeshTunnel",
+            crate::notifications::NotificationTier::UnifiedPush => "UnifiedPush",
+            crate::notifications::NotificationTier::SilentPush  => "SilentPush",
+            crate::notifications::NotificationTier::RichPush    => "RichPush",
+        };
+        let push_url: String = cfg.push_relay.as_ref().map(|r| match &r.relay_address {
+            crate::notifications::RelayAddress::ClearnetUrl  { url }      => url.clone(),
+            crate::notifications::RelayAddress::UnifiedPush { endpoint }  => endpoint.clone(),
+            crate::notifications::RelayAddress::MeshService { .. }        => String::new(),
+        }).unwrap_or_default();
+
+        serde_json::json!({
+            "enabled":            cfg.enabled,
+            "tier":               cfg.tier as u8,
+            "tierLabel":          tier_label,
+            "cloudPingEnabled":   cfg.tier as u8 >= 2,
+            "pushServerUrl":      push_url,
+            "showPreviews":       cfg.rich_content_level as u8 >= 1,
+            "soundEnabled":       true,
+            "vibrationEnabled":   true,
+            "suppressedByThreat": suppressed,
+            "effectiveTier":      effective,
+        }).to_string()
+    }
+
+    /// Update the notification configuration from a JSON object.
+    ///
+    /// Recognised fields: `enabled` (bool), `tier` (1-4), `pushServerUrl` (str),
+    /// `showPreviews` (bool).
+    ///
+    /// Returns `Ok(())` on success, `Err(reason)` on parse failure.
+    pub fn set_notification_config(&self, json: &str) -> Result<(), String> {
+        let v: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| e.to_string())?;
+
+        let mut notif = self.notifications.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cfg = notif.config.clone();
+
+        if let Some(enabled) = v["enabled"].as_bool() {
+            cfg.enabled = enabled;
+        }
+        if let Some(tier) = v["tier"].as_u64() {
+            cfg.tier = match tier {
+                1 => crate::notifications::NotificationTier::MeshTunnel,
+                2 => crate::notifications::NotificationTier::UnifiedPush,
+                3 => crate::notifications::NotificationTier::SilentPush,
+                4 => crate::notifications::NotificationTier::RichPush,
+                _ => return Err(format!("invalid tier {tier}")),
+            };
+        }
+        if let Some(url) = v["pushServerUrl"].as_str() {
+            if url.is_empty() {
+                cfg.push_relay = None;
+            } else {
+                cfg.push_relay = Some(crate::notifications::PushRelayConfig {
+                    relay_address: crate::notifications::RelayAddress::UnifiedPush {
+                        endpoint: url.to_string(),
+                    },
+                    device_token: Vec::new(),
+                    platform:     crate::notifications::PushPlatform::UnifiedPush,
+                });
+            }
+        }
+        if let Some(previews) = v["showPreviews"].as_bool() {
+            cfg.rich_content_level = if previews {
+                crate::notifications::RichPushContentLevel::Standard
+            } else {
+                crate::notifications::RichPushContentLevel::Minimal
+            };
+        }
+        notif.config = cfg;
+        drop(notif);
+        self.save_settings();
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Emergency / duress erase (§3.9)
+    // -----------------------------------------------------------------------
+
+    /// Standard emergency erase: destroy all identity layers.
+    ///
+    /// Calls `killswitch::standard_erase` on disk and clears all in-memory
+    /// state.  Non-reversible.
+    pub fn emergency_erase(&mut self) {
+        let data_dir = std::path::Path::new(&self.data_dir);
+        crate::identity::killswitch::standard_erase(data_dir);
+        self.identity_unlocked = false;
+        *self.identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.contacts.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.messages.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.vault = None;
+    }
+
+    /// Duress erase: destroy Layers 2 and 3, preserve Layer 1.
+    ///
+    /// Calls `killswitch::duress_erase` on disk.  Non-reversible.
+    pub fn duress_erase(&mut self) {
+        let data_dir = std::path::Path::new(&self.data_dir);
+        crate::identity::killswitch::duress_erase(data_dir);
+        self.identity_unlocked = false;
+        *self.identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.contacts.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.messages.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.vault = None;
+    }
 }
