@@ -1882,11 +1882,14 @@ LAN discovery enables nodes to find each other on local network segments without
 **TXT record contents:**
 ```
 ver=1                          // protocol version
-pk=<base64url mesh identity WireGuard pubkey>
-transport_hints=<comma-separated list>  // e.g. "wireguard,ble,tor"
+port=<clearnet TCP port>       // port for the §4.9.6 discovery handshake
 ```
 
-The mDNS advertisement exposes the mesh identity WireGuard public key on the local network. This is intentional — it is the same key visible in tunnel coordination gossip. It reveals only that a Mesh Infinity node is on this network segment, not who the user is.
+No cryptographic material is included. Per §4.9.5, mDNS advertisements reveal only
+presence — that a Mesh Infinity node is reachable at a given port. Identity exchange
+(WireGuard key, Ed25519 key) happens through the §4.9.6 TCP challenge-response after
+a node chooses to probe. The `transport_hints` field is removed; transport capability
+is negotiated after pairing, not advertised passively.
 
 **Platform implementation:**
 - Android: NsdManager
