@@ -10411,6 +10411,38 @@ The FFI layer exposes a C ABI consumed by Flutter via `dart:ffi`. Core design ru
 - FFI functions return integer status codes; `mi_get_last_error(ctx)` retrieves the error string for the last failure.
 - All strings crossing the boundary are null-terminated UTF-8; lengths are validated.
 
+**Architectural invariant — the FFI layer is a thin boundary, not a logic layer.**
+
+`backend/ffi/lib.rs` must contain ONLY:
+
+1. `MeshContext` — an opaque C-ABI handle. It wraps `Box<MeshRuntime>` and nothing
+   else. It carries no state of its own and implements no business logic.
+2. `pub unsafe extern "C" fn` shim functions — each is a one-to-three-line wrapper:
+   validate inputs, delegate to `MeshRuntime`, translate the result to a C-compatible
+   return type.
+3. No `impl MeshContext` block that performs protocol work. No transport loops.
+   No cryptographic operations. No JSON construction. No routing decisions.
+
+Everything else belongs in the backend:
+
+- **`backend/service/`** — `MeshRuntime`: owns all application state; orchestrates the
+  subsystems below via their public APIs.
+- **`backend/transport/`** — transport-specific send/receive logic, poll loops, LAN
+  discovery, WireGuard session management.
+- **`backend/crypto/`** — all cryptographic operations.
+- **`backend/routing/`** — routing table, announcements, store-and-forward.
+- **`backend/messaging/`** — message construction, encryption, delivery.
+- **`backend/groups/`** — group lifecycle, Sender Key management, governance.
+- **`backend/network/`** — gossip, network map, threat context.
+- **`backend/identity/`** — identity lifecycle, PIN, killswitch.
+
+If a function in `ffi/lib.rs` is longer than ~10 lines (excluding comments), it
+contains business logic that belongs in a backend module.
+
+The boundary between the frontend and the backend is the FFI. The boundary between
+the FFI and the backend is `MeshRuntime`. These are separate concerns and must be
+kept separate in the code.
+
 **FFI function categories:**
 
 Lifecycle:
