@@ -104,8 +104,10 @@ impl Mask {
         // Ed25519 mask key
         let hk_ed = Hkdf::<Sha256>::new(Some(&mask_id.0), &self_ed25519.to_bytes());
         let mut ed_secret_bytes = [0u8; 32];
+        // Infallible: HKDF-SHA256 expand fails only when the output length exceeds
+        // 255 × 32 = 8160 bytes. We request exactly 32 bytes, so this cannot fail.
         hk_ed.expand(MASK_ED25519_DOMAIN, &mut ed_secret_bytes)
-            .expect("HKDF expand for 32 bytes");
+            .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
         let signing_key = SigningKey::from_bytes(&ed_secret_bytes);
         let ed25519_pub = signing_key.verifying_key().to_bytes();
         ed_secret_bytes.iter_mut().for_each(|b| *b = 0); // zeroize
@@ -113,8 +115,10 @@ impl Mask {
         // X25519 mask key
         let hk_x = Hkdf::<Sha256>::new(Some(&mask_id.0), &self_x25519.to_bytes());
         let mut x_secret_bytes = [0u8; 32];
+        // Infallible: same reasoning as the Ed25519 derivation above — 32-byte output
+        // is always within the HKDF-SHA256 legal range of 1..=8160 bytes.
         hk_x.expand(MASK_X25519_DOMAIN, &mut x_secret_bytes)
-            .expect("HKDF expand for 32 bytes");
+            .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
         let x25519_secret = X25519Secret::from(x_secret_bytes);
         let x25519_pub = X25519Public::from(&x25519_secret);
         x_secret_bytes.iter_mut().for_each(|b| *b = 0); // zeroize
@@ -212,8 +216,10 @@ impl Mask {
 
         let hk = Hkdf::<Sha256>::new(Some(&self.signing_key.to_bytes()), &ikm);
         let mut derived = [0u8; 32];
+        // Infallible: HKDF-SHA256 expand with 32-byte output never exceeds the
+        // 255 × hash_len ceiling. This is a compile-time-verifiable constant.
         hk.expand(b"meshinfinity-rel-key-v1", &mut derived)
-            .expect("HKDF expand for 32 bytes");
+            .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
 
         SigningKey::from_bytes(&derived)
     }

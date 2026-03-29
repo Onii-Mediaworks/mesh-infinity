@@ -141,7 +141,11 @@ impl SelfIdentity {
             ed25519_pub: hex::encode(self.ed25519_pub),
             x25519_pub: hex::encode(self.x25519_pub.as_bytes()),
         };
-        let json = serde_json::to_vec(&metadata).expect("Identity metadata serialization");
+        // Infallible: IdentityMetadata contains only Option<String> and String fields;
+        // serde_json serialization of those types cannot fail at runtime.
+        // If this somehow panics, it indicates a programmer error (e.g., a type change
+        // that introduced a non-serializable field) — a panic is the correct signal.
+        let json = serde_json::to_vec(&metadata).expect("IdentityMetadata serialization is infallible — all fields are String/Option<String>");
 
         let json_len = (json.len() as u32).to_le_bytes();
         let ed25519_bytes = self.ed25519_signing.to_bytes();
@@ -382,10 +386,13 @@ pub fn derive_kem_keypair(master_key: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
     let hk = Hkdf::<Sha256>::new(None, master_key);
     let mut d = ml_kem::B32::default();
     let mut z = ml_kem::B32::default();
+    // Infallible: HKDF-SHA256 expand fails only when the output length exceeds 255 × 32 = 8160 bytes.
+    // Here output is exactly 32 bytes (ml_kem::B32), which is well within that limit.
     hk.expand(b"meshinfinity-ml-kem-768-d-v1", d.as_mut_slice())
-        .expect("HKDF expand for d");
+        .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
+    // Infallible: same reasoning as above — 32-byte output for SHA-256 never triggers the length guard.
     hk.expand(b"meshinfinity-ml-kem-768-z-v1", z.as_mut_slice())
-        .expect("HKDF expand for z");
+        .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
     let (dk, ek) = MlKem768::generate_deterministic(&d, &z);
     (dk.as_bytes().to_vec(), ek.as_bytes().to_vec())
 }
@@ -393,8 +400,10 @@ pub fn derive_kem_keypair(master_key: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
 fn derive_identity_dat_key(master_key: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(None, master_key);
     let mut key = Zeroizing::new([0u8; 32]);
+    // Infallible: HKDF-SHA256 expand fails only when output exceeds 255 × 32 = 8160 bytes.
+    // Requesting 32 bytes never triggers that guard — this is a design-time invariant.
     hk.expand(b"meshinfinity-identity-dat-v1", &mut *key)
-        .expect("HKDF expand");
+        .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
     key
 }
 
@@ -432,8 +441,10 @@ pub fn derive_preauth_keypair(ik_secret: &X25519Secret) -> (X25519Secret, X25519
     let info = format!("meshinfinity-preauth-spk-v1-week-{week}");
     let hk = Hkdf::<Sha256>::new(None, &ik_secret.to_bytes());
     let mut preauth_bytes = Zeroizing::new([0u8; 32]);
+    // Infallible: HKDF-SHA256 expand fails only when output exceeds 255 × 32 = 8160 bytes.
+    // The preauth key output is exactly 32 bytes — well within the HKDF length limit.
     hk.expand(info.as_bytes(), &mut *preauth_bytes)
-        .expect("HKDF expand");
+        .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
 
     let preauth_secret = X25519Secret::from(*preauth_bytes);
     let preauth_pub = X25519Public::from(&preauth_secret);
