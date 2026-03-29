@@ -103,9 +103,8 @@ pub struct FfiMeshConfig {
 // Pre-init error storage
 // ---------------------------------------------------------------------------
 
-/// Thread-local store for errors that occur before a `MeshContext` exists.
-///
-/// `mi_last_error_message(null)` reads from here after a failed `mesh_init`.
+// Thread-local store for errors that occur before a `MeshContext` exists.
+// `mi_last_error_message(null)` reads from here after a failed `mesh_init`.
 thread_local! {
     static PREINIT_ERROR: std::cell::RefCell<Option<CString>> =
         const { std::cell::RefCell::new(None) };
