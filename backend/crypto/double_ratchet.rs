@@ -277,10 +277,13 @@ impl DoubleRatchetSession {
     /// Encrypt a plaintext message using the current sending chain.
     /// Returns (header, ciphertext).
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<(RatchetHeader, Vec<u8>), RatchetError> {
+        // Return an error rather than panicking if the session was never
+        // initialised (send_chain_key is None). This path is reachable from
+        // FFI, so a panic would crash the whole process.
         let chain_key = self
             .send_chain_key
             .as_ref()
-            .expect("Send chain must be initialized before encrypting");
+            .ok_or(RatchetError::EncryptionFailed)?;
 
         // Advance the sending chain
         let (msg_key, new_chain_key) = kdf_chain_step(chain_key);
@@ -359,19 +362,23 @@ impl DoubleRatchetSession {
             self.send_chain_key = Some(send_chain_key);
         }
 
-        // Skip any messages in the current chain before this one
+        // Skip any messages in the current chain before this one.
+        // Return DecryptionFailed if the recv chain was not set — this should
+        // be unreachable after the DH step above, but must not panic from FFI.
         let recv_ck = self
             .recv_chain_key
-            .expect("Recv chain must exist after DH step");
+            .ok_or(RatchetError::DecryptionFailed)?;
         self.skip_message_keys(recv_ck, self.recv_msg_num, header.msg_num)?;
 
         // Advance receiving chain to this message.
-        // recv_chain_key is still Some: [u8; 32] is Copy so the .expect() above
-        // read a copy without consuming the field.
+        // recv_chain_key is still Some: [u8; 32] is Copy so the ok_or() above
+        // read a copy without consuming the field.  A None here is logically
+        // impossible (skip_message_keys always sets the field), but we propagate
+        // an error rather than panic to uphold the no-panic-in-FFI contract.
         let recv_ck = self
             .recv_chain_key
             .as_ref()
-            .expect("recv_chain_key is still Some after skip — Copy type, field not consumed");
+            .ok_or(RatchetError::DecryptionFailed)?;
         let (msg_key, new_recv_ck) = kdf_chain_step(recv_ck);
         self.recv_chain_key = Some(new_recv_ck);
         self.recv_msg_num = header.msg_num + 1;
@@ -402,9 +409,11 @@ impl DoubleRatchetSession {
             return Err(RatchetError::TooManySkipped);
         }
 
+        // their_ratchet_pub is always set by the caller before skip_message_keys
+        // is invoked, but we must not panic from FFI — propagate an error instead.
         let their_pub = self
             .their_ratchet_pub
-            .expect("their_ratchet_pub must be set before skipping");
+            .ok_or(RatchetError::DecryptionFailed)?;
 
         for i in from..until {
             let (msg_key, new_ck) = kdf_chain_step(&chain_key);
@@ -443,10 +452,12 @@ impl DoubleRatchetSession {
     /// those to `encrypt_message`. Prefer this over `encrypt()` when the
     /// four-layer AEAD wrapper is applied externally.
     pub fn next_send_msg_key(&mut self) -> Result<(RatchetHeader, [u8; 32]), RatchetError> {
+        // Return EncryptionFailed if the send chain was never initialised.
+        // Panicking here would crash the process when called from FFI.
         let chain_key = self
             .send_chain_key
             .as_ref()
-            .expect("Send chain must be initialized before encrypting");
+            .ok_or(RatchetError::EncryptionFailed)?;
 
         let (msg_key, new_chain_key) = kdf_chain_step(chain_key);
         self.send_chain_key = Some(new_chain_key);
@@ -508,18 +519,23 @@ impl DoubleRatchetSession {
         }
 
         // Skip messages before this one in the current receiving chain.
+        // Propagate DecryptionFailed rather than panicking if recv_chain_key is
+        // None — this is logically unreachable after the DH step above, but must
+        // be handled safely because recv_msg_key is called from FFI paths.
         let recv_ck = self
             .recv_chain_key
-            .expect("Recv chain must exist after DH step");
+            .ok_or(RatchetError::DecryptionFailed)?;
         self.skip_message_keys(recv_ck, self.recv_msg_num, header.msg_num)?;
 
         // Advance the receiving chain to this message.
-        // recv_chain_key is still Some: [u8; 32] is Copy so the .expect() above
-        // read a copy without consuming the field.
+        // recv_chain_key is still Some: [u8; 32] is Copy so the ok_or() above
+        // read a copy without consuming the field.  skip_message_keys always
+        // sets recv_chain_key before returning, so None here is impossible in
+        // practice, but we propagate an error to uphold the no-panic contract.
         let recv_ck = self
             .recv_chain_key
             .as_ref()
-            .expect("recv_chain_key is still Some after skip — Copy type, field not consumed");
+            .ok_or(RatchetError::DecryptionFailed)?;
         let (msg_key, new_recv_ck) = kdf_chain_step(recv_ck);
         self.recv_chain_key = Some(new_recv_ck);
         self.recv_msg_num = header.msg_num + 1;

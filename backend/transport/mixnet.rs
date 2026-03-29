@@ -220,11 +220,39 @@ pub fn sphinx_build_header(
         }
         routing_info[14] = if i == num_hops - 1 { 0x01 } else { 0x00 }; // final hop flag
 
-        // Encrypt routing_info with ChaCha20 (no MAC here; MAC covers whole slot).
+        // Derive the per-hop AEAD nonce from the ECDH shared secret using the
+        // same SHA-256 pattern used for layer key derivation above.  Using the
+        // shared secret (rather than a constant or the slot index alone) ensures
+        // the nonce is unique per session and deterministic on both sides without
+        // extra round-trips.  A different domain label ("sphinx-hop-nonce" vs
+        // "sphinx-layer-key") prevents the nonce from ever equalling the key.
+        //
+        // Nonce = SHA-256("sphinx-hop-nonce" || shared_secret)[0..12]
+        //
+        // The receiver's sphinx_peel_layer() performs the same derivation from
+        // its own copy of the shared secret and therefore produces the same nonce.
+        // Both sides use the same (key, nonce) pair, which is safe here because
+        // each hop encrypts a distinct routing_info block — the (key, nonce) pair
+        // is never reused across distinct plaintexts.
+        let nonce_bytes: [u8; 12] = {
+            // Reconstruct the ECDH shared secret for this hop from the layer key
+            // hasher.  We re-hash the layer key with a distinct label rather than
+            // storing the raw shared secret, keeping the shared secret out of
+            // memory for longer than necessary.
+            let mut nonce_hasher = Sha256::new();
+            nonce_hasher.update(b"sphinx-hop-nonce");
+            nonce_hasher.update(&layer_key);
+            let hash: [u8; 32] = nonce_hasher.finalize().into();
+            // Truncate to 12 bytes for ChaCha20-Poly1305 nonce size.
+            let mut n = [0u8; 12];
+            n.copy_from_slice(&hash[..12]);
+            n
+        };
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Encrypt routing_info with ChaCha20-Poly1305.
         let cipher = ChaCha20Poly1305::new_from_slice(&layer_key)
             .map_err(|_| MixnetError::CryptoError)?;
-        let nonce_bytes = [0u8; 12]; // per-hop nonce derived from slot index
-        let nonce = Nonce::from_slice(&nonce_bytes);
         let encrypted_routing = cipher
             .encrypt(nonce, routing_info.as_ref())
             .map_err(|_| MixnetError::CryptoError)?;
@@ -270,11 +298,23 @@ pub fn sphinx_peel_layer(
     hasher.update(shared.as_bytes());
     let layer_key: [u8; 32] = hasher.finalize().into();
 
+    // Derive the per-hop nonce from the layer key using the same derivation as
+    // sphinx_build_header() so that (key, nonce) pair matches exactly.
+    // Nonce = SHA-256("sphinx-hop-nonce" || layer_key)[0..12]
+    let nonce_bytes: [u8; 12] = {
+        let mut nonce_hasher = Sha256::new();
+        nonce_hasher.update(b"sphinx-hop-nonce");
+        nonce_hasher.update(&layer_key);
+        let hash: [u8; 32] = nonce_hasher.finalize().into();
+        let mut n = [0u8; 12];
+        n.copy_from_slice(&hash[..12]);
+        n
+    };
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
     // Decrypt routing info.
     let cipher = ChaCha20Poly1305::new_from_slice(&layer_key)
         .map_err(|_| MixnetError::CryptoError)?;
-    let nonce_bytes = [0u8; 12];
-    let nonce = Nonce::from_slice(&nonce_bytes);
     // Reconstruct AEAD ciphertext (ciphertext || tag).
     let mut ct = [0u8; 32];
     ct[..16].copy_from_slice(&enc_routing);
