@@ -42,6 +42,13 @@
 //! - Latency/bandwidth requirements (voice calls need low latency)
 //! - Transport diversity (spread traffic across multiple transports)
 
+/// The `Transport` trait — the common interface every carrier must implement.
+/// See `trait_transport.rs` for the full design rationale and endpoint format table.
+pub mod trait_transport;
+/// Re-export the trait and helpers at the crate level for convenience.
+pub use trait_transport::Transport;
+pub use trait_transport::TransportExt;
+
 pub mod bluetooth;
 pub mod can_bus;
 pub mod cjdns;
