@@ -104,16 +104,22 @@ impl MessageContext {
 
 /// Step 1: Authenticate plaintext with HMAC-SHA256 using the ratchet message key.
 /// Both parties can produce this MAC — provides deniability (§3.5.1).
-pub fn step1_authenticate(plaintext: &[u8], msg_key: &[u8; 32]) -> Vec<u8> {
+/// Returns Err if the key length is rejected by the HMAC implementation (should
+/// never happen with a 32-byte key, but we propagate rather than panic so that
+/// no FFI-reachable path can unwind through the C boundary).
+pub fn step1_authenticate(
+    plaintext: &[u8],
+    msg_key: &[u8; 32],
+) -> Result<Vec<u8>, MessageCryptoError> {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(msg_key)
-        .expect("HMAC-SHA256 accepts 32-byte key");
+        .map_err(|_| MessageCryptoError::EncryptFailed)?;
     mac.update(plaintext);
     let tag = mac.finalize().into_bytes();
 
     let mut authenticated = Vec::with_capacity(plaintext.len() + MAC_SIZE);
     authenticated.extend_from_slice(plaintext);
     authenticated.extend_from_slice(&tag);
-    authenticated
+    Ok(authenticated)
 }
 
 /// Step 1 verify: Check HMAC on received authenticated payload.
@@ -307,7 +313,7 @@ pub fn encrypt_message(
     context: MessageContext,
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Step 1: Inner authentication (deniable HMAC)
-    let authenticated = step1_authenticate(plaintext, ratchet_msg_key);
+    let authenticated = step1_authenticate(plaintext, ratchet_msg_key)?;
 
     // Step 2: Trust-channel encryption
     let trust_encrypted = step2_encrypt(&authenticated, session_cipher_key, session_nonce)?;
@@ -364,7 +370,7 @@ mod tests {
     fn test_step1_roundtrip() {
         let key = [0x42u8; 32];
         let plaintext = b"Hello world";
-        let authed = step1_authenticate(plaintext, &key);
+        let authed = step1_authenticate(plaintext, &key).unwrap();
         let recovered = step1_verify(&authed, &key).unwrap();
         assert_eq!(recovered, plaintext);
     }
@@ -372,7 +378,7 @@ mod tests {
     #[test]
     fn test_step1_tamper_detected() {
         let key = [0x42u8; 32];
-        let mut authed = step1_authenticate(b"Hello", &key);
+        let mut authed = step1_authenticate(b"Hello", &key).unwrap();
         authed[0] ^= 0xFF;
         assert!(step1_verify(&authed, &key).is_err());
     }

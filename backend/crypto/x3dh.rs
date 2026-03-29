@@ -105,6 +105,8 @@ pub enum X3dhError {
     PreauthBundleSignatureInvalid,
     #[error("Secure memory error: {0}")]
     SecureMemory(#[from] SecureMemoryError),
+    #[error("HMAC key error — key was rejected by the MAC implementation")]
+    HmacKeyError,
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +447,7 @@ fn try_pqxdh_encapsulate(
     // KEM binding: HMAC-SHA256(DH3_shared, kem_ciphertext) prevents KEM CT substitution.
     let dh3_shared = ek_a_secret.diffie_hellman(preauth_pub);
     let kem_ct_bytes = kem_ct.as_slice();
-    let binding = compute_kem_binding(dh3_shared.as_bytes(), kem_ct_bytes);
+    let binding = compute_kem_binding(dh3_shared.as_bytes(), kem_ct_bytes).ok()?;
 
     // Mix PQ shared secret into IKM.
     ikm.extend_from_slice(pq_ss.as_slice());
@@ -508,10 +510,15 @@ pub fn pqxdh_decapsulate(
 /// HMAC-SHA256(key=eph_dh_shared, data=KEM_BINDING_INFO || kem_ciphertext).
 /// The domain separator (`KEM_BINDING_INFO`) prevents cross-protocol binding
 /// reuse even when the same DH output appears in multiple contexts.
-fn compute_kem_binding(eph_dh_shared: &[u8], kem_ciphertext: &[u8]) -> [u8; 32] {
+/// Returns `X3dhError::HmacKeyError` rather than panicking if the key is
+/// somehow rejected — HMAC accepts any length but we must not unwind through FFI.
+fn compute_kem_binding(
+    eph_dh_shared: &[u8],
+    kem_ciphertext: &[u8],
+) -> Result<[u8; 32], X3dhError> {
     let mut mac =
         <Hmac<Sha256> as Mac>::new_from_slice(eph_dh_shared)
-            .expect("HMAC-SHA256 accepts any key length");
+            .map_err(|_| X3dhError::HmacKeyError)?;
     // Domain separator first — prevents cross-protocol binding reuse.
     mac.update(KEM_BINDING_INFO);
     // KEM ciphertext is the committed value being bound.
@@ -519,7 +526,7 @@ fn compute_kem_binding(eph_dh_shared: &[u8], kem_ciphertext: &[u8]) -> [u8; 32] 
     let result = mac.finalize();
     let mut binding = [0u8; 32];
     binding.copy_from_slice(&result.into_bytes());
-    binding
+    Ok(binding)
 }
 
 /// Verify KEM binding on the responder side.
@@ -532,7 +539,7 @@ fn verify_kem_binding(
     kem_ciphertext: &[u8],
     expected_binding: &[u8; 32],
 ) -> Result<(), X3dhError> {
-    let computed = compute_kem_binding(eph_dh_shared, kem_ciphertext);
+    let computed = compute_kem_binding(eph_dh_shared, kem_ciphertext)?;
     if computed != *expected_binding {
         return Err(X3dhError::KemBindingMismatch);
     }
@@ -628,7 +635,7 @@ mod tests {
         let shared = [0x42u8; 32];
         let kem_ct = [0x01u8; 64];
 
-        let binding = compute_kem_binding(&shared, &kem_ct);
+        let binding = compute_kem_binding(&shared, &kem_ct).unwrap();
         assert!(verify_kem_binding(&shared, &kem_ct, &binding).is_ok());
 
         // Wrong ciphertext should fail

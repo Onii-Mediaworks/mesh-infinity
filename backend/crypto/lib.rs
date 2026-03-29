@@ -7,7 +7,7 @@
 //! - Four-layer message encryption (§7.2)
 //! - Vault encryption (§17.9)
 //! - Backup encryption (§3.7.4)
-//! - AOS ring signatures (§3.5.2)
+//! - AOS ring signatures (§3.5.2) — NOT YET IMPLEMENTED; see groups/group.rs
 
 pub mod primitives;
 pub mod secmem;

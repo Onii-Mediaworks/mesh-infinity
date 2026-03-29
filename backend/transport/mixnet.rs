@@ -241,7 +241,7 @@ pub fn sphinx_build_header(
             // memory for longer than necessary.
             let mut nonce_hasher = Sha256::new();
             nonce_hasher.update(b"sphinx-hop-nonce");
-            nonce_hasher.update(&layer_key);
+            nonce_hasher.update(layer_key);
             let hash: [u8; 32] = nonce_hasher.finalize().into();
             // Truncate to 12 bytes for ChaCha20-Poly1305 nonce size.
             let mut n = [0u8; 12];
@@ -304,7 +304,7 @@ pub fn sphinx_peel_layer(
     let nonce_bytes: [u8; 12] = {
         let mut nonce_hasher = Sha256::new();
         nonce_hasher.update(b"sphinx-hop-nonce");
-        nonce_hasher.update(&layer_key);
+        nonce_hasher.update(layer_key);
         let hash: [u8; 32] = nonce_hasher.finalize().into();
         let mut n = [0u8; 12];
         n.copy_from_slice(&hash[..12]);
