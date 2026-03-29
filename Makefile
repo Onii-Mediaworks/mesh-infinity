@@ -59,7 +59,7 @@ macos-rust-debug macos-rust-release: macos-rust-%:
 	profile="$*"; \
 	cargo_flags=""; [[ "$$profile" == "release" ]] && cargo_flags="--release"; \
 	rust_subdir="debug"; [[ "$$profile" == "release" ]] && rust_subdir="release"; \
-	rust_target="$(BUILD_DIR)/intermediates/macos/backend"; \
+	rust_target="$(BUILD_DIR)/intermediates/macos/backend/$$profile"; \
 	rust_out="$(BUILD_DIR)/intermediates/macos/rust/$$profile"; \
 	\
 	mkdir -p "$$rust_target" "$$rust_out"; \
@@ -208,12 +208,13 @@ ios-rust-debug ios-rust-release: ios-rust-%:
 	profile="$*"; \
 	cargo_flags=""; [[ "$$profile" == "release" ]] && cargo_flags="--release"; \
 	rust_subdir="debug"; [[ "$$profile" == "release" ]] && rust_subdir="release"; \
-	rust_target="$(BUILD_DIR)/intermediates/ios/backend"; \
+	rust_target="$(BUILD_DIR)/intermediates/ios/backend/$$profile"; \
 	rust_out="$(BUILD_DIR)/intermediates/ios/rust/$$profile"; \
 	\
 	mkdir -p "$$rust_target" "$$rust_out"; \
 	\
 	CARGO_TARGET_DIR="$$rust_target" \
+	  IPHONEOS_DEPLOYMENT_TARGET=13.0 \
 	  cargo build -p mesh-infinity --target aarch64-apple-ios $$cargo_flags; \
 	cp "$$rust_target/aarch64-apple-ios/$$rust_subdir/libmesh_infinity.a" \
 	   "$$rust_out/libmesh_infinity.a"; \
@@ -351,7 +352,7 @@ android-rust-debug android-rust-release: android-rust-%:
 	@set -euo pipefail; \
 	profile="$*"; \
 	cargo_flags=""; [[ "$$profile" == "release" ]] && cargo_flags="--release"; \
-	rust_target="$(BUILD_DIR)/intermediates/android/backend"; \
+	rust_target="$(BUILD_DIR)/intermediates/android/backend/$$profile"; \
 	jni_out="$(BUILD_DIR)/intermediates/android/jni/$$profile"; \
 	\
 	mkdir -p "$$rust_target" "$$jni_out"; \
@@ -416,7 +417,7 @@ linux-rust-debug linux-rust-release: linux-rust-%:
 	profile="$*"; \
 	cargo_flags=""; [[ "$$profile" == "release" ]] && cargo_flags="--release"; \
 	rust_subdir="debug"; [[ "$$profile" == "release" ]] && rust_subdir="release"; \
-	rust_target="$(BUILD_DIR)/intermediates/linux/backend"; \
+	rust_target="$(BUILD_DIR)/intermediates/linux/backend/$$profile"; \
 	rust_out="$(BUILD_DIR)/intermediates/linux/rust/$$profile"; \
 	\
 	mkdir -p "$$rust_target" "$$rust_out"; \
@@ -535,7 +536,7 @@ windows-rust-debug windows-rust-release: windows-rust-%:
 	profile="$*"; \
 	cargo_flags=""; [[ "$$profile" == "release" ]] && cargo_flags="--release"; \
 	rust_subdir="debug"; [[ "$$profile" == "release" ]] && rust_subdir="release"; \
-	rust_target="$(BUILD_DIR)/intermediates/windows/backend"; \
+	rust_target="$(BUILD_DIR)/intermediates/windows/backend/$$profile"; \
 	rust_out="$(BUILD_DIR)/intermediates/windows/rust/$$profile"; \
 	\
 	mkdir -p "$$rust_target" "$$rust_out"; \
