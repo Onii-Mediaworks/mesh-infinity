@@ -1170,13 +1170,15 @@ impl MeshContext {
     /// Called from `advance_clearnet_transport()` on every poll cycle
     /// (approximately every 200ms). Broadcasts are throttled to once per 5s.
     ///
-    /// Packet format (compact JSON, one line, ≤512 bytes):
-    ///   {"v":1,"type":"mi_presence","peer_id":"hex","ed25519_pub":"hex",
-    ///    "x25519_pub":"hex","display_name":"…","endpoint":"ip:port","ts":unix}
+    /// Packet format (compact JSON, one line, ≤256 bytes):
+    ///   {"v":1,"type":"mi_presence","wg_pub":"<hex>","clearnet_port":N,"ts":N}
     ///
-    /// Signed announcements (future): the `sig` field will carry an Ed25519
-    /// signature over the canonical JSON. For now omitted — LAN trust is
-    /// confirmed at pairing; the announce is only used to learn the endpoint.
+    /// Per §4.9.5: LAN broadcasts advertise the **mesh identity WireGuard
+    /// public key (Layer 1) only**.  Mask-level keys (Ed25519, X3DH preauth),
+    /// peer IDs, and display names are NEVER included.  They reveal only that
+    /// a Mesh Infinity node is present on this network segment, not who the
+    /// user is.  Full identity exchange happens inside an authenticated
+    /// WireGuard tunnel established after pairing.
     fn advance_lan_discovery(&self) {
         if !*self.mdns_running.lock().unwrap_or_else(|e| e.into_inner()) { return; }
 
@@ -1205,37 +1207,22 @@ impl MeshContext {
         *self.lan_next_announce.lock().unwrap_or_else(|e| e.into_inner()) =
             now + std::time::Duration::from_secs(5);
 
-        // Build our presence announcement.
-        let (peer_id_hex, ed_hex, x_hex, preauth_hex, preauth_sig_hex, display_name, clearnet_port) = {
+        // Extract only the Layer 1 WireGuard public key (x25519_pub) and the
+        // clearnet port.  No mask-level fields (ed25519, preauth, peer_id,
+        // display_name) are included — §4.9.5.
+        let (wg_pub_hex, clearnet_port) = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_ref() {
                 None => return,
-                Some(id) => {
-                    // Sign the preauth key with our Ed25519 identity key so
-                    // receivers can verify the identity binding (§7.0.1).
-                    let preauth_sig = {
-                        use crate::crypto::x3dh::PreauthBundle;
-                        let msg = PreauthBundle::signed_message(&id.preauth_x25519_pub);
-                        let secret = id.ed25519_signing.to_bytes();
-                        crate::crypto::signing::sign(&secret, crate::crypto::x3dh::PREAUTH_SIG_DOMAIN, &msg)
-                    };
-                    (
-                        id.peer_id().to_hex(),
-                        hex::encode(id.ed25519_pub),
-                        hex::encode(id.x25519_pub),
-                        hex::encode(id.preauth_x25519_pub.as_bytes()),
-                        hex::encode(&preauth_sig),
-                        id.display_name.clone().unwrap_or_default(),
-                        *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner()),
-                    )
-                }
+                Some(id) => (
+                    hex::encode(id.x25519_pub.as_bytes()),
+                    *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner()),
+                ),
             }
         };
 
-        // The endpoint we announce is "local_ip:clearnet_port". We use the
-        // source address the socket is bound to, which is 0.0.0.0 (any
-        // interface) — the receiver should use the packet source address
-        // to fill in the real IP.
+        // The receiver infers our IP from the UDP source address;
+        // clearnet_port tells them the TCP port for the clearnet transport.
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -1244,12 +1231,7 @@ impl MeshContext {
         let announcement = serde_json::json!({
             "v": 1,
             "type": "mi_presence",
-            "peer_id": peer_id_hex,
-            "ed25519_pub": ed_hex,
-            "x25519_pub": x_hex,
-            "preauth_x25519_pub": preauth_hex,
-            "preauth_sig": preauth_sig_hex,
-            "display_name": display_name,
+            "wg_pub": wg_pub_hex,
             "clearnet_port": clearnet_port,
             "ts": ts,
         });
@@ -1262,8 +1244,16 @@ impl MeshContext {
 
     /// Process a single received LAN presence packet.
     ///
-    /// If the sender is a known contact, update their status to online.
-    /// If unknown, add to the mDNS-discovered cache (for the UI to display).
+    /// Per §4.9.5, presence packets carry only the WireGuard public key
+    /// (Layer 1) and the clearnet port.  Identity lookup is performed
+    /// against the local contact store using the wg_pub field — no
+    /// mask-level identity material is extracted from the broadcast.
+    ///
+    /// If the WireGuard key matches a known contact, update their endpoint
+    /// and emit a PeerUpdated event (identity details come from our local
+    /// contact record, not from the unauthenticated broadcast).
+    /// If unknown, add to the discovery cache for display in the UI so the
+    /// user can initiate pairing.
     fn handle_lan_presence_packet(
         &self,
         data: &[u8],
@@ -1273,45 +1263,46 @@ impl MeshContext {
         if pkt.get("type")?.as_str()? != "mi_presence" { return None; }
         if pkt.get("v")?.as_u64()? != 1 { return None; }
 
-        let peer_id_hex = pkt.get("peer_id")?.as_str()?;
-        let ed_hex = pkt.get("ed25519_pub")?.as_str()?;
-        let x_hex = pkt.get("x25519_pub")?.as_str()?;
-        let display_name = pkt.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
+        // Only the WireGuard public key (Layer 1) and port are trusted from
+        // the broadcast — all other identity material is ignored.
+        let wg_pub_hex = pkt.get("wg_pub")?.as_str()?;
         let clearnet_port = pkt.get("clearnet_port").and_then(|v| v.as_u64()).unwrap_or(7234);
-        // Extract peer's current preauth pub (X3DH SPK) if present.
-        let preauth_pub_bytes: Option<[u8; 32]> = pkt
-            .get("preauth_x25519_pub")
-            .and_then(|v| v.as_str())
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
-        // Extract the identity-binding signature for the preauth key (§7.0.1).
-        let preauth_sig_opt: Option<Vec<u8>> = pkt
-            .get("preauth_sig")
-            .and_then(|v| v.as_str())
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == 64);
 
-        let peer_bytes: [u8; 32] = hex::decode(peer_id_hex)
+        let wg_pub_bytes: [u8; 32] = hex::decode(wg_pub_hex)
             .ok()
             .filter(|b| b.len() == 32)
             .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })?;
-        let peer_id = PeerId(peer_bytes);
 
-        // Ignore our own broadcasts.
-        let our_peer_id = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map(|id| id.peer_id());
-        if Some(peer_id) == our_peer_id { return None; }
+        // Ignore our own broadcasts (compare WireGuard / x25519 key).
+        let our_wg_pub = self.identity.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|id| *id.x25519_pub.as_bytes());
+        if Some(wg_pub_bytes) == our_wg_pub { return None; }
 
         // Build the inferred clearnet endpoint from the source IP + announced port.
         let src_ip = src.ip().to_string();
         let endpoint = format!("{src_ip}:{clearnet_port}");
 
-        // Check if this peer is already a contact.
-        let is_contact = self.contacts.lock().unwrap_or_else(|e| e.into_inner())
-            .get(&peer_id).is_some();
+        // Look up the contact by their WireGuard/x25519 public key.
+        // ContactStore is keyed by PeerId (ed25519 hash); search all() to match
+        // by x25519_public (Layer 1 WireGuard key).  O(n) is fine — contact
+        // lists are small and this runs at most once per 5-second broadcast.
+        let matched_peer: Option<(PeerId, String, u8, bool, bool, bool, bool)> = {
+            let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
+            contacts.all().into_iter()
+                .find(|c| c.x25519_public == wg_pub_bytes)
+                .map(|c| (
+                    c.peer_id,
+                    c.display_name.clone().unwrap_or_default(),
+                    c.trust_level.value(),
+                    c.can_be_exit_node,
+                    c.can_be_wrapper_node,
+                    c.can_be_store_forward,
+                    c.can_endorse_peers,
+                ))
+        };
 
-        if is_contact {
+        if let Some((peer_id, display_name, trust_level_val, cap_exit, cap_wrapper, cap_sf, cap_endorse)) = matched_peer {
             // Measure TCP RTT to the peer (50 ms timeout — LAN connects in <5 ms).
             let latency_ms: Option<u32> = endpoint.parse::<std::net::SocketAddr>().ok()
                 .and_then(|addr| {
@@ -1321,42 +1312,25 @@ impl MeshContext {
                         .map(|_| t0.elapsed().as_millis() as u32)
                 });
 
-            // Update last_seen, clearnet endpoint, and latency in contact record.
+            // Update last_seen, clearnet endpoint, and latency.
+            // Preauth key updates are NOT done from broadcast — they must come
+            // from an authenticated in-tunnel channel to prevent substitution.
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let (trust_level_val, cap_exit, cap_wrapper, cap_sf, cap_endorse) = {
+            {
                 let mut contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(c) = contacts.get_mut(&peer_id) {
                     c.last_seen = Some(now);
                     c.clearnet_endpoint = Some(endpoint.clone());
                     if let Some(ms) = latency_ms { c.latency_ms = Some(ms); }
-                    // Refresh preauth key from presence announcement (rotates weekly).
-                    if let Some(preauth_bytes) = preauth_pub_bytes {
-                        // Only update if changed — avoid unnecessary disk writes.
-                        if c.preauth_key.as_ref() != Some(&preauth_bytes) {
-                            if let Some(sig) = preauth_sig_opt.clone() {
-                                c.update_preauth_key_with_sig(preauth_bytes, sig, now);
-                            } else {
-                                c.update_preauth_key(preauth_bytes, now);
-                            }
-                        }
-                    }
-                    (
-                        c.trust_level.value(),
-                        c.can_be_exit_node,
-                        c.can_be_wrapper_node,
-                        c.can_be_store_forward,
-                        c.can_endorse_peers,
-                    )
-                } else {
-                    (0, false, false, false, false)
                 }
-            };
-            // Emit PeerUpdated so the UI shows "online" status.
+            }
+
+            // Emit PeerUpdated — identity details from our local record, not broadcast.
             self.push_event("PeerUpdated", serde_json::json!({
-                "id": peer_id_hex,
+                "id": peer_id.to_hex(),
                 "name": display_name,
                 "trustLevel": trust_level_val,
                 "status": "online",
@@ -1367,20 +1341,20 @@ impl MeshContext {
                 "latencyMs": latency_ms,
             }));
         } else {
-            // Add to the discovery cache if not already present.
+            // Unknown peer — add to discovery cache so the UI can prompt pairing.
+            // Only the WireGuard public key and endpoint are stored; no identity
+            // material from the broadcast is exposed to the UI.
             let mut discovered = self.mdns_discovered.lock().unwrap_or_else(|e| e.into_inner());
             let already = discovered.iter().any(|e| {
-                e.get("id").and_then(|v| v.as_str()) == Some(peer_id_hex)
+                e.get("wgPub").and_then(|v| v.as_str()) == Some(wg_pub_hex)
             });
             if !already {
-                // Use field names matching the Dart DiscoveredPeerModel
-                // ("id", "address") plus pairing fields for the pair action.
+                // "wgPub" is the only identity hint available before pairing.
+                // After the user initiates pairing, the full identity exchange
+                // happens inside an authenticated WireGuard tunnel.
                 discovered.push(serde_json::json!({
-                    "id": peer_id_hex,
+                    "wgPub": wg_pub_hex,
                     "address": endpoint,
-                    "displayName": display_name,
-                    "ed25519Pub": ed_hex,
-                    "x25519Pub": x_hex,
                 }));
             }
         }
@@ -4715,13 +4689,13 @@ fn static_dh_bootstrap_session(
 
     // Role assignment: smaller peer_id bytes → initiator (Alice).
     let session = if our_id_bytes < their_id_bytes {
-        DoubleRatchetSession::init_sender(&*master, &contact.x25519_public)
+        DoubleRatchetSession::init_sender(&master, &contact.x25519_public)
             .map_err(|e| format!("init_sender failed: {e}"))?
     } else {
         let our_secret_bytes = our_id.x25519_secret.to_bytes();
         let our_secret_copy = X25519Secret::from(our_secret_bytes);
         let our_pub_bytes = *our_id.x25519_pub.as_bytes();
-        DoubleRatchetSession::init_receiver(&*master, our_secret_copy, &our_pub_bytes)
+        DoubleRatchetSession::init_receiver(&master, our_secret_copy, &our_pub_bytes)
     };
 
     // Zeroizing<> Drop impl wipes `master` here automatically.
@@ -4869,8 +4843,13 @@ pub struct FfiMeshConfig {
 ///
 /// Returns null on failure; call `mi_last_error_message(null)` to retrieve a
 /// human-readable error string stored in thread-local storage.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
+pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
     // --- Validate the config pointer -------------------------------------
     if config.is_null() {
         set_preinit_error("mesh_init: config pointer is null");
@@ -4913,8 +4892,13 @@ pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
 }
 
 /// Destroy the context and free all resources.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
+pub unsafe extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
     if !ctx.is_null() {
         // SAFETY: `ctx` was allocated by `Box::into_raw` in `mesh_init`.
         // This is the unique ownership reclaim point; the caller must not
@@ -4926,8 +4910,13 @@ pub extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
 }
 
 /// Get the last error message (or null if none).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_last_error(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_last_error(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() {
         return ptr::null();
     }
@@ -4946,8 +4935,13 @@ pub extern "C" fn mi_get_last_error(ctx: *mut MeshContext) -> *const c_char {
 // ---------------------------------------------------------------------------
 
 /// Check if an identity exists on this device.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_has_identity(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_has_identity(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() {
         return 0;
     }
@@ -4966,8 +4960,13 @@ pub extern "C" fn mi_has_identity(ctx: *mut MeshContext) -> i32 {
 /// via mi_get_identity_summary() after creation.
 ///
 /// Note: the spec requires an optional PIN at creation time. Pass null for no PIN.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_create_identity(
+pub unsafe extern "C" fn mi_create_identity(
     ctx: *mut MeshContext,
     display_name: *const c_char,
 ) -> i32 {
@@ -5033,8 +5032,13 @@ pub extern "C" fn mi_create_identity(
 ///
 /// Must be called before any feature that requires Layer 2 identity.
 /// Pass null for `pin` if no PIN was set at creation.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_unlock_identity(
+pub unsafe extern "C" fn mi_unlock_identity(
     ctx: *mut MeshContext,
     pin: *const c_char,
 ) -> i32 {
@@ -5153,8 +5157,13 @@ pub extern "C" fn mi_unlock_identity(
 /// Get identity summary. Returns JSON or null if no identity.
 ///
 /// JSON shape: `{"locked": bool, "peerId"?: string, "ed25519Pub"?: string, "displayName"?: string}`
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_identity_summary(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_identity_summary(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() {
         return ptr::null();
     }
@@ -5191,8 +5200,13 @@ pub extern "C" fn mi_get_identity_summary(ctx: *mut MeshContext) -> *const c_cha
 // ---------------------------------------------------------------------------
 
 /// Get the list of rooms. Returns JSON array.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_room_list(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_room_list(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() {
         return ptr::null();
     }
@@ -5249,8 +5263,13 @@ pub extern "C" fn mi_get_room_list(ctx: *mut MeshContext) -> *const c_char {
 }
 
 /// Create a new room. Returns JSON: { id }.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_create_room(
+pub unsafe extern "C" fn mi_create_room(
     ctx: *mut MeshContext,
     name: *const c_char,
     peer_id: *const c_char,
@@ -5309,8 +5328,13 @@ pub extern "C" fn mi_create_room(
 ///
 /// Returns up to `limit` messages before `before_seq` (0 = newest).
 /// Messages are returned newest-first. A limit of 0 returns up to 200.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_messages(
+pub unsafe extern "C" fn mi_get_messages(
     ctx: *mut MeshContext,
     room_id: *const c_char,
     before_seq: u64,
@@ -5358,8 +5382,13 @@ pub extern "C" fn mi_get_messages(
 /// Stores the message in the in-memory log and emits MessageAdded + RoomUpdated
 /// events so Flutter updates immediately. In the full implementation, the message
 /// is also encrypted via the 4-layer scheme (§7.2) and routed through the mesh.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_send_message(
+pub unsafe extern "C" fn mi_send_message(
     ctx: *mut MeshContext,
     room_id: *const c_char,
     _mask_id: *const c_char,
@@ -5654,8 +5683,13 @@ pub extern "C" fn mi_send_message(
 /// Get all settings as JSON.
 ///
 /// Returns the full settings object matching SettingsModel in Flutter.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_settings(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_settings(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() {
         return ptr::null();
     }
@@ -5707,8 +5741,13 @@ fn build_settings_json(
 // ---------------------------------------------------------------------------
 
 /// Set threat context level. Returns 0 on success.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_threat_context(ctx: *mut MeshContext, level: u8) -> i32 {
+pub unsafe extern "C" fn mi_set_threat_context(ctx: *mut MeshContext, level: u8) -> i32 {
     if ctx.is_null() {
         return -1;
     }
@@ -5730,8 +5769,13 @@ pub extern "C" fn mi_set_threat_context(ctx: *mut MeshContext, level: u8) -> i32
 }
 
 /// Get threat context level.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_threat_context(ctx: *mut MeshContext) -> u8 {
+pub unsafe extern "C" fn mi_get_threat_context(ctx: *mut MeshContext) -> u8 {
     if ctx.is_null() {
         return 0;
     }
@@ -5747,8 +5791,13 @@ pub extern "C" fn mi_get_threat_context(ctx: *mut MeshContext) -> u8 {
 // ---------------------------------------------------------------------------
 
 /// Set a peer's trust level. Returns 0 on success.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_trust_level(
+pub unsafe extern "C" fn mi_set_trust_level(
     ctx: *mut MeshContext,
     peer_id: *const c_char,
     level: u8,
@@ -5802,8 +5851,13 @@ pub extern "C" fn mi_set_trust_level(
 
 /// Set the active conversation for priority escalation.
 /// Pass null room_id to clear.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_active_conversation(
+pub unsafe extern "C" fn mi_set_active_conversation(
     ctx: *mut MeshContext,
     room_id: *const c_char,
 ) -> i32 {
@@ -5831,8 +5885,13 @@ pub extern "C" fn mi_set_active_conversation(
 }
 
 /// Set conversation security mode.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_conversation_security_mode(
+pub unsafe extern "C" fn mi_set_conversation_security_mode(
     ctx: *mut MeshContext,
     room_id: *const c_char,
     mode: u8,
@@ -5893,8 +5952,13 @@ pub extern "C" fn mi_set_conversation_security_mode(
 ///
 /// Each element: `{"type": "EventName", "data": {...}}`
 /// An empty array (`[]`) means no events are pending.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_poll_events(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_poll_events(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() {
         return ptr::null();
     }
@@ -5928,8 +5992,13 @@ pub extern "C" fn mi_poll_events(ctx: *mut MeshContext) -> *const c_char {
 /// messages on every poll cycle.
 ///
 /// Returns 0 on success, -1 if the listener could not be bound.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_start_clearnet_listener(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_start_clearnet_listener(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -5954,8 +6023,13 @@ pub extern "C" fn mi_start_clearnet_listener(ctx: *mut MeshContext) -> i32 {
 }
 
 /// Stop the clearnet TCP listener and close all active connections.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_stop_clearnet_listener(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_stop_clearnet_listener(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -5983,8 +6057,13 @@ pub extern "C" fn mi_stop_clearnet_listener(ctx: *mut MeshContext) -> i32 {
 ///
 /// Returns 0 on success, -1 on failure (identity not unlocked, Tor bootstrap
 /// error, or Tor already enabled).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_tor_enable(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_tor_enable(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6039,8 +6118,13 @@ pub extern "C" fn mi_tor_enable(ctx: *mut MeshContext) -> i32 {
 ///
 /// Drops the `TorTransport` (which closes the tokio runtime and all Tor
 /// circuits). Returns 0 on success.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_tor_disable(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_tor_disable(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6057,8 +6141,13 @@ pub extern "C" fn mi_tor_disable(ctx: *mut MeshContext) -> i32 {
 /// Returns `null` if Tor is not enabled.
 /// The address is derived deterministically from the identity master key and
 /// is stable across restarts.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_tor_get_onion_address(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_tor_get_onion_address(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6082,8 +6171,13 @@ pub extern "C" fn mi_tor_get_onion_address(ctx: *mut MeshContext) -> *const c_ch
 /// send/receive path.
 ///
 /// Returns 0 on success, -1 on failure.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_tor_connect(
+pub unsafe extern "C" fn mi_tor_connect(
     ctx: *mut MeshContext,
     peer_id_hex_ptr: *const c_char,
     onion_addr_ptr: *const c_char,
@@ -6133,8 +6227,13 @@ pub extern "C" fn mi_tor_connect(
 }
 
 /// Set the clearnet listen port. Takes effect on next `mi_start_clearnet_listener`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_clearnet_port(ctx: *mut MeshContext, port: u16) -> i32 {
+pub unsafe extern "C" fn mi_set_clearnet_port(ctx: *mut MeshContext, port: u16) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6153,8 +6252,13 @@ pub extern "C" fn mi_set_clearnet_port(ctx: *mut MeshContext, port: u16) -> i32 
 /// Callers encode this as a QR code or deep link for peer scanning.
 ///
 /// JSON shape: PairingPayload (§8.3) serialised with snake_case keys.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_pairing_payload(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_pairing_payload(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6252,13 +6356,23 @@ pub extern "C" fn mi_get_pairing_payload(ctx: *mut MeshContext) -> *const c_char
 // backend modules are completed.
 // ---------------------------------------------------------------------------
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_rooms_json(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_rooms_json(ctx: *mut MeshContext) -> *const c_char {
     mi_get_room_list(ctx)
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_messages_json(ctx: *mut MeshContext, room_id: *const c_char) -> *const c_char {
+pub unsafe extern "C" fn mi_messages_json(ctx: *mut MeshContext, room_id: *const c_char) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6275,8 +6389,13 @@ pub extern "C" fn mi_messages_json(ctx: *mut MeshContext, room_id: *const c_char
     }
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_peer_list(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_peer_list(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6302,8 +6421,13 @@ pub extern "C" fn mi_get_peer_list(ctx: *mut MeshContext) -> *const c_char {
     ctx.set_response(&json)
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_file_transfers_json(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_file_transfers_json(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6314,8 +6438,13 @@ pub extern "C" fn mi_file_transfers_json(ctx: *mut MeshContext) -> *const c_char
     ctx.set_response(&json)
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_active_room_id(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_active_room_id(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6328,13 +6457,23 @@ pub extern "C" fn mi_active_room_id(ctx: *mut MeshContext) -> *const c_char {
     }
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_select_room(ctx: *mut MeshContext, room_id: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_select_room(ctx: *mut MeshContext, room_id: *const c_char) -> i32 {
     mi_set_active_conversation(ctx, room_id)
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_delete_room(ctx: *mut MeshContext, room_id: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_delete_room(ctx: *mut MeshContext, room_id: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -6358,13 +6497,23 @@ pub extern "C" fn mi_delete_room(ctx: *mut MeshContext, room_id: *const c_char) 
     }
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_send_text_message(ctx: *mut MeshContext, room_id: *const c_char, text: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_send_text_message(ctx: *mut MeshContext, room_id: *const c_char, text: *const c_char) -> i32 {
     mi_send_message(ctx, room_id, ptr::null(), text)
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_delete_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_delete_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6384,8 +6533,13 @@ pub extern "C" fn mi_delete_message(ctx: *mut MeshContext, msg_id: *const c_char
     0
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_node_mode(ctx: *mut MeshContext, mode: i32) -> i32 {
+pub unsafe extern "C" fn mi_set_node_mode(ctx: *mut MeshContext, mode: i32) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6418,13 +6572,23 @@ pub extern "C" fn mi_set_node_mode(ctx: *mut MeshContext, mode: i32) -> i32 {
     0
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_settings_json(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_settings_json(ctx: *mut MeshContext) -> *const c_char {
     mi_get_settings(ctx)
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_transport_flags(ctx: *mut MeshContext, flags_json_ptr: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_set_transport_flags(ctx: *mut MeshContext, flags_json_ptr: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6472,8 +6636,13 @@ pub extern "C" fn mi_set_transport_flags(ctx: *mut MeshContext, flags_json_ptr: 
     0
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_pair_peer(ctx: *mut MeshContext, peer_data: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_pair_peer(ctx: *mut MeshContext, peer_data: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6731,8 +6900,13 @@ fn send_pairing_hello_to(ctx: &MeshContext, endpoint: &str) {
 ///
 /// Returns JSON: `{"groupId": "...", "name": "...", "memberCount": 1}` on
 /// success, or `{"error": "..."}` on failure.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_create_group(
+pub unsafe extern "C" fn mi_create_group(
     ctx: *mut MeshContext,
     name_ptr: *const c_char,
     description_ptr: *const c_char,
@@ -6869,8 +7043,13 @@ pub extern "C" fn mi_create_group(
 ///
 /// Returns a JSON array of group summaries:
 /// `[{"groupId": "...", "name": "...", "memberCount": N, "isAdmin": bool}]`
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_list_groups(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_list_groups(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -6901,8 +7080,13 @@ pub extern "C" fn mi_list_groups(ctx: *mut MeshContext) -> *const c_char {
 /// `group_id_ptr`: hex-encoded group ID.
 ///
 /// Returns a JSON array of peer ID hex strings, or `{"error": "..."}`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_group_members(
+pub unsafe extern "C" fn mi_group_members(
     ctx: *mut MeshContext,
     group_id_ptr: *const c_char,
 ) -> *const c_char {
@@ -6940,8 +7124,13 @@ pub extern "C" fn mi_group_members(
 /// Does NOT notify other members (network gossip handles propagation).
 ///
 /// Returns 0 on success, -1 on failure.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_leave_group(
+pub unsafe extern "C" fn mi_leave_group(
     ctx: *mut MeshContext,
     group_id_ptr: *const c_char,
 ) -> i32 {
@@ -6979,8 +7168,13 @@ pub extern "C" fn mi_leave_group(
 /// group message fan-out to members is handled by the transport layer.
 ///
 /// Returns 0 on success, -1 on failure.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_group_send_message(
+pub unsafe extern "C" fn mi_group_send_message(
     ctx: *mut MeshContext,
     group_id_ptr: *const c_char,
     text_ptr: *const c_char,
@@ -7208,8 +7402,13 @@ pub extern "C" fn mi_group_send_message(
 /// This adds the peer to the in-memory group participant list and persists the
 /// change to vault. In the future this will also dispatch an invite wire frame
 /// to the peer via the active transport.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_group_invite_peer(
+pub unsafe extern "C" fn mi_group_invite_peer(
     ctx: *mut MeshContext,
     group_id_ptr: *const c_char,
     peer_id_ptr: *const c_char,
@@ -7335,13 +7534,23 @@ pub extern "C" fn mi_group_invite_peer(
     0
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_local_identity_json(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_local_identity_json(ctx: *mut MeshContext) -> *const c_char {
     mi_get_identity_summary(ctx)
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_trust_attest(ctx: *mut MeshContext, peer_id: *const c_char, level: i32) -> i32 {
+pub unsafe extern "C" fn mi_trust_attest(ctx: *mut MeshContext, peer_id: *const c_char, level: i32) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -7380,8 +7589,13 @@ pub extern "C" fn mi_trust_attest(ctx: *mut MeshContext, peer_id: *const c_char,
     }
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_trust_verify_json(ctx: *mut MeshContext, peer_id: *const c_char) -> *const c_char {
+pub unsafe extern "C" fn mi_trust_verify_json(ctx: *mut MeshContext, peer_id: *const c_char) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -7412,8 +7626,13 @@ pub extern "C" fn mi_trust_verify_json(ctx: *mut MeshContext, peer_id: *const c_
     }
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_import_identity(
+pub unsafe extern "C" fn mi_import_identity(
     ctx: *mut MeshContext,
     backup_b64_json: *const c_char,
     passphrase: *const c_char,
@@ -7519,8 +7738,13 @@ pub extern "C" fn mi_import_identity(
     0
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_reset_identity(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_reset_identity(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -7541,8 +7765,13 @@ pub extern "C" fn mi_reset_identity(ctx: *mut MeshContext) -> i32 {
 ///
 /// Validates field lengths, persists to vault under "public_profile", and
 /// emits a `ProfileUpdated` event so the UI reflects the change immediately.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_public_profile(ctx: *mut MeshContext, json: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_set_public_profile(ctx: *mut MeshContext, json: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -7579,8 +7808,13 @@ pub extern "C" fn mi_set_public_profile(ctx: *mut MeshContext, json: *const c_ch
 /// Set the private profile shared only with trusted contacts (§9.2).
 ///
 /// Persists to vault under "private_profile" and emits `ProfileUpdated`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_private_profile(ctx: *mut MeshContext, json: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_set_private_profile(ctx: *mut MeshContext, json: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -7615,8 +7849,13 @@ pub extern "C" fn mi_set_private_profile(ctx: *mut MeshContext, json: *const c_c
 ///
 /// This matches the Flutter bridge call site:
 ///   `_bindings!.sendReaction(_context, roomPtr, msgPtr, emojiPtr)`
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_send_reaction(
+pub unsafe extern "C" fn mi_send_reaction(
     ctx: *mut MeshContext,
     room_id: *const c_char,
     msg_id: *const c_char,
@@ -7674,8 +7913,13 @@ pub extern "C" fn mi_send_reaction(
 }
 
 /// Mark a message as read and reset the unread counter for the room.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_send_read_receipt(ctx: *mut MeshContext, room_id: *const c_char, msg_id: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_send_read_receipt(ctx: *mut MeshContext, room_id: *const c_char, msg_id: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -7698,8 +7942,13 @@ pub extern "C" fn mi_send_read_receipt(ctx: *mut MeshContext, room_id: *const c_
 
 /// Emit a typing indicator event (§10.2.1) and broadcast a wire frame to all
 /// connected participants in the room.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_send_typing_indicator(ctx: *mut MeshContext, room_id: *const c_char, active: i32) -> i32 {
+pub unsafe extern "C" fn mi_send_typing_indicator(ctx: *mut MeshContext, room_id: *const c_char, active: i32) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -7752,8 +8001,13 @@ pub extern "C" fn mi_send_typing_indicator(ctx: *mut MeshContext, room_id: *cons
 }
 
 /// Send a message that quotes/replies to an earlier message.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_reply_to_message(ctx: *mut MeshContext, room_id: *const c_char, reply_to: *const c_char, text: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_reply_to_message(ctx: *mut MeshContext, room_id: *const c_char, reply_to: *const c_char, text: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -7800,8 +8054,13 @@ pub extern "C" fn mi_reply_to_message(ctx: *mut MeshContext, room_id: *const c_c
 }
 
 /// Edit the text of a sent message (§10.1.3 Edit content type).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_edit_message(ctx: *mut MeshContext, msg_id: *const c_char, new_text: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_edit_message(ctx: *mut MeshContext, msg_id: *const c_char, new_text: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -7847,8 +8106,13 @@ pub extern "C" fn mi_edit_message(ctx: *mut MeshContext, msg_id: *const c_char, 
 }
 
 /// Delete a message for all participants (§10.1.3 Deletion content type).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_delete_for_everyone(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_delete_for_everyone(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -7884,8 +8148,13 @@ pub extern "C" fn mi_delete_for_everyone(ctx: *mut MeshContext, msg_id: *const c
 }
 
 /// Forward a message to another room (§10.1.3 is_forwarded flag).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_forward_message(ctx: *mut MeshContext, msg_id: *const c_char, target_room: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_forward_message(ctx: *mut MeshContext, msg_id: *const c_char, target_room: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -7932,8 +8201,13 @@ pub extern "C" fn mi_forward_message(ctx: *mut MeshContext, msg_id: *const c_cha
 }
 
 /// Pin a message in the conversation (§10.1.3 Pin content type).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_pin_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_pin_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -7964,8 +8238,13 @@ pub extern "C" fn mi_pin_message(ctx: *mut MeshContext, msg_id: *const c_char) -
 }
 
 /// Unpin a previously pinned message.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_unpin_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_unpin_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -7999,8 +8278,13 @@ pub extern "C" fn mi_unpin_message(ctx: *mut MeshContext, msg_id: *const c_char)
 ///
 /// After this timer (in seconds), messages in the room auto-delete.
 /// The timer is stored on the Room and enforced by `mi_prune_expired_messages`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_disappearing_timer(ctx: *mut MeshContext, room_id: *const c_char, secs: u64) -> i32 {
+pub unsafe extern "C" fn mi_set_disappearing_timer(ctx: *mut MeshContext, room_id: *const c_char, secs: u64) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -8026,8 +8310,13 @@ pub extern "C" fn mi_set_disappearing_timer(ctx: *mut MeshContext, room_id: *con
 /// Full-text search across all in-memory messages.
 ///
 /// Returns a JSON array of matching message objects. Case-insensitive.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_search_messages(ctx: *mut MeshContext, query: *const c_char) -> *const c_char {
+pub unsafe extern "C" fn mi_search_messages(ctx: *mut MeshContext, query: *const c_char) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8059,8 +8348,13 @@ pub extern "C" fn mi_search_messages(ctx: *mut MeshContext, query: *const c_char
 /// Should be called periodically (e.g., on app foreground) to enforce
 /// disappearing message timers. Also stamps new messages with expires_at
 /// when the room has a disappearing_timer set.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_prune_expired_messages(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_prune_expired_messages(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -8093,8 +8387,13 @@ pub extern "C" fn mi_prune_expired_messages(ctx: *mut MeshContext) -> i32 {
 }
 
 /// Get live network statistics (transports, tunnels, SDR sessions).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_network_stats(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_network_stats(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8148,8 +8447,13 @@ pub extern "C" fn mi_get_network_stats(ctx: *mut MeshContext) -> *const c_char {
     ctx.set_response(&stats.to_string())
 }
 
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_toggle_transport_flag(ctx: *mut MeshContext, transport: *const c_char, enabled: i32) -> i32 {
+pub unsafe extern "C" fn mi_toggle_transport_flag(ctx: *mut MeshContext, transport: *const c_char, enabled: i32) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8196,7 +8500,12 @@ pub extern "C" fn mi_toggle_transport_flag(ctx: *mut MeshContext, transport: *co
 ///
 /// Marks mDNS as running. When peers advertise themselves, they
 /// appear in `mi_mdns_get_discovered_peers`. Emits `MdnsStarted`.
-pub extern "C" fn mi_mdns_enable(ctx: *mut MeshContext) -> i32 {
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_mdns_enable(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8233,7 +8542,12 @@ pub extern "C" fn mi_mdns_enable(ctx: *mut MeshContext) -> i32 {
 
 #[no_mangle]
 /// Disable mDNS peer discovery and clear the discovered-peers cache.
-pub extern "C" fn mi_mdns_disable(ctx: *mut MeshContext) -> i32 {
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_mdns_disable(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8249,7 +8563,12 @@ pub extern "C" fn mi_mdns_disable(ctx: *mut MeshContext) -> i32 {
 
 #[no_mangle]
 /// Returns 1 if mDNS is currently running, 0 otherwise.
-pub extern "C" fn mi_mdns_is_running(ctx: *mut MeshContext) -> i32 {
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_mdns_is_running(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return 0; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8264,7 +8583,12 @@ pub extern "C" fn mi_mdns_is_running(ctx: *mut MeshContext) -> i32 {
 /// Each entry: {"peerId": "...", "name": "...", "address": "...", "trustLevel": N}.
 /// In a production build, this is populated by the real mDNS responder.
 /// For now, returns paired contacts that could be local (no transport filter).
-pub extern "C" fn mi_mdns_get_discovered_peers(ctx: *mut MeshContext) -> *const c_char {
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_mdns_get_discovered_peers(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8285,7 +8609,12 @@ pub extern "C" fn mi_mdns_get_discovered_peers(ctx: *mut MeshContext) -> *const 
 ///
 /// Returns JSON `{"id":"…","peerId":"…","name":"…","status":"pending","direction":"…"}`
 /// or null on error.
-pub extern "C" fn mi_file_transfer_start(
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_file_transfer_start(
     ctx: *mut MeshContext,
     direction: *const c_char,
     peer_id: *const c_char,
@@ -8421,7 +8750,12 @@ pub extern "C" fn mi_file_transfer_start(
 
 #[no_mangle]
 /// Cancel an in-progress file transfer.
-pub extern "C" fn mi_file_transfer_cancel(ctx: *mut MeshContext, transfer_id: *const c_char) -> i32 {
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_file_transfer_cancel(ctx: *mut MeshContext, transfer_id: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8449,7 +8783,12 @@ pub extern "C" fn mi_file_transfer_cancel(ctx: *mut MeshContext, transfer_id: *c
 /// Sets the transfer status from `pending` to `active` and emits a
 /// `FileTransferStarted` event so the UI reflects the acceptance.
 /// Returns 0 on success, -1 if the transfer was not found.
-pub extern "C" fn mi_file_transfer_accept(
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_file_transfer_accept(
     ctx: *mut MeshContext,
     transfer_id: *const c_char,
     save_path: *const c_char,
@@ -8515,7 +8854,12 @@ pub extern "C" fn mi_file_transfer_accept(
 /// - `dns`: array of DNS server IPs
 /// - `routes`: array of CIDR strings to route over mesh
 /// - `killswitch`: bool — block clearnet if mesh is unreachable
-pub extern "C" fn mi_set_clearnet_route(ctx: *mut MeshContext, route: *const c_char) -> i32 {
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
+pub unsafe extern "C" fn mi_set_clearnet_route(ctx: *mut MeshContext, route: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8534,8 +8878,13 @@ pub extern "C" fn mi_set_clearnet_route(ctx: *mut MeshContext, route: *const c_c
 /// `mode_json` is a JSON object:
 /// - `mode`: "off" | "mesh_only" | "exit_node" | "policy"
 /// - `killSwitch`: "disabled" | "permissive" | "strict"
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_vpn_mode(ctx: *mut MeshContext, mode_json: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_set_vpn_mode(ctx: *mut MeshContext, mode_json: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8568,8 +8917,13 @@ pub extern "C" fn mi_set_vpn_mode(ctx: *mut MeshContext, mode_json: *const c_cha
 /// Set the exit node peer for VPN exit_node mode (§6.9.2).
 ///
 /// `peer_id_hex`: 32-byte peer ID as hex string. Pass empty string to clear.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_exit_node(ctx: *mut MeshContext, peer_id_hex: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_set_exit_node(ctx: *mut MeshContext, peer_id_hex: *const c_char) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8597,8 +8951,13 @@ pub extern "C" fn mi_set_exit_node(ctx: *mut MeshContext, peer_id_hex: *const c_
 }
 
 /// Get VPN status (§6.9).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_vpn_status(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_vpn_status(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8628,8 +8987,13 @@ pub extern "C" fn mi_get_vpn_status(ctx: *mut MeshContext) -> *const c_char {
 ///
 /// `auth_key`: a Tailscale auth key (tskey-auth-...) or OAuth token.
 /// `control_url`: empty string or custom control server URL (e.g. Headscale).
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_tailscale_auth_key(
+pub unsafe extern "C" fn mi_tailscale_auth_key(
     ctx: *mut MeshContext,
     auth_key: *const c_char,
     control_url: *const c_char,
@@ -8670,8 +9034,13 @@ pub extern "C" fn mi_tailscale_auth_key(
 /// redirect URL is returned to the Flutter UI via a `TailscaleOAuthUrl` event.
 ///
 /// `control_url`: empty string for official server, or Headscale URL.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_tailscale_begin_oauth(
+pub unsafe extern "C" fn mi_tailscale_begin_oauth(
     ctx: *mut MeshContext,
     control_url: *const c_char,
 ) -> i32 {
@@ -8708,8 +9077,13 @@ pub extern "C" fn mi_tailscale_begin_oauth(
 /// `api_key`: ZeroTier Central API key, or empty for self-hosted.
 /// `controller_url`: empty string for Central, or self-hosted controller URL.
 /// `network_ids_json`: JSON array of 16-char hex network IDs, e.g. `["a09acf023301..."]`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_zerotier_connect(
+pub unsafe extern "C" fn mi_zerotier_connect(
     ctx: *mut MeshContext,
     api_key: *const c_char,
     controller_url: *const c_char,
@@ -8779,8 +9153,13 @@ pub extern "C" fn mi_zerotier_connect(
 ///   "zerotier":  {"connected": bool, "networks": [...], "anonymizationScore": 0.5}
 /// }
 /// ```
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_overlay_status(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_overlay_status(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -8826,8 +9205,13 @@ pub extern "C" fn mi_overlay_status(ctx: *mut MeshContext) -> *const c_char {
 /// Returns JSON with:
 /// - `accepted`: bool
 /// - `rejection_reason`: string or null
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_losec_request(
+pub unsafe extern "C" fn mi_losec_request(
     ctx: *mut MeshContext,
     request_json: *const c_char,
 ) -> *const c_char {
@@ -8954,8 +9338,13 @@ pub extern "C" fn mi_losec_request(
 /// - `available`: bool — whether current traffic is above the LoSec threshold
 /// - `active_tunnels`: usize
 /// - `bytes_per_sec`: u64
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_losec_ambient_status(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_losec_ambient_status(ctx: *mut MeshContext) -> *const c_char {
     use crate::routing::losec::AmbientTrafficMonitor;
 
     if ctx.is_null() { return ptr::null(); }
@@ -8989,8 +9378,13 @@ pub extern "C" fn mi_losec_ambient_status(ctx: *mut MeshContext) -> *const c_cha
 /// as a hex string for the caller to transmit to the peer.
 ///
 /// Returns JSON: `{"init_hex": "..."}` or `{"error": "..."}`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_wg_initiate_handshake(
+pub unsafe extern "C" fn mi_wg_initiate_handshake(
     ctx: *mut MeshContext,
     peer_id_hex: *const c_char,
 ) -> *const c_char {
@@ -9071,8 +9465,13 @@ pub extern "C" fn mi_wg_initiate_handshake(
 /// `peer_id_hex`: the peer's device address (32-byte hex).
 ///
 /// Returns JSON: `{"response_hex": "...", "session_established": true}` or error.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_wg_respond_to_handshake(
+pub unsafe extern "C" fn mi_wg_respond_to_handshake(
     ctx: *mut MeshContext,
     peer_id_hex: *const c_char,
     init_hex: *const c_char,
@@ -9166,8 +9565,13 @@ pub extern "C" fn mi_wg_respond_to_handshake(
 /// `response_hex`: the 32-byte ephemeral public key from the responder (hex, 64 chars).
 ///
 /// Returns JSON: `{"session_established": true}` or `{"error": "..."}`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_wg_complete_handshake(
+pub unsafe extern "C" fn mi_wg_complete_handshake(
     ctx: *mut MeshContext,
     peer_id_hex: *const c_char,
     response_hex: *const c_char,
@@ -9246,8 +9650,13 @@ pub extern "C" fn mi_wg_complete_handshake(
 /// - `hop_key_hex`: 64-char hex string (required for secure/evasive profiles)
 ///
 /// Returns 0 on success, -1 on bad input.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_sdr_configure(ctx: *mut MeshContext, config_json: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_sdr_configure(ctx: *mut MeshContext, config_json: *const c_char) -> i32 {
     use crate::transport::rf_sdr::{SdrConfig, SdrDriverType, LoRaChipModel};
 
     if ctx.is_null() { return -1; }
@@ -9323,8 +9732,13 @@ pub extern "C" fn mi_sdr_configure(ctx: *mut MeshContext, config_json: *const c_
 /// - `ale`: bool
 /// - `primary_freq_hz`: u64
 /// - `stats`: aggregate stats (tx_bytes, rx_bytes, fhss_hops, etc.)
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_sdr_status(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_sdr_status(ctx: *mut MeshContext) -> *const c_char {
     
 
     if ctx.is_null() { return ptr::null(); }
@@ -9372,8 +9786,13 @@ pub extern "C" fn mi_sdr_status(ctx: *mut MeshContext) -> *const c_char {
 ///
 /// Returns JSON `{"freq_hz": <u64>, "epoch": <u64>, "label": "<str>"}`
 /// or `{"error": "..."}` if FHSS is not configured.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_sdr_current_channel(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_sdr_current_channel(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -9402,8 +9821,13 @@ pub extern "C" fn mi_sdr_current_channel(ctx: *mut MeshContext) -> *const c_char
 /// List available SDR hardware profiles as JSON array.
 ///
 /// Returns static profile info — not dependent on having a device connected.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_sdr_list_profiles(_ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_sdr_list_profiles(_ctx: *mut MeshContext) -> *const c_char {
     if _ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -9460,8 +9884,13 @@ pub extern "C" fn mi_sdr_list_profiles(_ctx: *mut MeshContext) -> *const c_char 
 }
 
 /// List supported SDR hardware types as JSON array.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_sdr_list_hardware(_ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_sdr_list_hardware(_ctx: *mut MeshContext) -> *const c_char {
     if _ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -9490,8 +9919,13 @@ pub extern "C" fn mi_sdr_list_hardware(_ctx: *mut MeshContext) -> *const c_char 
 /// - `enabled`: bool
 /// - `minTrustLevel`: int (0 = Unknown)
 /// - `allowedTransports`: string array
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_service_list(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_service_list(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -9526,8 +9960,13 @@ pub extern "C" fn mi_get_service_list(ctx: *mut MeshContext) -> *const c_char {
 /// `config_json`: JSON object with at minimum `{"enabled": bool}`
 ///
 /// Returns 1 on success, 0 on unknown module or parse error.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_configure_service(
+pub unsafe extern "C" fn mi_configure_service(
     ctx: *mut MeshContext,
     service_id: *const c_char,
     config_json: *const c_char,
@@ -9605,8 +10044,13 @@ struct BackupContents {
 /// Identity private keys are NEVER included — spec §3.7 explicitly prohibits it.
 /// `backup_type`: 0 = standard (contacts + rooms), 1 = extended (+ message history).
 /// Returns JSON `{"ok": true, "backup_b64": "..."}` or `{"ok": false, "error": "..."}`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_create_backup(ctx: *mut MeshContext, passphrase: *const c_char, backup_type: u8) -> *const c_char {
+pub unsafe extern "C" fn mi_create_backup(ctx: *mut MeshContext, passphrase: *const c_char, backup_type: u8) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -9696,8 +10140,13 @@ pub extern "C" fn mi_create_backup(ctx: *mut MeshContext, passphrase: *const c_c
 ///
 /// Destroys all three identity layers. Non-reversible.
 /// Returns 0 on success (erase completed), -1 if ctx is null.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_emergency_erase(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_emergency_erase(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -9719,8 +10168,13 @@ pub extern "C" fn mi_emergency_erase(ctx: *mut MeshContext) -> i32 {
 ///
 /// Preserves Layer 1 (mesh identity), destroys Layers 2 and 3.
 /// Returns 0 on success, -1 if ctx is null.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_duress_erase(ctx: *mut MeshContext) -> i32 {
+pub unsafe extern "C" fn mi_duress_erase(ctx: *mut MeshContext) -> i32 {
     if ctx.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and that no other reference to this context
@@ -9738,12 +10192,12 @@ pub extern "C" fn mi_duress_erase(ctx: *mut MeshContext) -> i32 {
     0
 }
 
-/// Thread-local storage for errors that occur before a MeshContext exists
-/// (e.g. mi_init() failure).  mi_last_error_message() reads from here when
-/// ctx is null; the context-owned last_error is used for all post-init errors.
+// Thread-local storage for errors that occur before a MeshContext exists
+// (e.g. mi_init() failure).  mi_last_error_message() reads from here when
+// ctx is null; the context-owned last_error is used for all post-init errors.
 thread_local! {
     static PREINIT_ERROR: std::cell::RefCell<Option<CString>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Store an error string in the pre-init thread-local so the caller can
@@ -9762,8 +10216,13 @@ pub(crate) fn set_preinit_error(msg: &str) {
 /// The Dart binding calls this with no arguments (zero-arg ABI) when ctx is
 /// null, so the Rust side must handle null gracefully.  The returned pointer is
 /// valid until the next FFI call on this thread.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_last_error_message(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_last_error_message(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() {
         // Read from thread-local pre-init error store.
         return PREINIT_ERROR.with(|e| {
@@ -9778,8 +10237,13 @@ pub extern "C" fn mi_last_error_message(ctx: *mut MeshContext) -> *const c_char 
 
 /// Free a string previously returned by the bridge.
 /// In our implementation, strings are owned by the context — this is a no-op.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_string_free(_ptr: *mut c_char) {
+pub unsafe extern "C" fn mi_string_free(_ptr: *mut c_char) {
     // No-op: strings are owned by MeshContext.last_response
 }
 
@@ -9798,8 +10262,13 @@ pub extern "C" fn mi_string_free(_ptr: *mut c_char) {
 /// `is_video`     — 1 for video+audio, 0 for audio-only.
 ///
 /// Returns JSON `{"ok":true,"callId":"<hex>"}` or `{"ok":false,"error":"..."}`.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_call_offer(
+pub unsafe extern "C" fn mi_call_offer(
     ctx: *mut MeshContext,
     peer_id_hex: *const c_char,
     is_video: i32,
@@ -9807,7 +10276,8 @@ pub extern "C" fn mi_call_offer(
     // Guard against a null context pointer before dereferencing.
     // A null ctx means the runtime was never initialised; return a JSON error
     // so the caller gets a structured failure rather than a segfault.
-    if ctx.is_null() {
+    // Guard ctx and the string arg — both null-checked before any dereference.
+    if ctx.is_null() || peer_id_hex.is_null() {
         return ptr::null();
     }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
@@ -9818,9 +10288,8 @@ pub extern "C" fn mi_call_offer(
         return ctx.set_response(r#"{"ok":false,"error":"identity not unlocked"}"#);
     }
 
-    // SAFETY: The FFI caller guarantees this pointer is non-null and
-    // points to a valid NUL-terminated C string that lives at least as
-    // long as this borrow.
+    // SAFETY: null-checked above; pointer is guaranteed valid NUL-terminated
+    // C string for the duration of this call.
     let peer_hex = match unsafe { CStr::from_ptr(peer_id_hex) }.to_str() {
         Ok(s) => s.to_string(),
         Err(_) => return ctx.set_response(r#"{"ok":false,"error":"invalid peer_id encoding"}"#),
@@ -9873,14 +10342,19 @@ pub extern "C" fn mi_call_offer(
 /// `accept`      — 1 to accept, 0 to reject.
 ///
 /// Returns 1 on success, 0 on error.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_call_answer(
+pub unsafe extern "C" fn mi_call_answer(
     ctx: *mut MeshContext,
     call_id_hex: *const c_char,
     accept: i32,
 ) -> i32 {
-    // Guard against null context pointer before dereferencing.
-    if ctx.is_null() {
+    // Guard ctx and the string arg — both null-checked before any dereference.
+    if ctx.is_null() || call_id_hex.is_null() {
         return 0;
     }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
@@ -9889,9 +10363,8 @@ pub extern "C" fn mi_call_answer(
     let ctx = unsafe { &*ctx };
     if !ctx.identity_unlocked { return 0; }
 
-    // SAFETY: The FFI caller guarantees this pointer is non-null and
-    // points to a valid NUL-terminated C string that lives at least as
-    // long as this borrow.
+    // SAFETY: null-checked above; pointer is guaranteed valid NUL-terminated
+    // C string for the duration of this call.
     let call_id_str = match unsafe { CStr::from_ptr(call_id_hex) }.to_str() {
         Ok(s) => s.to_string(),
         Err(_) => return 0,
@@ -9932,13 +10405,18 @@ pub extern "C" fn mi_call_answer(
 ///
 /// Sends a hangup frame to all participants and clears call state.
 /// Returns 1 on success, 0 if no active call with that ID.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_call_hangup(
+pub unsafe extern "C" fn mi_call_hangup(
     ctx: *mut MeshContext,
     call_id_hex: *const c_char,
 ) -> i32 {
-    // Guard against null context pointer before dereferencing.
-    if ctx.is_null() {
+    // Guard ctx and the string arg — both null-checked before any dereference.
+    if ctx.is_null() || call_id_hex.is_null() {
         return 0;
     }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
@@ -9946,9 +10424,8 @@ pub extern "C" fn mi_call_hangup(
     // the C API contract documented in the generated header.
     let ctx = unsafe { &*ctx };
 
-    // SAFETY: The FFI caller guarantees this pointer is non-null and
-    // points to a valid NUL-terminated C string that lives at least as
-    // long as this borrow.
+    // SAFETY: null-checked above; pointer is guaranteed valid NUL-terminated
+    // C string for the duration of this call.
     let call_id_str = match unsafe { CStr::from_ptr(call_id_hex) }.to_str() {
         Ok(s) => s.to_string(),
         Err(_) => return 0,
@@ -9972,8 +10449,13 @@ pub extern "C" fn mi_call_hangup(
 /// Returns JSON `{"active":false}` when idle, or
 /// `{"active":true,"callId":"<hex>","peerId":"<hex>","isVideo":<bool>,"durationSecs":<u64>}`
 /// when a call is in progress.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_call_status(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_call_status(ctx: *mut MeshContext) -> *const c_char {
     // Guard against null context pointer before dereferencing.
     if ctx.is_null() {
         return ptr::null();
@@ -10021,8 +10503,13 @@ pub extern "C" fn mi_call_status(ctx: *mut MeshContext) -> *const c_char {
 ///   "effectiveTier": 1
 /// }
 /// ```
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_get_notification_config(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_get_notification_config(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -10070,8 +10557,13 @@ pub extern "C" fn mi_get_notification_config(ctx: *mut MeshContext) -> *const c_
 /// }
 /// ```
 /// Returns 0 on success, -1 on error.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_set_notification_config(ctx: *mut MeshContext, json: *const c_char) -> i32 {
+pub unsafe extern "C" fn mi_set_notification_config(ctx: *mut MeshContext, json: *const c_char) -> i32 {
     if ctx.is_null() || json.is_null() { return -1; }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -10148,8 +10640,13 @@ pub extern "C" fn mi_set_notification_config(ctx: *mut MeshContext, json: *const
 ///   }
 /// }
 /// ```
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_routing_table_stats(ctx: *mut MeshContext) -> *const c_char {
+pub unsafe extern "C" fn mi_routing_table_stats(ctx: *mut MeshContext) -> *const c_char {
     if ctx.is_null() { return ptr::null(); }
     // SAFETY: The FFI caller guarantees this pointer is non-null,
     // correctly aligned, and lives for the duration of this call per
@@ -10166,8 +10663,13 @@ pub extern "C" fn mi_routing_table_stats(ctx: *mut MeshContext) -> *const c_char
 ///
 /// Returns JSON `{"found": true, "nextHop": "<hex>", "hopCount": 1, "latencyMs": 10}`
 /// or `{"found": false}` if no route exists.
+/// # Safety
+///
+/// All raw pointer arguments are null-checked at the top of the function
+/// body before any dereference.  Passing invalid non-null pointers is
+/// undefined behaviour per the C API contract documented in the module header.
 #[no_mangle]
-pub extern "C" fn mi_routing_lookup(
+pub unsafe extern "C" fn mi_routing_lookup(
     ctx: *mut MeshContext,
     dest_peer_id_hex: *const c_char,
 ) -> *const c_char {
@@ -10215,7 +10717,26 @@ mod tests {
     fn make_ctx() -> (*mut MeshContext, TempDir) {
         let dir = TempDir::new().unwrap();
         let dir_str = CString::new(dir.path().to_str().unwrap()).unwrap();
-        let ctx = mesh_init(dir_str.as_ptr());
+        // Build an FfiMeshConfig pointing to the temp directory.
+        // SAFETY: config_path points to dir_str which outlives this call;
+        // mesh_init copies the path string before returning.
+        let config = FfiMeshConfig {
+            config_path: dir_str.as_ptr(),
+            log_level: 0,
+            enable_tor: 0,
+            enable_clearnet: 0,
+            mesh_discovery: 0,
+            allow_relays: 0,
+            enable_i2p: 0,
+            enable_bluetooth: 0,
+            enable_rf: 0,
+            wireguard_port: 0,
+            max_peers: 100,
+            max_connections: 100,
+            node_mode: 0,
+        };
+        // SAFETY: config pointer is valid for the duration of this call.
+        let ctx = unsafe { mesh_init(&config as *const FfiMeshConfig) };
         assert!(!ctx.is_null());
         (ctx, dir)
     }
@@ -10223,14 +10744,14 @@ mod tests {
     #[test]
     fn test_init_destroy() {
         let (ctx, _dir) = make_ctx();
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_no_identity_initially() {
         let (ctx, _dir) = make_ctx();
-        assert_eq!(mi_has_identity(ctx), 0);
-        mesh_destroy(ctx);
+        assert_eq!(unsafe { mi_has_identity(ctx) }, 0);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
@@ -10238,14 +10759,14 @@ mod tests {
         let (ctx, _dir) = make_ctx();
         let name = CString::new("Alice").unwrap();
         // mi_create_identity now returns i32 (0 = success)
-        let result = mi_create_identity(ctx, name.as_ptr());
+        let result = unsafe { mi_create_identity(ctx, name.as_ptr()) };
         assert_eq!(result, 0, "mi_create_identity should succeed");
 
         // After creation, identity should be unlocked
-        assert_eq!(mi_has_identity(ctx), 1);
+        assert_eq!(unsafe { mi_has_identity(ctx) }, 1);
 
         // Verify summary is available
-        let summary = mi_get_identity_summary(ctx);
+        let summary = unsafe { mi_get_identity_summary(ctx) };
         assert!(!summary.is_null());
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
@@ -10253,27 +10774,35 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(json_str).unwrap();
         assert_eq!(json["locked"], false);
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_unlock_identity() {
         let (ctx, dir) = make_ctx();
         let name = CString::new("Bob").unwrap();
-        assert_eq!(mi_create_identity(ctx, name.as_ptr()), 0);
-        mesh_destroy(ctx);
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
+        unsafe { mesh_destroy(ctx) };
 
         // Re-open context with same dir
         let dir_str = CString::new(dir.path().to_str().unwrap()).unwrap();
-        let ctx2 = mesh_init(dir_str.as_ptr());
+        let config2 = FfiMeshConfig {
+            config_path: dir_str.as_ptr(),
+            log_level: 0, enable_tor: 0, enable_clearnet: 0,
+            mesh_discovery: 0, allow_relays: 0, enable_i2p: 0,
+            enable_bluetooth: 0, enable_rf: 0, wireguard_port: 0,
+            max_peers: 100, max_connections: 100, node_mode: 0,
+        };
+        // SAFETY: config2 pointer is valid for the duration of this call.
+        let ctx2 = unsafe { mesh_init(&config2 as *const FfiMeshConfig) };
         assert!(!ctx2.is_null());
-        assert_eq!(mi_has_identity(ctx2), 1);
+        assert_eq!(unsafe { mi_has_identity(ctx2) }, 1);
 
         // Unlock (no PIN)
-        assert_eq!(mi_unlock_identity(ctx2, ptr::null()), 0, "Unlock should succeed");
+        assert_eq!(unsafe { mi_unlock_identity(ctx2, ptr::null()) }, 0, "Unlock should succeed");
 
         // Summary should now be active
-        let summary = mi_get_identity_summary(ctx2);
+        let summary = unsafe { mi_get_identity_summary(ctx2) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let json_str = unsafe { CStr::from_ptr(summary).to_str().unwrap() };
@@ -10281,7 +10810,7 @@ mod tests {
         assert_eq!(json["locked"], false);
         assert!(json["peerId"].is_string());
 
-        mesh_destroy(ctx2);
+        unsafe { mesh_destroy(ctx2) };
     }
 
     #[test]
@@ -10290,11 +10819,11 @@ mod tests {
 
         // Create room
         let name = CString::new("Test Room").unwrap();
-        let result = mi_create_room(ctx, name.as_ptr(), ptr::null());
+        let result = unsafe { mi_create_room(ctx, name.as_ptr(), ptr::null()) };
         assert!(!result.is_null());
 
         // List rooms
-        let rooms = mi_get_room_list(ctx);
+        let rooms = unsafe { mi_get_room_list(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let json_str = unsafe { CStr::from_ptr(rooms).to_str().unwrap() };
@@ -10302,42 +10831,42 @@ mod tests {
         assert_eq!(rooms.len(), 1);
         assert_eq!(rooms[0]["name"], "Test Room");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_threat_context() {
         let (ctx, _dir) = make_ctx();
 
-        assert_eq!(mi_get_threat_context(ctx), 0); // Normal
-        assert_eq!(mi_set_threat_context(ctx, 2), 0); // Set Critical
-        assert_eq!(mi_get_threat_context(ctx), 2);
-        assert_eq!(mi_set_threat_context(ctx, 5), -1); // Invalid
+        assert_eq!(unsafe { mi_get_threat_context(ctx) }, 0); // Normal
+        assert_eq!(unsafe { mi_set_threat_context(ctx, 2) }, 0); // Set Critical
+        assert_eq!(unsafe { mi_get_threat_context(ctx) }, 2);
+        assert_eq!(unsafe { mi_set_threat_context(ctx, 5) }, -1); // Invalid
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_active_conversation() {
         let (ctx, _dir) = make_ctx();
-        assert_eq!(mi_set_active_conversation(ctx, ptr::null()), 0);
+        assert_eq!(unsafe { mi_set_active_conversation(ctx, ptr::null()) }, 0);
 
         let room_id = CString::new("0102030405060708090a0b0c0d0e0f10").unwrap();
-        assert_eq!(mi_set_active_conversation(ctx, room_id.as_ptr()), 0);
+        assert_eq!(unsafe { mi_set_active_conversation(ctx, room_id.as_ptr()) }, 0);
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_poll_events_empty() {
         let (ctx, _dir) = make_ctx();
-        let events = mi_poll_events(ctx);
+        let events = unsafe { mi_poll_events(ctx) };
         assert!(!events.is_null());
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let json_str = unsafe { CStr::from_ptr(events).to_str().unwrap() };
         assert_eq!(json_str, "[]");
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
@@ -10346,7 +10875,7 @@ mod tests {
 
         // Create a room first
         let room_name = CString::new("Events Test Room").unwrap();
-        let room_result = mi_create_room(ctx, room_name.as_ptr(), ptr::null());
+        let room_result = unsafe { mi_create_room(ctx, room_name.as_ptr(), ptr::null()) };
         assert!(!room_result.is_null());
         let room_json: serde_json::Value = serde_json::from_str(
             // SAFETY: The pointer was returned by our own FFI function and is
@@ -10357,14 +10886,14 @@ mod tests {
         let room_id = CString::new(room_id_str.clone()).unwrap();
 
         // Drain the RoomUpdated event from room creation
-        let _ = mi_poll_events(ctx);
+        let _ = unsafe { mi_poll_events(ctx) };
 
         // Send a message
         let text = CString::new("Hello mesh").unwrap();
-        assert_eq!(mi_send_text_message(ctx, room_id.as_ptr(), text.as_ptr()), 0);
+        assert_eq!(unsafe { mi_send_text_message(ctx, room_id.as_ptr(), text.as_ptr()) }, 0);
 
         // Poll — should have MessageAdded and RoomUpdated
-        let events_ptr = mi_poll_events(ctx);
+        let events_ptr = unsafe { mi_poll_events(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let events_str = unsafe { CStr::from_ptr(events_ptr).to_str().unwrap() };
@@ -10384,20 +10913,20 @@ mod tests {
         assert_eq!(msg_event["data"]["roomId"], room_id_str);
 
         // Poll again — queue should be empty
-        let empty_ptr = mi_poll_events(ctx);
+        let empty_ptr = unsafe { mi_poll_events(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let empty_str = unsafe { CStr::from_ptr(empty_ptr).to_str().unwrap() };
         assert_eq!(empty_str, "[]");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_delete_room_emits_event() {
         let (ctx, _dir) = make_ctx();
         let name = CString::new("Delete Me").unwrap();
-        let result_ptr = mi_create_room(ctx, name.as_ptr(), ptr::null());
+        let result_ptr = unsafe { mi_create_room(ctx, name.as_ptr(), ptr::null()) };
         let room_json: serde_json::Value = serde_json::from_str(
             // SAFETY: The pointer was returned by our own FFI function and is
             // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
@@ -10407,12 +10936,12 @@ mod tests {
         let rid = CString::new(rid_str.clone()).unwrap();
 
         // Drain creation events
-        let _ = mi_poll_events(ctx);
+        let _ = unsafe { mi_poll_events(ctx) };
 
         // Delete the room
-        assert_eq!(mi_delete_room(ctx, rid.as_ptr()), 0);
+        assert_eq!(unsafe { mi_delete_room(ctx, rid.as_ptr()) }, 0);
 
-        let events_ptr = mi_poll_events(ctx);
+        let events_ptr = unsafe { mi_poll_events(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let events_str = unsafe { CStr::from_ptr(events_ptr).to_str().unwrap() };
@@ -10421,16 +10950,16 @@ mod tests {
         assert_eq!(events[0]["type"], "RoomDeleted");
         assert_eq!(events[0]["data"]["roomId"], rid_str);
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_transport_flag_emits_settings_event() {
         let (ctx, _dir) = make_ctx();
         let transport = CString::new("tor").unwrap();
-        assert_eq!(mi_toggle_transport_flag(ctx, transport.as_ptr(), 1), 0);
+        assert_eq!(unsafe { mi_toggle_transport_flag(ctx, transport.as_ptr(), 1) }, 0);
 
-        let events_ptr = mi_poll_events(ctx);
+        let events_ptr = unsafe { mi_poll_events(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let events_str = unsafe { CStr::from_ptr(events_ptr).to_str().unwrap() };
@@ -10439,7 +10968,7 @@ mod tests {
         assert_eq!(events[0]["type"], "SettingsUpdated");
         assert_eq!(events[0]["data"]["enableTor"], true);
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
@@ -10448,7 +10977,7 @@ mod tests {
 
         // Create a room to operate on.
         let room_name = CString::new("test room").unwrap();
-        let room_ptr = mi_create_room(ctx, room_name.as_ptr(), ptr::null());
+        let room_ptr = unsafe { mi_create_room(ctx, room_name.as_ptr(), ptr::null()) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let room_json_str = unsafe { CStr::from_ptr(room_ptr).to_str().unwrap() };
@@ -10457,23 +10986,23 @@ mod tests {
         let room_id_c = CString::new(room_id_str).unwrap();
 
         // Setting a valid security mode on a known room should succeed.
-        assert_eq!(mi_set_conversation_security_mode(ctx, room_id_c.as_ptr(), 2), 0); // Standard
+        assert_eq!(unsafe { mi_set_conversation_security_mode(ctx, room_id_c.as_ptr(), 2) }, 0); // Standard
         // Setting on a null room_id should fail.
-        assert_eq!(mi_set_conversation_security_mode(ctx, ptr::null(), 2), -1);
+        assert_eq!(unsafe { mi_set_conversation_security_mode(ctx, ptr::null(), 2) }, -1);
         // Setting an invalid mode value should fail.
-        assert_eq!(mi_set_conversation_security_mode(ctx, room_id_c.as_ptr(), 99), -1);
+        assert_eq!(unsafe { mi_set_conversation_security_mode(ctx, room_id_c.as_ptr(), 99) }, -1);
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_null_safety() {
         // All functions should handle null context gracefully
-        assert_eq!(mi_has_identity(ptr::null_mut()), 0);
-        assert!(mi_get_room_list(ptr::null_mut()).is_null());
-        assert!(mi_poll_events(ptr::null_mut()).is_null());
-        assert_eq!(mi_set_threat_context(ptr::null_mut(), 0), -1);
-        mesh_destroy(ptr::null_mut()); // Should not crash
+        assert_eq!(unsafe { mi_has_identity(ptr::null_mut()) }, 0);
+        assert!(unsafe { mi_get_room_list(ptr::null_mut()) }.is_null());
+        assert!(unsafe { mi_poll_events(ptr::null_mut()) }.is_null());
+        assert_eq!(unsafe { mi_set_threat_context(ptr::null_mut(), 0) }, -1);
+        unsafe { mesh_destroy(ptr::null_mut()) }; // Should not crash
     }
 
     #[test]
@@ -10716,7 +11245,7 @@ mod tests {
             && e.get("data").and_then(|d| d.get("text")).and_then(|t| t.as_str()) == Some("hello group")
         }), "MessageAdded event must be emitted with correct text; events: {events:?}");
 
-        mesh_destroy(ctx_ptr);
+        unsafe { mesh_destroy(ctx_ptr) };
     }
 
     /// Second message in the chain decrypts after the first advanced the
@@ -10780,7 +11309,7 @@ mod tests {
         assert!(texts.contains(&"first"), "first message text must appear");
         assert!(texts.contains(&"second"), "second message text must appear");
 
-        mesh_destroy(ctx_ptr);
+        unsafe { mesh_destroy(ctx_ptr) };
     }
 
     /// Unknown sender (no Sender Key registered) → rejected without panic.
@@ -10800,7 +11329,7 @@ mod tests {
         let ok = unsafe { (*ctx_ptr).process_group_message_sk_frame(&frame) };
         assert!(!ok, "Unknown sender must be rejected");
 
-        mesh_destroy(ctx_ptr);
+        unsafe { mesh_destroy(ctx_ptr) };
     }
 
     /// Corrupted outer `wrapped` ciphertext (wrong symmetric key layer).
@@ -10823,7 +11352,7 @@ mod tests {
         let ok = unsafe { (*ctx_ptr).process_group_message_sk_frame(&frame) };
         assert!(!ok, "Tampered outer ciphertext must be rejected");
 
-        mesh_destroy(ctx_ptr);
+        unsafe { mesh_destroy(ctx_ptr) };
     }
 
     /// Valid outer layer but tampered Ed25519 signature on inner SK message.
@@ -10872,7 +11401,7 @@ mod tests {
         let ok = unsafe { (*ctx_ptr).process_group_message_sk_frame(&frame) };
         assert!(!ok, "Tampered signature must be rejected");
 
-        mesh_destroy(ctx_ptr);
+        unsafe { mesh_destroy(ctx_ptr) };
     }
 
     // ---------------------------------------------------------------------------
@@ -10884,15 +11413,15 @@ mod tests {
     fn make_ctx_with_backup(room_name: &str, passphrase: &str) -> (*mut MeshContext, TempDir, String) {
         let (ctx, dir) = make_ctx();
         let name = CString::new("Alice").unwrap();
-        assert_eq!(mi_create_identity(ctx, name.as_ptr()), 0);
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
 
         // Add a room so the backup contains something.
         let rname = CString::new(room_name).unwrap();
-        let r = mi_create_room(ctx, rname.as_ptr(), ptr::null());
+        let r = unsafe { mi_create_room(ctx, rname.as_ptr(), ptr::null()) };
         assert!(!r.is_null());
 
         let pass_c = CString::new(passphrase).unwrap();
-        let backup_ptr = mi_create_backup(ctx, pass_c.as_ptr(), 0); // standard
+        let backup_ptr = unsafe { mi_create_backup(ctx, pass_c.as_ptr(), 0) }; // standard
         assert!(!backup_ptr.is_null());
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
@@ -10911,15 +11440,15 @@ mod tests {
 
         // Add another room AFTER the backup was made.
         let rname = CString::new("PostBackupRoom").unwrap();
-        mi_create_room(ctx, rname.as_ptr(), ptr::null());
+        unsafe { mi_create_room(ctx, rname.as_ptr(), ptr::null()) };
 
         // Restore the backup — should wipe PostBackupRoom and restore only OldRoom.
         let pass_c = CString::new("secret-passphrase").unwrap();
         let b64_c = CString::new(backup_json).unwrap();
-        let result = mi_import_identity(ctx, b64_c.as_ptr(), pass_c.as_ptr());
+        let result = unsafe { mi_import_identity(ctx, b64_c.as_ptr(), pass_c.as_ptr()) };
         assert_eq!(result, 0, "import should succeed");
 
-        let rooms_ptr = mi_get_room_list(ctx);
+        let rooms_ptr = unsafe { mi_get_room_list(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let rooms_str = unsafe { CStr::from_ptr(rooms_ptr).to_str().unwrap() };
@@ -10928,21 +11457,21 @@ mod tests {
         assert_eq!(rooms.len(), 1, "restore should replace, not merge");
         assert_eq!(rooms[0]["name"], "OldRoom", "only pre-backup room should be present");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_import_identity_malformed_base64_rejected() {
         let (ctx, _dir) = make_ctx();
         let name = CString::new("Alice").unwrap();
-        assert_eq!(mi_create_identity(ctx, name.as_ptr()), 0);
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
 
         let bad_b64 = CString::new("!!!not-base64!!!").unwrap();
         let pass = CString::new("pass").unwrap();
-        let result = mi_import_identity(ctx, bad_b64.as_ptr(), pass.as_ptr());
+        let result = unsafe { mi_import_identity(ctx, bad_b64.as_ptr(), pass.as_ptr()) };
         assert_eq!(result, -1, "malformed base64 must be rejected");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
@@ -10951,10 +11480,10 @@ mod tests {
 
         let b64_c = CString::new(backup_json).unwrap();
         let wrong_pass = CString::new("wrong-pass").unwrap();
-        let result = mi_import_identity(ctx, b64_c.as_ptr(), wrong_pass.as_ptr());
+        let result = unsafe { mi_import_identity(ctx, b64_c.as_ptr(), wrong_pass.as_ptr()) };
         assert_eq!(result, -1, "wrong passphrase must be rejected");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
@@ -10963,24 +11492,24 @@ mod tests {
         let (ctx, _dir) = make_ctx();
         let bad = CString::new("eyJhIjoiYiJ9").unwrap(); // {"a":"b"} in base64
         let pass = CString::new("pass").unwrap();
-        let result = mi_import_identity(ctx, bad.as_ptr(), pass.as_ptr());
+        let result = unsafe { mi_import_identity(ctx, bad.as_ptr(), pass.as_ptr()) };
         assert_eq!(result, -1, "restore without identity must fail");
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_import_identity_json_missing_backup_b64_key_rejected() {
         let (ctx, _dir) = make_ctx();
         let name = CString::new("Alice").unwrap();
-        assert_eq!(mi_create_identity(ctx, name.as_ptr()), 0);
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
 
         // JSON wrapper without the "backup_b64" key.
         let bad_json = CString::new(r#"{"wrong_key":"somevalue"}"#).unwrap();
         let pass = CString::new("pass").unwrap();
-        let result = mi_import_identity(ctx, bad_json.as_ptr(), pass.as_ptr());
+        let result = unsafe { mi_import_identity(ctx, bad_json.as_ptr(), pass.as_ptr()) };
         assert_eq!(result, -1, "missing backup_b64 key must be rejected");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     // ---------------------------------------------------------------------------
@@ -10991,11 +11520,11 @@ mod tests {
     fn test_send_reaction_emits_local_event() {
         let (ctx, _dir) = make_ctx();
         let name = CString::new("Alice").unwrap();
-        assert_eq!(mi_create_identity(ctx, name.as_ptr()), 0);
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
 
         // Create a room and send a message to get a msg_id.
         let room_name = CString::new("Reaction Room").unwrap();
-        let room_ptr = mi_create_room(ctx, room_name.as_ptr(), ptr::null());
+        let room_ptr = unsafe { mi_create_room(ctx, room_name.as_ptr(), ptr::null()) };
         let room_json: serde_json::Value = serde_json::from_str(
             // SAFETY: The pointer was returned by our own FFI function and is
             // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
@@ -11004,11 +11533,11 @@ mod tests {
         let room_id_str = room_json["id"].as_str().unwrap().to_string();
 
         // Drain creation events.
-        let _ = mi_poll_events(ctx);
+        let _ = unsafe { mi_poll_events(ctx) };
 
         let text = CString::new("Hi").unwrap();
-        assert_eq!(mi_send_text_message(ctx, CString::new(room_id_str.as_str()).unwrap().as_ptr(), text.as_ptr()), 0);
-        let events_ptr = mi_poll_events(ctx);
+        assert_eq!(unsafe { mi_send_text_message(ctx, CString::new(room_id_str.as_str()).unwrap().as_ptr(), text.as_ptr()) }, 0);
+        let events_ptr = unsafe { mi_poll_events(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let events_str = unsafe { CStr::from_ptr(events_ptr).to_str().unwrap() };
@@ -11020,11 +11549,11 @@ mod tests {
         let room_id_c = CString::new(room_id_str.as_str()).unwrap();
         let msg_id_c = CString::new(msg_id_str.as_str()).unwrap();
         let emoji_c = CString::new("👍").unwrap();
-        let result = mi_send_reaction(ctx, room_id_c.as_ptr(), msg_id_c.as_ptr(), emoji_c.as_ptr());
+        let result = unsafe { mi_send_reaction(ctx, room_id_c.as_ptr(), msg_id_c.as_ptr(), emoji_c.as_ptr()) };
         assert_eq!(result, 0);
 
         // Poll — should have a ReactionAdded event.
-        let events_ptr = mi_poll_events(ctx);
+        let events_ptr = unsafe { mi_poll_events(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let events_str = unsafe { CStr::from_ptr(events_ptr).to_str().unwrap() };
@@ -11035,34 +11564,34 @@ mod tests {
         assert_eq!(reaction["data"]["msgId"], msg_id_str);
         assert_eq!(reaction["data"]["emoji"], "👍");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]
     fn test_send_reaction_empty_emoji_rejected() {
         let (ctx, _dir) = make_ctx();
         let name = CString::new("Alice").unwrap();
-        assert_eq!(mi_create_identity(ctx, name.as_ptr()), 0);
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
 
         let room_name = CString::new("Reaction Room 2").unwrap();
-        let room_ptr = mi_create_room(ctx, room_name.as_ptr(), ptr::null());
+        let room_ptr = unsafe { mi_create_room(ctx, room_name.as_ptr(), ptr::null()) };
         let room_json: serde_json::Value = serde_json::from_str(
             // SAFETY: The pointer was returned by our own FFI function and is
             // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
             unsafe { CStr::from_ptr(room_ptr).to_str().unwrap() }
         ).unwrap();
         let room_id_str = room_json["id"].as_str().unwrap().to_string();
-        let _ = mi_poll_events(ctx);
+        let _ = unsafe { mi_poll_events(ctx) };
 
         // Empty emoji should be rejected (-1).
         let room_id_c = CString::new(room_id_str.as_str()).unwrap();
         let msg_id_c = CString::new("aabbccdd").unwrap();
         let emoji_c = CString::new("").unwrap();
-        let result = mi_send_reaction(ctx, room_id_c.as_ptr(), msg_id_c.as_ptr(), emoji_c.as_ptr());
+        let result = unsafe { mi_send_reaction(ctx, room_id_c.as_ptr(), msg_id_c.as_ptr(), emoji_c.as_ptr()) };
         assert_eq!(result, -1, "empty emoji must be rejected");
 
         // No ReactionAdded event should have been emitted.
-        let events_ptr = mi_poll_events(ctx);
+        let events_ptr = unsafe { mi_poll_events(ctx) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let events_str = unsafe { CStr::from_ptr(events_ptr).to_str().unwrap() };
@@ -11072,7 +11601,7 @@ mod tests {
             "No ReactionAdded should be emitted for empty emoji"
         );
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 
     // ---------------------------------------------------------------------------
@@ -11090,8 +11619,8 @@ mod tests {
         let (bob, _bob_dir) = make_ctx();
         let alice_name = CString::new("Alice").unwrap();
         let bob_name = CString::new("Bob").unwrap();
-        assert_eq!(mi_create_identity(alice, alice_name.as_ptr()), 0);
-        assert_eq!(mi_create_identity(bob, bob_name.as_ptr()), 0);
+        assert_eq!(unsafe { mi_create_identity(alice, alice_name.as_ptr()) }, 0);
+        assert_eq!(unsafe { mi_create_identity(bob, bob_name.as_ptr()) }, 0);
 
         // Exchange identity keys via pairing (simulated: add each other to contacts).
         let (alice_ed, alice_x, alice_id_hex) = {
@@ -11148,7 +11677,7 @@ mod tests {
 
         // Step 1: Alice initiates the WireGuard handshake.
         let bob_hex = CString::new(bob_id_hex.as_str()).unwrap();
-        let init_resp_ptr = mi_wg_initiate_handshake(alice, bob_hex.as_ptr());
+        let init_resp_ptr = unsafe { mi_wg_initiate_handshake(alice, bob_hex.as_ptr()) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let init_resp_str = unsafe { CStr::from_ptr(init_resp_ptr).to_str().unwrap() };
@@ -11170,7 +11699,7 @@ mod tests {
         // Step 2: Bob responds to Alice's handshake.
         let alice_hex = CString::new(alice_id_hex.as_str()).unwrap();
         let init_hex_c = CString::new(init_hex_str).unwrap();
-        let respond_ptr = mi_wg_respond_to_handshake(bob, alice_hex.as_ptr(), init_hex_c.as_ptr());
+        let respond_ptr = unsafe { mi_wg_respond_to_handshake(bob, alice_hex.as_ptr(), init_hex_c.as_ptr()) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let respond_str = unsafe { CStr::from_ptr(respond_ptr).to_str().unwrap() };
@@ -11181,7 +11710,7 @@ mod tests {
 
         // Step 3: Alice completes the handshake with Bob's response.
         let response_hex_c = CString::new(response_hex_str).unwrap();
-        let complete_ptr = mi_wg_complete_handshake(alice, bob_hex.as_ptr(), response_hex_c.as_ptr());
+        let complete_ptr = unsafe { mi_wg_complete_handshake(alice, bob_hex.as_ptr(), response_hex_c.as_ptr()) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let complete_str = unsafe { CStr::from_ptr(complete_ptr).to_str().unwrap() };
@@ -11216,8 +11745,8 @@ mod tests {
             );
         }
 
-        mesh_destroy(alice);
-        mesh_destroy(bob);
+        unsafe { mesh_destroy(alice) };
+        unsafe { mesh_destroy(bob) };
     }
 
     /// Completing a handshake without a prior initiation must fail.
@@ -11225,17 +11754,17 @@ mod tests {
     fn test_wg_complete_without_initiation_rejected() {
         let (ctx, _dir) = make_ctx();
         let name = CString::new("Alice").unwrap();
-        assert_eq!(mi_create_identity(ctx, name.as_ptr()), 0);
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
 
         let fake_peer_hex = CString::new("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20").unwrap();
         let fake_response_hex = CString::new("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20").unwrap();
-        let result_ptr = mi_wg_complete_handshake(ctx, fake_peer_hex.as_ptr(), fake_response_hex.as_ptr());
+        let result_ptr = unsafe { mi_wg_complete_handshake(ctx, fake_peer_hex.as_ptr(), fake_response_hex.as_ptr()) };
         // SAFETY: The pointer was returned by our own FFI function and is
         // guaranteed to be a valid NUL-terminated string for the lifetime of ctx.
         let result_str = unsafe { CStr::from_ptr(result_ptr).to_str().unwrap() };
         let result_json: serde_json::Value = serde_json::from_str(result_str).unwrap();
         assert!(result_json.get("error").is_some(), "complete without initiation must return error");
 
-        mesh_destroy(ctx);
+        unsafe { mesh_destroy(ctx) };
     }
 }

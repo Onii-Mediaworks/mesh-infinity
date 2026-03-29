@@ -177,12 +177,20 @@ impl NetworkType {
     /// Whether this group type uses ring signatures for
     /// membership privacy (§8.7.7 Step 5).
     ///
-    /// Private and Closed groups use ring signatures so that
-    /// routing nodes can't determine who is a member.
-    /// Open and Public groups don't need this because
-    /// membership is not secret.
+    /// Private and Closed groups SHOULD use AOS Linkable Ring Signatures
+    /// (§3.5.2) so routing nodes cannot determine group membership.
+    /// Open and Public groups don't need this because membership is not secret.
+    ///
+    /// **Implementation status: NOT YET IMPLEMENTED.**  The LSAG ring signature
+    /// scheme required by §3.5.2 has not been built yet.  This function returns
+    /// `false` to accurately reflect the current security level rather than
+    /// advertising a property we do not yet provide.  When LSAG is implemented,
+    /// this will return `true` for Private/Closed and the callers should gate
+    /// the ring-sign path on the result.
     pub fn uses_ring_signatures(&self) -> bool {
-        matches!(self, Self::Private | Self::Closed)
+        // TODO(§3.5.2): implement LSAG ring signatures and change to:
+        //   matches!(self, Self::Private | Self::Closed)
+        false
     }
 
     /// Whether member count is visible to non-members.
@@ -561,8 +569,10 @@ mod tests {
 
     #[test]
     fn test_network_type_properties() {
-        assert!(NetworkType::Private.uses_ring_signatures());
-        assert!(NetworkType::Closed.uses_ring_signatures());
+        // Ring signatures are not yet implemented (§3.5.2 TODO).
+        // All network types return false until LSAG is built.
+        assert!(!NetworkType::Private.uses_ring_signatures());
+        assert!(!NetworkType::Closed.uses_ring_signatures());
         assert!(!NetworkType::Open.uses_ring_signatures());
         assert!(!NetworkType::Public.uses_ring_signatures());
 
