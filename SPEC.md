@@ -1903,26 +1903,80 @@ SSDP packets reach the gateway and may be logged by consumer routers. Disabled b
 
 #### 4.9.3 Local Broadcast / Subnet Probe
 
-A direct broadcast to the subnet broadcast address carrying a minimal presence packet. Works on networks where multicast is filtered.
+A direct UDP broadcast to 255.255.255.255:7235 carrying a minimal presence packet.
+Works on networks where multicast is filtered.
 
-```
-MeshPresenceBeacon {
-    version:    u8,
-    wg_pubkey:  [u8; 32],   // mesh identity WireGuard public key
-    port:       u16,         // WireGuard listen port
-    nonce:      [u8; 8],     // random per beacon — prevents replay correlation
-}
+**Broadcast packet (JSON, ≤128 bytes):**
+```json
+{"v":1,"type":"mi_presence","clearnet_port":<N>,"ts":<unix_seconds>}
 ```
 
-Broadcast interval: 60 seconds. Nodes respond with unicast reply to avoid amplification. The WireGuard public key is stable per install — nonce rotation prevents beacon-content tracking but the pubkey itself is a persistent identifier on the segment.
+No cryptographic material is included. The broadcast reveals only that a Mesh Infinity
+node is present on this network segment — a passive attacker learns nothing about who
+the user is or which account/identity is in use.
+
+**Identity exchange** happens through a separate TCP challenge-response handshake
+(§4.9.6). That handshake requires active effort (a logged TCP connection), preventing
+passive discovery of user identity from a broadcast sniff.
+
+Broadcast interval: 5 seconds (throttled). The source IP and clearnet_port allow
+recipients to initiate the §4.9.6 handshake if desired.
 
 #### 4.9.4 Layer 2 Ethernet Discovery
 
 Covered in §5.14.2 (raw Ethernet custom EtherType). The correct mechanism for fully IP-free LAN discovery.
 
-#### 4.9.5 Three-Layer Model and Trust
+#### 4.9.5 Privacy Model for LAN Discovery
 
-All LAN discovery mechanisms advertise the **mesh identity WireGuard public key** (Layer 1) only. Mask-level keys and peer IDs are never included. Nodes discovered via LAN mechanisms are `Unverified` (see §4.1 trust table) until normal pairing occurs.
+LAN broadcasts reveal **only presence** — that a Mesh Infinity node exists on the
+segment — never identity. No WireGuard key, Ed25519 key, peer ID, display name, or
+any other identity-linked material is included in any broadcast or multicast packet.
+
+Key disclosure requires **active effort**: an observer must initiate a TCP
+challenge-response (§4.9.6), which is a non-passive, logged act. This prevents
+passive traffic sniffing from building a persistent identifier for any node.
+
+Nodes discovered via LAN mechanisms are `Unverified` (see §4.1 trust table) until
+normal pairing occurs.
+
+#### 4.9.6 LAN Discovery Challenge-Response Handshake
+
+After receiving a presence broadcast (§4.9.3), a node that wishes to identify the
+sender initiates a short-lived TCP connection to `<src_ip>:<clearnet_port>`.
+
+**Step 1 — Discover request** (initiator → responder):
+```json
+{"type":"mi_discover","nonce":"<32-byte hex>"}
+```
+The nonce is freshly generated for each handshake (CSPRNG).
+
+**Step 2 — Discover acknowledgement** (responder → initiator):
+```json
+{
+  "type":   "mi_discover_ack",
+  "wg_pub": "<32-byte hex>",
+  "ed_pub": "<32-byte hex>",
+  "sig":    "<64-byte hex>"
+}
+```
+`sig` = Ed25519_sign(ed25519_signing_key, `"meshinfinity-lan-discover-v1"` ‖ nonce_bytes)
+
+**Verification (initiator):**
+1. Verify the Ed25519 signature over the domain-separated nonce.
+2. If invalid: discard response silently.
+3. If valid: look up `wg_pub` in the local contact store.
+   - Known contact → update their clearnet endpoint, emit `PeerUpdated`.
+   - Unknown → add `{wgPub, edPub, address}` to the discovery cache so the UI
+     can offer pairing.
+
+**Responder behaviour:**
+- Emit a `DiscoveryRequest` event (logged: `{fromAddress}`) so the user can see
+  who probed their node.
+- Close the connection after sending the ack — the discovery socket is not promoted
+  to a long-lived identified connection.
+
+**Cooldown:** the initiator will not re-probe the same endpoint more than once per
+60 seconds, preventing amplification from a fast-broadcasting peer.
 
 ---
 
