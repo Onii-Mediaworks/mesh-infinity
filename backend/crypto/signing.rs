@@ -87,6 +87,12 @@ pub const DOMAIN_CANCELLATION: &[u8] = b"meshinfinity-cancellation-v1";
 /// being replayed as any other signed type.
 pub const DOMAIN_PAIRING_HELLO: &[u8] = b"meshinfinity-pairing-hello-v1";
 
+/// Domain separator for LAN discovery challenge-response (§4.9.5).
+///
+/// Signed by the responder over the 32-byte nonce sent by the initiator.
+/// Prevents a recorded ack from being replayed as any other signed type.
+pub const DOMAIN_LAN_DISCOVER: &[u8] = b"meshinfinity-lan-discover-v1";
+
 // ---------------------------------------------------------------------------
 // Signing
 // ---------------------------------------------------------------------------
