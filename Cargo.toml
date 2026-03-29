@@ -129,6 +129,11 @@ vpn-routing = []
 
 [dependencies]
 
+# dirs-next — platform-appropriate user data/config directory paths.
+# Used by mesh_init() to resolve the default config directory when the caller
+# passes a null config_path.
+dirs-next = "2"
+
 # --- Core async runtime and utilities ----------------------------------------
 
 # tokio — the async runtime for Rust.

@@ -4823,22 +4823,87 @@ fn c_str_to_string(ptr: *const c_char) -> Option<String> {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-/// Initialize the Mesh Infinity backend. Returns a context handle.
+/// Configuration struct passed by Dart to mesh_init().
+///
+/// Layout must match the Dart `FfiMeshConfig` Struct exactly (field order,
+/// alignment, sizes).  Both sides use `#[repr(C)]` / `@Packed` to ensure
+/// a stable ABI.  See frontend/lib/backend/backend_bridge.dart for the
+/// field-by-field documentation.
+#[repr(C)]
+pub struct FfiMeshConfig {
+    /// Pointer to a NUL-terminated UTF-8 string: the config directory path.
+    /// May be null; Rust falls back to a platform default.
+    pub config_path: *const c_char,
+
+    /// Logging verbosity: 0=off 1=error 2=info 3=debug 4=trace.
+    pub log_level: u8,
+    /// 1 = route traffic through Tor, 0 = disabled.
+    pub enable_tor: u8,
+    /// 1 = allow direct clearnet connections, 0 = disabled.
+    pub enable_clearnet: u8,
+    /// 1 = enable local-network peer discovery (mDNS/UDP broadcast).
+    pub mesh_discovery: u8,
+    /// 1 = allow this node to relay traffic for other peers.
+    pub allow_relays: u8,
+    /// 1 = route traffic through I2P garlic routing, 0 = disabled.
+    pub enable_i2p: u8,
+    /// 1 = enable BLE peer discovery and transport, 0 = disabled.
+    pub enable_bluetooth: u8,
+    /// 1 = enable SDR/RF transport (LoRa etc.), 0 = disabled.
+    pub enable_rf: u8,
+    /// UDP port for the WireGuard tunnel.  0 = let the OS pick a free port.
+    pub wireguard_port: u16,
+    /// Maximum peers to maintain.  0 = no limit.
+    pub max_peers: u32,
+    /// Maximum simultaneous network connections.  0 = no limit.
+    pub max_connections: u32,
+    /// Node operating mode: 0=leaf, 1=relay, 2=gateway.
+    pub node_mode: u8,
+}
+
+/// Initialize the Mesh Infinity backend and return an opaque context handle.
+///
+/// `config` must point to a fully-initialised `FfiMeshConfig` struct.  Dart
+/// allocates this with `calloc<FfiMeshConfig>()` (zero-initialised) and fills
+/// every field before calling mesh_init, so any field not explicitly set is 0.
+///
+/// Returns null on failure; call `mi_last_error_message(null)` to retrieve a
+/// human-readable error string stored in thread-local storage.
 #[no_mangle]
-pub extern "C" fn mesh_init(data_dir: *const c_char) -> *mut MeshContext {
-    // SAFETY: The FFI caller guarantees these pointers are non-null
-    // and point to valid NUL-terminated C strings for this call.
-    let dir = unsafe {
-        match c_str_to_str(data_dir) {
+pub extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
+    // --- Validate the config pointer -------------------------------------
+    if config.is_null() {
+        set_preinit_error("mesh_init: config pointer is null");
+        return ptr::null_mut();
+    }
+
+    // SAFETY: caller (Dart) guarantees config is a valid, aligned, fully
+    // initialised FfiMeshConfig for the duration of this call.
+    let cfg = unsafe { &*config };
+
+    // --- Resolve the config directory path --------------------------------
+    // If the Dart caller supplied a non-null config_path, use it.
+    // Otherwise fall back to a sensible platform default so the binary
+    // can run without any configuration.
+    let dir = if cfg.config_path.is_null() {
+        // Default: $HOME/.mesh-infinity on Linux/macOS, %APPDATA%\mesh-infinity on Windows.
+        dirs_next::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("mesh-infinity")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        // SAFETY: cfg.config_path is non-null and caller guarantees a valid NUL-terminated string.
+        match unsafe { c_str_to_str(cfg.config_path) } {
             Some(s) => s.to_string(),
-            None => return ptr::null_mut(),
+            None => {
+                set_preinit_error("mesh_init: config_path is not valid UTF-8");
+                return ptr::null_mut();
+            }
         }
     };
 
-    // Create data directory if it doesn't exist.
-    // Log on failure: mesh_init returns a raw pointer so we cannot use ?,
-    // but a failed mkdir means vault operations will also fail and the user
-    // should see a diagnostic message.
+    // --- Create the data directory if needed ------------------------------
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("[mesh_init] WARNING: failed to create data directory {dir:?}: {e}");
     }
@@ -9673,8 +9738,41 @@ pub extern "C" fn mi_duress_erase(ctx: *mut MeshContext) -> i32 {
     0
 }
 
+/// Thread-local storage for errors that occur before a MeshContext exists
+/// (e.g. mi_init() failure).  mi_last_error_message() reads from here when
+/// ctx is null; the context-owned last_error is used for all post-init errors.
+thread_local! {
+    static PREINIT_ERROR: std::cell::RefCell<Option<CString>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Store an error string in the pre-init thread-local so the caller can
+/// retrieve it via mi_last_error_message(null) after a failed mi_init().
+pub(crate) fn set_preinit_error(msg: &str) {
+    PREINIT_ERROR.with(|e| {
+        *e.borrow_mut() = CString::new(msg).ok();
+    });
+}
+
+/// Return the last error string.
+///
+/// - If `ctx` is non-null: returns the error stored in the context (post-init errors).
+/// - If `ctx` is null: returns the pre-init error stored in thread-local storage.
+///
+/// The Dart binding calls this with no arguments (zero-arg ABI) when ctx is
+/// null, so the Rust side must handle null gracefully.  The returned pointer is
+/// valid until the next FFI call on this thread.
 #[no_mangle]
 pub extern "C" fn mi_last_error_message(ctx: *mut MeshContext) -> *const c_char {
+    if ctx.is_null() {
+        // Read from thread-local pre-init error store.
+        return PREINIT_ERROR.with(|e| {
+            e.borrow()
+                .as_ref()
+                .map(|s| s.as_ptr())
+                .unwrap_or(ptr::null())
+        });
+    }
     mi_get_last_error(ctx)
 }
 
