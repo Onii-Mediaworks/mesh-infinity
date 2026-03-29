@@ -28,5 +28,19 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Camera: QR code scanning for peer pairing -->
+	<key>NSCameraUsageDescription</key>
+	<string>Camera access is required to scan peer pairing QR codes.</string>
+	<!-- Bluetooth: mesh networking with nearby peers -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth is used to discover and connect to nearby mesh peers.</string>
+	<!-- Local network: mDNS peer discovery on LAN -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Local network access is required to discover peers on the same network via mDNS.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mesh-infinity._tcp</string>
+		<string>_mesh-infinity._udp</string>
+	</array>
 </dict>
 </plist>

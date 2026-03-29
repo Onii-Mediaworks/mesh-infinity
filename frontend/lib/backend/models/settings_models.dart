@@ -9,8 +9,9 @@ class SettingsModel {
     this.enableI2p = false,
     this.enableBluetooth = false,
     this.enableRf = false,
-    this.pairingCode = '',
+    this.pairingCode,
     this.localPeerId = '',
+    this.clearnetPort = 7234,
   });
 
   final int nodeMode;
@@ -24,8 +25,12 @@ class SettingsModel {
   final bool enableI2p;
   final bool enableBluetooth;
   final bool enableRf;
-  final String pairingCode;
+  /// Null means the backend has not configured a pairing code yet.
+  /// Empty string is distinct from null (code explicitly set to '').
+  final String? pairingCode;
   final String localPeerId;
+  /// TCP listen port for the clearnet transport (default 7234).
+  final int clearnetPort;
 
   String get nodeModeLabel => switch (nodeMode) {
     0 => 'Client',
@@ -34,19 +39,28 @@ class SettingsModel {
     _ => 'Unknown',
   };
 
-  factory SettingsModel.fromJson(Map<String, dynamic> json) => SettingsModel(
-    nodeMode: json['nodeMode'] as int? ?? 0,
-    enableTor: json['enableTor'] as bool? ?? false,
-    enableClearnet: json['enableClearnet'] as bool? ?? false,
-    clearnetFallback: json['clearnetFallback'] as bool? ?? false,
-    meshDiscovery: json['meshDiscovery'] as bool? ?? false,
-    allowRelays: json['allowRelays'] as bool? ?? false,
-    enableI2p: json['enableI2p'] as bool? ?? false,
-    enableBluetooth: json['enableBluetooth'] as bool? ?? false,
-    enableRf: json['enableRf'] as bool? ?? false,
-    pairingCode: json['pairingCode'] as String? ?? '',
-    localPeerId: json['localPeerId'] as String? ?? '',
-  );
+  factory SettingsModel.fromJson(Map<String, dynamic> json) {
+    // M3: Validate nodeMode is within known range (0=client, 1=server, 2=dual).
+    // Out-of-range values from future backend versions are clamped to 0 rather
+    // than silently stored as an invalid enum value.
+    final rawMode = json['nodeMode'] as int? ?? 0;
+    final nodeMode = (rawMode >= 0 && rawMode <= 2) ? rawMode : 0;
+    return SettingsModel(
+      nodeMode: nodeMode,
+      enableTor: json['enableTor'] as bool? ?? false,
+      enableClearnet: json['enableClearnet'] as bool? ?? false,
+      clearnetFallback: json['clearnetFallback'] as bool? ?? false,
+      meshDiscovery: json['meshDiscovery'] as bool? ?? false,
+      allowRelays: json['allowRelays'] as bool? ?? false,
+      enableI2p: json['enableI2p'] as bool? ?? false,
+      enableBluetooth: json['enableBluetooth'] as bool? ?? false,
+      enableRf: json['enableRf'] as bool? ?? false,
+      // M4: Preserve null vs. empty-string distinction for pairingCode.
+      pairingCode: json['pairingCode'] as String?,
+      localPeerId: json['localPeerId'] as String? ?? '',
+      clearnetPort: (json['clearnetPort'] as num?)?.toInt() ?? 7234,
+    );
+  }
 
   SettingsModel copyWith({
     int? nodeMode,
@@ -60,6 +74,7 @@ class SettingsModel {
     bool? enableRf,
     String? pairingCode,
     String? localPeerId,
+    int? clearnetPort,
   }) => SettingsModel(
     nodeMode: nodeMode ?? this.nodeMode,
     enableTor: enableTor ?? this.enableTor,
@@ -72,6 +87,7 @@ class SettingsModel {
     enableRf: enableRf ?? this.enableRf,
     pairingCode: pairingCode ?? this.pairingCode,
     localPeerId: localPeerId ?? this.localPeerId,
+    clearnetPort: clearnetPort ?? this.clearnetPort,
   );
 }
 

@@ -1,395 +1,382 @@
-//! Encrypted backup/restore subsystem.
+//! Backup Encryption (§3.7.4)
 //!
-//! Backs up long-lived identity/trust/network metadata while intentionally
-//! excluding transient session/message material so forward secrecy guarantees are
-//! not weakened by backup files.
+//! Both backup types use the same encryption envelope:
+//! ```text
+//! EncryptedBackup {
+//!     version:         u32,
+//!     backup_type:     u8,        // 0 = standard, 1 = extended
+//!     argon2id_salt:   [u8; 32],
+//!     argon2id_params: { m_cost, t_cost, p_cost },
+//!     nonce:           [u8; 12],
+//!     ciphertext:      Vec<u8>,   // ChaCha20-Poly1305 of BackupPayload
+//! }
+//! ```
 
-use argon2::{Argon2, ParamsBuilder};
-use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use argon2::{Algorithm, Argon2, Params, Version};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    ChaCha20Poly1305, Nonce,
+};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use zeroize::Zeroizing;
 
-use super::secmem::{SecureKey32, SecureMemory};
-use crate::core::error::{MeshInfinityError, Result};
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-/// Encrypted backup containing identity and trust data
-/// DOES NOT include message history to maintain PFS
+/// Minimum Argon2id parameters (§3.7.4).
+const MIN_M_COST: u32 = 65536; // 64 MB
+const MIN_T_COST: u32 = 3;
+const MIN_P_COST: u32 = 4;
+
+/// Minimum passphrase length for local backups.
+const MIN_PASSPHRASE_LOCAL: usize = 8;
+/// Minimum passphrase length for cloud-synced backups (§3.7.4).
+const MIN_PASSPHRASE_CLOUD: usize = 16;
+
+/// Current backup format version.
+const BACKUP_VERSION: u32 = 1;
+
+// ---------------------------------------------------------------------------
+// Error types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum BackupError {
+    #[error("Passphrase too short (need {required}, got {provided})")]
+    PassphraseTooShort { required: usize, provided: usize },
+    #[error("Argon2id derivation failed: {0}")]
+    Argon2(String),
+    #[error("Encryption failed")]
+    Encrypt,
+    #[error("Decryption failed — wrong passphrase or corrupted backup")]
+    Decrypt,
+    #[error("Invalid backup format")]
+    InvalidFormat,
+    #[error("Argon2id parameters below minimum")]
+    WeakParams,
+    #[error("Unknown backup version {0}")]
+    UnknownVersion(u32),
+    #[error("Serialization: {0}")]
+    Serialize(String),
+}
+
+// ---------------------------------------------------------------------------
+// Backup types
+// ---------------------------------------------------------------------------
+
+/// Backup type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum BackupType {
+    /// Standard: identity + trust graph + contacts. Small (<1 MB).
+    Standard = 0,
+    /// Extended: everything in standard + message history + contact keys.
+    Extended = 1,
+}
+
+/// The encrypted backup envelope (serialized to disk / cloud).
 #[derive(Serialize, Deserialize)]
 pub struct EncryptedBackup {
-    /// Version for future compatibility
-    version: u32,
-
-    /// Salt for key derivation from passphrase
-    salt: [u8; 32],
-
-    /// Nonce for ChaCha20-Poly1305
-    nonce: [u8; 12],
-
-    /// Encrypted backup data
-    ciphertext: Vec<u8>,
-
-    /// Argon2 parameters (stored separately for transparency)
-    argon2_mem_cost: u32,
-    argon2_time_cost: u32,
-    argon2_parallelism: u32,
+    pub version: u32,
+    pub backup_type: u8,
+    pub argon2id_salt: Vec<u8>,
+    pub m_cost: u32,
+    pub t_cost: u32,
+    pub p_cost: u32,
+    pub nonce: Vec<u8>,
+    pub ciphertext: Vec<u8>,
 }
 
-/// Plaintext backup contents
-/// Contains only identity and trust data, NOT message history
-#[derive(Serialize, Deserialize)]
-struct BackupContents {
-    /// User's identity keypair (ed25519)
-    identity_private_key: Vec<u8>,
+// ---------------------------------------------------------------------------
+// Create backup
+// ---------------------------------------------------------------------------
 
-    identity_public_key: Vec<u8>,
-
-    /// Web of Trust data
-    trust_store: TrustStore,
-
-    /// Network map (known peers, not conversations)
-    network_map: NetworkMap,
-
-    /// Settings and preferences
-    settings: BackupSettings,
-
-    /// Timestamp of backup creation
-    created_at: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct TrustStore {
-    /// Peer ID → Trust level
-    trust_levels: HashMap<String, u8>,
-
-    /// Peer ID → Shared verification data
-    verification_data: HashMap<String, Vec<u8>>,
-
-    /// Peer ID → Trust endorsements from others
-    endorsements: HashMap<String, Vec<TrustEndorsement>>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct TrustEndorsement {
-    endorser_id: String,
-    target_id: String,
-    trust_level: u8,
-    signature: Vec<u8>,
-    timestamp: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct NetworkMap {
-    /// Known peers and their metadata (NOT conversation history)
-    peers: HashMap<String, PeerMetadata>,
-
-    /// Relay nodes
-    relays: Vec<RelayNode>,
-
-    /// Bootstrap nodes
-    bootstrap_nodes: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct PeerMetadata {
-    peer_id: String,
-    display_name: Option<String>,
-    public_key: Vec<u8>,
-    last_seen: u64,
-    available_transports: Vec<String>,
-    // NOTE: No message history, no session keys
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct RelayNode {
-    node_id: String,
-    onion_address: Option<String>,
-    i2p_address: Option<String>,
-    clearnet_address: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct BackupSettings {
-    pub display_name: Option<String>,
-    pub preferred_transports: Vec<String>,
-    pub enable_tor: bool,
-    pub enable_i2p: bool,
-    pub enable_clearnet: bool,
-    // Other non-sensitive settings
-}
-
-pub struct BackupManager {
-    /// Argon2 parameters for key derivation
-    argon2_mem_cost: u32,
-    argon2_time_cost: u32,
-    argon2_parallelism: u32,
-}
-
-impl Default for BackupManager {
-    /// Create backup manager with hardened Argon2 defaults.
-    fn default() -> Self {
-        Self {
-            // High security parameters
-            // Memory cost: 64 MB
-            argon2_mem_cost: 65536,
-            // Time cost: 3 iterations
-            argon2_time_cost: 3,
-            // Parallelism: 4 threads
-            argon2_parallelism: 4,
-        }
-    }
-}
-
-impl BackupManager {
-    /// Construct backup manager with default key-derivation parameters.
-    pub fn new() -> Self {
-        Self::default()
+/// Create an encrypted backup from a plaintext payload.
+///
+/// Enforces minimum passphrase length based on whether the backup
+/// is destined for cloud storage.
+pub fn create_backup(
+    payload: &[u8],
+    passphrase: &[u8],
+    backup_type: BackupType,
+    is_cloud: bool,
+) -> Result<EncryptedBackup, BackupError> {
+    // Enforce passphrase length (§3.7.4)
+    let min_len = if is_cloud {
+        MIN_PASSPHRASE_CLOUD
+    } else {
+        MIN_PASSPHRASE_LOCAL
+    };
+    if passphrase.len() < min_len {
+        return Err(BackupError::PassphraseTooShort {
+            required: min_len,
+            provided: passphrase.len(),
+        });
     }
 
-    /// Create encrypted backup from identity and trust data
-    /// IMPORTANT: Does NOT include message history
-    pub fn create_backup(
-        &self,
-        passphrase: &str,
-        identity_keypair: &[u8], // ed25519 keypair (64 bytes)
-        trust_store: TrustStore,
-        network_map: NetworkMap,
-        settings: BackupSettings,
-    ) -> Result<EncryptedBackup> {
-        // Validate passphrase strength
-        if passphrase.len() < 12 {
-            return Err(MeshInfinityError::CryptoError(
-                "Passphrase must be at least 12 characters".to_string(),
-            ));
-        }
+    // Generate salt
+    let mut salt = vec![0u8; 32];
+    OsRng.fill_bytes(&mut salt);
 
-        // Split keypair
-        let (secret_key, public_key) = identity_keypair.split_at(32);
+    // Derive key via Argon2id
+    let key = derive_backup_key(passphrase, &salt, MIN_M_COST, MIN_T_COST, MIN_P_COST)?;
 
-        // Create backup contents
-        let contents = BackupContents {
-            identity_private_key: secret_key.to_vec(),
-            identity_public_key: public_key.to_vec(),
-            trust_store,
-            network_map,
-            settings,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        };
+    // Generate nonce
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
 
-        // Serialize
-        let plaintext = serde_json::to_vec(&contents)
-            .map_err(|e| MeshInfinityError::SerializationError(e.to_string()))?;
+    // Encrypt
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&*key).map_err(|_| BackupError::Encrypt)?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, payload)
+        .map_err(|_| BackupError::Encrypt)?;
 
-        // Generate salt
-        let mut salt = [0u8; 32];
-        OsRng.fill_bytes(&mut salt);
-
-        // Derive encryption key from passphrase
-        let encryption_key = self.derive_key_from_passphrase(passphrase, &salt)?;
-
-        // Generate nonce
-        let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        // Encrypt with ChaCha20-Poly1305
-        let key = Key::from_slice(encryption_key.as_ref().as_bytes());
-        let cipher = ChaCha20Poly1305::new(key);
-        let ciphertext = cipher
-            .encrypt(nonce, plaintext.as_slice())
-            .map_err(|_| MeshInfinityError::CryptoError("Encryption failed".to_string()))?;
-
-        Ok(EncryptedBackup {
-            version: 1,
-            salt,
-            nonce: nonce_bytes,
-            ciphertext,
-            argon2_mem_cost: self.argon2_mem_cost,
-            argon2_time_cost: self.argon2_time_cost,
-            argon2_parallelism: self.argon2_parallelism,
-        })
-    }
-
-    /// Restore from encrypted backup
-    /// Returns identity and trust data, NOT message history
-    pub fn restore_backup(
-        &self,
-        backup: &EncryptedBackup,
-        passphrase: &str,
-    ) -> Result<(Vec<u8>, TrustStore, NetworkMap, BackupSettings)> {
-        // Check version
-        if backup.version != 1 {
-            return Err(MeshInfinityError::CryptoError(
-                "Unsupported backup version".to_string(),
-            ));
-        }
-
-        // Derive decryption key
-        let decryption_key = self.derive_key_from_passphrase(passphrase, &backup.salt)?;
-
-        // Decrypt
-        let key = Key::from_slice(decryption_key.as_ref().as_bytes());
-        let cipher = ChaCha20Poly1305::new(key);
-        let nonce = Nonce::from_slice(&backup.nonce);
-
-        let plaintext = cipher
-            .decrypt(nonce, backup.ciphertext.as_slice())
-            .map_err(|_| {
-                MeshInfinityError::AuthError("Invalid passphrase or corrupted backup".to_string())
-            })?;
-
-        // Deserialize
-        let contents: BackupContents = serde_json::from_slice(&plaintext)
-            .map_err(|e| MeshInfinityError::DeserializationError(e.to_string()))?;
-
-        // Reconstruct keypair
-        let mut keypair = Vec::with_capacity(64);
-        keypair.extend_from_slice(&contents.identity_private_key);
-        keypair.extend_from_slice(&contents.identity_public_key);
-
-        let trust_store = contents.trust_store.clone();
-        let network_map = contents.network_map.clone();
-        let settings = contents.settings.clone();
-
-        Ok((keypair, trust_store, network_map, settings))
-    }
-
-    /// Export backup to encrypted file
-    pub fn export_to_file(&self, backup: &EncryptedBackup, path: &std::path::Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(backup)
-            .map_err(|e| MeshInfinityError::SerializationError(e.to_string()))?;
-
-        std::fs::write(path, json).map_err(|e| {
-            MeshInfinityError::CryptoError(format!("Failed to write backup: {}", e))
-        })?;
-
-        Ok(())
-    }
-
-    /// Import backup from encrypted file
-    /// Deserialize encrypted backup payload from a JSON file.
-    pub fn import_from_file(&self, path: &std::path::Path) -> Result<EncryptedBackup> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| MeshInfinityError::CryptoError(format!("Failed to read backup: {}", e)))?;
-
-        let backup = serde_json::from_str(&json)
-            .map_err(|e| MeshInfinityError::DeserializationError(e.to_string()))?;
-
-        Ok(backup)
-    }
-
-    /// Derive encryption key from passphrase using Argon2
-    fn derive_key_from_passphrase(
-        &self,
-        passphrase: &str,
-        salt: &[u8; 32],
-    ) -> Result<SecureMemory<SecureKey32>> {
-        let params = ParamsBuilder::new()
-            .m_cost(self.argon2_mem_cost)
-            .t_cost(self.argon2_time_cost)
-            .p_cost(self.argon2_parallelism)
-            .build()
-            .map_err(|e| MeshInfinityError::CryptoError(format!("Argon2 params: {}", e)))?;
-
-        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-
-        let mut key = [0u8; 32];
-        argon2
-            .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-            .map_err(|e| MeshInfinityError::CryptoError(format!("Key derivation failed: {}", e)))?;
-
-        SecureKey32::new(key).map_err(|_| {
-            MeshInfinityError::CryptoError("Secure memory allocation failed".to_string())
-        })
-    }
+    Ok(EncryptedBackup {
+        version: BACKUP_VERSION,
+        backup_type: backup_type as u8,
+        argon2id_salt: salt,
+        m_cost: MIN_M_COST,
+        t_cost: MIN_T_COST,
+        p_cost: MIN_P_COST,
+        nonce: nonce_bytes.to_vec(),
+        ciphertext,
+    })
 }
+
+// ---------------------------------------------------------------------------
+// Restore backup
+// ---------------------------------------------------------------------------
+
+/// Decrypt and restore a backup.
+pub fn restore_backup(
+    backup: &EncryptedBackup,
+    passphrase: &[u8],
+) -> Result<(Vec<u8>, BackupType), BackupError> {
+    // Validate version
+    if backup.version > BACKUP_VERSION {
+        return Err(BackupError::UnknownVersion(backup.version));
+    }
+
+    // Validate parameters
+    if backup.m_cost < MIN_M_COST || backup.t_cost < MIN_T_COST || backup.p_cost < MIN_P_COST {
+        return Err(BackupError::WeakParams);
+    }
+
+    // Derive key
+    let key = derive_backup_key(
+        passphrase,
+        &backup.argon2id_salt,
+        backup.m_cost,
+        backup.t_cost,
+        backup.p_cost,
+    )?;
+
+    // Validate nonce length (ChaCha20-Poly1305 requires exactly 12 bytes).
+    if backup.nonce.len() != 12 {
+        return Err(BackupError::InvalidFormat);
+    }
+
+    // Validate salt length (Argon2id requires non-empty salt).
+    if backup.argon2id_salt.is_empty() {
+        return Err(BackupError::InvalidFormat);
+    }
+
+    // Decrypt
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&*key).map_err(|_| BackupError::Decrypt)?;
+    let nonce = Nonce::from_slice(&backup.nonce);
+    let plaintext = cipher
+        .decrypt(nonce, backup.ciphertext.as_ref())
+        .map_err(|_| BackupError::Decrypt)?;
+
+    let backup_type = match backup.backup_type {
+        0 => BackupType::Standard,
+        1 => BackupType::Extended,
+        _ => return Err(BackupError::InvalidFormat),
+    };
+
+    Ok((plaintext, backup_type))
+}
+
+/// Check if the backup was created with older/weaker parameters.
+/// Returns true if re-encryption with current params is recommended.
+pub fn needs_param_upgrade(backup: &EncryptedBackup) -> bool {
+    backup.m_cost < MIN_M_COST || backup.t_cost < MIN_T_COST || backup.p_cost < MIN_P_COST
+}
+
+// ---------------------------------------------------------------------------
+// Internal
+// ---------------------------------------------------------------------------
+
+fn derive_backup_key(
+    passphrase: &[u8],
+    salt: &[u8],
+    m_cost: u32,
+    t_cost: u32,
+    p_cost: u32,
+) -> Result<Zeroizing<[u8; 32]>, BackupError> {
+    let params = Params::new(m_cost, t_cost, p_cost, Some(32))
+        .map_err(|e| BackupError::Argon2(e.to_string()))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
+    let mut key = Zeroizing::new([0u8; 32]);
+    argon2
+        .hash_password_into(passphrase, salt, &mut *key)
+        .map_err(|e| BackupError::Argon2(e.to_string()))?;
+    Ok(key)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    /// Backup-restore round trip should preserve key/settings content.
-    fn test_backup_restore_cycle() {
-        let manager = BackupManager::new();
+    fn test_backup_roundtrip() {
+        let payload = b"secret backup data with trust graph and contacts";
+        let passphrase = b"correct horse battery staple!";
 
-        // Create test data
-        let keypair = [42u8; 64];
-        let trust_store = TrustStore {
-            trust_levels: HashMap::new(),
-            verification_data: HashMap::new(),
-            endorsements: HashMap::new(),
-        };
-        let network_map = NetworkMap {
-            peers: HashMap::new(),
-            relays: Vec::new(),
-            bootstrap_nodes: Vec::new(),
-        };
-        let settings = BackupSettings {
-            display_name: Some("Test User".to_string()),
-            preferred_transports: vec!["tor".to_string()],
-            enable_tor: true,
-            enable_i2p: false,
-            enable_clearnet: false,
-        };
+        let backup =
+            create_backup(payload, passphrase, BackupType::Standard, false).unwrap();
+        let (restored, bt) = restore_backup(&backup, passphrase).unwrap();
 
-        // Create backup
-        let passphrase = "very_strong_passphrase_here";
-        let backup = manager
-            .create_backup(
-                passphrase,
-                &keypair,
-                trust_store.clone(),
-                network_map.clone(),
-                settings.clone(),
-            )
-            .unwrap();
-
-        // Restore backup
-        let (restored_keypair, _restored_trust, _restored_map, restored_settings) =
-            manager.restore_backup(&backup, passphrase).unwrap();
-
-        // Verify
-        assert_eq!(&keypair[..], &restored_keypair[..]);
-        assert_eq!(settings.display_name, restored_settings.display_name);
+        assert_eq!(restored, payload);
+        assert_eq!(bt, BackupType::Standard);
     }
 
     #[test]
-    /// Restore must fail when passphrase is incorrect.
-    fn test_wrong_passphrase_fails() {
-        let manager = BackupManager::new();
-
-        let keypair = [42u8; 64];
-        let backup = manager
-            .create_backup(
-                "correct_passphrase",
-                &keypair,
-                TrustStore {
-                    trust_levels: HashMap::new(),
-                    verification_data: HashMap::new(),
-                    endorsements: HashMap::new(),
-                },
-                NetworkMap {
-                    peers: HashMap::new(),
-                    relays: Vec::new(),
-                    bootstrap_nodes: Vec::new(),
-                },
-                BackupSettings {
-                    display_name: None,
-                    preferred_transports: Vec::new(),
-                    enable_tor: true,
-                    enable_i2p: false,
-                    enable_clearnet: false,
-                },
-            )
-            .unwrap();
-
-        // Wrong passphrase should fail
-        let result = manager.restore_backup(&backup, "wrong_passphrase");
+    fn test_wrong_passphrase() {
+        let backup =
+            create_backup(b"data", b"rightpassword!!!", BackupType::Standard, false).unwrap();
+        let result = restore_backup(&backup, b"wrongpassword!!!");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cloud_passphrase_minimum() {
+        let result = create_backup(b"data", b"short", BackupType::Standard, true);
+        assert!(matches!(result, Err(BackupError::PassphraseTooShort { required: 16, .. })));
+    }
+
+    #[test]
+    fn test_local_passphrase_minimum() {
+        let result = create_backup(b"data", b"1234567", BackupType::Standard, false);
+        assert!(matches!(result, Err(BackupError::PassphraseTooShort { required: 8, .. })));
+
+        let result = create_backup(b"data", b"12345678", BackupType::Standard, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extended_backup() {
+        let payload = b"extended backup with message history";
+        let passphrase = b"long enough passphrase for cloud!";
+
+        let backup =
+            create_backup(payload, passphrase, BackupType::Extended, true).unwrap();
+        let (_, bt) = restore_backup(&backup, passphrase).unwrap();
+        assert_eq!(bt, BackupType::Extended);
+    }
+
+    #[test]
+    fn test_backup_serialization() {
+        let backup =
+            create_backup(b"test", b"passphrase!!", BackupType::Standard, false).unwrap();
+        let json = serde_json::to_string(&backup).unwrap();
+        let recovered: EncryptedBackup = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.version, BACKUP_VERSION);
+    }
+
+    #[test]
+    fn test_param_upgrade_check() {
+        let backup =
+            create_backup(b"test", b"passphrase!!", BackupType::Standard, false).unwrap();
+        assert!(!needs_param_upgrade(&backup)); // Current params, no upgrade needed
+
+        let weak = EncryptedBackup {
+            m_cost: 1024, // Way below minimum
+            ..backup
+        };
+        assert!(needs_param_upgrade(&weak));
+    }
+
+    // --- Malformed envelope rejection tests ---
+
+    #[test]
+    fn test_malformed_empty_salt_rejected() {
+        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup { argon2id_salt: vec![], ..backup };
+        let result = restore_backup(&bad, b"passphrase123");
+        assert!(result.is_err(), "empty salt must be rejected");
+    }
+
+    #[test]
+    fn test_malformed_wrong_nonce_length_rejected() {
+        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup { nonce: vec![0u8; 8], ..backup }; // 8 bytes instead of 12
+        let result = restore_backup(&bad, b"passphrase123");
+        assert!(result.is_err(), "wrong-length nonce must be rejected");
+    }
+
+    #[test]
+    fn test_malformed_truncated_ciphertext_rejected() {
+        let backup = create_backup(b"hello world", b"passphrase123", BackupType::Standard, false).unwrap();
+        let truncated = backup.ciphertext[..backup.ciphertext.len() / 2].to_vec();
+        let bad = EncryptedBackup { ciphertext: truncated, ..backup };
+        let result = restore_backup(&bad, b"passphrase123");
+        assert!(result.is_err(), "truncated ciphertext must fail AEAD verification");
+    }
+
+    #[test]
+    fn test_malformed_tampered_ciphertext_rejected() {
+        let backup = create_backup(b"hello world", b"passphrase123", BackupType::Standard, false).unwrap();
+        let mut tampered = backup.ciphertext.clone();
+        tampered[0] ^= 0xFF;
+        let bad = EncryptedBackup { ciphertext: tampered, ..backup };
+        let result = restore_backup(&bad, b"passphrase123");
+        assert!(result.is_err(), "tampered ciphertext must fail AEAD verification");
+    }
+
+    #[test]
+    fn test_malformed_unknown_version_rejected() {
+        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup { version: 99, ..backup };
+        let result = restore_backup(&bad, b"passphrase123");
+        assert!(
+            matches!(result, Err(BackupError::UnknownVersion(99))),
+            "unknown version must be rejected with UnknownVersion error"
+        );
+    }
+
+    #[test]
+    fn test_malformed_weak_params_rejected() {
+        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup { m_cost: 1024, ..backup };
+        let result = restore_backup(&bad, b"passphrase123");
+        assert!(
+            matches!(result, Err(BackupError::WeakParams)),
+            "below-minimum Argon2id params must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_malformed_invalid_backup_type_rejected() {
+        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup { backup_type: 0xFF, ..backup };
+        // Must decrypt successfully (AEAD is intact) but fail on backup_type parse.
+        // However, since the ciphertext was not re-encrypted, it will fail AEAD.
+        // In practice: backup_type is not part of AEAD AAD so it CAN be tampered.
+        // restore_backup() should catch it with InvalidFormat.
+        // (The AEAD protects the plaintext, not the envelope fields.)
+        let result = restore_backup(&bad, b"passphrase123");
+        // Either InvalidFormat or Decrypt is acceptable — the point is it rejects.
+        assert!(result.is_err(), "invalid backup_type must be rejected");
     }
 }

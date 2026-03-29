@@ -19,8 +19,9 @@ APPLE_WORKSPACE := $(PLATFORMS_DIR)/apple/Runner.xcworkspace
 APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | sed 's/[-[:space:]]//g')
 APP_VERSION      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
-# CI passes CI_RUN_NUMBER=${{ github.run_number }}; local builds leave it unset.
-APP_BUILD_LABEL  := $(APP_VERSION)$(if $(CI_RUN_NUMBER),-r$(CI_RUN_NUMBER),)
+# Revision number = total commit count (deterministic, same locally and in CI).
+APP_REV          := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+APP_BUILD_LABEL  := $(APP_VERSION)-r$(APP_REV)
 
 .PHONY: clean \
         macos-rust-debug macos-rust-release \
@@ -37,7 +38,8 @@ APP_BUILD_LABEL  := $(APP_VERSION)$(if $(CI_RUN_NUMBER),-r$(CI_RUN_NUMBER),)
         linux-debug linux-release \
         windows-rust-debug windows-rust-release \
         windows-bundle-debug windows-bundle-release \
-        windows-debug windows-release
+        windows-debug windows-release \
+        push
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
@@ -257,8 +259,8 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	\
 	flutter config --enable-ios; \
 	( cd "$$src_dir" && flutter pub get ); \
-	cp "$(FRONTEND_DIR)/ios/Podfile" "$$src_dir/ios/Podfile"; \
 	ln -sfn "$(ROOT_DIR)/platforms/apple/Runner.xcodeproj" "$$src_dir/ios/Runner.xcodeproj"; \
+	cp "$(ROOT_DIR)/platforms/apple/Podfile.ios" "$$src_dir/ios/Podfile"; \
 	flutter_mode_flags="--$$profile"; \
 	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
 	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
@@ -276,9 +278,13 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  "FLUTTER_BUILD_NAME=$(APP_VERSION)" \
 	  "FLUTTER_BUILD_NUMBER=$(APP_BUILD_NUMBER)" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/Flutter-Generated.xcconfig"; \
+	( cd "$$src_dir/ios" && \
+	  FLUTTER_ROOT="$$flutter_root" \
+	  FLUTTER_APPLICATION_PATH="$$src_dir" \
+	  pod install ); \
 	\
 	xcodebuild \
-	  -project "$(APPLE_PROJECT)" \
+	  -workspace "$$src_dir/ios/Runner.xcworkspace" \
 	  -scheme RunnerIOS \
 	  -configuration "$$cfg" \
 	  -sdk iphoneos \
@@ -291,14 +297,13 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  FLUTTER_FRAMEWORK_BASE="$(BUILD_DIR)/intermediates/ios" \
 	  LIBRARY_SEARCH_PATHS="$$rust_out" \
 	  OTHER_LDFLAGS="-lmesh_infinity -lresolv" \
-	  archive \
-	  -archivePath "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive"; \
+	  build; \
 	\
 	ipa_payload="$(BUILD_DIR)/output/ios/$$profile/Payload"; \
 	rm -rf "$$ipa_payload"; \
 	mkdir -p "$$ipa_payload"; \
 	cp -R \
-	  "$(BUILD_DIR)/intermediates/ios/xcode/$$profile.xcarchive/Products/Applications/"*.app \
+	  "$(BUILD_DIR)/intermediates/ios/xcode/Build/Products/$$cfg-iphoneos/"*.app \
 	  "$$ipa_payload/"; \
 	native_assets_dir="$$src_dir/build/native_assets/ios"; \
 	if [ -d "$$native_assets_dir" ]; then \
@@ -607,3 +612,15 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 windows-debug windows-release: windows-%:
 	$(MAKE) windows-rust-$*
 	$(MAKE) windows-bundle-$*
+
+# ── Push with prerelease tag ──────────────────────────────────────────────────
+# Creates a revision tag (v<version>-r<commit_count>) and pushes code + tag to
+# origin.  The tag lives on Gitea, so the push mirror preserves it on GitHub
+# and the prerelease workflow attaches assets to it.
+
+push:
+	@rev=$$(git rev-list --count HEAD); \
+	tag="v$(APP_VERSION)-r$$rev"; \
+	echo "Tagging $$tag ..."; \
+	git tag -f "$$tag" HEAD; \
+	git push origin main "$$tag"

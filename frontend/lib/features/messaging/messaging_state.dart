@@ -159,6 +159,13 @@ class MessagingState extends ChangeNotifier {
   /// results.  Used to show a loading indicator in ThreadScreen.
   bool _loadingMessages = false;
 
+  /// Guard flag to prevent concurrent loadRooms() calls.
+  bool _loadingRooms = false;
+
+  /// Peer IDs currently typing in the active room.
+  /// Cleared on room switch.  The UI reads this to show "Alice is typing…".
+  final Set<String> _typingPeers = {};
+
   // -------------------------------------------------------------------------
   // Public getters — read-only access for the UI
   // -------------------------------------------------------------------------
@@ -178,6 +185,9 @@ class MessagingState extends ChangeNotifier {
 
   /// True while messages are being fetched from the backend.
   bool get loadingMessages => _loadingMessages;
+
+  /// Peer IDs currently typing in the active room (§10.2.1).
+  Set<String> get typingPeers => Set.unmodifiable(_typingPeers);
 
   // -------------------------------------------------------------------------
   // Load / refresh operations
@@ -202,28 +212,37 @@ class MessagingState extends ChangeNotifier {
   ///   - After createRoom() or deleteRoom() to keep the list up-to-date.
   ///   - From ConversationListScreen's pull-to-refresh handler.
   Future<void> loadRooms() async {
-    // fetchRooms() calls into Rust via FFI and returns a List<RoomSummary>
-    // decoded from JSON.
-    //
-    // The call path looks like:
-    //   Dart: _bridge.fetchRooms()
-    //     → native: mi_fetch_rooms(ctx)     (C FFI boundary)
-    //       → Rust: service.fetch_rooms()   (returns JSON bytes)
-    //     → native: returns pointer to JSON string
-    //   Dart: parses JSON → List<RoomSummary>
-    final rooms = _bridge.fetchRooms();
+    // Guard against concurrent calls — a second loadRooms() while the first
+    // is still executing would overwrite results non-deterministically.
+    if (_loadingRooms) return;
+    _loadingRooms = true;
 
-    // activeRoomId() asks the backend which room is currently "focused"
-    // (relevant after restoring state from disk on app restart).
-    final activeId = _bridge.activeRoomId();
+    try {
+      // fetchRooms() calls into Rust via FFI and returns a List<RoomSummary>
+      // decoded from JSON.
+      //
+      // The call path looks like:
+      //   Dart: _bridge.fetchRooms()
+      //     → native: mi_fetch_rooms(ctx)     (C FFI boundary)
+      //       → Rust: service.fetch_rooms()   (returns JSON bytes)
+      //     → native: returns pointer to JSON string
+      //   Dart: parses JSON → List<RoomSummary>
+      final rooms = _bridge.fetchRooms();
 
-    _rooms = rooms;
-    _activeRoomId = activeId;
+      // activeRoomId() asks the backend which room is currently "focused"
+      // (relevant after restoring state from disk on app restart).
+      final activeId = _bridge.activeRoomId();
 
-    // Tell every watching widget to rebuild with the new data.
-    // At this point _rooms has new content, so ConversationListScreen will
-    // render the updated list on its next build() call.
-    if (!_disposed) notifyListeners();
+      _rooms = rooms;
+      _activeRoomId = activeId;
+
+      // Tell every watching widget to rebuild with the new data.
+      // At this point _rooms has new content, so ConversationListScreen will
+      // render the updated list on its next build() call.
+      if (!_disposed) notifyListeners();
+    } finally {
+      _loadingRooms = false;
+    }
   }
 
   /// Fetches the messages for [roomId] and stores them in _messages.
@@ -266,6 +285,7 @@ class MessagingState extends ChangeNotifier {
   Future<void> selectRoom(String roomId) async {
     _bridge.selectRoom(roomId); // Tell Rust "this is the focused room".
     _activeRoomId = roomId;
+    _typingPeers.clear(); // Typing state is per-room; reset on switch.
     if (!_disposed) notifyListeners(); // Update ConversationListScreen's highlighted row.
     await loadMessages(roomId); // Load and display messages.
   }
@@ -318,8 +338,57 @@ class MessagingState extends ChangeNotifier {
   ///     paths fire at the same time.
   /// The ~200 ms EventBus latency is acceptable for a messaging app.
   bool sendMessage(String text) {
-    if (_activeRoomId == null) return false; // No room open — nothing to send.
-    return _bridge.sendMessage(_activeRoomId, text);
+    // Capture into a local first: a RoomDeletedEvent could null _activeRoomId
+    // between the null-check and the bridge call (H4).
+    final roomId = _activeRoomId;
+    if (roomId == null) return false;
+    return _bridge.sendMessage(roomId, text);
+  }
+
+  /// Send a reaction emoji to a message in the active room.
+  bool sendReaction(String roomId, String messageId, String emoji) {
+    return _bridge.sendReaction(roomId, messageId, emoji);
+  }
+
+  /// Edit a previously sent message.
+  bool editMessage(String roomId, String messageId, String newText) {
+    final ok = _bridge.editMessage(roomId, messageId, newText);
+    if (ok && roomId == _activeRoomId) {
+      _messages = [
+        for (final m in _messages)
+          if (m.id == messageId)
+            m.copyWith(text: newText, edited: true)
+          else
+            m,
+      ];
+      if (!_disposed) notifyListeners();
+    }
+    return ok;
+  }
+
+  /// Delete a message for all participants in the room.
+  bool deleteForEveryone(String roomId, String messageId) {
+    final ok = _bridge.deleteForEveryone(roomId, messageId);
+    if (ok && roomId == _activeRoomId) {
+      _messages = _messages.where((m) => m.id != messageId).toList();
+      if (!_disposed) notifyListeners();
+    }
+    return ok;
+  }
+
+  /// Reply to a specific message in the active room.
+  bool replyToMessage(String roomId, String parentId, String text) {
+    return _bridge.replyToMessage(roomId, parentId, text);
+  }
+
+  /// Search messages across all rooms.
+  List<MessageModel> searchMessages(String query) {
+    return _bridge.searchMessages(query);
+  }
+
+  /// Forward a message from one room to another.
+  bool forwardMessage(String fromRoomId, String messageId, String toRoomId) {
+    return _bridge.forwardMessage(fromRoomId, messageId, toRoomId);
   }
 
   /// Removes a message locally without waiting for a backend confirmation event.
@@ -389,6 +458,22 @@ class MessagingState extends ChangeNotifier {
       // A new message arrived (from a peer or from ourselves on another
       // device via a relay).
       case MessageAddedEvent(:final message):
+        // If the room doesn't exist yet in our local list (e.g. message
+        // arrived before the room list was loaded), auto-create a placeholder
+        // room entry so the conversation appears in the list immediately.
+        if (!_rooms.any((r) => r.id == message.roomId)) {
+          _rooms = [
+            ..._rooms,
+            RoomSummary(
+              id: message.roomId,
+              name: message.sender,
+              lastMessage: message.text,
+              unreadCount: 1,
+              timestamp: message.timestamp,
+            ),
+          ];
+        }
+
         if (message.roomId == _activeRoomId) {
           // The message belongs to the open room — append it to the thread.
           // We create a NEW list (spread operator `...`) rather than mutating
@@ -456,10 +541,60 @@ class MessagingState extends ChangeNotifier {
       // app was restored from a saved session).
       case ActiveRoomChangedEvent(:final roomId):
         _activeRoomId = roomId;
+        _typingPeers.clear(); // Typing state is per-room; reset on switch.
         // Load the messages for the newly active room.
         // `if (roomId != null)` is necessary because roomId is nullable —
         // a null value means "no active room", in which case we don't load.
         if (roomId != null) loadMessages(roomId); // Load the new room's messages.
+        if (!_disposed) notifyListeners();
+
+      // A delivery receipt arrived — update the message's deliveryStatus (§7.3).
+      // When the recipient's app decrypts our message it sends back a receipt,
+      // and Rust emits this event.  We find the message in _messages (if the
+      // room is currently open) and swap in a copy with the updated status.
+      case MessageStatusUpdatedEvent(:final msgId, :final roomId, :final deliveryStatus):
+        if (roomId == _activeRoomId) {
+          _messages = [
+            for (final m in _messages)
+              if (m.id == msgId)
+                m.copyWith(deliveryStatus: deliveryStatus)
+              else
+                m,
+          ];
+          if (!_disposed) notifyListeners();
+        }
+
+      // A peer started or stopped typing in a room (§10.2.1).
+      // Only track typing state for the currently open room; events for
+      // background rooms are silently ignored (no badge or preview change needed).
+      // peerId is null for locally-originated events (user's own typing) — skip those.
+      case TypingIndicatorEvent(:final roomId, :final peerId, :final active)
+          when peerId != null && roomId == _activeRoomId:
+        if (active) {
+          _typingPeers.add(peerId);
+        } else {
+          _typingPeers.remove(peerId);
+        }
+        if (!_disposed) notifyListeners();
+
+      // A peer reacted to a message in the currently open room (§10.1.2).
+      // Find the target message and append the new reaction to its reactions list.
+      case ReactionAddedEvent(:final roomId, :final msgId, :final peerId, :final emoji)
+          when roomId == _activeRoomId:
+        final senderHex = peerId ?? 'local';
+        final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        _messages = [
+          for (final m in _messages)
+            if (m.id == msgId)
+              m.copyWith(
+                reactions: [
+                  ...m.reactions,
+                  ReactionModel(emoji: emoji, sender: senderHex, timestamp: ts),
+                ],
+              )
+            else
+              m,
+        ];
         if (!_disposed) notifyListeners();
 
       // Ignore all other event types (peer changes, file transfers, etc.).

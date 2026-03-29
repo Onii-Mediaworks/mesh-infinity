@@ -521,16 +521,13 @@ Widget _detailPaneFor(ShellState shell, BuildContext context) {
         ? PeerDetailScreen(peerId: shell.selectedPeerId!)
         : const _EmptyDetail(icon: Icons.people_outline, label: 'Select a peer'),
 
-    // Files, Network, Settings have no persistent "detail" concept — the
-    // list screen IS the full view.  Shrink the detail pane to nothing.
-    //
-    // SizedBox.shrink() creates a zero-size box — it takes up no space.
-    // This effectively hides the detail pane for these sections without
-    // removing it from the tree (which would cause unnecessary layout work).
-    //
-    // The `_` wildcard pattern matches any remaining enum values.  It is
-    // Dart's equivalent of a switch `default:` case.
-    _ => const SizedBox.shrink(),
+    // Files, Network, Settings show contextual help in the detail pane.
+    AppSection.files => const _EmptyDetail(
+        icon: Icons.folder_outlined, label: 'File transfers and sharing'),
+    AppSection.network => const _EmptyDetail(
+        icon: Icons.hub_outlined, label: 'Transport and mesh configuration'),
+    AppSection.settings => const _EmptyDetail(
+        icon: Icons.settings_outlined, label: 'Identity, services, and preferences'),
   };
 }
 

@@ -49,7 +49,17 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   @override
   Widget build(BuildContext context) {
     final bridge = _bridge;
-    if (bridge != null) return MeshInfinityApp(bridge: bridge);
+
+    if (bridge != null) {
+      // Backend failed to load — show a blocking error screen so the user
+      // knows something is wrong instead of seeing a silently empty app.
+      if (!bridge.isAvailable) {
+        return _FatalErrorApp(
+          error: bridge.initError ?? 'Backend failed to load',
+        );
+      }
+      return MeshInfinityApp(bridge: bridge);
+    }
 
     // Loading screen — shown for the ~200 ms it takes to open the dylib.
     return MaterialApp(
@@ -58,6 +68,67 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       darkTheme: MeshTheme.dark(),
       home: const Scaffold(
         body: Center(child: CircularProgressIndicator()),
+      ),
+    );
+  }
+}
+
+/// Shown when the Rust backend fails to load.  Blocks the app entirely so the
+/// user cannot reach a silently-broken state, and surfaces the error message.
+class _FatalErrorApp extends StatelessWidget {
+  const _FatalErrorApp({required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: MeshTheme.light(),
+      darkTheme: MeshTheme.dark(),
+      home: Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Icon(Icons.error_outline, size: 64, color: Colors.red),
+                const SizedBox(height: 24),
+                const Text(
+                  'Failed to start Mesh Infinity',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'The backend library could not be loaded. '
+                  'Please reinstall the application.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: SelectableText(
+                    error,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

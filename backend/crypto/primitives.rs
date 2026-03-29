@@ -1,0 +1,139 @@
+//! Shared low-level KDF primitives (§7.0.3, §7.0.4)
+//!
+//! Both the Double Ratchet (`double_ratchet.rs`) and Sender Keys
+//! (`sender_keys.rs`) advance their symmetric KDF chains using the same
+//! HMAC-SHA256-based formula.  This module holds the single implementation
+//! so both protocols stay in sync and there is no room for subtle divergence.
+//!
+//! # Chain step formula
+//!
+//! ```text
+//! msg_key       = HMAC-SHA256(chain_key, 0x01)
+//! new_chain_key = HMAC-SHA256(chain_key, 0x02)
+//! ```
+//!
+//! The input bytes 0x01 / 0x02 follow the Signal Protocol convention and are
+//! specified in §7.0.3 of SPEC.md.
+
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+// ---------------------------------------------------------------------------
+// Shared constants
+// ---------------------------------------------------------------------------
+
+/// HMAC input byte for deriving a message key from the chain key.
+///
+/// Value 0x01 matches the Signal Protocol convention (§7.0.3).
+pub const CHAIN_MSG_KEY_INPUT: u8 = 0x01;
+
+/// HMAC input byte for advancing the chain key to its next state.
+///
+/// Value 0x02 matches the Signal Protocol convention (§7.0.3).
+pub const CHAIN_ADVANCE_INPUT: u8 = 0x02;
+
+/// Zero-byte salt for HKDF operations that have no external salt.
+///
+/// HKDF-SHA256 with a zero salt is semantically equivalent to using a
+/// PRF whose key is derived from the IKM alone.  This is the standard
+/// approach when no salt is available (RFC 5869 §3.1).
+pub const ZERO_SALT: [u8; 32] = [0u8; 32];
+
+// ---------------------------------------------------------------------------
+// kdf_chain_step
+// ---------------------------------------------------------------------------
+
+/// Advance a symmetric KDF chain by one step.
+///
+/// Returns `(msg_key, new_chain_key)`:
+/// - `msg_key` is used to encrypt/decrypt the current message.
+/// - `new_chain_key` replaces `chain_key` for all subsequent messages,
+///   providing forward secrecy within the chain.
+///
+/// # Algorithm
+///
+/// ```text
+/// msg_key       = HMAC-SHA256(chain_key, 0x01)
+/// new_chain_key = HMAC-SHA256(chain_key, 0x02)
+/// ```
+///
+/// Both computations use the **same** `chain_key` as the HMAC key so that
+/// neither output can be derived from the other.
+pub fn kdf_chain_step(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    // Derive message key: HMAC-SHA256(chain_key, 0x01).
+    // The expect is unreachable: HMAC-SHA256 accepts any key length.
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(chain_key)
+        .expect("HMAC-SHA256 accepts any key length");
+    mac.update(&[CHAIN_MSG_KEY_INPUT]);
+    let msg_key_bytes = mac.finalize().into_bytes();
+    let mut msg_key = [0u8; 32];
+    msg_key.copy_from_slice(&msg_key_bytes);
+
+    // Derive next chain key: HMAC-SHA256(chain_key, 0x02).
+    // Uses a fresh HMAC instance with the same chain_key as the key, not
+    // the msg_key — this ensures msg_key and new_chain_key are independent.
+    let mut mac2 = <Hmac<Sha256> as Mac>::new_from_slice(chain_key)
+        .expect("HMAC-SHA256 accepts any key length");
+    mac2.update(&[CHAIN_ADVANCE_INPUT]);
+    let new_ck_bytes = mac2.finalize().into_bytes();
+    let mut new_chain_key = [0u8; 32];
+    new_chain_key.copy_from_slice(&new_ck_bytes);
+
+    (msg_key, new_chain_key)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Identical chain_key must produce identical outputs (determinism).
+    #[test]
+    fn test_kdf_chain_step_deterministic() {
+        let ck = [0x42u8; 32];
+        let (mk1, nck1) = kdf_chain_step(&ck);
+        let (mk2, nck2) = kdf_chain_step(&ck);
+        assert_eq!(mk1, mk2, "msg_key must be deterministic");
+        assert_eq!(nck1, nck2, "new_chain_key must be deterministic");
+    }
+
+    /// msg_key and new_chain_key must not be equal to each other or to the
+    /// input chain_key — independence is required for forward secrecy.
+    #[test]
+    fn test_kdf_chain_step_outputs_differ() {
+        let ck = [0xABu8; 32];
+        let (mk, nck) = kdf_chain_step(&ck);
+        assert_ne!(mk, nck, "msg_key and new_chain_key must differ");
+        assert_ne!(mk, ck, "msg_key must not equal chain_key");
+        assert_ne!(nck, ck, "new_chain_key must not equal chain_key");
+    }
+
+    /// The chain must advance: step N+1 output must differ from step N output.
+    #[test]
+    fn test_kdf_chain_step_advances() {
+        let ck = [0x01u8; 32];
+        let (mk1, nck1) = kdf_chain_step(&ck);
+        let (mk2, _nck2) = kdf_chain_step(&nck1);
+        assert_ne!(mk1, mk2, "successive message keys must differ");
+    }
+
+    /// Adversarial: knowing msg_key at step N must not allow deriving
+    /// new_chain_key (and hence all future message keys).
+    ///
+    /// This is a regression guard — both values are computed from the same
+    /// chain_key, so an attacker who only observes mk cannot recompute nck.
+    /// We verify here that `mk != nck` so the two are not trivially related.
+    #[test]
+    fn test_kdf_chain_step_forward_secrecy_invariant() {
+        for seed in 0u8..=255 {
+            let ck = [seed; 32];
+            let (mk, nck) = kdf_chain_step(&ck);
+            // If these were equal an attacker with mk could derive nck and all
+            // future keys — that would break forward secrecy.
+            assert_ne!(mk, nck, "seed {seed}: msg_key must not equal new_chain_key");
+        }
+    }
+}

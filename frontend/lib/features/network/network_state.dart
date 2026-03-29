@@ -94,6 +94,26 @@ import '../../backend/models/settings_models.dart';
 // SettingsModel — all app-level settings as a typed Dart object.
 
 // ---------------------------------------------------------------------------
+// Overlay Client Status
+// ---------------------------------------------------------------------------
+
+/// Connection state of a Mesh Infinity-managed overlay transport client
+/// (Tailscale or ZeroTier). Mesh Infinity acts as the client itself — no
+/// separate app or daemon is required.
+enum OverlayClientStatus {
+  /// Not set up — no credentials stored.
+  notConfigured,
+  /// Credentials stored; actively attempting to connect.
+  connecting,
+  /// Authenticated and connected to the overlay network.
+  connected,
+  /// Credentials stored but currently disconnected (e.g. transport disabled).
+  disconnected,
+  /// Authentication or connection error.
+  error,
+}
+
+// ---------------------------------------------------------------------------
 // NetworkState
 // ---------------------------------------------------------------------------
 
@@ -157,6 +177,60 @@ class NetworkState extends ChangeNotifier {
   /// last time mDNS was enabled.  Cleared when mDNS is disabled.
   List<DiscoveredPeerModel> _discoveredPeers = const [];
 
+  // ---- VPN state ----
+
+  /// Current VPN mode: "off", "mesh_only", "exit_node", "policy_based".
+  String _vpnMode = 'off';
+
+  /// The peer ID of the selected exit node, or null if none selected.
+  String? _selectedExitNodeId;
+
+  /// VPN connection status: "disconnected", "connecting", "connected".
+  String _vpnConnectionStatus = 'disconnected';
+
+  /// Whether the kill switch is enabled (block traffic if VPN drops).
+  bool _vpnKillSwitch = false;
+
+  /// VPN uptime in seconds since connection was established.
+  int _vpnUptimeSeconds = 0;
+
+  // ---- Overlay client state (§5.22, §5.23) ----
+
+  /// Tailscale client connection status.
+  OverlayClientStatus _tailscaleClientStatus = OverlayClientStatus.notConfigured;
+
+  /// ZeroTier client connection status.
+  OverlayClientStatus _zerotierClientStatus = OverlayClientStatus.notConfigured;
+
+  // ---- Trusted context state (§4.8.3) ----
+
+  /// Whether Tailscale is a trusted context for discovery.
+  bool _tailscaleTrusted = true;
+
+  /// Whether ZeroTier is a trusted context for discovery.
+  bool _zerotierTrusted = true;
+
+  /// Whether LAN is a trusted context for discovery.
+  bool _lanTrusted = false;
+
+  /// Whether mDNS is allowed on trusted context transports.
+  bool _mdnsOnTrusted = true;
+
+  // ---- Trust metrics ----
+
+  /// Trust distribution: map from trust level (0-8) to count.
+  Map<int, int> _trustCounts = {};
+
+  /// Pairing method counts: map from method name to count.
+  Map<String, int> _pairingCounts = {};
+
+  /// Total number of known peers.
+  int _totalPeers = 0;
+
+  /// Routing table summary (§6): directPeers, totalRoutes.
+  Map<String, dynamic> _routingStats = const {};
+
+
   // -------------------------------------------------------------------------
   // Public getters
   // -------------------------------------------------------------------------
@@ -176,6 +250,68 @@ class NetworkState extends ChangeNotifier {
   /// Peers found on the LAN.  Empty when mDNS is off or when no nodes are
   /// nearby.
   List<DiscoveredPeerModel> get discoveredPeers => _discoveredPeers;
+
+  // ---- VPN getters ----
+
+  /// Current VPN mode: "off", "mesh_only", "exit_node", "policy_based".
+  String get vpnMode => _vpnMode;
+
+  /// The peer ID of the selected exit node, or null.
+  String? get selectedExitNodeId => _selectedExitNodeId;
+
+  /// VPN connection status: "disconnected", "connecting", "connected".
+  String get vpnConnectionStatus => _vpnConnectionStatus;
+
+  /// Whether the kill switch is enabled.
+  bool get vpnKillSwitch => _vpnKillSwitch;
+
+  /// VPN uptime in seconds.
+  int get vpnUptimeSeconds => _vpnUptimeSeconds;
+
+  /// Whether the VPN is in any active mode (not "off").
+  bool get isVpnActive => _vpnMode != 'off';
+
+  // ---- Overlay client getters (§5.22, §5.23) ----
+
+  /// Tailscale client connection status.
+  OverlayClientStatus get tailscaleClientStatus => _tailscaleClientStatus;
+
+  /// ZeroTier client connection status.
+  OverlayClientStatus get zerotierClientStatus => _zerotierClientStatus;
+
+  // ---- Trusted context getters (§4.8.3) ----
+
+  /// Whether Tailscale is marked as a trusted context for discovery.
+  bool get tailscaleTrusted => _tailscaleTrusted;
+
+  /// Whether ZeroTier is marked as a trusted context for discovery.
+  bool get zerotierTrusted => _zerotierTrusted;
+
+  /// Whether the local LAN is marked as a trusted context.
+  bool get lanTrusted => _lanTrusted;
+
+  /// Whether mDNS is allowed on trusted context transports.
+  bool get mdnsOnTrusted => _mdnsOnTrusted;
+
+  // ---- Trust metrics getters ----
+
+  /// Trust level distribution: map from level (0-8) to peer count.
+  Map<int, int> get trustCounts => _trustCounts;
+
+  /// Pairing method distribution: map from method name to count.
+  Map<String, int> get pairingCounts => _pairingCounts;
+
+  /// Total number of known peers.
+  int get totalPeers => _totalPeers;
+
+  /// Routing table summary: directPeers, totalRoutes (§6).
+  Map<String, dynamic> get routingStats => _routingStats;
+
+  /// Count of untrusted-tier peers (levels 0-5).
+  int get untrustedCount =>
+      _trustCounts.entries
+          .where((e) => e.key < 6)
+          .fold(0, (sum, e) => sum + e.value);
 
   // -------------------------------------------------------------------------
   // Data loading
@@ -228,6 +364,23 @@ class NetworkState extends ChangeNotifier {
     _discoveredPeers = rawPeers
         .map(DiscoveredPeerModel.fromJson) // Decode each JSON blob.
         .toList();
+
+    // Fetch VPN status from the backend (may be null if not yet implemented).
+    final vpnStatus = _bridge.getVpnStatus();
+    if (vpnStatus != null) {
+      _vpnMode = vpnStatus['mode'] as String? ?? 'off';
+      _selectedExitNodeId = vpnStatus['exitNodePeerId'] as String?;
+      _vpnConnectionStatus = vpnStatus['connectionStatus'] as String? ?? 'disconnected';
+      _vpnKillSwitch = vpnStatus['killSwitch'] as bool? ?? false;
+      _vpnUptimeSeconds = vpnStatus['uptimeSeconds'] as int? ?? 0;
+    }
+
+    // Fetch routing table summary (§6).
+    final routing = _bridge.getRoutingTableStats();
+    if (routing != null) _routingStats = routing;
+
+    // Load trust metrics from the contact store.
+    _loadTrustMetrics();
 
     if (!_disposed) notifyListeners(); // Rebuild the NetworkScreen with fresh data.
   }
@@ -304,6 +457,60 @@ class NetworkState extends ChangeNotifier {
     // even if the mode change was rejected.
     final raw = _bridge.fetchSettings();
     _settings = raw;
+    if (!_disposed) notifyListeners();
+    return ok;
+  }
+
+  /// Change the clearnet TCP listen port (default 7234).
+  ///
+  /// Takes effect on the next `mi_start_clearnet_listener` call.
+  /// Port must be in range 1024–65535.
+  Future<bool> setClearnetPort(int port) async {
+    if (port < 1024 || port > 65535) return false;
+    final ok = _bridge.setClearnetPort(port);
+    final raw = _bridge.fetchSettings();
+    _settings = raw;
+    if (!_disposed) notifyListeners();
+    return ok;
+  }
+
+  // -------------------------------------------------------------------------
+  // VPN / Exit Node
+  // -------------------------------------------------------------------------
+
+  /// Set the VPN mode.
+  ///
+  /// [mode] is one of: "off", "mesh_only", "exit_node", "policy_based".
+  /// [exitNodePeerId] is required when mode is "exit_node".
+  ///
+  /// Returns true if the backend accepted the change.
+  Future<bool> setVpnMode(String mode, {String? exitNodePeerId}) async {
+    final ok = _bridge.setVpnMode(mode, exitNodePeerId: exitNodePeerId);
+    if (ok) {
+      _vpnMode = mode;
+      _selectedExitNodeId = exitNodePeerId;
+      _vpnConnectionStatus = mode == 'off' ? 'disconnected' : 'connecting';
+      _vpnUptimeSeconds = 0;
+    }
+    // Re-fetch to get authoritative state from backend.
+    final vpnStatus = _bridge.getVpnStatus();
+    if (vpnStatus != null) {
+      _vpnMode = vpnStatus['mode'] as String? ?? _vpnMode;
+      _selectedExitNodeId = vpnStatus['exitNodePeerId'] as String? ?? _selectedExitNodeId;
+      _vpnConnectionStatus = vpnStatus['connectionStatus'] as String? ?? _vpnConnectionStatus;
+      _vpnKillSwitch = vpnStatus['killSwitch'] as bool? ?? _vpnKillSwitch;
+      _vpnUptimeSeconds = vpnStatus['uptimeSeconds'] as int? ?? _vpnUptimeSeconds;
+    }
+    if (!_disposed) notifyListeners();
+    return ok;
+  }
+
+  /// Enable or disable the VPN kill switch.
+  Future<bool> setVpnKillSwitch(bool enabled) async {
+    final ok = _bridge.setVpnKillSwitch(enabled);
+    if (ok) {
+      _vpnKillSwitch = enabled;
+    }
     if (!_disposed) notifyListeners();
     return ok;
   }
@@ -388,6 +595,70 @@ class NetworkState extends ChangeNotifier {
     }
     if (!_disposed) notifyListeners();
     return ok;
+  }
+
+  // -------------------------------------------------------------------------
+  // Overlay client status updates (§5.22, §5.23)
+  // -------------------------------------------------------------------------
+
+  /// Update the connection status of an overlay transport client.
+  ///
+  /// Called by the setup screens after authentication, and by the backend
+  /// event handler when overlay connection state changes.
+  void setOverlayClientStatus(String overlay, OverlayClientStatus status) {
+    switch (overlay) {
+      case 'tailscale':
+        _tailscaleClientStatus = status;
+      case 'zerotier':
+        _zerotierClientStatus = status;
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  // Trusted Context control (§4.8.3)
+  // -------------------------------------------------------------------------
+  //
+  // Trusted contexts control which networks permit automatic peer discovery.
+  // They do NOT affect routing or pathing — only mDNS/local discovery.
+  // Pairing over a trusted context gives the peer a trust boost.
+
+  /// Toggle a trusted context.
+  ///
+  /// [context] is one of: "tailscale", "zerotier", "lan", "mdns".
+  /// [enabled] is the new state.
+  void setTrustedContext(String context, bool enabled) {
+    switch (context) {
+      case 'tailscale':
+        _tailscaleTrusted = enabled;
+      case 'zerotier':
+        _zerotierTrusted = enabled;
+      case 'lan':
+        _lanTrusted = enabled;
+      case 'mdns':
+        _mdnsOnTrusted = enabled;
+    }
+    // Persist the change to the backend.
+    _bridge.setTrustedContext(context, enabled);
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Load trust metrics from the peer list.
+  ///
+  /// Computes trust distribution and pairing method counts from
+  /// the contact store. Called from loadAll().
+  void _loadTrustMetrics() {
+    final peers = _bridge.getPeerList();
+    _totalPeers = peers.length;
+    _trustCounts = {};
+    _pairingCounts = {};
+
+    for (final peer in peers) {
+      final level = peer['trustLevel'] as int? ?? 0;
+      _trustCounts[level] = (_trustCounts[level] ?? 0) + 1;
+
+      final method = peer['pairingMethod'] as String? ?? 'unknown';
+      _pairingCounts[method] = (_pairingCounts[method] ?? 0) + 1;
+    }
   }
 
   // -------------------------------------------------------------------------

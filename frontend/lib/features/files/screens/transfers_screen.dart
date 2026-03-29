@@ -50,6 +50,15 @@ class TransfersScreen extends StatelessWidget {
             if (files.transfers.isEmpty)
               _EmptyTransfers()
             else ...[
+              if (files.incomingOffers.isNotEmpty) ...[
+                const _SectionHeader('Incoming Offers'),
+                for (final t in files.incomingOffers)
+                  TransferTile(
+                    transfer: t,
+                    onAccept:  () => files.acceptTransfer(t.id),
+                    onDecline: () => files.cancelTransfer(t.id),
+                  ),
+              ],
               if (files.activeTransfers.isNotEmpty) ...[
                 const _SectionHeader('Active'),
                 for (final t in files.activeTransfers)

@@ -4,8 +4,10 @@ import 'package:provider/provider.dart';
 import '../messaging_state.dart';
 import '../../../shell/shell_state.dart';
 import '../widgets/thread_list_tile.dart';
+import 'create_group_screen.dart';
 import 'create_room_screen.dart';
 import 'thread_screen.dart';
+import 'search_screen.dart';
 
 class ConversationListScreen extends StatelessWidget {
   const ConversationListScreen({super.key});
@@ -20,6 +22,26 @@ class ConversationListScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Conversations'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.search_outlined),
+            tooltip: 'Search messages',
+            onPressed: () async {
+              final roomId = await Navigator.push<String>(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const MessageSearchScreen(),
+                ),
+              );
+              if (roomId != null && context.mounted) {
+                _openRoom(context, roomId, false);
+              }
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.group_add_outlined),
+            tooltip: 'New group',
+            onPressed: () => _openCreateGroup(context),
+          ),
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             tooltip: 'New conversation',
@@ -50,6 +72,16 @@ class ConversationListScreen extends StatelessWidget {
         child: const Icon(Icons.add),
       ),
     );
+  }
+
+  Future<void> _openCreateGroup(BuildContext context) async {
+    final roomId = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
+    );
+    if (roomId != null && context.mounted) {
+      _openRoom(context, roomId, MediaQuery.sizeOf(context).width >= 1200);
+    }
   }
 
   Future<void> _openCreateRoom(BuildContext context) async {

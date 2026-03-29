@@ -207,6 +207,160 @@ sealed class BackendEvent {
           : null,
 
         // -----------------------------------------------------------------------
+        // 'PeerAdded'
+        // Fired when a new peer is added to the contact store (e.g. via pairing).
+        // -----------------------------------------------------------------------
+        'PeerAdded' => dataMap != null
+          ? PeerAddedEvent(PeerModel.fromJson(dataMap))
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'LoSecResponse'
+        // Fired when a peer responds to a LoSec negotiation request.
+        // -----------------------------------------------------------------------
+        'LoSecResponse' => dataMap != null
+            && dataMap['peerId'] is String
+            && dataMap['sessionId'] is String
+          ? LoSecResponseEvent(
+              peerId: dataMap['peerId'] as String,
+              sessionId: dataMap['sessionId'] as String,
+              accepted: dataMap['accepted'] as bool? ?? false,
+              rejectionReason: dataMap['rejectionReason'] as String?,
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'LoSecRequested'
+        // Fired when a remote peer sends us a LoSec negotiation request.
+        // -----------------------------------------------------------------------
+        'LoSecRequested' => dataMap != null
+            && dataMap['peerId'] is String
+          ? LoSecRequestedEvent(
+              peerId: dataMap['peerId'] as String,
+              sessionId: dataMap['sessionId'] as String? ?? '',
+              accepted: dataMap['accepted'] as bool? ?? false,
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'CallIncoming'
+        // Fired when a remote peer initiates a call to us.  The UI should ring
+        // and show an incoming-call screen with accept/decline buttons.
+        // -----------------------------------------------------------------------
+        'CallIncoming' => dataMap != null
+            && dataMap['callId'] is String
+            && dataMap['peerId'] is String
+          ? CallIncomingEvent(
+              callId: dataMap['callId'] as String,
+              peerId: dataMap['peerId'] as String,
+              isVideo: dataMap['isVideo'] as bool? ?? false,
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'CallAnswered'
+        // Fired when the remote peer accepts our outgoing call offer.
+        // The UI should transition from "ringing" to "in call".
+        // -----------------------------------------------------------------------
+        'CallAnswered' => dataMap != null && dataMap['callId'] is String
+          ? CallAnsweredEvent(
+              callId: dataMap['callId'] as String,
+              audioCodec: dataMap['audioCodec'] as String? ?? 'Opus',
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'CallHungUp'
+        // Fired when the remote peer ends or declines the call.
+        // The UI should return to idle state.
+        // -----------------------------------------------------------------------
+        'CallHungUp' => dataMap != null && dataMap['callId'] is String
+          ? CallHungUpEvent(
+              callId: dataMap['callId'] as String,
+              reason: dataMap['reason'] as String? ?? 'Normal',
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'MeshPacketDelivered'
+        // Fired when a mesh-routed packet (non-message kind) is delivered to
+        // this node after multi-hop forwarding.  Used by the Network screen to
+        // display live mesh traffic stats.
+        // -----------------------------------------------------------------------
+        'MeshPacketDelivered' => dataMap != null
+            && dataMap['source'] is String
+          ? MeshPacketDeliveredEvent(
+              source: dataMap['source'] as String,
+              kind: dataMap['kind'] as String? ?? 'Unknown',
+              size: (dataMap['size'] as num?)?.toInt() ?? 0,
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'MessageStatusUpdated'
+        // Fired when a delivery receipt arrives from the recipient (§7.3).
+        // The UI should update the message's delivery indicator from "sent"
+        // to "delivered" (e.g. single-tick → double-tick).
+        // -----------------------------------------------------------------------
+        'MessageStatusUpdated' => dataMap != null
+            && dataMap['msgId'] is String
+            && dataMap['roomId'] is String
+          ? MessageStatusUpdatedEvent(
+              msgId: dataMap['msgId'] as String,
+              roomId: dataMap['roomId'] as String,
+              deliveryStatus: dataMap['deliveryStatus'] as String? ?? 'sent',
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'TypingIndicator'
+        // Fired when a remote peer starts or stops typing in a shared room.
+        // Also fired locally when the user starts/stops typing (peerId is null
+        // in that case — the UI can use this to suppress echo).
+        // -----------------------------------------------------------------------
+        'TypingIndicator' => dataMap != null && dataMap['roomId'] is String
+          ? TypingIndicatorEvent(
+              roomId: dataMap['roomId'] as String,
+              peerId: dataMap['peerId'] as String?,
+              active: dataMap['active'] as bool? ?? false,
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'LocalNotification'
+        // Fired when the notification dispatcher delivers a coalesced notification
+        // (§14).  The UI should display a system notification or in-app banner.
+        // -----------------------------------------------------------------------
+        'LocalNotification' => dataMap != null && dataMap['title'] is String
+          ? LocalNotificationEvent(
+              title: dataMap['title'] as String,
+              body: dataMap['body'] as String?,
+              conversationId: dataMap['conversationId'] as String?,
+              eventCount: (dataMap['eventCount'] as num?)?.toInt() ?? 1,
+              priority: dataMap['priority'] as String? ?? 'Normal',
+              tier: dataMap['tier'] as String? ?? 'MeshTunnel',
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'ReactionAdded'
+        // Fired when a peer (or the local user) adds an emoji reaction to a
+        // message (§10.1.2).  The UI should display the emoji on the message row.
+        // [peerId] is null when the reaction is the local user's own action.
+        // -----------------------------------------------------------------------
+        'ReactionAdded' => dataMap != null
+            && dataMap['roomId'] is String
+            && dataMap['msgId'] is String
+            && dataMap['emoji'] is String
+          ? ReactionAddedEvent(
+              roomId: dataMap['roomId'] as String,
+              msgId: dataMap['msgId'] as String,
+              peerId: dataMap['peerId'] as String?,
+              emoji: dataMap['emoji'] as String,
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
         // Catch-all: any event type we don't recognise is silently dropped.
         // This makes the app forward-compatible with new event types added in
         // newer versions of the Rust backend.
@@ -298,4 +452,153 @@ final class TrustUpdatedEvent extends BackendEvent {
   const TrustUpdatedEvent({required this.peerId, required this.trustLevel});
   final String peerId;
   final TrustLevel trustLevel;
+}
+
+/// A new peer has been added to the contact store (e.g. via QR pairing).
+final class PeerAddedEvent extends BackendEvent {
+  const PeerAddedEvent(this.peer);
+  final PeerModel peer;
+}
+
+/// A peer responded to our LoSec negotiation request (§6.9.6).
+/// [accepted] indicates whether they agreed to LoSec mode.
+final class LoSecResponseEvent extends BackendEvent {
+  const LoSecResponseEvent({
+    required this.peerId,
+    required this.sessionId,
+    required this.accepted,
+    this.rejectionReason,
+  });
+  final String peerId;
+  final String sessionId;
+  final bool accepted;
+  final String? rejectionReason;
+}
+
+/// A remote peer has sent us a LoSec negotiation request (§6.9.6).
+/// [accepted] indicates whether our local policy accepted it.
+final class LoSecRequestedEvent extends BackendEvent {
+  const LoSecRequestedEvent({
+    required this.peerId,
+    required this.sessionId,
+    required this.accepted,
+  });
+  final String peerId;
+  final String sessionId;
+  final bool accepted;
+}
+
+/// A remote peer is calling us (§10.1.6).
+/// [isVideo] — true if the offer includes a video track.
+final class CallIncomingEvent extends BackendEvent {
+  const CallIncomingEvent({
+    required this.callId,
+    required this.peerId,
+    required this.isVideo,
+  });
+  final String callId;
+  final String peerId;
+  final bool isVideo;
+}
+
+/// The remote peer accepted our outgoing call offer (§10.1.6).
+final class CallAnsweredEvent extends BackendEvent {
+  const CallAnsweredEvent({required this.callId, required this.audioCodec});
+  final String callId;
+  final String audioCodec;
+}
+
+/// The call ended — either the remote peer hung up or declined (§10.1.6).
+final class CallHungUpEvent extends BackendEvent {
+  const CallHungUpEvent({required this.callId, required this.reason});
+  final String callId;
+  final String reason;
+}
+
+/// A non-message mesh packet was delivered to this node after multi-hop routing.
+/// Used by the Network screen for live mesh traffic statistics.
+/// [source] is the hex-encoded originating node address.
+/// [kind] is the packet kind (Keepalive, Data, CallSignal, etc.).
+/// [size] is the payload size in bytes.
+final class MeshPacketDeliveredEvent extends BackendEvent {
+  const MeshPacketDeliveredEvent({
+    required this.source,
+    required this.kind,
+    required this.size,
+  });
+  final String source;
+  final String kind;
+  final int size;
+}
+
+/// A delivery receipt was received from the message recipient (§7.3).
+/// [msgId] identifies the acknowledged message.
+/// [roomId] identifies the room it belongs to.
+/// [deliveryStatus] is the new status string — currently always "delivered".
+final class MessageStatusUpdatedEvent extends BackendEvent {
+  const MessageStatusUpdatedEvent({
+    required this.msgId,
+    required this.roomId,
+    required this.deliveryStatus,
+  });
+  final String msgId;
+  final String roomId;
+  final String deliveryStatus;
+}
+
+/// A peer started or stopped typing in a shared room (§10.2.1).
+/// [roomId] identifies the conversation room.
+/// [peerId] is the hex-encoded peer ID of the typist, or null when this event
+/// is fired for the local user's own typing state.
+/// [active] is true while the peer is typing, false when they stop.
+final class TypingIndicatorEvent extends BackendEvent {
+  const TypingIndicatorEvent({
+    required this.roomId,
+    required this.peerId,
+    required this.active,
+  });
+  final String roomId;
+  final String? peerId;
+  final bool active;
+}
+
+/// A coalesced notification was dispatched by the notification system (§14).
+/// [title] is the notification heading.
+/// [body] is the optional detail text (omitted for privacy on lower tiers).
+/// [conversationId] is the hex room/group ID this notification relates to, or null.
+/// [eventCount] is how many underlying events were coalesced into this notification.
+/// [priority] and [tier] are the string representations of the backend enums.
+final class LocalNotificationEvent extends BackendEvent {
+  const LocalNotificationEvent({
+    required this.title,
+    required this.body,
+    required this.conversationId,
+    required this.eventCount,
+    required this.priority,
+    required this.tier,
+  });
+  final String title;
+  final String? body;
+  final String? conversationId;
+  final int eventCount;
+  final String priority;
+  final String tier;
+}
+
+/// A peer (or the local user) added an emoji reaction to a message (§10.1.2).
+/// [roomId] identifies the conversation room.
+/// [msgId] identifies the message being reacted to.
+/// [peerId] is the hex-encoded peer ID of the reactor, or null for the local user.
+/// [emoji] is the emoji string (e.g. "👍").
+final class ReactionAddedEvent extends BackendEvent {
+  const ReactionAddedEvent({
+    required this.roomId,
+    required this.msgId,
+    required this.peerId,
+    required this.emoji,
+  });
+  final String roomId;
+  final String msgId;
+  final String? peerId;
+  final String emoji;
 }

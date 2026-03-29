@@ -35,6 +35,8 @@ import '../features/peers/peers_state.dart';       // Connected peer state
 import '../features/files/files_state.dart';       // File transfer state
 import '../features/network/network_state.dart';   // Network/transport state
 import '../features/settings/settings_state.dart'; // Settings and identity state
+import '../features/calls/calls_state.dart';       // Voice/video call state
+import '../features/calls/call_overlay.dart';      // Full-screen call UI overlay
 
 // =============================================================================
 // MeshInfinityApp — StatefulWidget
@@ -100,10 +102,25 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
     // call — it reads a file from disk or checks an in-memory flag.
     _hasIdentity = widget.bridge.hasIdentity();
 
-    // Start the background event polling loop, but ONLY if the Rust backend
-    // actually loaded.  On developer machines where the .so is not built,
-    // bridge.isAvailable is false and we skip this to avoid a crash.
     if (widget.bridge.isAvailable) {
+      // For returning users (identity already exists on disk), unlock the
+      // identity so that vault data is loaded and the backend is fully live.
+      // New users go through the OnboardingScreen which calls createIdentity()
+      // or importIdentity(), both of which unlock the identity internally.
+      if (_hasIdentity) {
+        // Attempt unlock with no PIN.  If the user set a PIN during onboarding
+        // we will need a PIN entry screen (future work); for now, no-PIN is
+        // the default and this covers the common case.
+        final unlocked = widget.bridge.unlockIdentity();
+        if (unlocked) {
+          // Start accepting incoming TCP connections.  Safe to call here
+          // because unlockIdentity() has already loaded the vault and made
+          // the identity live.
+          widget.bridge.startClearnetListener();
+        }
+      }
+
+      // Start the background event polling loop.
       // contextAddress is the raw memory address of the Rust context pointer,
       // passed as an integer so it can cross the isolate boundary safely.
       // See event_bus.dart for a detailed explanation of why this works.
@@ -120,10 +137,11 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
   // ---------------------------------------------------------------------------
   @override
   void dispose() {
-    // Kill the background polling isolate and close the message port.
-    EventBus.instance.stop();
-    // Call mesh_destroy() in Rust to flush state, close sockets, free memory.
-    widget.bridge.dispose();
+    // Stop the background polling isolate first, then destroy the Rust context.
+    // stop() is async — it waits for the isolate to exit the FFI poll loop
+    // before returning, so mesh_destroy() cannot race with mi_poll_events() (C3).
+    // Flutter's dispose() is synchronous, so we chain via .then().
+    EventBus.instance.stop().then((_) => widget.bridge.dispose());
     super.dispose(); // Always call super last in dispose().
   }
 
@@ -202,6 +220,11 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
         ChangeNotifierProvider(
           create: (_) => SettingsState(widget.bridge),
         ),
+
+        // CallsState manages voice/video call lifecycle (§10.1.6).
+        ChangeNotifierProvider(
+          create: (_) => CallsState(widget.bridge),
+        ),
       ],
       // -----------------------------------------------------------------------
       // MaterialApp
@@ -258,7 +281,8 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
       );
     }
     // Returning user (or just-completed onboarding): show the full app shell
-    // with navigation, all features, and the complete UI.
-    return const AppShell();
+    // wrapped in CallOverlay so incoming/active calls appear on top of every
+    // screen without disturbing the navigation stack (§10.1.6).
+    return const CallOverlay(child: AppShell());
   }
 }

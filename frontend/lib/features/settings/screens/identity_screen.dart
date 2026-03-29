@@ -3,10 +3,41 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../../../backend/backend_bridge.dart';
 import '../settings_state.dart';
+import 'profile_edit_screen.dart';
 
-class IdentityScreen extends StatelessWidget {
+class IdentityScreen extends StatefulWidget {
   const IdentityScreen({super.key});
+
+  @override
+  State<IdentityScreen> createState() => _IdentityScreenState();
+}
+
+class _IdentityScreenState extends State<IdentityScreen> {
+  // Full pairing payload JSON — loaded once and refreshable.
+  // Encoded in the QR code so that scanning gives all keys + transport hints.
+  String? _pairingPayload;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPairingPayload();
+  }
+
+  void _loadPairingPayload() {
+    final bridge = context.read<BackendBridge>();
+    setState(() {
+      _pairingPayload = bridge.getPairingPayload();
+    });
+  }
+
+  void _copy(BuildContext context, String value, String label) {
+    Clipboard.setData(ClipboardData(text: value));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$label copied')),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,7 +45,24 @@ class IdentityScreen extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Identity')),
+      appBar: AppBar(
+        title: const Text('Identity'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_outlined),
+            tooltip: 'Refresh QR Code',
+            onPressed: _loadPairingPayload,
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            tooltip: 'Edit Profile',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ProfileEditScreen()),
+            ),
+          ),
+        ],
+      ),
       body: identity == null
           ? const Center(child: Text('Identity not available'))
           : ListView(
@@ -31,8 +79,11 @@ class IdentityScreen extends StatelessWidget {
                             borderRadius: BorderRadius.circular(12),
                           ),
                           padding: const EdgeInsets.all(8),
+                          // Encode the full pairing payload so scanning gives
+                          // all keys + transport hints needed for session setup.
+                          // Falls back to peer ID if payload unavailable.
                           child: QrImageView(
-                            data: identity.peerId,
+                            data: _pairingPayload ?? identity.peerId,
                             version: QrVersions.auto,
                             size: 200,
                             eyeStyle: QrEyeStyle(
@@ -79,13 +130,6 @@ class IdentityScreen extends StatelessWidget {
             ),
     );
   }
-
-  void _copy(BuildContext context, String value, String label) {
-    Clipboard.setData(ClipboardData(text: value));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$label copied')),
-    );
-  }
 }
 
 class _KeyCard extends StatelessWidget {
@@ -102,29 +146,33 @@ class _KeyCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(label, style: Theme.of(context).textTheme.titleSmall),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.copy_outlined, size: 18),
-                  tooltip: 'Copy',
-                  onPressed: onCopy,
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SelectableText(
-              value,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-            ),
-          ],
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onCopy,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(label, style: Theme.of(context).textTheme.titleSmall),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.copy_outlined, size: 18),
+                    tooltip: 'Copy',
+                    onPressed: onCopy,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SelectableText(
+                value,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -53,11 +53,8 @@ class PeersState extends ChangeNotifier {
   }
 
   PeerModel? findPeer(String peerId) {
-    try {
-      return _peers.firstWhere((p) => p.id == peerId);
-    } catch (_) {
-      return null;
-    }
+    final match = _peers.where((p) => p.id == peerId);
+    return match.isNotEmpty ? match.first : null;
   }
 
   void _onEvent(BackendEvent event) {
@@ -71,6 +68,12 @@ class PeersState extends ChangeNotifier {
           _peers = [..._peers, peer];
         }
         if (!_disposed) notifyListeners();
+
+      case PeerAddedEvent(:final peer):
+        if (!_peers.any((p) => p.id == peer.id)) {
+          _peers = [..._peers, peer];
+          if (!_disposed) notifyListeners();
+        }
 
       case TrustUpdatedEvent(:final peerId, :final trustLevel):
         _peers = [

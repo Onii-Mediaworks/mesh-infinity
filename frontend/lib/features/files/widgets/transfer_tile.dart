@@ -7,10 +7,14 @@ class TransferTile extends StatelessWidget {
     super.key,
     required this.transfer,
     this.onCancel,
+    this.onAccept,
+    this.onDecline,
   });
 
   final FileTransferModel transfer;
   final VoidCallback? onCancel;
+  final VoidCallback? onAccept;
+  final VoidCallback? onDecline;
 
   @override
   Widget build(BuildContext context) {
@@ -41,7 +45,24 @@ class TransferTile extends StatelessWidget {
                   ),
                 ),
                 _StatusChip(status: transfer.status),
-                if (transfer.status.isActive && onCancel != null) ...[
+                if (transfer.status == TransferStatus.pending &&
+                    transfer.direction == TransferDirection.receive) ...[
+                  const SizedBox(width: 4),
+                  IconButton(
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    tooltip: 'Accept',
+                    color: Colors.green,
+                    onPressed: onAccept,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.cancel_outlined, size: 18),
+                    tooltip: 'Decline',
+                    color: Colors.red,
+                    onPressed: onDecline,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ] else if (transfer.status.isActive && onCancel != null) ...[
                   const SizedBox(width: 8),
                   IconButton(
                     icon: const Icon(Icons.close, size: 18),

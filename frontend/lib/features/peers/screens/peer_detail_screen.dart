@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../peers_state.dart';
 import '../../../backend/models/peer_models.dart';
 import '../../../features/settings/settings_state.dart';
+import '../../../features/calls/calls_state.dart';
 import '../widgets/trust_badge.dart';
 
 class PeerDetailScreen extends StatelessWidget {
@@ -45,6 +46,106 @@ class PeerDetailScreen extends StatelessWidget {
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 12),
+          // Actions
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Actions',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  ListTile(
+                    leading: const Icon(Icons.call_outlined),
+                    title: const Text('Voice Call'),
+                    onTap: () {
+                      context.read<CallsState>().startCall(peer.id);
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.videocam_outlined),
+                    title: const Text('Video Call'),
+                    onTap: () {
+                      context.read<CallsState>().startCall(peer.id, video: true);
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.chat_outlined),
+                    title: const Text('Start Conversation'),
+                    onTap: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                            content: Text(
+                                'Create a room for ${peer.name.isNotEmpty ? peer.name : "this peer"} from the Chat tab')),
+                      );
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.send_outlined),
+                    title: const Text('Send File'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content:
+                                Text('File transfer: select a file to send')),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.block_outlined,
+                        color: Theme.of(context).colorScheme.error),
+                    title: Text('Remove Peer',
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.error)),
+                    onTap: () => _confirmRemovePeer(context, peer),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmRemovePeer(BuildContext context, PeerModel peer) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove Peer?'),
+        content: Text(
+          'This will revoke trust and remove '
+          '${peer.name.isNotEmpty ? peer.name : "this peer"} '
+          'from your peer list.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () {
+              final settings = context.read<SettingsState>();
+              final localId = settings.settings?.localPeerId ?? '';
+              context.read<PeersState>().attestTrust(
+                localPeerId: localId,
+                targetPeerId: peer.id,
+                trustLevel: 0,
+              );
+              Navigator.of(ctx).pop();
+              Navigator.of(context).pop();
+            },
+            child: const Text('Remove'),
           ),
         ],
       ),
@@ -184,13 +285,22 @@ class _TrustSheet extends StatelessWidget {
                 selected: peer.trustLevel == level,
                 onTap: () {
                   Navigator.pop(context);
-                  if (localPeerId.isNotEmpty) {
-                    context.read<PeersState>().attestTrust(
-                      localPeerId: localPeerId,
-                      targetPeerId: peer.id,
-                      trustLevel: level.value,
+                  if (localPeerId.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Cannot set trust: local identity not available. '
+                          'Complete onboarding first.',
+                        ),
+                      ),
                     );
+                    return;
                   }
+                  context.read<PeersState>().attestTrust(
+                    localPeerId: localPeerId,
+                    targetPeerId: peer.id,
+                    trustLevel: level.value,
+                  );
                 },
               ),
           ],

@@ -43,8 +43,9 @@ impl<T: Zeroize> SecureMemory<T> {
 
         // `mut` is required by the `#[cfg(unix)]` block below (calls `data.as_mut()`).
         // On non-unix platforms (Windows) that block is compiled out, so the compiler
-        // warns that `mut` is unnecessary.  We suppress that platform-specific warning.
-        #[allow(unused_mut)]
+        // warns that `mut` is unnecessary.  The cfg_attr below is precise: it only
+        // silences the warning on platforms where the mut is genuinely redundant.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut data = Box::new(value);
 
         #[cfg(unix)]
@@ -52,7 +53,11 @@ impl<T: Zeroize> SecureMemory<T> {
             let ptr = data.as_mut() as *mut T as *mut libc::c_void;
             let size = std::mem::size_of::<T>();
 
-            // Lock memory to prevent swapping
+            // Lock memory to prevent swapping.
+            // SAFETY: `ptr` is derived from a valid, heap-allocated Box<T> via
+            // `as_mut()`, so it is non-null, correctly aligned, and valid for
+            // `size` bytes.  mlock(2) only reads the address/length; it does
+            // not dereference the memory itself.
             let result = unsafe { mlock(ptr, size) };
 
             if result != 0 {
@@ -88,6 +93,9 @@ impl<T: Zeroize> SecureMemory<T> {
         if self.locked {
             let ptr = self.data.as_mut() as *mut T as *mut libc::c_void;
             let size = std::mem::size_of::<T>();
+            // SAFETY: `ptr` is derived from the same Box<T> that was locked
+            // with mlock; the pointer and size are unchanged since the lock
+            // call, so munlock(2) receives valid arguments.
             unsafe {
                 munlock(ptr, size);
             }
@@ -95,20 +103,6 @@ impl<T: Zeroize> SecureMemory<T> {
         }
     }
 
-    /// Get a reference to the data
-    /// Warning: Be careful not to copy the data
-    #[allow(clippy::should_implement_trait)]
-    /// As ref.
-    pub fn as_ref(&self) -> &T {
-        &self.data
-    }
-
-    /// Get a mutable reference to the data
-    #[allow(clippy::should_implement_trait)]
-    /// As mut.
-    pub fn as_mut(&mut self) -> &mut T {
-        &mut self.data
-    }
 }
 
 impl<T: Zeroize> AsRef<T> for SecureMemory<T> {
@@ -136,6 +130,9 @@ impl<T: Zeroize> Drop for SecureMemory<T> {
         if self.locked {
             let ptr = self.data.as_mut() as *mut T as *mut libc::c_void;
             let size = std::mem::size_of::<T>();
+            // SAFETY: `ptr` and `size` match those used when mlock was called
+            // in `SecureMemory::new`; Drop is called exactly once, so this
+            // munlock(2) call is paired with exactly one prior mlock(2) call.
             unsafe {
                 munlock(ptr, size);
             }

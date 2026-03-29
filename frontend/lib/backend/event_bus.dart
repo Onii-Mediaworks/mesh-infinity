@@ -50,6 +50,7 @@ import 'dart:io';       // Platform, sleep — OS detection and thread sleeping
 import 'dart:isolate';  // Isolate, ReceivePort, SendPort — inter-isolate messaging
 
 import 'package:ffi/ffi.dart'; // Utf8 type alias and helpers
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'event_models.dart'; // BackendEvent and its subclasses
 
@@ -112,6 +113,13 @@ class EventBus {
   // Whether stop() was called intentionally (suppresses auto-restart).
   bool _stopped = false;
 
+  // Native (non-GC) flag shared with the background isolate.  Setting it to 1
+  // signals the poll loop to exit cleanly between FFI calls, so we do not call
+  // mesh_destroy() while an mi_poll_events() call is still executing in the
+  // background isolate.  calloc() allocates outside the Dart GC heap, so the
+  // pointer is readable by both isolates as a plain integer address.
+  final Pointer<Int32> _stopFlag = calloc<Int32>();
+
   // Timestamps of recent restarts for rate-limiting.  If more than
   // _maxRestartsInWindow restarts happen within _restartWindow, we stop
   // retrying to avoid a rapid crash loop.
@@ -134,6 +142,7 @@ class EventBus {
   void start(int contextAddress) {
     _contextAddress = contextAddress;
     _stopped = false;
+    _stopFlag.value = 0; // Arm the cooperative-stop flag for the new isolate.
     _spawnIsolate();
   }
 
@@ -162,7 +171,7 @@ class EventBus {
     _errorPort!.listen((dynamic error) {
       // Log the error but do not restart here — the onExit handler fires
       // after the error when the isolate actually terminates.
-      print('[EventBus] Background isolate error: $error');
+      debugPrint('[EventBus] Background isolate error: $error');
     });
 
     // Port for detecting when the background isolate terminates.
@@ -185,6 +194,7 @@ class EventBus {
       _PollMessage(
         sendPort: _receivePort!.sendPort,
         contextAddress: _contextAddress!,
+        stopFlagAddress: _stopFlag.address,
       ),
       errorsAreFatal: true,
       onError: _errorPort!.sendPort,
@@ -216,7 +226,7 @@ class EventBus {
     );
 
     if (_restartTimestamps.length >= _maxRestartsInWindow) {
-      print(
+      debugPrint(
         '[EventBus] Isolate restarted $_maxRestartsInWindow times in '
         '${_restartWindow.inSeconds}s — giving up. UI events will not update.',
       );
@@ -224,7 +234,7 @@ class EventBus {
     }
 
     _restartTimestamps.add(now);
-    print(
+    debugPrint(
       '[EventBus] Background isolate exited unexpectedly. '
       'Restarting in ${_restartDelay.inSeconds}s '
       '(${_restartTimestamps.length}/$_maxRestartsInWindow)...',
@@ -242,13 +252,50 @@ class EventBus {
   // ---------------------------------------------------------------------------
   // stop()
   //
-  // Kill the background isolate and clean up resources.
-  // Called when the app widget is disposed (closing the app).
+  // Signal the background isolate to exit cleanly, wait for confirmation,
+  // then clean up resources.  Returns a Future so the caller can await it
+  // before calling mesh_destroy() — guaranteeing the isolate is not inside
+  // an mi_poll_events() FFI call when the Rust context is freed (C3).
+  //
+  // Shutdown sequence:
+  //   1. Set the cooperative stop flag (native memory readable by the isolate).
+  //      The poll loop checks this flag at the top of each iteration and
+  //      immediately after each FFI call, so it will exit within one polling
+  //      cycle (≤ 200 ms) without entering another FFI call.
+  //   2. Register a one-shot listener on _exitPort and await its completion
+  //      with a 500 ms timeout (belt-and-suspenders if the isolate hangs).
+  //   3. Force-kill the isolate — no-op if it already exited cleanly.
+  //   4. Close all ports and null out references.
   // ---------------------------------------------------------------------------
-  void stop() {
+  Future<void> stop() async {
     _stopped = true;
-    // Isolate.immediate means "kill it now, don't wait for current task to
-    // finish".  Safe here because the isolate only does FFI calls and sleeps.
+
+    // Step 1 — signal cooperative exit.
+    _stopFlag.value = 1;
+
+    // Step 2 — wait for the isolate to confirm it has exited.
+    if (_isolate != null) {
+      final exitCompleter = Completer<void>();
+
+      // Re-create _exitPort so we get a clean one-shot notification.
+      _exitPort?.close();
+      _exitPort = ReceivePort();
+      _exitPort!.listen((_) {
+        if (!exitCompleter.isCompleted) exitCompleter.complete();
+      });
+      _isolate!.addOnExitListener(_exitPort!.sendPort);
+
+      // Step 3 — nudge the isolate to exit; the cooperative flag is the
+      // primary signal; beforeNextEvent is a fallback for any edge case
+      // where the flag is not checked (e.g. crash recovery paths).
+      _isolate!.kill(priority: Isolate.beforeNextEvent);
+
+      // Wait up to 500 ms for a clean exit before proceeding.
+      await exitCompleter.future
+          .timeout(const Duration(milliseconds: 500), onTimeout: () {});
+    }
+
+    // Step 4 — hard kill and cleanup (idempotent if already exited).
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
     _receivePort?.close();
@@ -270,6 +317,12 @@ class EventBus {
   // We parse it, convert each item into a typed BackendEvent, and add it to
   // the stream so that all listeners (state objects) get notified.
   // ---------------------------------------------------------------------------
+  /// Number of events dropped due to parse errors or unknown type (M2).
+  /// Exposed for diagnostics — a non-zero value indicates backend/frontend
+  /// version mismatch or a serialization bug.
+  int get droppedEventCount => _droppedEventCount;
+  int _droppedEventCount = 0;
+
   void _onMessage(dynamic message) {
     // Guard: we only handle String messages.  Other types (e.g. error objects
     // sent by the isolate framework) are ignored.
@@ -278,15 +331,26 @@ class EventBus {
       final decoded = jsonDecode(message); // String → Dart List
       if (decoded is! List) return;
       for (final item in decoded) {
-        if (item is! Map<String, dynamic>) continue;
+        if (item is! Map<String, dynamic>) {
+          _droppedEventCount++;
+          continue;
+        }
         // Convert the raw map into a typed BackendEvent subclass.
-        // fromJson returns null for unknown event types — we skip those.
+        // fromJson returns null for unknown event types — we count and skip.
         final event = BackendEvent.fromJson(item);
-        if (event != null) _controller.add(event); // publish to the stream
+        if (event != null) {
+          _controller.add(event); // publish to the stream
+        } else {
+          _droppedEventCount++;
+          final type = item['type'] ?? '<missing>';
+          debugPrint('[EventBus] Unknown event type "$type" — dropped (total: $_droppedEventCount)');
+        }
       }
-    } catch (_) {
-      // Swallow parse errors silently.  A malformed event batch should not
-      // crash the UI.
+    } catch (e, st) {
+      // Count and log parse errors.  A malformed event batch should not
+      // crash the UI, but we want visibility into these failures (M2).
+      _droppedEventCount++;
+      debugPrint('[EventBus] Event parse error (total dropped: $_droppedEventCount): $e\n$st');
     }
   }
 
@@ -342,13 +406,29 @@ class EventBus {
     //     are safe.
     final ctx = Pointer<Void>.fromAddress(msg.contextAddress);
 
-    // THE POLL LOOP — runs until the isolate is killed.
-    while (true) {
+    // Reconstruct the cooperative-stop flag pointer from the address integer.
+    // This is the same native memory that EventBus._stopFlag points to on the
+    // main isolate — both sides read/write the same physical bytes.
+    final stopFlag = Pointer<Int32>.fromAddress(msg.stopFlagAddress);
+
+    // THE POLL LOOP — runs until the stop flag is set or the isolate is killed.
+    //
+    // We check stopFlag.value at TWO points:
+    //   (a) at the top of the loop — avoids entering a new FFI call after stop()
+    //   (b) immediately after pollEvents() returns — exits before re-entering
+    //       native code so mesh_destroy() can safely free the context.
+    while (stopFlag.value == 0) {
       // Ask Rust for up to 64 pending events.
       // Requesting a batch (64) rather than one at a time reduces overhead —
       // if many events arrived at once (e.g. bulk message sync), we process
       // them all in one round rather than sleeping between each one.
       final ptr = pollEvents(ctx, 64);
+
+      // (b) Check stop flag immediately after FFI returns.
+      if (stopFlag.value != 0) {
+        if (ptr != nullptr) stringFree(ptr);
+        break;
+      }
 
       if (ptr != nullptr) {
         // There were events.  Copy them out of native memory into a Dart String.
@@ -413,7 +493,11 @@ class EventBus {
 // =============================================================================
 
 class _PollMessage {
-  const _PollMessage({required this.sendPort, required this.contextAddress});
+  const _PollMessage({
+    required this.sendPort,
+    required this.contextAddress,
+    required this.stopFlagAddress,
+  });
 
   /// The port the background isolate uses to send event JSON back to the main
   /// isolate.  SendPort is safe to pass across isolate boundaries.
@@ -423,4 +507,11 @@ class _PollMessage {
   /// The background isolate calls Pointer.fromAddress(contextAddress) to
   /// reconstruct a usable `Pointer<Void>` from this integer.
   final int contextAddress;
+
+  /// The raw address of a native Int32 stop-flag allocated by calloc() in the
+  /// main isolate.  The background isolate reconstructs a `Pointer<Int32>` from
+  /// this address and checks its value at each loop iteration.  When the main
+  /// isolate sets the flag to 1, the poll loop exits between FFI calls so that
+  /// mesh_destroy() can run safely (C3 fix).
+  final int stopFlagAddress;
 }

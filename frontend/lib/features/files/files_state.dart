@@ -23,6 +23,11 @@ class FilesState extends ChangeNotifier {
   List<ServiceModel> _services = const [];
 
   List<FileTransferModel> get transfers => _transfers;
+  List<FileTransferModel> get incomingOffers => _transfers
+      .where((t) =>
+          t.status == TransferStatus.pending &&
+          t.direction == TransferDirection.receive)
+      .toList();
   List<FileTransferModel> get activeTransfers =>
       _transfers.where((t) => t.status.isActive).toList();
   List<FileTransferModel> get completedTransfers =>
@@ -66,6 +71,12 @@ class FilesState extends ChangeNotifier {
 
   Future<bool> cancelTransfer(String transferId) async {
     final ok = _bridge.cancelFileTransfer(transferId);
+    if (ok) await loadTransfers();
+    return ok;
+  }
+
+  Future<bool> acceptTransfer(String transferId, {String savePath = ''}) async {
+    final ok = _bridge.acceptFileTransfer(transferId, savePath: savePath);
     if (ok) await loadTransfers();
     return ok;
   }

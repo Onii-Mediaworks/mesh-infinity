@@ -258,6 +258,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!mounted) return;
 
     if (ok) {
+      // Start accepting incoming clearnet connections now that the identity
+      // is live.  Pairing requires the listener to be running so the other
+      // side can reach us after scanning our QR code.
+      bridge.startClearnetListener();
       setState(() {
         _busy = false;
         _step = _Step.publicProfile; // Advance the wizard.
@@ -324,6 +328,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!mounted) return;
 
     if (ok) {
+      bridge.startClearnetListener();
       setState(() {
         _busy = false;
         _step = _Step.publicProfile; // Advance to profile setup.
@@ -367,17 +372,28 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     // This lets the Rust backend distinguish between "field was left blank"
     // and "field was filled with a value" — an important semantic difference
     // when merging profiles later.
-    bridge.setPublicProfile(
+    final pubOk = bridge.setPublicProfile(
       displayName: pubName.isEmpty ? null : pubName,
       isPublic: _identityPublic,
     );
 
     // Write the private profile (device-only, never sent over the network).
     // Same null-for-blank convention as the public profile above.
-    bridge.setPrivateProfile(
+    final privOk = bridge.setPrivateProfile(
       displayName: privName.isEmpty ? null : privName,
       bio: bio.isEmpty ? null : bio,
     );
+
+    if (!pubOk || !privOk) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to save profile. Please try again.'),
+          ),
+        );
+      }
+      return;
+    }
 
     // Tell the parent that onboarding is finished.  The parent (app.dart)
     // will remove OnboardingScreen from the tree and show the main AppShell.

@@ -416,6 +416,22 @@ class BackendBridge {
     return result == 0;
   }
 
+  /// Accept an incoming file transfer offer.
+  ///
+  /// [savePath] is where the file should be saved; pass empty string to use
+  /// the default downloads location.  Returns true on success.
+  bool acceptFileTransfer(String transferId, {String savePath = ''}) {
+    if (!isAvailable) return false;
+    final tPtr = transferId.toNativeUtf8();
+    final pPtr = savePath.toNativeUtf8();
+    try {
+      return _bindings!.fileTransferAccept(_context, tPtr, pPtr) == 0;
+    } finally {
+      calloc.free(tPtr);
+      calloc.free(pPtr);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Settings & Identity
   // ---------------------------------------------------------------------------
@@ -449,14 +465,27 @@ class BackendBridge {
     return _bindings!.hasIdentity(_context) == 1;
   }
 
-  /// Persist the current in-memory identity to disk.
+  /// Create a new identity and persist it to disk.
   /// Call once during onboarding after the user chooses "Create New Identity".
+  /// Returns true on success. On failure, call [lastError] for details.
   bool createIdentity({String? name}) {
     if (!isAvailable) return false;
-    // Pass nullptr when no name is given — Rust will use a default.
     final namePtr = name != null ? name.toNativeUtf8() : nullptr;
     final result = _bindings!.createIdentity(_context, namePtr);
     if (namePtr != nullptr) calloc.free(namePtr);
+    return result == 0;
+  }
+
+  /// Unlock an existing identity using the provided PIN.
+  ///
+  /// Pass null [pin] if no PIN was configured at creation time.
+  /// Returns true on success. On failure (wrong PIN, missing identity),
+  /// call [lastError] for the human-readable reason.
+  bool unlockIdentity({String? pin}) {
+    if (!isAvailable) return false;
+    final pinPtr = pin != null ? pin.toNativeUtf8() : nullptr;
+    final result = _bindings!.unlockIdentity(_context, pinPtr);
+    if (pinPtr != nullptr) calloc.free(pinPtr);
     return result == 0;
   }
 
@@ -485,6 +514,20 @@ class BackendBridge {
     return result == 0;
   }
 
+  /// Create an encrypted backup of identity, trust data, network map, and
+  /// settings.  Returns the JSON-serialised EncryptedBackup on success, or
+  /// null on failure.
+  /// [backupType]: 0 = full backup (identity + contacts + settings),
+  /// 1 = identity-only (keys only, smaller payload).
+  String? createBackup({required String passphrase, int backupType = 0}) {
+    if (!isAvailable) return null;
+    final passphrasePtr = passphrase.toNativeUtf8();
+    final result = _readString(
+        _bindings!.createBackup(_context, passphrasePtr, backupType));
+    calloc.free(passphrasePtr);
+    return result;
+  }
+
   /// Restore an identity from an encrypted backup payload + passphrase.
   bool importIdentity({required String backupJson, required String passphrase}) {
     if (!isAvailable) return false;
@@ -501,6 +544,69 @@ class BackendBridge {
   bool resetIdentity() {
     if (!isAvailable) return false;
     return _bindings!.resetIdentity(_context) == 0;
+  }
+
+  /// Get the full pairing payload JSON for QR code display and sharing.
+  /// Includes our Ed25519 + X25519 public keys, a fresh one-time token,
+  /// display name (signed), and transport hints.
+  /// Returns null if the identity is not unlocked.
+  String? getPairingPayload() {
+    if (!isAvailable) return null;
+    return _readString(_bindings!.getPairingPayload(_context));
+  }
+
+  /// Start the clearnet TCP listener on the configured port (default 7234).
+  /// Call once after unlocking the identity so incoming connections can be
+  /// accepted during the mi_poll_events cycle.
+  bool startClearnetListener() {
+    if (!isAvailable) return false;
+    return _bindings!.startClearnetListener(_context) == 0;
+  }
+
+  /// Stop the clearnet TCP listener and close all open connections.
+  bool stopClearnetListener() {
+    if (!isAvailable) return false;
+    return _bindings!.stopClearnetListener(_context) == 0;
+  }
+
+  /// Change the TCP port the clearnet listener will bind to.
+  /// Takes effect on the next [startClearnetListener] call.
+  bool setClearnetPort(int port) {
+    if (!isAvailable) return false;
+    return _bindings!.setClearnetPort(_context, port) == 0;
+  }
+
+  /// Update the threat context level (0=Normal, 1=Elevated, 2=Critical).
+  /// Elevated/Critical automatically suppresses cloud push tiers.
+  bool setThreatContext(int level) {
+    if (!isAvailable) return false;
+    return _bindings!.setThreatContext(_context, level) == 0;
+  }
+
+  /// Read the current threat context level (0=Normal, 1=Elevated, 2=Critical).
+  int getThreatContext() {
+    if (!isAvailable) return 0;
+    return _bindings!.getThreatContext(_context);
+  }
+
+  /// Set the trust level for a peer identified by hex peer ID.
+  /// [level]: 0=Unknown … 9=Absolute (see TrustLevel in the spec §8).
+  bool setTrustLevel(String peerId, int level) {
+    if (!isAvailable) return false;
+    final peerPtr = peerId.toNativeUtf8();
+    final result = _bindings!.setTrustLevel(_context, peerPtr, level);
+    calloc.free(peerPtr);
+    return result == 0;
+  }
+
+  /// Set the security mode for a conversation room.
+  /// [mode]: 0=Standard, 1=HighSecurity, 2=MaxSecurity.
+  bool setConversationSecurityMode(String roomId, int mode) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final result = _bindings!.setConversationSecurityMode(_context, roomPtr, mode);
+    calloc.free(roomPtr);
+    return result == 0;
   }
 
   /// Set the node operating mode (e.g. 0 = standard, 1 = relay-only, etc.).
@@ -541,13 +647,22 @@ class BackendBridge {
     ) == 0;
   }
 
-  /// Configure the VPN routing rules (sent as a JSON blob to Rust).
-  bool setVpnRoute(Map<String, dynamic> routeConfig) {
+  /// Set the VPN routing mode (§6.9).
+  bool setVpnModeConfig(Map<String, dynamic> modeConfig) {
     if (!isAvailable) return false;
-    final ptr = jsonEncode(routeConfig).toNativeUtf8();
-    final result = _bindings!.setVpnRoute(_context, ptr);
+    final ptr = jsonEncode(modeConfig).toNativeUtf8();
+    final result = _bindings!.setVpnMode(_context, ptr);
     calloc.free(ptr);
-    return result != 0;
+    return result == 0;
+  }
+
+  /// Set the exit node peer ID (§6.9.2). Pass empty string to clear.
+  bool setExitNode(String peerIdHex) {
+    if (!isAvailable) return false;
+    final ptr = peerIdHex.toNativeUtf8();
+    final result = _bindings!.setExitNode(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
   }
 
   /// Configure the clearnet (plain internet) routing rules.
@@ -557,6 +672,157 @@ class BackendBridge {
     final result = _bindings!.setClearnetRoute(_context, ptr);
     calloc.free(ptr);
     return result != 0;
+  }
+
+  /// Configure VPN routing (alias for [setVpnModeConfig]).
+  bool setVpnRoute(Map<String, dynamic> routeConfig) {
+    return setVpnModeConfig(routeConfig);
+  }
+
+  // ---------------------------------------------------------------------------
+  // VPN / Exit Node
+  //
+  // These methods control the VPN subsystem described in spec section 13.
+  // The Rust backend may not have full implementations yet — callers should
+  // handle false returns gracefully.
+  // ---------------------------------------------------------------------------
+
+  /// Set the VPN mode (§6.9).
+  ///
+  /// [mode] is one of: "off", "mesh_only", "exit_node", "policy".
+  /// [exitNodePeerId] is required when mode is "exit_node".
+  bool setVpnMode(String mode, {String? exitNodePeerId}) {
+    if (exitNodePeerId != null) setExitNode(exitNodePeerId);
+    return setVpnModeConfig({'mode': mode});
+  }
+
+  /// Enable or disable the VPN kill switch (§6.9.4).
+  bool setVpnKillSwitch(bool enabled) {
+    return setVpnModeConfig({'killSwitch': enabled ? 'strict' : 'disabled'});
+  }
+
+  /// Fetch current VPN status from the backend.
+  ///
+  /// Returns a map with keys: mode, exitNodePeerId, connectionStatus,
+  /// killSwitch, uptimeSeconds.  Returns null if the backend has no VPN
+  /// state yet.
+  ///
+  /// Fetch current VPN status from the backend.
+  ///
+  /// Returns a map with keys: enabled, mode, state, killSwitch, exitPeerId,
+  /// internetAllowed.  Returns null if the backend is not available.
+  Map<String, dynamic>? getVpnStatus() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.getVpnStatus(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Perform a standard emergency erase (§3.9.1).
+  ///
+  /// Destroys ALL three identity layers permanently. Non-reversible.
+  /// Returns true if the erase was initiated.
+  bool emergencyErase() {
+    if (!isAvailable) return false;
+    return _bindings!.emergencyErase(_context) == 0;
+  }
+
+  /// Perform a duress erase (§3.9.2).
+  ///
+  /// Preserves Layer 1 (mesh identity), destroys Layers 2 and 3.
+  /// An observer sees a normal-looking fresh account with real mesh history.
+  /// Returns true if the erase was initiated.
+  bool duressErase() {
+    if (!isAvailable) return false;
+    return _bindings!.duressErase(_context) == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // SDR / RF Transport
+  //
+  // The SDR stack treats all radio as software-defined. Dedicated hardware
+  // (LoRa chips, Meshtastic, HF transceivers) are hardware-backed profiles
+  // implementing the same interface with limited configurability.
+  // ---------------------------------------------------------------------------
+
+  /// Configure the SDR transport.
+  ///
+  /// [profile] — one of: "balanced", "secure", "long_range", "long_range_hf", "evasive"
+  /// [driver]  — one of: "lora", "hackrf", "limesdr", "pluto", "rtlsdr",
+  ///             "hf_transceiver", "meshtastic", "simulated"
+  /// [freqHz]  — primary frequency in Hz (ignored for profile-determined frequencies)
+  /// [hopKeyHex] — 64-char hex hop key (required for "secure" and "evasive" profiles)
+  bool configureSdr({
+    String profile = 'balanced',
+    String driver = 'simulated',
+    int freqHz = 433175000,
+    String? hopKeyHex,
+  }) {
+    if (!isAvailable) return false;
+    final config = <String, dynamic>{
+      'profile': profile,
+      'driver': driver,
+      'freq_hz': freqHz,
+      if (hopKeyHex != null) 'hop_key_hex': hopKeyHex,
+    };
+    final ptr = jsonEncode(config).toNativeUtf8();
+    final result = _bindings!.sdrConfigure(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Get current SDR/RF status.
+  ///
+  /// Returns a map with keys: enabled, profile, driver, fhss, ale,
+  /// primaryFreqHz, stats (txBytes, rxBytes, fhssHops, lossRatio, etc.).
+  Map<String, dynamic>? getSdrStatus() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.sdrStatus(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Get the current FHSS channel (if FHSS is active).
+  ///
+  /// Returns a map with keys: freq_hz, epoch, label, bandwidth_hz.
+  /// Returns null if FHSS is not configured.
+  Map<String, dynamic>? getSdrCurrentChannel() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.sdrCurrentChannel(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map || decoded.containsKey('error')) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// List available SDR radio profiles.
+  ///
+  /// Returns a list of maps with keys: id, name, description, bandwidth_class,
+  /// fhss, ale, approx_range_km.
+  List<Map<String, dynamic>> listSdrProfiles() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.sdrListProfiles(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  /// List supported SDR hardware types.
+  ///
+  /// Returns a list of maps with keys: id, name, min_freq_mhz, max_freq_mhz,
+  /// full_duplex, raw_iq.
+  List<Map<String, dynamic>> listSdrHardware() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.sdrListHardware(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
   // ---------------------------------------------------------------------------
@@ -606,6 +872,73 @@ class BackendBridge {
     return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
   }
 
+  /// Get routing table summary statistics (§6).
+  Map<String, dynamic>? getRoutingTableStats() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.routingTableStats(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
+  /// Look up next-hop for a destination peer (§6).
+  Map<String, dynamic>? routingLookup(String destPeerIdHex) {
+    if (!isAvailable) return null;
+    final ptr = destPeerIdHex.toNativeUtf8();
+    try {
+      final json = _readString(_bindings!.routingLookup(_context, ptr));
+      if (json == null) return null;
+      final decoded = jsonDecode(json);
+      return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trusted Contexts (§4.8.3)
+  //
+  // Trusted contexts control which networks permit automatic peer discovery.
+  // They do NOT affect routing or pathing — only mDNS/local discovery.
+  // ---------------------------------------------------------------------------
+
+  /// Toggle a trusted context on or off.
+  ///
+  /// [context] is one of: "tailscale", "zerotier", "lan", "mdns".
+  /// [enabled] is the new state.
+  ///
+  /// Returns true if the backend accepted the change.
+  bool setTrustedContext(String context, bool enabled) {
+    if (!isAvailable) return false;
+    // We reuse the transport flags mechanism — trusted contexts are
+    // stored as transport-level flags in the backend.
+    final flagName = 'trusted_ctx_$context';
+    final flagPtr = flagName.toNativeUtf8();
+    final result = _bindings!.toggleTransportFlag(
+        _context, flagPtr, enabled ? 1 : 0);
+    calloc.free(flagPtr);
+    return result == 0;
+  }
+
+  /// Get the list of all peers from the contact store.
+  ///
+  /// Returns a list of JSON maps with peer info including:
+  /// - "id": hex peer ID
+  /// - "name": display name
+  /// - "trustLevel": int 0-8
+  /// - "status": "online" or "offline"
+  /// - "pairingMethod": how they were paired (for trust metrics)
+  List<Map<String, dynamic>> getPeerList() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.peerListJson(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
   // ---------------------------------------------------------------------------
   // Services
   //
@@ -634,6 +967,501 @@ class BackendBridge {
     calloc.free(idPtr);
     calloc.free(cfgPtr);
     return result != 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // Messaging — extended actions
+  // ---------------------------------------------------------------------------
+
+  /// Send a reaction emoji to a message.
+  bool sendReaction(String roomId, String messageId, String emoji) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final msgPtr = messageId.toNativeUtf8();
+    final emojiPtr = emoji.toNativeUtf8();
+    final result = _bindings!.sendReaction(_context, roomPtr, msgPtr, emojiPtr);
+    calloc.free(roomPtr);
+    calloc.free(msgPtr);
+    calloc.free(emojiPtr);
+    return result == 0;
+  }
+
+  /// Edit the text of a previously sent message.
+  bool editMessage(String roomId, String messageId, String newText) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final msgPtr = messageId.toNativeUtf8();
+    final textPtr = newText.toNativeUtf8();
+    final result = _bindings!.editMessage(_context, roomPtr, msgPtr, textPtr);
+    calloc.free(roomPtr);
+    calloc.free(msgPtr);
+    calloc.free(textPtr);
+    return result == 0;
+  }
+
+  /// Delete a message for all participants in the room.
+  bool deleteForEveryone(String roomId, String messageId) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final msgPtr = messageId.toNativeUtf8();
+    final result = _bindings!.deleteForEveryone(_context, roomPtr, msgPtr);
+    calloc.free(roomPtr);
+    calloc.free(msgPtr);
+    return result == 0;
+  }
+
+  /// Set the disappearing message timer for a room (0 to disable).
+  bool setDisappearingTimer(String roomId, int durationSecs) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final result = _bindings!.setDisappearingTimer(_context, roomPtr, durationSecs);
+    calloc.free(roomPtr);
+    return result == 0;
+  }
+
+  /// Send a typing indicator to a room.
+  bool sendTypingIndicator(String roomId, bool isTyping) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final result = _bindings!.sendTypingIndicator(
+      _context, roomPtr, isTyping ? 1 : 0,
+    );
+    calloc.free(roomPtr);
+    return result == 0;
+  }
+
+  /// Send a read receipt for a specific message.
+  bool sendReadReceipt(String roomId, String messageId) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final msgPtr = messageId.toNativeUtf8();
+    final result = _bindings!.sendReadReceipt(_context, roomPtr, msgPtr);
+    calloc.free(roomPtr);
+    calloc.free(msgPtr);
+    return result == 0;
+  }
+
+  /// Reply to a specific message in a room.
+  bool replyToMessage(String roomId, String parentId, String text) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final parentPtr = parentId.toNativeUtf8();
+    final textPtr = text.toNativeUtf8();
+    final result = _bindings!.replyToMessage(_context, roomPtr, parentPtr, textPtr);
+    calloc.free(roomPtr);
+    calloc.free(parentPtr);
+    calloc.free(textPtr);
+    return result == 0;
+  }
+
+  /// Forward a message from one room to another.
+  bool forwardMessage(String fromRoomId, String messageId, String toRoomId) {
+    if (!isAvailable) return false;
+    final fromPtr = fromRoomId.toNativeUtf8();
+    final msgPtr = messageId.toNativeUtf8();
+    final toPtr = toRoomId.toNativeUtf8();
+    final result = _bindings!.forwardMessage(_context, fromPtr, msgPtr, toPtr);
+    calloc.free(fromPtr);
+    calloc.free(msgPtr);
+    calloc.free(toPtr);
+    return result == 0;
+  }
+
+  /// Search messages across all rooms. Returns matching messages.
+  List<MessageModel> searchMessages(String query) {
+    if (!isAvailable) return const [];
+    final queryPtr = query.toNativeUtf8();
+    final json = _readString(_bindings!.searchMessages(_context, queryPtr));
+    calloc.free(queryPtr);
+    if (json == null) return const [];
+    final decoded = jsonDecode(json) as List<dynamic>;
+    return decoded
+        .map((e) => MessageModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Pin a message in a room.
+  bool pinMessage(String roomId, String messageId) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final msgPtr = messageId.toNativeUtf8();
+    final result = _bindings!.pinMessage(_context, roomPtr, msgPtr);
+    calloc.free(roomPtr);
+    calloc.free(msgPtr);
+    return result == 0;
+  }
+
+  /// Unpin a message in a room.
+  bool unpinMessage(String roomId, String messageId) {
+    if (!isAvailable) return false;
+    final roomPtr = roomId.toNativeUtf8();
+    final msgPtr = messageId.toNativeUtf8();
+    final result = _bindings!.unpinMessage(_context, roomPtr, msgPtr);
+    calloc.free(roomPtr);
+    calloc.free(msgPtr);
+    return result == 0;
+  }
+
+  /// Prune all expired disappearing messages across all rooms.
+  bool pruneExpiredMessages() {
+    if (!isAvailable) return false;
+    return _bindings!.pruneExpiredMessages(_context) == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Overlay networks (Tailscale / ZeroTier)
+  // ---------------------------------------------------------------------------
+
+  /// Authenticate with Tailscale using a pre-auth key.
+  ///
+  /// [authKey] is a Tailscale pre-authentication key from the admin console.
+  /// [controlUrl] is the control plane URL — pass empty string for
+  /// the default Tailscale SaaS (`https://controlplane.tailscale.com`), or
+  /// a Headscale URL for self-hosted deployments.
+  ///
+  /// Returns true if Rust accepted the credentials.
+  bool tailscaleAuthKey(String authKey, String controlUrl) {
+    if (!isAvailable) return false;
+    final keyPtr = authKey.toNativeUtf8();
+    final urlPtr = controlUrl.toNativeUtf8();
+    final result = _bindings!.tailscaleAuthKey(_context, keyPtr, urlPtr);
+    calloc.free(keyPtr);
+    calloc.free(urlPtr);
+    return result == 0;
+  }
+
+  /// Begin a Tailscale OAuth flow (browser-based login).
+  ///
+  /// [controlUrl] is the control plane URL, same convention as
+  /// [tailscaleAuthKey].  An empty string uses the default Tailscale SaaS.
+  ///
+  /// The backend emits a `TailscaleOAuthUrl` event with the URL to open.
+  /// Returns true if Rust started the OAuth flow.
+  bool tailscaleBeginOAuth(String controlUrl) {
+    if (!isAvailable) return false;
+    final urlPtr = controlUrl.toNativeUtf8();
+    final result = _bindings!.tailscaleBeginOAuth(_context, urlPtr);
+    calloc.free(urlPtr);
+    return result == 0;
+  }
+
+  /// Connect to one or more ZeroTier networks.
+  ///
+  /// [apiKey] is a ZeroTier Central API token (empty for self-hosted without
+  /// authentication).
+  /// [controllerUrl] is the URL of the ZeroTier controller — pass empty string
+  /// for `https://my.zerotier.com` (ZeroTier Central SaaS), or a self-hosted
+  /// controller URL.
+  /// [networkIds] is the list of 16-hex-digit ZeroTier network IDs to join.
+  ///
+  /// Returns true if Rust accepted the configuration.
+  bool zerotierConnect(String apiKey, String controllerUrl, List<String> networkIds) {
+    if (!isAvailable) return false;
+    final keyPtr = apiKey.toNativeUtf8();
+    final urlPtr = controllerUrl.toNativeUtf8();
+    final idsPtr = jsonEncode(networkIds).toNativeUtf8();
+    final result = _bindings!.zerotierConnect(_context, keyPtr, urlPtr, idsPtr);
+    calloc.free(keyPtr);
+    calloc.free(urlPtr);
+    calloc.free(idsPtr);
+    return result == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // LoSec — Low-Traffic Security Mode (§6.9.6)
+  // ---------------------------------------------------------------------------
+
+  /// Request LoSec (low-traffic security) mode negotiation with a peer.
+  ///
+  /// [sessionId] is a 64-char hex string (32 random bytes).
+  /// [mode] is "standard" | "losec" | "direct".
+  /// [hopCount] is 1 or 2 (only used for LoSec mode).
+  /// [reason] is a human-readable string shown in the remote peer's dialog.
+  /// [ambientBytesPerSec] is the current measured traffic volume.
+  /// [activeTunnels] is the current active tunnel count.
+  ///
+  /// Returns a map with `accepted` (bool) and `rejection_reason` (String?),
+  /// or null on failure.
+  Map<String, dynamic>? loSecRequest({
+    required String sessionId,
+    String mode = 'losec',
+    int hopCount = 2,
+    String reason = '',
+    int ambientBytesPerSec = 0,
+    int activeTunnels = 0,
+    String? peerId,
+  }) {
+    if (!isAvailable) return null;
+    final requestJson = jsonEncode({
+      'session_id': sessionId,
+      'mode': mode,
+      'hop_count': hopCount,
+      'reason': reason,
+      'ambient_bytes_per_sec': ambientBytesPerSec,
+      'active_tunnels': activeTunnels,
+      if (peerId != null) 'peer_id': peerId,
+    });
+    final ptr = requestJson.toNativeUtf8();
+    final json = _readString(_bindings!.loSecRequest(_context, ptr));
+    calloc.free(ptr);
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
+  /// Query the current ambient traffic level for LoSec eligibility.
+  ///
+  /// Returns a map with:
+  /// - `available`: bool — true if ambient traffic is sufficient for LoSec
+  /// - `active_tunnels`: int
+  /// - `bytes_per_sec`: int
+  Map<String, dynamic>? loSecAmbientStatus() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.loSecAmbientStatus(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
+  /// Fetch the current overlay network status.
+  ///
+  /// Returns a map with keys:
+  /// - `tailscale`: `{connected, ip, node_name, controller}`
+  /// - `zerotier`: `{connected, networks: [{id, name, ip}]}`
+  /// - `exit_nodes`: list of available exit node peers
+  /// - `anonymous_score`: integer 0-100 (§5.20)
+  ///
+  /// Returns null if the backend is unavailable.
+  Map<String, dynamic>? getOverlayStatus() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.overlayStatus(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Group Management (§8.7)
+  // ---------------------------------------------------------------------------
+
+  /// Create a new group owned by this identity.
+  ///
+  /// [name] is the group display name (max 64 bytes).
+  /// [description] is optional.
+  /// [networkType] is 0=Private, 1=Closed, 2=Open, 3=Public.
+  ///
+  /// Returns a map with `groupId`, `name`, `memberCount`, `roomId`,
+  /// or null on failure.
+  Map<String, dynamic>? createGroup({
+    required String name,
+    String description = '',
+    int networkType = 0,
+  }) {
+    if (!isAvailable) return null;
+    final namePtr = name.toNativeUtf8();
+    final descPtr = description.toNativeUtf8();
+    final json = _readString(
+        _bindings!.createGroup(_context, namePtr, descPtr, networkType));
+    calloc.free(namePtr);
+    calloc.free(descPtr);
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is Map && decoded.containsKey('error')) return null;
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
+  /// List all groups the user belongs to.
+  List<Map<String, dynamic>> listGroups() {
+    if (!isAvailable) return [];
+    final json = _readString(_bindings!.listGroups(_context));
+    if (json == null) return [];
+    final decoded = jsonDecode(json);
+    if (decoded is List) {
+      return decoded.whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    return [];
+  }
+
+  /// Get the member list for a group.
+  List<Map<String, dynamic>> getGroupMembers(String groupId) {
+    if (!isAvailable) return [];
+    final ptr = groupId.toNativeUtf8();
+    final json = _readString(_bindings!.groupMembers(_context, ptr));
+    calloc.free(ptr);
+    if (json == null) return [];
+    final decoded = jsonDecode(json);
+    if (decoded is List) {
+      return decoded.whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    return [];
+  }
+
+  /// Leave a group. Returns true on success.
+  bool leaveGroup(String groupId) {
+    if (!isAvailable) return false;
+    final ptr = groupId.toNativeUtf8();
+    final result = _bindings!.leaveGroup(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Invite a peer (by peer-ID hex) into a group. Returns true on success.
+  bool inviteToGroup(String groupId, String peerId) {
+    if (!isAvailable) return false;
+    final gPtr = groupId.toNativeUtf8();
+    final pPtr = peerId.toNativeUtf8();
+    final result = _bindings!.groupInvitePeer(_context, gPtr, pPtr);
+    calloc.free(gPtr);
+    calloc.free(pPtr);
+    return result == 0;
+  }
+
+  /// Send a text message to a group. Returns true on success.
+  bool groupSendMessage(String groupId, String text) {
+    if (!isAvailable) return false;
+    final gidPtr = groupId.toNativeUtf8();
+    final textPtr = text.toNativeUtf8();
+    final result = _bindings!.groupSendMessage(_context, gidPtr, textPtr);
+    calloc.free(gidPtr);
+    calloc.free(textPtr);
+    return result == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Calls (§10.1.6)
+  // ---------------------------------------------------------------------------
+
+  /// Initiate an outgoing call to [peerIdHex]. [isVideo] enables the video
+  /// track. Returns `{"ok":true,"callId":"<hex>"}` on success.
+  Map<String, dynamic>? callOffer(String peerIdHex, {bool isVideo = false}) {
+    if (!isAvailable) return null;
+    final ptr = peerIdHex.toNativeUtf8();
+    final result = _readString(
+      _bindings!.callOffer(_context, ptr, isVideo ? 1 : 0),
+    );
+    calloc.free(ptr);
+    if (result == null) return null;
+    try {
+      return jsonDecode(result) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Accept (accept=true) or reject (accept=false) an incoming call.
+  bool callAnswer(String callIdHex, {required bool accept}) {
+    if (!isAvailable) return false;
+    final ptr = callIdHex.toNativeUtf8();
+    final result = _bindings!.callAnswer(_context, ptr, accept ? 1 : 0);
+    calloc.free(ptr);
+    return result == 1;
+  }
+
+  /// End an active call. Returns true if there was an active call to end.
+  bool callHangup(String callIdHex) {
+    if (!isAvailable) return false;
+    final ptr = callIdHex.toNativeUtf8();
+    final result = _bindings!.callHangup(_context, ptr);
+    calloc.free(ptr);
+    return result == 1;
+  }
+
+  /// Returns the current call status as a map, or null if unavailable.
+  Map<String, dynamic>? callStatus() {
+    if (!isAvailable) return null;
+    final result = _readString(_bindings!.callStatus(_context));
+    if (result == null) return null;
+    try {
+      return jsonDecode(result) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // §14 — Notification configuration
+  // ---------------------------------------------------------------------------
+
+  /// Get the current notification configuration from the backend.
+  Map<String, dynamic>? getNotificationConfig() {
+    if (!isAvailable) return null;
+    final result = _readString(_bindings!.getNotificationConfig(_context));
+    if (result == null) return null;
+    try {
+      return jsonDecode(result) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Save notification configuration to the backend.
+  bool setNotificationConfig(Map<String, dynamic> config) {
+    if (!isAvailable) return false;
+    final jsonStr = jsonEncode(config);
+    final ptr = jsonStr.toNativeUtf8();
+    try {
+      return _bindings!.setNotificationConfig(_context, ptr) == 0;
+    } finally {
+      malloc.free(ptr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // WireGuard handshake (§5.2)
+  // ---------------------------------------------------------------------------
+
+  /// Initiate a WireGuard handshake with [peerIdHex].
+  ///
+  /// Returns a map with `init_hex` (the 80-byte handshake init message to
+  /// send to the peer) or `error` on failure.
+  Map<String, dynamic>? wgInitiateHandshake(String peerIdHex) {
+    if (!isAvailable) return null;
+    final ptr = peerIdHex.toNativeUtf8();
+    final json = _readString(_bindings!.wgInitiateHandshake(_context, ptr));
+    calloc.free(ptr);
+    if (json == null) return null;
+    try { return jsonDecode(json) as Map<String, dynamic>; } catch (_) { return null; }
+  }
+
+  /// Respond to an incoming WireGuard handshake from [peerIdHex].
+  ///
+  /// [initHex] is the 80-byte handshake init message (hex-encoded).
+  /// Returns a map with `response_hex` and `session_established: true` or
+  /// `error` on failure.
+  Map<String, dynamic>? wgRespondToHandshake(String peerIdHex, String initHex) {
+    if (!isAvailable) return null;
+    final peerPtr = peerIdHex.toNativeUtf8();
+    final initPtr = initHex.toNativeUtf8();
+    final json = _readString(_bindings!.wgRespondToHandshake(_context, peerPtr, initPtr));
+    calloc.free(peerPtr);
+    calloc.free(initPtr);
+    if (json == null) return null;
+    try { return jsonDecode(json) as Map<String, dynamic>; } catch (_) { return null; }
+  }
+
+  /// Complete an initiator-side WireGuard handshake after receiving the
+  /// responder's reply.
+  ///
+  /// [peerIdHex] is the responder's peer ID.
+  /// [responseHex] is the 32-byte ephemeral public key from the responder.
+  /// Returns a map with `session_established: true` or `error` on failure.
+  Map<String, dynamic>? wgCompleteHandshake(String peerIdHex, String responseHex) {
+    if (!isAvailable) return null;
+    final peerPtr = peerIdHex.toNativeUtf8();
+    final respPtr = responseHex.toNativeUtf8();
+    final json = _readString(_bindings!.wgCompleteHandshake(_context, peerPtr, respPtr));
+    calloc.free(peerPtr);
+    calloc.free(respPtr);
+    if (json == null) return null;
+    try { return jsonDecode(json) as Map<String, dynamic>; } catch (_) { return null; }
   }
 
   // ---------------------------------------------------------------------------
@@ -699,17 +1527,21 @@ Pointer<Void> _initContext(
   String? configPath,
 }) {
   // Prefer an explicitly passed configPath; fall back to the environment variable.
-  final envConfigPath = Platform.environment['MESH_CONFIG_PATH']?.trim();
+  // M15: env-var overrides are only honoured in debug builds. In release builds
+  // they are silently ignored so that MDM/shell env cannot redirect config paths.
+  final envConfigPath = kDebugMode
+      ? Platform.environment['MESH_CONFIG_PATH']?.trim()
+      : null;
   final resolvedPath = (configPath != null && configPath.isNotEmpty)
       ? configPath
       : (envConfigPath != null && envConfigPath.isNotEmpty)
           ? envConfigPath
           : null;
 
-  // Allow overriding the WireGuard UDP port at runtime for testing.
-  final wireguardPort = int.tryParse(
-    (Platform.environment['MESH_WIREGUARD_PORT'] ?? '').trim(),
-  );
+  // Allow overriding the WireGuard UDP port at runtime for testing (debug only).
+  final wireguardPort = kDebugMode
+      ? int.tryParse((Platform.environment['MESH_WIREGUARD_PORT'] ?? '').trim())
+      : null;
 
   // Convert the optional config path string into a native C pointer.
   // If no path is given, use the null pointer (Rust interprets this as "default").
@@ -736,7 +1568,7 @@ Pointer<Void> _initContext(
     ..configPath = configPathPtr
     ..logLevel = 2          // 2 = INFO level in Rust's log crate convention
     ..enableTor = 1         // Start with Tor enabled by default
-    ..enableClearnet = 1    // And clearnet (plain TCP/UDP) enabled
+    ..enableClearnet = 0    // Clearnet disabled by default (privacy-first posture)
     ..meshDiscovery = 1     // Enable local-network peer discovery
     ..allowRelays = 1       // Allow peers to act as relay nodes
     ..enableI2p = 0         // I2P disabled until more mature
@@ -880,6 +1712,14 @@ class _BackendBindings {
           .lookupFunction<GetNetworkStatsNative, GetNetworkStatsDart>(
             'mi_get_network_stats',
           ),
+      routingTableStats = _lib
+          .lookupFunction<RoutingTableStatsNative, RoutingTableStatsDart>(
+            'mi_routing_table_stats',
+          ),
+      routingLookup = _lib
+          .lookupFunction<RoutingLookupNative, RoutingLookupDart>(
+            'mi_routing_lookup',
+          ),
       fileTransferStart = _lib
           .lookupFunction<FileTransferStartNative, FileTransferStartDart>(
             'mi_file_transfer_start',
@@ -887,6 +1727,10 @@ class _BackendBindings {
       fileTransferCancel = _lib
           .lookupFunction<FileTransferCancelNative, FileTransferCancelDart>(
             'mi_file_transfer_cancel',
+          ),
+      fileTransferAccept = _lib
+          .lookupFunction<FileTransferAcceptNative, FileTransferAcceptDart>(
+            'mi_file_transfer_accept',
           ),
       getServiceList = _lib
           .lookupFunction<GetServiceListNative, GetServiceListDart>(
@@ -900,8 +1744,10 @@ class _BackendBindings {
           .lookupFunction<ToggleTransportFlagNative, ToggleTransportFlagDart>(
             'mi_toggle_transport_flag',
           ),
-      setVpnRoute =
-          _lib.lookupFunction<SetVpnRouteNative, SetVpnRouteDart>('mi_set_vpn_route'),
+      setVpnMode =
+          _lib.lookupFunction<SetVpnModeNative, SetVpnModeDart>('mi_set_vpn_mode'),
+      setExitNode =
+          _lib.lookupFunction<SetExitNodeNative, SetExitNodeDart>('mi_set_exit_node'),
       setClearnetRoute = _lib
           .lookupFunction<SetClearnetRouteNative, SetClearnetRouteDart>(
             'mi_set_clearnet_route',
@@ -909,6 +1755,10 @@ class _BackendBindings {
       createIdentity = _lib
           .lookupFunction<CreateIdentityNative, CreateIdentityDart>(
             'mi_create_identity',
+          ),
+      unlockIdentity = _lib
+          .lookupFunction<UnlockIdentityNative, UnlockIdentityDart>(
+            'mi_unlock_identity',
           ),
       setPublicProfile = _lib
           .lookupFunction<SetPublicProfileNative, SetPublicProfileDart>(
@@ -918,6 +1768,10 @@ class _BackendBindings {
           .lookupFunction<SetPrivateProfileNative, SetPrivateProfileDart>(
             'mi_set_private_profile',
           ),
+      createBackup = _lib
+          .lookupFunction<CreateBackupNative, CreateBackupDart>(
+            'mi_create_backup',
+          ),
       importIdentity = _lib
           .lookupFunction<ImportIdentityNative, ImportIdentityDart>(
             'mi_import_identity',
@@ -925,6 +1779,200 @@ class _BackendBindings {
       resetIdentity = _lib
           .lookupFunction<ResetIdentityNative, ResetIdentityDart>(
             'mi_reset_identity',
+          ),
+      sendReaction = _lib
+          .lookupFunction<SendReactionNative, SendReactionDart>(
+            'mi_send_reaction',
+          ),
+      editMessage = _lib
+          .lookupFunction<EditMessageNative, EditMessageDart>(
+            'mi_edit_message',
+          ),
+      deleteForEveryone = _lib
+          .lookupFunction<DeleteForEveryoneNative, DeleteForEveryoneDart>(
+            'mi_delete_for_everyone',
+          ),
+      setDisappearingTimer = _lib
+          .lookupFunction<SetDisappearingTimerNative, SetDisappearingTimerDart>(
+            'mi_set_disappearing_timer',
+          ),
+      sendTypingIndicator = _lib
+          .lookupFunction<SendTypingIndicatorNative, SendTypingIndicatorDart>(
+            'mi_send_typing_indicator',
+          ),
+      sendReadReceipt = _lib
+          .lookupFunction<SendReadReceiptNative, SendReadReceiptDart>(
+            'mi_send_read_receipt',
+          ),
+      replyToMessage = _lib
+          .lookupFunction<ReplyToMessageNative, ReplyToMessageDart>(
+            'mi_reply_to_message',
+          ),
+      forwardMessage = _lib
+          .lookupFunction<ForwardMessageNative, ForwardMessageDart>(
+            'mi_forward_message',
+          ),
+      searchMessages = _lib
+          .lookupFunction<SearchMessagesNative, SearchMessagesDart>(
+            'mi_search_messages',
+          ),
+      pinMessage = _lib
+          .lookupFunction<PinMessageNative, PinMessageDart>(
+            'mi_pin_message',
+          ),
+      unpinMessage = _lib
+          .lookupFunction<UnpinMessageNative, UnpinMessageDart>(
+            'mi_unpin_message',
+          ),
+      pruneExpiredMessages = _lib
+          .lookupFunction<PruneExpiredMessagesNative, PruneExpiredMessagesDart>(
+            'mi_prune_expired_messages',
+          ),
+      getVpnStatus =
+          _lib.lookupFunction<GetVpnStatusNative, GetVpnStatusDart>('mi_get_vpn_status'),
+      emergencyErase = _lib
+          .lookupFunction<EmergencyEraseNative, EmergencyEraseDart>(
+            'mi_emergency_erase',
+          ),
+      duressErase = _lib
+          .lookupFunction<DuressEraseNative, DuressEraseDart>(
+            'mi_duress_erase',
+          ),
+      sdrConfigure = _lib
+          .lookupFunction<SdrConfigureNative, SdrConfigureDart>(
+            'mi_sdr_configure',
+          ),
+      sdrStatus = _lib
+          .lookupFunction<SdrStatusNative, SdrStatusDart>(
+            'mi_sdr_status',
+          ),
+      sdrCurrentChannel = _lib
+          .lookupFunction<SdrCurrentChannelNative, SdrCurrentChannelDart>(
+            'mi_sdr_current_channel',
+          ),
+      sdrListProfiles = _lib
+          .lookupFunction<SdrListProfilesNative, SdrListProfilesDart>(
+            'mi_sdr_list_profiles',
+          ),
+      sdrListHardware = _lib
+          .lookupFunction<SdrListHardwareNative, SdrListHardwareDart>(
+            'mi_sdr_list_hardware',
+          ),
+      tailscaleAuthKey = _lib
+          .lookupFunction<TailscaleAuthKeyNative, TailscaleAuthKeyDart>(
+            'mi_tailscale_auth_key',
+          ),
+      tailscaleBeginOAuth = _lib
+          .lookupFunction<TailscaleBeginOAuthNative, TailscaleBeginOAuthDart>(
+            'mi_tailscale_begin_oauth',
+          ),
+      zerotierConnect = _lib
+          .lookupFunction<ZeroTierConnectNative, ZeroTierConnectDart>(
+            'mi_zerotier_connect',
+          ),
+      overlayStatus = _lib
+          .lookupFunction<OverlayStatusNative, OverlayStatusDart>(
+            'mi_overlay_status',
+          ),
+      loSecRequest = _lib
+          .lookupFunction<LoSecRequestNative, LoSecRequestDart>(
+            'mi_losec_request',
+          ),
+      loSecAmbientStatus = _lib
+          .lookupFunction<LoSecAmbientStatusNative, LoSecAmbientStatusDart>(
+            'mi_losec_ambient_status',
+          ),
+      getPairingPayload = _lib
+          .lookupFunction<GetPairingPayloadNative, GetPairingPayloadDart>(
+            'mi_get_pairing_payload',
+          ),
+      startClearnetListener = _lib
+          .lookupFunction<StartClearnetListenerNative, StartClearnetListenerDart>(
+            'mi_start_clearnet_listener',
+          ),
+      stopClearnetListener = _lib
+          .lookupFunction<StopClearnetListenerNative, StopClearnetListenerDart>(
+            'mi_stop_clearnet_listener',
+          ),
+      setClearnetPort = _lib
+          .lookupFunction<SetClearnetPortNative, SetClearnetPortDart>(
+            'mi_set_clearnet_port',
+          ),
+      setThreatContext = _lib
+          .lookupFunction<SetThreatContextNative, SetThreatContextDart>(
+            'mi_set_threat_context',
+          ),
+      getThreatContext = _lib
+          .lookupFunction<GetThreatContextNative, GetThreatContextDart>(
+            'mi_get_threat_context',
+          ),
+      setTrustLevel = _lib
+          .lookupFunction<SetTrustLevelNative, SetTrustLevelDart>(
+            'mi_set_trust_level',
+          ),
+      setConversationSecurityMode = _lib
+          .lookupFunction<SetConversationSecurityModeNative, SetConversationSecurityModeDart>(
+            'mi_set_conversation_security_mode',
+          ),
+      createGroup = _lib
+          .lookupFunction<CreateGroupNative, CreateGroupDart>(
+            'mi_create_group',
+          ),
+      listGroups = _lib
+          .lookupFunction<ListGroupsNative, ListGroupsDart>(
+            'mi_list_groups',
+          ),
+      groupMembers = _lib
+          .lookupFunction<GroupMembersNative, GroupMembersDart>(
+            'mi_group_members',
+          ),
+      leaveGroup = _lib
+          .lookupFunction<LeaveGroupNative, LeaveGroupDart>(
+            'mi_leave_group',
+          ),
+      groupSendMessage = _lib
+          .lookupFunction<GroupSendMessageNative, GroupSendMessageDart>(
+            'mi_group_send_message',
+          ),
+      groupInvitePeer = _lib
+          .lookupFunction<GroupInvitePeerNative, GroupInvitePeerDart>(
+            'mi_group_invite_peer',
+          ),
+      callOffer = _lib
+          .lookupFunction<CallOfferNative, CallOfferDart>(
+            'mi_call_offer',
+          ),
+      callAnswer = _lib
+          .lookupFunction<CallAnswerNative, CallAnswerDart>(
+            'mi_call_answer',
+          ),
+      callHangup = _lib
+          .lookupFunction<CallHangupNative, CallHangupDart>(
+            'mi_call_hangup',
+          ),
+      callStatus = _lib
+          .lookupFunction<CallStatusNative, CallStatusDart>(
+            'mi_call_status',
+          ),
+      getNotificationConfig = _lib
+          .lookupFunction<GetNotificationConfigNative, GetNotificationConfigDart>(
+            'mi_get_notification_config',
+          ),
+      setNotificationConfig = _lib
+          .lookupFunction<SetNotificationConfigNative, SetNotificationConfigDart>(
+            'mi_set_notification_config',
+          ),
+      wgInitiateHandshake = _lib
+          .lookupFunction<WgInitiateHandshakeNative, WgInitiateHandshakeDart>(
+            'mi_wg_initiate_handshake',
+          ),
+      wgRespondToHandshake = _lib
+          .lookupFunction<WgRespondToHandshakeNative, WgRespondToHandshakeDart>(
+            'mi_wg_respond_to_handshake',
+          ),
+      wgCompleteHandshake = _lib
+          .lookupFunction<WgCompleteHandshakeNative, WgCompleteHandshakeDart>(
+            'mi_wg_complete_handshake',
           );
 
   // Keep a reference to the library so it is not garbage-collected while
@@ -962,18 +2010,73 @@ class _BackendBindings {
   final MdnsIsRunningDart mdnsIsRunning;
   final MdnsGetDiscoveredPeersDart mdnsGetDiscoveredPeers;
   final GetNetworkStatsDart getNetworkStats;
+  final RoutingTableStatsDart routingTableStats;
+  final RoutingLookupDart routingLookup;
   final FileTransferStartDart fileTransferStart;
   final FileTransferCancelDart fileTransferCancel;
+  final FileTransferAcceptDart fileTransferAccept;
   final GetServiceListDart getServiceList;
   final ConfigureServiceDart configureService;
   final ToggleTransportFlagDart toggleTransportFlag;
-  final SetVpnRouteDart setVpnRoute;
+  final SetVpnModeDart setVpnMode;
+  final SetExitNodeDart setExitNode;
   final SetClearnetRouteDart setClearnetRoute;
   final CreateIdentityDart createIdentity;
+  final UnlockIdentityDart unlockIdentity;
   final SetPublicProfileDart setPublicProfile;
   final SetPrivateProfileDart setPrivateProfile;
+  final CreateBackupDart createBackup;
   final ImportIdentityDart importIdentity;
   final ResetIdentityDart resetIdentity;
+  final SendReactionDart sendReaction;
+  final EditMessageDart editMessage;
+  final DeleteForEveryoneDart deleteForEveryone;
+  final SetDisappearingTimerDart setDisappearingTimer;
+  final SendTypingIndicatorDart sendTypingIndicator;
+  final SendReadReceiptDart sendReadReceipt;
+  final ReplyToMessageDart replyToMessage;
+  final ForwardMessageDart forwardMessage;
+  final SearchMessagesDart searchMessages;
+  final PinMessageDart pinMessage;
+  final UnpinMessageDart unpinMessage;
+  final PruneExpiredMessagesDart pruneExpiredMessages;
+  final GetVpnStatusDart getVpnStatus;
+  final EmergencyEraseDart emergencyErase;
+  final DuressEraseDart duressErase;
+  final SdrConfigureDart sdrConfigure;
+  final SdrStatusDart sdrStatus;
+  final SdrCurrentChannelDart sdrCurrentChannel;
+  final SdrListProfilesDart sdrListProfiles;
+  final SdrListHardwareDart sdrListHardware;
+  final TailscaleAuthKeyDart tailscaleAuthKey;
+  final TailscaleBeginOAuthDart tailscaleBeginOAuth;
+  final ZeroTierConnectDart zerotierConnect;
+  final OverlayStatusDart overlayStatus;
+  final LoSecRequestDart loSecRequest;
+  final LoSecAmbientStatusDart loSecAmbientStatus;
+  final GetPairingPayloadDart getPairingPayload;
+  final StartClearnetListenerDart startClearnetListener;
+  final StopClearnetListenerDart stopClearnetListener;
+  final SetClearnetPortDart setClearnetPort;
+  final SetThreatContextDart setThreatContext;
+  final GetThreatContextDart getThreatContext;
+  final SetTrustLevelDart setTrustLevel;
+  final SetConversationSecurityModeDart setConversationSecurityMode;
+  final CreateGroupDart createGroup;
+  final ListGroupsDart listGroups;
+  final GroupMembersDart groupMembers;
+  final LeaveGroupDart leaveGroup;
+  final GroupSendMessageDart groupSendMessage;
+  final GroupInvitePeerDart groupInvitePeer;
+  final CallOfferDart callOffer;
+  final CallAnswerDart callAnswer;
+  final CallHangupDart callHangup;
+  final CallStatusDart callStatus;
+  final GetNotificationConfigDart getNotificationConfig;
+  final SetNotificationConfigDart setNotificationConfig;
+  final WgInitiateHandshakeDart wgInitiateHandshake;
+  final WgRespondToHandshakeDart wgRespondToHandshake;
+  final WgCompleteHandshakeDart wgCompleteHandshake;
 }
 
 // =============================================================================
@@ -1199,6 +2302,14 @@ typedef MdnsIsRunningDart = int Function(Pointer<Void>);
 typedef MdnsGetDiscoveredPeersNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef MdnsGetDiscoveredPeersDart = Pointer<Utf8> Function(Pointer<Void>);
 
+// mi_routing_table_stats(ctx) -> *const c_char (JSON)
+typedef RoutingTableStatsNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef RoutingTableStatsDart   = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_routing_lookup(ctx, dest_peer_id_hex) -> *const c_char (JSON)
+typedef RoutingLookupNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef RoutingLookupDart   = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
 // mi_get_network_stats(ctx) -> *mut c_char  (JSON object)
 typedef GetNetworkStatsNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetNetworkStatsDart = Pointer<Utf8> Function(Pointer<Void>);
@@ -1223,6 +2334,10 @@ typedef FileTransferStartDart =
 typedef FileTransferCancelNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef FileTransferCancelDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
+// mi_file_transfer_accept(ctx, transfer_id, save_path) -> i32
+typedef FileTransferAcceptNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef FileTransferAcceptDart = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
 // mi_get_service_list(ctx) -> *mut c_char  (JSON array)
 typedef GetServiceListNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetServiceListDart = Pointer<Utf8> Function(Pointer<Void>);
@@ -1239,9 +2354,13 @@ typedef ToggleTransportFlagNative =
 typedef ToggleTransportFlagDart =
     int Function(Pointer<Void>, Pointer<Utf8>, int);
 
-// mi_set_vpn_route(ctx, route_config_json: *const c_char) -> i32
-typedef SetVpnRouteNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef SetVpnRouteDart = int Function(Pointer<Void>, Pointer<Utf8>);
+// mi_set_vpn_mode(ctx, mode_json: *const c_char) -> i32
+typedef SetVpnModeNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetVpnModeDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_set_exit_node(ctx, peer_id_hex: *const c_char) -> i32
+typedef SetExitNodeNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetExitNodeDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_set_clearnet_route(ctx, route_config_json: *const c_char) -> i32
 typedef SetClearnetRouteNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
@@ -1251,6 +2370,10 @@ typedef SetClearnetRouteDart = int Function(Pointer<Void>, Pointer<Utf8>);
 typedef CreateIdentityNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef CreateIdentityDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
+// mi_unlock_identity(ctx, pin: *const c_char) -> i32  (pin may be nullptr for no-PIN)
+typedef UnlockIdentityNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef UnlockIdentityDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
 // mi_set_public_profile(ctx, profile_json: *const c_char) -> i32
 typedef SetPublicProfileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetPublicProfileDart = int Function(Pointer<Void>, Pointer<Utf8>);
@@ -1258,6 +2381,13 @@ typedef SetPublicProfileDart = int Function(Pointer<Void>, Pointer<Utf8>);
 // mi_set_private_profile(ctx, profile_json: *const c_char) -> i32
 typedef SetPrivateProfileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetPrivateProfileDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_create_backup(ctx, passphrase, backup_type) -> *const c_char  (JSON EncryptedBackup)
+// backup_type: 0=full, 1=identity_only
+typedef CreateBackupNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Uint8);
+typedef CreateBackupDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, int);
 
 // mi_import_identity(ctx, backup_json, passphrase) -> i32
 typedef ImportIdentityNative =
@@ -1268,3 +2398,233 @@ typedef ImportIdentityDart =
 // mi_reset_identity(ctx) -> i32  (0=ok; this is irreversible!)
 typedef ResetIdentityNative = Int32 Function(Pointer<Void>);
 typedef ResetIdentityDart = int Function(Pointer<Void>);
+
+// mi_send_reaction(ctx, room_id, message_id, emoji) -> i32
+typedef SendReactionNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef SendReactionDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_edit_message(ctx, room_id, message_id, new_text) -> i32
+typedef EditMessageNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef EditMessageDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_delete_for_everyone(ctx, room_id, message_id) -> i32
+typedef DeleteForEveryoneNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef DeleteForEveryoneDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_set_disappearing_timer(ctx, room_id, duration_secs: i32) -> i32
+typedef SetDisappearingTimerNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef SetDisappearingTimerDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_send_typing_indicator(ctx, room_id, is_typing: i32) -> i32
+typedef SendTypingIndicatorNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef SendTypingIndicatorDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_send_read_receipt(ctx, room_id, message_id) -> i32
+typedef SendReadReceiptNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef SendReadReceiptDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_reply_to_message(ctx, room_id, parent_id, text) -> i32
+typedef ReplyToMessageNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ReplyToMessageDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_forward_message(ctx, from_room_id, message_id, to_room_id) -> i32
+typedef ForwardMessageNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ForwardMessageDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_search_messages(ctx, query) -> *const c_char  (JSON array)
+typedef SearchMessagesNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef SearchMessagesDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_pin_message(ctx, room_id, message_id) -> i32
+typedef PinMessageNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef PinMessageDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_unpin_message(ctx, room_id, message_id) -> i32
+typedef UnpinMessageNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef UnpinMessageDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_prune_expired_messages(ctx) -> i32
+typedef PruneExpiredMessagesNative = Int32 Function(Pointer<Void>);
+typedef PruneExpiredMessagesDart = int Function(Pointer<Void>);
+
+// mi_get_vpn_status(ctx) -> *const c_char  (JSON VPN state)
+typedef GetVpnStatusNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetVpnStatusDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_emergency_erase(ctx) -> i32  (standard killswitch — destroys all layers)
+typedef EmergencyEraseNative = Int32 Function(Pointer<Void>);
+typedef EmergencyEraseDart = int Function(Pointer<Void>);
+
+// mi_duress_erase(ctx) -> i32  (duress killswitch — preserves Layer 1)
+typedef DuressEraseNative = Int32 Function(Pointer<Void>);
+typedef DuressEraseDart = int Function(Pointer<Void>);
+
+// mi_sdr_configure(ctx, config_json) -> i32
+typedef SdrConfigureNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SdrConfigureDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_sdr_status(ctx) -> *const c_char  (JSON SDR state)
+typedef SdrStatusNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef SdrStatusDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_sdr_current_channel(ctx) -> *const c_char  (JSON current FHSS channel)
+typedef SdrCurrentChannelNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef SdrCurrentChannelDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_sdr_list_profiles(ctx) -> *const c_char  (JSON array of profiles)
+typedef SdrListProfilesNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef SdrListProfilesDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_sdr_list_hardware(ctx) -> *const c_char  (JSON array of hardware types)
+typedef SdrListHardwareNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef SdrListHardwareDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_tailscale_auth_key(ctx, auth_key, control_url) -> i32
+typedef TailscaleAuthKeyNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleAuthKeyDart = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_tailscale_begin_oauth(ctx, control_url) -> i32
+typedef TailscaleBeginOAuthNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleBeginOAuthDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_zerotier_connect(ctx, api_key, controller_url, network_ids_json) -> i32
+typedef ZeroTierConnectNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ZeroTierConnectDart = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_overlay_status(ctx) -> *const c_char  (JSON overlay state)
+typedef OverlayStatusNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef OverlayStatusDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_losec_request(ctx, request_json) -> *const c_char  (JSON accepted/rejection)
+typedef LoSecRequestNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef LoSecRequestDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_losec_ambient_status(ctx) -> *const c_char  (JSON ambient traffic info)
+typedef LoSecAmbientStatusNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef LoSecAmbientStatusDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_get_pairing_payload(ctx) -> *const c_char  (JSON PairingPayload with keys + token)
+typedef GetPairingPayloadNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetPairingPayloadDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_start_clearnet_listener(ctx) -> i32  (0=ok, -1=fail)
+typedef StartClearnetListenerNative = Int32 Function(Pointer<Void>);
+typedef StartClearnetListenerDart = int Function(Pointer<Void>);
+
+// mi_stop_clearnet_listener(ctx) -> i32
+typedef StopClearnetListenerNative = Int32 Function(Pointer<Void>);
+typedef StopClearnetListenerDart = int Function(Pointer<Void>);
+
+// mi_set_clearnet_port(ctx, port: u16) -> i32
+typedef SetClearnetPortNative = Int32 Function(Pointer<Void>, Uint16);
+typedef SetClearnetPortDart = int Function(Pointer<Void>, int);
+
+// mi_set_threat_context(ctx, level: u8) -> i32
+typedef SetThreatContextNative = Int32 Function(Pointer<Void>, Uint8);
+typedef SetThreatContextDart = int Function(Pointer<Void>, int);
+
+// mi_get_threat_context(ctx) -> u8
+typedef GetThreatContextNative = Uint8 Function(Pointer<Void>);
+typedef GetThreatContextDart = int Function(Pointer<Void>);
+
+// mi_set_trust_level(ctx, peer_id: *const c_char, level: u8) -> i32
+typedef SetTrustLevelNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Uint8);
+typedef SetTrustLevelDart = int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_set_conversation_security_mode(ctx, room_id: *const c_char, mode: u8) -> i32
+typedef SetConversationSecurityModeNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Uint8);
+typedef SetConversationSecurityModeDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_create_group(ctx, name, description, network_type) -> *const c_char (JSON)
+typedef CreateGroupNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Int32);
+typedef CreateGroupDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, int);
+
+// mi_list_groups(ctx) -> *const c_char (JSON array)
+typedef ListGroupsNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef ListGroupsDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_group_members(ctx, group_id) -> *const c_char (JSON array)
+typedef GroupMembersNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef GroupMembersDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_leave_group(ctx, group_id) -> i32
+typedef LeaveGroupNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef LeaveGroupDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_group_send_message(ctx, group_id, text) -> i32
+typedef GroupSendMessageNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef GroupSendMessageDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_group_invite_peer(ctx, group_id, peer_id) -> i32
+typedef GroupInvitePeerNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef GroupInvitePeerDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_call_offer(ctx, peer_id_hex, is_video) -> *const c_char (JSON ok/error)
+typedef CallOfferNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef CallOfferDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_call_answer(ctx, call_id_hex, accept) -> i32
+typedef CallAnswerNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef CallAnswerDart = int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_call_hangup(ctx, call_id_hex) -> i32
+typedef CallHangupNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef CallHangupDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_call_status(ctx) -> *const c_char (JSON)
+typedef CallStatusNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef CallStatusDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_get_notification_config(ctx) -> *const c_char (JSON)
+typedef GetNotificationConfigNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetNotificationConfigDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_set_notification_config(ctx, json) -> i32
+typedef SetNotificationConfigNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetNotificationConfigDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_wg_initiate_handshake(ctx, peer_id_hex) -> *const c_char  (JSON)
+typedef WgInitiateHandshakeNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef WgInitiateHandshakeDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_wg_respond_to_handshake(ctx, peer_id_hex, init_hex) -> *const c_char  (JSON)
+typedef WgRespondToHandshakeNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef WgRespondToHandshakeDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_wg_complete_handshake(ctx, peer_id_hex, response_hex) -> *const c_char  (JSON)
+typedef WgCompleteHandshakeNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef WgCompleteHandshakeDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);

@@ -29,7 +29,7 @@ name = "mesh-infinity"
 #   MAJOR — incremented on breaking API changes
 #   MINOR — incremented when new features are added in a backwards-compatible way
 #   PATCH — incremented for backwards-compatible bug fixes
-version = "0.2.0"
+version = "0.3.0"
 
 # The Rust "edition" determines which version of the language specification to use.
 # Edition 2021 is the most recent stable edition and enables features like
@@ -284,7 +284,7 @@ rand_core = "0.6"
 # as free but the bytes remain on the heap until overwritten by something else.
 # An attacker with memory read access could recover private keys this way.
 # zeroize overwrites the bytes with zeros before releasing them.
-zeroize = "1.8"
+zeroize = { version = "1.8", features = ["derive"] }
 
 # base64 — encode/decode binary data as ASCII text.
 #
@@ -341,7 +341,15 @@ meshtastic = { version = "0.1.8", optional = true }
 #
 #   rustls is a pure-Rust TLS implementation with zero external C dependencies.
 #   It has no dlopen-time initialization, so it works safely on Android.
-arti-client = { version = "0.40", features = ["tokio", "rustls"] }
+arti-client = { version = "0.40", features = ["tokio", "rustls", "onion-service-service"] }
+tor-hsservice = { version = "0.40" }
+tor-llcrypto = "0.40"
+tor-cell = "0.40"
+tor-circmgr = "0.40"
+tor-proto = "0.40"
+data-encoding = "2"
+futures = "0.3"
+sha3 = "0.10"
 
 # rusqlite — SQLite bindings, pulled in transitively by arti-client for its
 # directory cache.  We list it here explicitly to enable the "bundled" feature,
@@ -491,6 +499,25 @@ jni = "0.22"
 # Force vendored OpenSSL so cross-compilation (Android NDK, etc.) works without
 # requiring a pre-installed OpenSSL for each target.
 openssl = { version = "0.10", features = ["vendored"] }
+hex = "0.4.3"
+rand = "0.10.0"
+
+# bitflags — type-safe bitfield flag structs.
+# Used in the SDR transport layer (SdrFrameFlags) and elsewhere.
+bitflags = "2"
+ml-kem = { version = "0.2.3", features = ["zeroize", "deterministic"] }
+kem = "=0.3.0-pre.0"
+rand_chacha = "0.9"
+
+# reqwest — async HTTP client for ZeroTier/Tailscale control-plane APIs (§5.22/5.23).
+# Using rustls-tls (pure Rust) to avoid OpenSSL conflicts.
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# libp2p — modular networking stack for GossipSub + Rendezvous + AutoNAT (§5.24).
+libp2p = { version = "0.54", features = ["gossipsub", "rendezvous", "tcp", "noise", "yamux", "autonat", "tokio", "macros"] }
+
+# reed-solomon-erasure — Reed-Solomon error correction for telephone subchannel (§5.16).
+reed-solomon-erasure = "6"
 
 # =============================================================================
 # Platform-conditional dependencies

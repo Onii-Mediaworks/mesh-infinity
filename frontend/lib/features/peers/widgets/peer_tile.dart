@@ -39,13 +39,16 @@ class PeerTile extends StatelessWidget {
           Positioned(
             right: 0,
             bottom: 0,
-            child: Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                color: statusColor,
-                shape: BoxShape.circle,
-                border: Border.all(color: cs.surface, width: 1.5),
+            child: Semantics(
+              label: peer.status,
+              child: Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: statusColor,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: cs.surface, width: 1.5),
+                ),
               ),
             ),
           ),
