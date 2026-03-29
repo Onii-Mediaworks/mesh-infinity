@@ -3,6 +3,11 @@
 //! This is the single Rust crate for the Mesh Infinity backend.
 //! All modules are re-exported from here.
 
+/// Unified error type — every fallible operation returns `Result<T, MeshError>`.
+/// See `backend/error.rs` for the full variant list and usage guide.
+#[path = "../backend/error.rs"]
+pub mod error;
+
 #[path = "../backend/crypto/lib.rs"]
 pub mod crypto;
 
@@ -50,6 +55,9 @@ pub mod notifications;
 
 #[path = "../backend/messaging/mod.rs"]
 pub mod messaging;
+
+#[path = "../backend/service/mod.rs"]
+pub mod service;
 
 #[path = "../backend/ffi/lib.rs"]
 pub mod ffi;
