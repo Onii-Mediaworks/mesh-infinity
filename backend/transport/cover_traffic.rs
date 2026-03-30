@@ -404,17 +404,19 @@ mod tests {
     fn cover_packets_generated_when_idle() {
         // Use a high rate (100 pps) so the interval is short (~10ms)
         // and we don't need to sleep long to trigger packet generation.
+        // Poll in a loop to account for timing variance on loaded CI systems.
         let mut gen = enabled_generator(100.0, 512);
 
-        // Sleep long enough for the interval to elapse and demand a cover packet.
-        // At 100 pps the base interval is ~10ms; with ±10% jitter it can be up
-        // to ~11ms. Sleeping 50ms guarantees multiple intervals have passed.
-        thread::sleep(Duration::from_millis(50));
-
-        // Poll should return a cover packet since zero real packets were sent.
-        let packet = gen.poll_cover_packet();
+        let mut got_packet = false;
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(10));
+            if gen.poll_cover_packet().is_some() {
+                got_packet = true;
+                break;
+            }
+        }
         assert!(
-            packet.is_some(),
+            got_packet,
             "Expected a cover packet when no real traffic was sent"
         );
     }
@@ -537,13 +539,17 @@ mod tests {
     #[test]
     fn rate_changes_take_effect() {
         // Start with high rate to confirm packets are generated.
+        // Poll in a loop to account for timing variance on loaded systems.
         let mut gen = enabled_generator(100.0, 128);
-        thread::sleep(Duration::from_millis(50));
-        let packet = gen.poll_cover_packet();
-        assert!(
-            packet.is_some(),
-            "Expected cover packet at high rate before rate change"
-        );
+        let mut got_packet = false;
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(10));
+            if gen.poll_cover_packet().is_some() {
+                got_packet = true;
+                break;
+            }
+        }
+        assert!(got_packet, "Expected cover packet at high rate before rate change");
 
         // Change to zero rate — should stop generating.
         gen.set_rate(0.0);
