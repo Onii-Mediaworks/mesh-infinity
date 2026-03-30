@@ -205,6 +205,13 @@ pub const DOMAIN_KEY_CHANGE: &[u8] = b"meshinfinity-key-change-v1";
 /// Used when signing Garden creation proofs and administrative actions.
 pub const DOMAIN_GARDEN: &[u8] = b"meshinfinity-garden-v1";
 
+/// Domain separator for plugin package signatures (§18).
+/// Used when verifying that a plugin binary was signed by its claimed author.
+/// Prevents replay of other signed types as plugin signatures.
+// DOMAIN_PLUGIN_SIGNATURE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+pub const DOMAIN_PLUGIN_SIGNATURE: &[u8] = b"meshinfinity-plugin-sig-v1";
+
 // ---------------------------------------------------------------------------
 // Signing
 // ---------------------------------------------------------------------------
@@ -609,6 +616,7 @@ mod tests {
             DOMAIN_GROUP_GOVERNANCE,
             DOMAIN_KEY_CHANGE,
             DOMAIN_GARDEN,
+            DOMAIN_PLUGIN_SIGNATURE,
         ];
 
         for i in 0..domains.len() {
