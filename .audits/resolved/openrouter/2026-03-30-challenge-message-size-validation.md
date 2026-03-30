@@ -1,3 +1,4 @@
+## Resolution Status: RESOLVED
 # Missing Challenge Message Size Validation in Pairing Handshake
 
 **Date:** 2026-03-30

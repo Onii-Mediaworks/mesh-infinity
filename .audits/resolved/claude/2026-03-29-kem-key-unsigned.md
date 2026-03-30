@@ -1,3 +1,4 @@
+## Resolution Status: RESOLVED
 # ML-KEM-768 Encapsulation Key Not Signed by Ed25519 Identity Key — PQ Downgrade Attack
 **Date:** 2026-03-29
 **Auditor:** claude-sonnet-4-6

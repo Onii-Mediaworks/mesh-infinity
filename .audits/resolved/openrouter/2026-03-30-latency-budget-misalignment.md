@@ -1,3 +1,4 @@
+## Resolution Status: RESOLVED
 # Latency Budget Misalignment in Security Policy
 
 **Date:** 2026-03-30

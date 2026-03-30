@@ -1,3 +1,4 @@
+## Resolution Status: RESOLVED
 # No Message ID Deduplication — Delivered Messages Can Be Replayed
 **Date:** 2026-03-29
 **Auditor:** claude-sonnet-4-6

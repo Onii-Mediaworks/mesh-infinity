@@ -1,3 +1,4 @@
+## Resolution Status: RESOLVED
 # Double Ratchet Header in Plaintext Envelope — Traffic Correlation Attack Surface
 **Date:** 2026-03-29
 **Auditor:** claude-sonnet-4-6

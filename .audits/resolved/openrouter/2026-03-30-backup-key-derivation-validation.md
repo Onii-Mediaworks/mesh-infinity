@@ -1,3 +1,4 @@
+## Resolution Status: RESOLVED
 # Insufficient Validation in Backup Key Derivation
 
 **Date:** 2026-03-30

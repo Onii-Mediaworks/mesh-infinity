@@ -1,3 +1,4 @@
+## Resolution Status: RESOLVED
 # Headless / Server Mode Requires GTK Display
 
 **Date:** 2026-03-29
