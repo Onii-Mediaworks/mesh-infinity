@@ -201,6 +201,10 @@ pub const DOMAIN_GROUP_GOVERNANCE: &[u8] = b"meshinfinity-group-governance-v1";
 /// Domain separator for key change validation signatures (§4.6).
 pub const DOMAIN_KEY_CHANGE: &[u8] = b"meshinfinity-key-change-v1";
 
+/// Domain separator for Garden (community) identity signatures (§10.2).
+/// Used when signing Garden creation proofs and administrative actions.
+pub const DOMAIN_GARDEN: &[u8] = b"meshinfinity-garden-v1";
+
 // ---------------------------------------------------------------------------
 // Signing
 // ---------------------------------------------------------------------------
@@ -604,6 +608,7 @@ mod tests {
             DOMAIN_LAN_DISCOVER,
             DOMAIN_GROUP_GOVERNANCE,
             DOMAIN_KEY_CHANGE,
+            DOMAIN_GARDEN,
         ];
 
         for i in 0..domains.len() {
