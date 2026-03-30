@@ -34,11 +34,17 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
 install(TARGETS flutter_ui LIBRARY DESTINATION "${CMAKE_INSTALL_PREFIX}/lib"
         COMPONENT Runtime)
 
-install(FILES "${FLUTTER_ICU_DATA_FILE}"
-        DESTINATION "${CMAKE_INSTALL_PREFIX}/data" COMPONENT Runtime)
+# These variables are populated by Flutter's internal build system during
+# the actual build phase.  Guard against empty strings during CMake configure.
+if(FLUTTER_ICU_DATA_FILE)
+  install(FILES "${FLUTTER_ICU_DATA_FILE}"
+          DESTINATION "${CMAKE_INSTALL_PREFIX}/data" COMPONENT Runtime)
+endif()
 
-install(FILES "${FLUTTER_LIBRARY}"
-        DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" COMPONENT Runtime)
+if(FLUTTER_LIBRARY)
+  install(FILES "${FLUTTER_LIBRARY}"
+          DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" COMPONENT Runtime)
+endif()
 
 foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})
   install(FILES "${bundled_library}"
@@ -54,6 +60,8 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
         DESTINATION "${CMAKE_INSTALL_PREFIX}/data" COMPONENT Runtime)
 
 # AOT snapshot only present in non-Debug configurations.
-install(FILES "${AOT_LIBRARY}"
-        DESTINATION "${CMAKE_INSTALL_PREFIX}/lib"
-        CONFIGURATIONS Release COMPONENT Runtime)
+if(AOT_LIBRARY)
+  install(FILES "${AOT_LIBRARY}"
+          DESTINATION "${CMAKE_INSTALL_PREFIX}/lib"
+          CONFIGURATIONS Release COMPONENT Runtime)
+endif()
