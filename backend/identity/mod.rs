@@ -8,10 +8,15 @@
 //! Each layer is cryptographically isolated. Compromising one reveals nothing
 //! about the others.
 
+// Sub-module: mesh_identity — see module-level docs for details.
 pub mod mesh_identity;
+// Sub-module: self_identity — see module-level docs for details.
 pub mod self_identity;
+// Sub-module: mask — see module-level docs for details.
 pub mod mask;
+// Sub-module: peer_id — see module-level docs for details.
 pub mod peer_id;
+// Sub-module: pin — see module-level docs for details.
 pub mod pin;
 pub mod killswitch;
 pub mod profile;

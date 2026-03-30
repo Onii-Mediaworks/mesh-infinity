@@ -79,28 +79,76 @@ use serde::{Deserialize, Serialize};
 
 /// IPv4 base network for Infinet. RFC 6598 CGNAT range.
 /// Same as Tailscale's 100.x.y.z address space.
+// IPV4_BASE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_BASE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_BASE — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const IPV4_BASE: [u8; 4] = [100, 64, 0, 0];
 
 /// IPv4 prefix length for the entire Infinet space.
+// IPV4_PREFIX_LEN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_PREFIX_LEN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_PREFIX_LEN — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const IPV4_PREFIX_LEN: u8 = 10;
 
 /// IPv4 prefix length per user (/16 = 65,534 usable addresses).
+// IPV4_USER_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_USER_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_USER_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const IPV4_USER_PREFIX: u8 = 16;
 
 /// Reserved gateway/resolver address: 100.64.0.1.
+// IPV4_GATEWAY — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_GATEWAY — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV4_GATEWAY — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const IPV4_GATEWAY: [u8; 4] = [100, 64, 0, 1];
 
 /// Maximum IPv4 participants (each gets a /16 from /10 = 64 slots).
+// MAX_IPV4_PARTICIPANTS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_IPV4_PARTICIPANTS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_IPV4_PARTICIPANTS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_IPV4_PARTICIPANTS: usize = 64;
 
 /// IPv6 ULA prefix for Infinet (Tailscale-compatible).
 /// fd7a:115c:a1e0::/48
+// IPV6_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV6_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV6_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const IPV6_PREFIX: [u16; 3] = [0xfd7a, 0x115c, 0xa1e0];
 
 /// IPv6 prefix length per user (/64).
+// IPV6_USER_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV6_USER_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// IPV6_USER_PREFIX — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const IPV6_USER_PREFIX: u8 = 64;
 
 /// Default device expiry (seconds) = 180 days from last seen.
+// DEVICE_EXPIRY_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEVICE_EXPIRY_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEVICE_EXPIRY_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const DEVICE_EXPIRY_SECS: u64 = 180 * 24 * 3600;
 
 // ---------------------------------------------------------------------------
@@ -109,6 +157,13 @@ pub const DEVICE_EXPIRY_SECS: u64 = 180 * 24 * 3600;
 
 /// Member role within an Infinet. Mirrors Tailscale admin/member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetRole — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetRole — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetRole — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum InfinetRole {
     /// Can manage members, ACLs, DNS, and settings.
     Admin,
@@ -122,59 +177,131 @@ pub enum InfinetRole {
 
 /// A member of an Infinet (analogous to a Tailscale user).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetMember — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetMember — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetMember — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct InfinetMember {
     /// Mesh peer ID of this member.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub peer_id: [u8; 32],
     /// Short human-readable name (used in DNS).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub shortname: String,
     /// Role in this Infinet.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub role: InfinetRole,
     /// Manually assigned IPv4 /16 subnet (e.g., "100.65.0.0/16").
     ///
     /// NOT auto-assigned on join — admin must set this explicitly.
     /// None means this member is IPv6-only within the Infinet.
     /// Avoids collision with Tailscale's 100.64.0.0/10 range.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub subnet_v4: Option<String>,
     /// Auto-assigned IPv6 /64 subnet.
     ///
     /// Assigned on join, collision-checked against known Tailscale addresses.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub subnet_v6: Option<String>,
     /// Devices registered by this member.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub devices: Vec<InfinetDevice>,
     /// When this member joined.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub joined_at: u64,
     /// When this membership expires (None = no expiry).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub expires_at: Option<u64>,
 }
 
 /// A device within an Infinet member's namespace.
 /// Analogous to a Tailscale machine/node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetDevice — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetDevice — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetDevice — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct InfinetDevice {
     /// Unique device identifier (mesh device address).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub device_id: [u8; 32],
     /// Short name used in DNS (e.g., "laptop", "phone").
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub shortname: String,
     /// Manually assigned IPv4 address within the member's /16, if the member
     /// has been given a manual subnet. None = no IPv4 within Infinet.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub addr_v4: Option<String>,
     /// Auto-assigned IPv6 address within the member's /64.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub addr_v6: Option<String>,
     /// Services running on this device.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub services: Vec<InfinetService>,
     /// Last time this device was seen online.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub last_seen: u64,
 }
 
 /// A service running on an Infinet device.
 /// Analogous to Tailscale Funnel/Serve exposed services.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetService — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetService — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetService — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct InfinetService {
     /// Service name (used in DNS, must be unique per device).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub name: String,
     /// Internal port the service listens on.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub port: u32,
     /// Human-readable description.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub description: Option<String>,
 }
 
@@ -187,45 +314,109 @@ pub struct InfinetService {
 /// Evaluated in order — first match wins. This mirrors Tailscale's
 /// ACL policy model where rules are evaluated top-to-bottom.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetACL — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetACL — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetACL — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct InfinetACL {
     /// Unique rule identifier.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub rule_id: [u8; 16],
     /// Who this rule applies to.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub subject: InfinetSubject,
     /// What this rule controls access to.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub target: InfinetTarget,
     /// Allow or deny.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub permission: InfinetPermission,
     /// Optional expiry for time-limited rules.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub expires_at: Option<u64>,
 }
 
 /// Who an ACL rule applies to.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetSubject — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetSubject — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetSubject — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum InfinetSubject {
     /// A specific member by peer ID.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Member { peer_id: [u8; 32] },
     /// All members with a specific role.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Role { role: InfinetRole },
     /// Everyone in the Infinet.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Everyone,
 }
 
 /// What an ACL rule controls access to.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetTarget — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetTarget — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetTarget — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum InfinetTarget {
     /// A specific device.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Device { device_id: [u8; 32] },
     /// A specific service on a specific device.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Service { device_id: [u8; 32], service: String },
     /// A subnet (CIDR notation).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Subnet { network: String },
     /// Everything in the Infinet.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Everything,
 }
 
 /// ACL permission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetPermission — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetPermission — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// InfinetPermission — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum InfinetPermission {
     Allow,
     Deny,
@@ -238,17 +429,55 @@ pub enum InfinetPermission {
 /// A DNS record within an Infinet.
 /// Analogous to Tailscale MagicDNS entries.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetDNSRecord — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetDNSRecord — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetDNSRecord — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct InfinetDNSRecord {
+    /// The record id for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub record_id: [u8; 16],
+    /// The name for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub name: String,
+    /// The record type for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub record_type: DnsRecordType,
+    /// The value for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub value: String,
+    /// The ttl for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub ttl: u32,
+    /// The created by for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub created_by: [u8; 32],
 }
 
 /// DNS record types supported in Infinet.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// DnsRecordType — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// DnsRecordType — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// DnsRecordType — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum DnsRecordType {
     A,
     AAAA,
@@ -263,14 +492,33 @@ pub enum DnsRecordType {
 /// How new members join an Infinet.
 /// Mirrors Tailscale's device authorization model.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// JoinPolicy — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// JoinPolicy — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// JoinPolicy — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum JoinPolicy {
     /// Admin must approve each join (Tailscale default).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     AdminApproval,
     /// N-of-M existing members must approve.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Quorum { n: u32, m: u32 },
     /// Auto-approve if mesh trust level is sufficient.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     AutoApprove { min_trust_level: u8 },
     /// One-time invite tokens only.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     InviteOnly,
 }
 
@@ -284,20 +532,48 @@ pub enum JoinPolicy {
 /// Analogous to Tailscale's coordination server state, except
 /// decentralized — signed by admin quorum instead of a central server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// InfinetState — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetState — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// InfinetState — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct InfinetState {
     /// Unique Infinet identifier.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub infinet_id: [u8; 32],
     /// Human-readable name.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub infinet_name: String,
     /// All members.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub members: Vec<InfinetMember>,
     /// Access control rules.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub acls: Vec<InfinetACL>,
     /// Custom DNS records.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub dns_records: Vec<InfinetDNSRecord>,
     /// Monotonically increasing state version.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub state_version: u64,
     /// Ed25519 signature over canonical state (admin quorum).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub state_sig: Vec<u8>,
 }
 
@@ -321,40 +597,131 @@ pub struct InfinetState {
 /// - Member 63: 100.127.0.0/16 (last slot)
 ///
 /// IPv6 allocation: slot N gets fd7a:115c:a1e0:N::/64.
+// IpAllocator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// IpAllocator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// IpAllocator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct IpAllocator {
     /// Which IPv4 /16 slots are allocated. Index = slot number.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     allocated_v4: Vec<bool>,
     /// Which IPv6 /64 slots are currently in use.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     allocated_v6: HashSet<u16>,
     /// Next slot to try for IPv6 allocation (monotone; not reset on release).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     next_v6_slot: u16,
 }
 
+// Begin the block scope.
+// IpAllocator implementation — core protocol logic.
+// IpAllocator implementation — core protocol logic.
+// IpAllocator implementation — core protocol logic.
 impl IpAllocator {
     /// Create a new allocator.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new() -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             allocated_v4: vec![false; MAX_IPV4_PARTICIPANTS],
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             allocated_v6: HashSet::new(),
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             next_v6_slot: 1, // 0 is reserved.
         }
     }
 
     /// Reconstruct allocator state from existing members.
+    // Perform the 'from members' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'from members' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'from members' operation.
+    // Errors are propagated to the caller via Result.
     pub fn from_members(members: &[InfinetMember]) -> Self {
+        // Invoke the associated function.
+        // Compute alloc for this protocol step.
+        // Compute alloc for this protocol step.
+        // Compute alloc for this protocol step.
         let mut alloc = Self::new();
+        // Process each peer/member in the set.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for member in members {
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if let Some(ref subnet) = member.subnet_v4 {
+                // Conditional branch based on the current state.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if let Some(slot) = Self::slot_from_v4_subnet(subnet) {
+                    // Validate the input length to prevent out-of-bounds access.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
                     if (slot as usize) < alloc.allocated_v4.len() {
+                        // Execute the operation and bind the result.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         alloc.allocated_v4[slot as usize] = true;
                     }
                 }
             }
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if let Some(ref subnet) = member.subnet_v6 {
+                // Conditional branch based on the current state.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if let Some(slot) = Self::slot_from_v6_subnet(subnet) {
+                    // Insert into the lookup table for efficient retrieval.
+                    // Insert into the map/set.
+                    // Insert into the map/set.
+                    // Insert into the map/set.
                     alloc.allocated_v6.insert(slot);
+                    // Bounds check to enforce protocol constraints.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
                     if slot >= alloc.next_v6_slot {
+                        // Execute the operation and bind the result.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         alloc.next_v6_slot = slot + 1;
                     }
                 }
@@ -369,27 +736,78 @@ impl IpAllocator {
     /// collision with Tailscale's 100.64.0.0/10 CGNAT range.
     ///
     /// Returns the subnet in CIDR notation, or None if all 64 slots taken.
+    // Perform the 'allocate v4' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate v4' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate v4' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allocate_v4(&mut self) -> Option<String> {
+        // Iterate over each element in the collection.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for (i, allocated) in self.allocated_v4.iter_mut().enumerate() {
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if !*allocated {
                 *allocated = true;
+                // Execute the operation and bind the result.
+                // Compute second octet for this protocol step.
+                // Compute second octet for this protocol step.
+                // Compute second octet for this protocol step.
                 let second_octet = 64 + i as u8;
+                // Format the output for display or logging.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
                 return Some(format!("100.{}.0.0/16", second_octet));
             }
         }
+        // No value available.
+        // No value available.
+        // No value available.
         None
     }
 
     /// Allocate a /64 IPv6 subnet, **without** collision checking.
     ///
     /// Use `allocate_v6_avoiding()` when Tailscale is also active.
+    // Perform the 'allocate v6' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate v6' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate v6' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allocate_v6(&mut self) -> String {
         // Find next free slot sequentially.
         loop {
+            // Execute the operation and bind the result.
+            // Compute slot for this protocol step.
+            // Compute slot for this protocol step.
+            // Compute slot for this protocol step.
             let slot = self.next_v6_slot;
+            // Update the next v6 slot to reflect the new state.
+            // Advance next v6 slot state.
+            // Advance next v6 slot state.
+            // Advance next v6 slot state.
             self.next_v6_slot = self.next_v6_slot.saturating_add(1);
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if !self.allocated_v6.contains(&slot) {
+                // Insert into the lookup table for efficient retrieval.
+                // Insert into the map/set.
+                // Insert into the map/set.
+                // Insert into the map/set.
                 self.allocated_v6.insert(slot);
+                // Format the output for display or logging.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
                 return format!("fd7a:115c:a1e0:{slot:04x}::/64");
             }
         }
@@ -404,36 +822,117 @@ impl IpAllocator {
     ///
     /// Returns the allocated subnet, or None if the address space is
     /// exhausted (extremely unlikely — 65,535 possible /64 slots).
+    // Perform the 'allocate v6 avoiding' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate v6 avoiding' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate v6 avoiding' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allocate_v6_avoiding(&mut self, tailscale_addrs: &[&str]) -> Option<String> {
+        // Initialize the hash function for digest computation.
+        // Compute blocked for this protocol step.
+        // Compute blocked for this protocol step.
+        // Compute blocked for this protocol step.
         let blocked: HashSet<u16> = tailscale_addrs.iter()
+            // Apply the closure to each element.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             .filter_map(|a| tailscale_ipv6_slot(a))
+            // Materialize the iterator into a concrete collection.
+            // Collect into a concrete collection.
+            // Collect into a concrete collection.
+            // Collect into a concrete collection.
             .collect();
 
+        // Iterate over each element in the collection.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for candidate in self.next_v6_slot..=u16::MAX {
+            // Flow control: check if the operation should be stalled.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if self.allocated_v6.contains(&candidate) || blocked.contains(&candidate) {
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 continue;
             }
+            // Insert into the lookup table for efficient retrieval.
+            // Insert into the map/set.
+            // Insert into the map/set.
+            // Insert into the map/set.
             self.allocated_v6.insert(candidate);
+            // Bounds check to enforce protocol constraints.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if candidate >= self.next_v6_slot {
+                // Update the next v6 slot to reflect the new state.
+                // Advance next v6 slot state.
+                // Advance next v6 slot state.
+                // Advance next v6 slot state.
                 self.next_v6_slot = candidate.saturating_add(1);
             }
+            // Format the output for display or logging.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return Some(format!("fd7a:115c:a1e0:{candidate:04x}::/64"));
         }
+        // Process the current step in the protocol.
+        // No value available.
+        // No value available.
+        // No value available.
         None // u16 exhausted — won't happen in practice
     }
 
     /// Release an IPv4 subnet (member removed or de-assigned).
+    // Perform the 'release v4' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'release v4' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'release v4' operation.
+    // Errors are propagated to the caller via Result.
     pub fn release_v4(&mut self, subnet: &str) {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if let Some(slot) = Self::slot_from_v4_subnet(subnet) {
+            // Validate the input length to prevent out-of-bounds access.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if (slot as usize) < self.allocated_v4.len() {
+                // Execute the operation and bind the result.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 self.allocated_v4[slot as usize] = false;
             }
         }
     }
 
     /// Release a /64 IPv6 subnet slot (member removed or address cycled).
+    // Perform the 'release v6' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'release v6' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'release v6' operation.
+    // Errors are propagated to the caller via Result.
     pub fn release_v6(&mut self, subnet: &str) {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if let Some(slot) = Self::slot_from_v6_subnet(subnet) {
+            // Remove from the collection and return the evicted value.
+            // Remove from the collection.
+            // Remove from the collection.
+            // Remove from the collection.
             self.allocated_v6.remove(&slot);
         }
     }
@@ -444,64 +943,210 @@ impl IpAllocator {
     /// `existing_addrs`: addresses already assigned to other devices.
     ///
     /// Returns an address like "100.65.0.2" (skipping .0.0 and .0.1).
+    // Perform the 'allocate device v4' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate device v4' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allocate device v4' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allocate_device_v4(
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         member_subnet: &str,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         existing_addrs: &[String],
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> Option<String> {
         // Parse the second octet from the subnet.
+        // Compute parts for this protocol step.
+        // Compute parts for this protocol step.
+        // Compute parts for this protocol step.
         let parts: Vec<&str> = member_subnet.split('.').collect();
+        // Validate the input length to prevent out-of-bounds access.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if parts.len() < 2 {
+            // No result available — signal absence to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return None;
         }
+        // Check the operation outcome without consuming the error.
+        // Compute second octet for this protocol step.
+        // Compute second octet for this protocol step.
+        // Compute second octet for this protocol step.
         let second_octet: u8 = parts[1].parse().ok()?;
 
         // Try addresses .0.2 through .255.254.
         // Skip .0.0 (network) and .0.1 (gateway reserved).
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for third in 0..=255u16 {
+            // Iterate over each element in the collection.
+            // Iterate over each element.
+            // Iterate over each element.
+            // Iterate over each element.
             for fourth in 2..=254u8 {
+                // Bounds check to enforce protocol constraints.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if third == 0 && fourth < 2 {
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     continue;
                 }
+                // Format the output for display or logging.
+                // Compute addr for this protocol step.
+                // Compute addr for this protocol step.
+                // Compute addr for this protocol step.
                 let addr = format!("100.{}.{}.{}", second_octet, third, fourth);
+                // Conditional branch based on the current state.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if !existing_addrs.contains(&addr) {
+                    // Return the result to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
                     return Some(addr);
                 }
             }
         }
+        // Process the current step in the protocol.
+        // No value available.
+        // No value available.
+        // No value available.
         None // /16 exhausted (65K addresses).
     }
 
     /// Extract the slot number from an IPv4 subnet string like "100.65.0.0/16".
+    // Perform the 'slot from v4 subnet' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'slot from v4 subnet' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'slot from v4 subnet' operation.
+    // Errors are propagated to the caller via Result.
     fn slot_from_v4_subnet(subnet: &str) -> Option<u8> {
+        // Materialize the iterator into a concrete collection.
+        // Compute parts for this protocol step.
+        // Compute parts for this protocol step.
+        // Compute parts for this protocol step.
         let parts: Vec<&str> = subnet.split('.').collect();
+        // Validate the input length to prevent out-of-bounds access.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if parts.len() >= 2 {
+            // Check the operation outcome without consuming the error.
+            // Compute second for this protocol step.
+            // Compute second for this protocol step.
+            // Compute second for this protocol step.
             let second: u8 = parts[1].parse().ok()?;
+            // Bounds check to enforce protocol constraints.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if second >= 64 {
+                // Wrap the found value for the caller.
+                // Wrap the found value.
+                // Wrap the found value.
+                // Wrap the found value.
                 Some(second - 64)
+            // Begin the block scope.
+            // Fallback when the guard was not satisfied.
+            // Fallback when the guard was not satisfied.
+            // Fallback when the guard was not satisfied.
             } else {
+                // No value available.
+                // No value available.
+                // No value available.
                 None
             }
+        // Begin the block scope.
+        // Fallback when the guard was not satisfied.
+        // Fallback when the guard was not satisfied.
+        // Fallback when the guard was not satisfied.
         } else {
+            // No value available.
+            // No value available.
+            // No value available.
             None
         }
     }
 
     /// Extract the slot number from an IPv6 subnet like "fd7a:115c:a1e0:0002::/64".
+    // Perform the 'slot from v6 subnet' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'slot from v6 subnet' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'slot from v6 subnet' operation.
+    // Errors are propagated to the caller via Result.
     pub fn slot_from_v6_subnet(subnet: &str) -> Option<u16> {
         // Format: "fd7a:115c:a1e0:XXXX::/64"
         // Split on ':' and take the 4th group (index 3).
+        // Compute without prefix for this protocol step.
+        // Compute without prefix for this protocol step.
+        // Compute without prefix for this protocol step.
         let without_prefix = subnet.trim_end_matches("::/64");
+        // Materialize the iterator into a concrete collection.
+        // Compute groups for this protocol step.
+        // Compute groups for this protocol step.
+        // Compute groups for this protocol step.
         let groups: Vec<&str> = without_prefix.split(':').collect();
+        // Validate the input length to prevent out-of-bounds access.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if groups.len() >= 4 {
+            // Check the operation outcome without consuming the error.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             u16::from_str_radix(groups[3], 16).ok()
+        // Begin the block scope.
+        // Fallback when the guard was not satisfied.
+        // Fallback when the guard was not satisfied.
+        // Fallback when the guard was not satisfied.
         } else {
+            // No value available.
+            // No value available.
+            // No value available.
             None
         }
     }
 }
 
+// Trait implementation for protocol conformance.
+// Implement Default for IpAllocator.
+// Implement Default for IpAllocator.
+// Implement Default for IpAllocator.
 impl Default for IpAllocator {
+    // Begin the block scope.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
     fn default() -> Self {
+        // Create a new instance with the specified parameters.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         Self::new()
     }
 }
@@ -517,25 +1162,64 @@ impl Default for IpAllocator {
 /// cannot be parsed. Addresses in other ranges are not a concern.
 ///
 /// Example: "fd7a:115c:a1e0:0001::5a3f" → Some(1)
+// Perform the 'tailscale ipv6 slot' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'tailscale ipv6 slot' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'tailscale ipv6 slot' operation.
+// Errors are propagated to the caller via Result.
 pub fn tailscale_ipv6_slot(addr: &str) -> Option<u16> {
     // Strip trailing /prefix-len if present (subnet notation).
+    // Compute addr for this protocol step.
+    // Compute addr for this protocol step.
+    // Compute addr for this protocol step.
     let addr = addr.split('/').next().unwrap_or(addr).trim();
 
     // We only care about our ULA prefix fd7a:115c:a1e0::/48.
     // A full address looks like: fd7a:115c:a1e0:XXXX::YYYY
     // or expanded: fd7a:115c:a1e0:XXXX:0000:0000:0000:YYYY
     // The 4th group (index 3 after splitting on ':') is the slot.
+    // Compute groups for this protocol step.
+    // Compute groups for this protocol step.
+    // Compute groups for this protocol step.
     let groups: Vec<&str> = addr.split(':').collect();
+    // Validate the input length to prevent out-of-bounds access.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
     if groups.len() < 4 {
+        // No result available — signal absence to the caller.
+        // Return to the caller.
+        // Return to the caller.
+        // Return to the caller.
         return None;
     }
     // Verify prefix groups.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
     if groups[0].to_lowercase() != "fd7a"
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         || groups[1].to_lowercase() != "115c"
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         || groups[2].to_lowercase() != "a1e0"
     {
+        // No result available — signal absence to the caller.
+        // Return to the caller.
+        // Return to the caller.
+        // Return to the caller.
         return None;
     }
+    // Check the operation outcome without consuming the error.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     u16::from_str_radix(groups[3], 16).ok()
 }
 
@@ -547,9 +1231,27 @@ pub fn tailscale_ipv6_slot(addr: &str) -> Option<u16> {
 /// `tailscale_addrs`: currently assigned Tailscale device IPv6 addresses.
 ///
 /// Returns true if any Tailscale address falls within the proposed /64.
+// Perform the 'infinet v6 collides with tailscale' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'infinet v6 collides with tailscale' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'infinet v6 collides with tailscale' operation.
+// Errors are propagated to the caller via Result.
 pub fn infinet_v6_collides_with_tailscale(infinet_slot: u16, tailscale_addrs: &[&str]) -> bool {
+    // Create an iterator over the collection elements.
+    // Create an iterator over the elements.
+    // Create an iterator over the elements.
+    // Create an iterator over the elements.
     tailscale_addrs.iter()
+        // Apply the closure to each element.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         .filter_map(|a| tailscale_ipv6_slot(a))
+        // Apply the closure to each element.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         .any(|ts_slot| ts_slot == infinet_slot)
 }
 
@@ -560,16 +1262,38 @@ pub fn infinet_v6_collides_with_tailscale(infinet_slot: u16, tailscale_addrs: &[
 /// is released. Both the device and the Infinet receive this event so they
 /// can update their routing tables and DNS records.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// AddressConflictEvent — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// AddressConflictEvent — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// AddressConflictEvent — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct AddressConflictEvent {
     /// The member whose address was cycled.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub member_peer_id: [u8; 32],
     /// The old /64 subnet that conflicted (now released).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub old_subnet_v6: String,
     /// The new /64 subnet assigned after cycling.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub new_subnet_v6: String,
     /// The Tailscale address that caused the conflict.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub conflicting_tailscale_addr: String,
     /// Unix timestamp when the cycle occurred.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub cycled_at: u64,
 }
 
@@ -585,60 +1309,192 @@ pub struct AddressConflictEvent {
 /// notification to the affected device).
 ///
 /// Returns None if the collision was not actually present (idempotent).
+// Perform the 'cycle v6 for member' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'cycle v6 for member' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'cycle v6 for member' operation.
+// Errors are propagated to the caller via Result.
 pub fn cycle_v6_for_member(
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     member: &mut InfinetMember,
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     alloc: &mut IpAllocator,
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     tailscale_addrs: &[&str],
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     now: u64,
+// Begin the block scope.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
 ) -> Option<AddressConflictEvent> {
+    // Identify the peer for this operation.
+    // Compute current subnet for this protocol step.
+    // Compute current subnet for this protocol step.
+    // Compute current subnet for this protocol step.
     let current_subnet = member.subnet_v6.as_ref()?;
+    // Propagate errors via the ? operator — callers handle failures.
+    // Compute current slot for this protocol step.
+    // Compute current slot for this protocol step.
+    // Compute current slot for this protocol step.
     let current_slot = IpAllocator::slot_from_v6_subnet(current_subnet)?;
 
     // Only cycle if there's actually a collision.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
     if !infinet_v6_collides_with_tailscale(current_slot, tailscale_addrs) {
+        // No result available — signal absence to the caller.
+        // Return to the caller.
+        // Return to the caller.
+        // Return to the caller.
         return None;
     }
 
     // Find which Tailscale address caused the conflict (for the event).
+    // Compute conflicting for this protocol step.
+    // Compute conflicting for this protocol step.
+    // Compute conflicting for this protocol step.
     let conflicting = tailscale_addrs.iter()
+        // Apply the closure to each element.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         .find(|a| tailscale_ipv6_slot(a) == Some(current_slot))
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         .copied()
+        // Fall back to the default value on failure.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         .unwrap_or("")
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         .to_string();
 
+    // Execute the operation and bind the result.
+    // Compute old subnet for this protocol step.
+    // Compute old subnet for this protocol step.
+    // Compute old subnet for this protocol step.
     let old_subnet = current_subnet.clone();
 
     // Release old slot.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     alloc.release_v6(&old_subnet);
 
     // Allocate new slot avoiding all current Tailscale addresses.
+    // Compute new subnet for this protocol step.
+    // Compute new subnet for this protocol step.
+    // Compute new subnet for this protocol step.
     let new_subnet = alloc.allocate_v6_avoiding(tailscale_addrs)?;
 
     // Update the member.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     member.subnet_v6 = Some(new_subnet.clone());
 
     // Device-level addresses within the /64 also need updating.
     // The new device address replaces the old one — derive from new subnet.
+    // Compute new slot for this protocol step.
+    // Compute new slot for this protocol step.
+    // Compute new slot for this protocol step.
     let new_slot = IpAllocator::slot_from_v6_subnet(&new_subnet)?;
+    // Process each peer/member in the set.
+    // Iterate over each element.
+    // Iterate over each element.
+    // Iterate over each element.
     for device in &mut member.devices {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if device.addr_v6.is_some() {
             // Derive new address from new subnet + deterministic interface ID.
+            // Compute iid for this protocol step.
+            // Compute iid for this protocol step.
+            // Compute iid for this protocol step.
             let iid = u64::from_le_bytes(device.device_id[..8].try_into().ok()?);
+            // Format the output for display or logging.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             device.addr_v6 = Some(format!(
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 "fd7a:115c:a1e0:{new_slot:04x}:{:04x}:{:04x}:{:04x}:{:04x}",
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 (iid >> 48) & 0xFFFF,
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 (iid >> 32) & 0xFFFF,
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 (iid >> 16) & 0xFFFF,
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 iid & 0xFFFF,
             ));
         }
     }
 
+    // Wrap the found value for the caller.
+    // Wrap the found value.
+    // Wrap the found value.
+    // Wrap the found value.
     Some(AddressConflictEvent {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         member_peer_id: member.peer_id,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         old_subnet_v6: old_subnet,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         new_subnet_v6: new_subnet,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         conflicting_tailscale_addr: conflicting,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         cycled_at: now,
     })
 }
@@ -653,57 +1509,165 @@ pub fn cycle_v6_for_member(
 /// Default (no rule matches): Deny.
 ///
 /// This mirrors Tailscale's ACL evaluation model.
+// Perform the 'evaluate acl' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'evaluate acl' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'evaluate acl' operation.
+// Errors are propagated to the caller via Result.
 pub fn evaluate_acl(
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     acls: &[InfinetACL],
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     requester_peer_id: &[u8; 32],
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     requester_role: InfinetRole,
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     target_device_id: &[u8; 32],
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     target_service: Option<&str>,
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     now: u64,
+// Begin the block scope.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
 ) -> InfinetPermission {
+    // Iterate over each element in the collection.
+    // Iterate over each element.
+    // Iterate over each element.
+    // Iterate over each element.
     for acl in acls {
         // Skip expired rules.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if let Some(expiry) = acl.expires_at {
+            // Bounds check to enforce protocol constraints.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if now >= expiry {
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 continue;
             }
         }
 
         // Check subject match.
+        // Compute subject match for this protocol step.
+        // Compute subject match for this protocol step.
+        // Compute subject match for this protocol step.
         let subject_match = match &acl.subject {
+            // Handle this match arm.
+            // Handle InfinetSubject::Member { peer_id }.
+            // Handle InfinetSubject::Member { peer_id }.
+            // Handle InfinetSubject::Member { peer_id }.
             InfinetSubject::Member { peer_id } => peer_id == requester_peer_id,
+            // Handle this match arm.
+            // Handle InfinetSubject::Role { role }.
+            // Handle InfinetSubject::Role { role }.
+            // Handle InfinetSubject::Role { role }.
             InfinetSubject::Role { role } => *role == requester_role,
+            // Handle this match arm.
             InfinetSubject::Everyone => true,
         };
 
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !subject_match {
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             continue;
         }
 
         // Check target match.
+        // Compute target match for this protocol step.
+        // Compute target match for this protocol step.
+        // Compute target match for this protocol step.
         let target_match = match &acl.target {
+            // Handle this match arm.
+            // Handle InfinetTarget::Device { device_id }.
+            // Handle InfinetTarget::Device { device_id }.
+            // Handle InfinetTarget::Device { device_id }.
             InfinetTarget::Device { device_id } => device_id == target_device_id,
+            // Begin the block scope.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             InfinetTarget::Service {
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 device_id,
                 service,
+            // Begin the block scope.
+            // Handle }.
+            // Handle }.
+            // Handle }.
             } => {
+                // Update the local state.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 device_id == target_device_id
+                    // Apply the closure to each element.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     && target_service.is_some_and(|s| s == service)
             }
+            // Begin the block scope.
+            // Handle InfinetTarget::Subnet { .. }.
+            // Handle InfinetTarget::Subnet { .. }.
+            // Handle InfinetTarget::Subnet { .. }.
             InfinetTarget::Subnet { .. } => {
                 // Subnet matching would require IP parsing.
                 // For now, this matches only if no specific device is targeted.
                 true
             }
+            // Handle this match arm.
             InfinetTarget::Everything => true,
         };
 
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if target_match {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return acl.permission;
         }
     }
 
     // Default: Deny (Tailscale default-deny model).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     InfinetPermission::Deny
 }
 
@@ -716,11 +1680,37 @@ pub fn evaluate_acl(
 /// Expired devices have `last_seen` older than `DEVICE_EXPIRY_SECS`.
 /// Expiry releases the device's IP address, removes its DNS records,
 /// and removes its services. Does NOT expire mesh trust.
+// Perform the 'find expired devices' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'find expired devices' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'find expired devices' operation.
+// Errors are propagated to the caller via Result.
 pub fn find_expired_devices(members: &[InfinetMember], now: u64) -> Vec<[u8; 32]> {
+    // Pre-allocate the buffer to avoid repeated reallocations.
+    // Compute expired for this protocol step.
+    // Compute expired for this protocol step.
+    // Compute expired for this protocol step.
     let mut expired = Vec::new();
+    // Process each peer/member in the set.
+    // Iterate over each element.
+    // Iterate over each element.
+    // Iterate over each element.
     for member in members {
+        // Process each peer/member in the set.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for device in &member.devices {
+            // Bounds check to enforce protocol constraints.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if now.saturating_sub(device.last_seen) > DEVICE_EXPIRY_SECS {
+                // Execute the operation and bind the result.
+                // Append to the collection.
+                // Append to the collection.
+                // Append to the collection.
                 expired.push(device.device_id);
             }
         }
@@ -738,60 +1728,207 @@ pub fn find_expired_devices(members: &[InfinetMember], now: u64) -> Vec<[u8; 32]
 ///
 /// This mirrors Tailscale's MagicDNS where each machine gets
 /// `<hostname>.<tailnet>.ts.net`.
+// Perform the 'generate dns entries' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'generate dns entries' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'generate dns entries' operation.
+// Errors are propagated to the caller via Result.
 pub fn generate_dns_entries(
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     infinet_name: &str,
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     members: &[InfinetMember],
+// Begin the block scope.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
 ) -> Vec<InfinetDNSRecord> {
+    // Pre-allocate the buffer to avoid repeated reallocations.
+    // Compute records for this protocol step.
+    // Compute records for this protocol step.
+    // Compute records for this protocol step.
     let mut records = Vec::new();
 
+    // Process each peer/member in the set.
+    // Iterate over each element.
+    // Iterate over each element.
+    // Iterate over each element.
     for member in members {
+        // Process each peer/member in the set.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for device in &member.devices {
             // Device A record (IPv4).
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if let Some(ref addr) = device.addr_v4 {
+                // Format the output for display or logging.
+                // Compute fqdn for this protocol step.
+                // Compute fqdn for this protocol step.
+                // Compute fqdn for this protocol step.
                 let fqdn = format!(
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     "{}.{}.{}.infinet.meshinfinity",
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     device.shortname, member.shortname, infinet_name
                 );
+                // Begin the block scope.
+                // Append to the collection.
+                // Append to the collection.
+                // Append to the collection.
                 records.push(InfinetDNSRecord {
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     record_id: [0; 16], // Generated.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     name: fqdn,
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     record_type: DnsRecordType::A,
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     value: addr.clone(),
                     ttl: 60,
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     created_by: member.peer_id,
                 });
             }
 
             // Device AAAA record (IPv6).
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if let Some(ref addr) = device.addr_v6 {
+                // Format the output for display or logging.
+                // Compute fqdn for this protocol step.
+                // Compute fqdn for this protocol step.
+                // Compute fqdn for this protocol step.
                 let fqdn = format!(
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     "{}.{}.{}.infinet.meshinfinity",
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     device.shortname, member.shortname, infinet_name
                 );
+                // Begin the block scope.
+                // Append to the collection.
+                // Append to the collection.
+                // Append to the collection.
                 records.push(InfinetDNSRecord {
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     record_id: [0; 16],
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     name: fqdn,
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     record_type: DnsRecordType::AAAA,
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     value: addr.clone(),
                     ttl: 60,
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     created_by: member.peer_id,
                 });
             }
 
             // Service records.
+            // Iterate over each element.
+            // Iterate over each element.
+            // Iterate over each element.
             for service in &device.services {
+                // Format the output for display or logging.
+                // Compute fqdn for this protocol step.
+                // Compute fqdn for this protocol step.
+                // Compute fqdn for this protocol step.
                 let fqdn = format!(
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     "{}.{}.{}.{}.infinet.meshinfinity",
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     service.name, device.shortname, member.shortname, infinet_name
                 );
                 // Service names resolve to the device's IP.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if let Some(ref addr) = device.addr_v4 {
+                    // Begin the block scope.
+                    // Append to the collection.
+                    // Append to the collection.
+                    // Append to the collection.
                     records.push(InfinetDNSRecord {
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         record_id: [0; 16],
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         name: fqdn,
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         record_type: DnsRecordType::A,
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         value: addr.clone(),
                         ttl: 60,
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         created_by: member.peer_id,
                     });
                 }

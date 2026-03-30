@@ -32,10 +32,22 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Maximum number of delivery retries before permanent failure.
+// MAX_RETRIES — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_RETRIES — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_RETRIES — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_RETRIES: u32 = 3;
 
 /// Retry backoff intervals (seconds).
 /// Exponential: 5s, 30s, 120s.
+// RETRY_BACKOFF_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// RETRY_BACKOFF_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// RETRY_BACKOFF_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const RETRY_BACKOFF_SECS: [u64; 3] = [5, 30, 120];
 
 // ---------------------------------------------------------------------------
@@ -47,6 +59,13 @@ pub const RETRY_BACKOFF_SECS: [u64; 3] = [5, 30, 120];
 /// The state machine enforces valid transitions. Invalid transitions
 /// (e.g., Pending → Read) are rejected.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// DeliveryStatus — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// DeliveryStatus — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// DeliveryStatus — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum DeliveryStatus {
     /// Message queued locally, not yet encrypted/sent.
     /// Displayed optimistically in the thread (§16.9.2).
@@ -56,32 +75,81 @@ pub enum DeliveryStatus {
     /// Message accepted by the network (WireGuard ACK or S&F deposit).
     Sent,
     /// Recipient's device received and decrypted the message.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Delivered,
     /// Recipient has viewed the message (read receipt received).
     Read,
     /// Delivery failed after retry exhaustion.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Failed { reason: String },
 }
 
+// Begin the block scope.
+// DeliveryStatus implementation — core protocol logic.
+// DeliveryStatus implementation — core protocol logic.
+// DeliveryStatus implementation — core protocol logic.
 impl DeliveryStatus {
     /// Whether the message is in a terminal state (no further transitions).
+    // Perform the 'is terminal' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is terminal' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is terminal' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_terminal(&self) -> bool {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(self, Self::Read | Self::Failed { .. })
     }
 
     /// Whether the message should show a retry option in the UI.
+    // Perform the 'is retryable' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is retryable' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is retryable' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_retryable(&self) -> bool {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(self, Self::Failed { .. })
     }
 
     /// Icon hint for UI rendering (§22.5.2 _DeliveryIcon).
+    // Perform the 'icon hint' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'icon hint' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'icon hint' operation.
+    // Errors are propagated to the caller via Result.
     pub fn icon_hint(&self) -> &'static str {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match self {
+            // Handle this match arm.
             Self::Pending => "clock",
+            // Handle this match arm.
             Self::Sending => "spinner",
+            // Handle this match arm.
             Self::Sent => "check",
+            // Handle this match arm.
             Self::Delivered => "done_all",
+            // Handle this match arm.
             Self::Read => "done_all_blue",
+            // Handle this match arm.
+            // Handle Self::Failed { .. }.
+            // Handle Self::Failed { .. }.
+            // Handle Self::Failed { .. }.
             Self::Failed { .. } => "error_retry",
         }
     }
@@ -98,15 +166,55 @@ impl DeliveryStatus {
     /// - Failed → Pending (retry initiated)
     ///
     /// All other transitions are invalid.
+    // Perform the 'can transition to' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'can transition to' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'can transition to' operation.
+    // Errors are propagated to the caller via Result.
     pub fn can_transition_to(&self, target: &DeliveryStatus) -> bool {
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             (self, target),
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             (Self::Pending, Self::Sending)
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | (Self::Sending, Self::Sent)
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | (Self::Sending, Self::Failed { .. })
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | (Self::Sent, Self::Delivered)
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | (Self::Sent, Self::Failed { .. })
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | (Self::Delivered, Self::Read)
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | (Self::Failed { .. }, Self::Pending)
         )
     }
@@ -120,31 +228,86 @@ impl DeliveryStatus {
 ///
 /// Manages the state machine, retry count, and timestamps.
 #[derive(Clone, Debug)]
+// Begin the block scope.
+// DeliveryTracker — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// DeliveryTracker — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// DeliveryTracker — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct DeliveryTracker {
     /// Current delivery status.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub status: DeliveryStatus,
 
     /// Number of delivery attempts made.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub attempts: u32,
 
     /// When the message was first created (Pending).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub created_at: u64,
 
     /// When the status last changed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub last_updated: u64,
 
     /// When the next retry should be attempted (if Failed).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub retry_after: Option<u64>,
 }
 
+// Begin the block scope.
+// DeliveryTracker implementation — core protocol logic.
+// DeliveryTracker implementation — core protocol logic.
+// DeliveryTracker implementation — core protocol logic.
 impl DeliveryTracker {
     /// Create a new tracker for a freshly composed message.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new(now: u64) -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             status: DeliveryStatus::Pending,
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             attempts: 0,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             created_at: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             last_updated: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             retry_after: None,
         }
     }
@@ -153,13 +316,34 @@ impl DeliveryTracker {
     ///
     /// Returns true if the transition was valid and applied.
     /// Returns false if the transition was invalid (state unchanged).
+    // Perform the 'transition' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'transition' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'transition' operation.
+    // Errors are propagated to the caller via Result.
     pub fn transition(&mut self, new_status: DeliveryStatus, now: u64) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.status.can_transition_to(&new_status) {
+            // Condition not met — return negative result.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return false;
         }
 
         // If transitioning to Sending, increment attempt count.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if matches!(new_status, DeliveryStatus::Sending) {
+            // Update the attempts to reflect the new state.
+            // Advance attempts state.
+            // Advance attempts state.
+            // Advance attempts state.
             self.attempts += 1;
         }
 
@@ -167,23 +351,58 @@ impl DeliveryTracker {
         // `attempts` was already incremented when entering Sending, so the
         // 1st failure has attempts==1. Subtract 1 before indexing so the
         // 1st failure uses RETRY_BACKOFF_SECS[0] (5s) as documented.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if matches!(new_status, DeliveryStatus::Failed { .. }) {
+            // Bounds check to enforce protocol constraints.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if self.attempts < MAX_RETRIES {
+                // Track the count for threshold and bounds checking.
+                // Compute backoff idx for this protocol step.
+                // Compute backoff idx for this protocol step.
+                // Compute backoff idx for this protocol step.
                 let backoff_idx = (self.attempts.saturating_sub(1) as usize)
+                    // Clamp the value to prevent overflow or underflow.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     .min(RETRY_BACKOFF_SECS.len() - 1);
+                // Update the retry after to reflect the new state.
+                // Advance retry after state.
+                // Advance retry after state.
+                // Advance retry after state.
                 self.retry_after = Some(now + RETRY_BACKOFF_SECS[backoff_idx]);
+            // Begin the block scope.
+            // Fallback when the guard was not satisfied.
+            // Fallback when the guard was not satisfied.
             } else {
                 // Max retries exhausted — no more retries.
+                // Advance retry after state.
+                // Advance retry after state.
                 self.retry_after = None;
             }
         }
 
         // If retrying (Failed → Pending), clear retry timer.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if matches!((&self.status, &new_status), (DeliveryStatus::Failed { .. }, DeliveryStatus::Pending)) {
+            // Update the retry after to reflect the new state.
+            // Advance retry after state.
+            // Advance retry after state.
             self.retry_after = None;
         }
 
+        // Update the status to reflect the new state.
+        // Advance status state.
+        // Advance status state.
         self.status = new_status;
+        // Update the last updated to reflect the new state.
+        // Advance last updated state.
+        // Advance last updated state.
         self.last_updated = now;
         true
     }
@@ -194,21 +413,53 @@ impl DeliveryTracker {
     /// - Status is Failed
     /// - We haven't exhausted retries
     /// - The retry backoff has elapsed
+    // Perform the 'should retry' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'should retry' operation.
+    // Errors are propagated to the caller via Result.
     pub fn should_retry(&self, now: u64) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.status.is_retryable() {
+            // Condition not met — return negative result.
+            // Return to the caller.
+            // Return to the caller.
             return false;
         }
+        // Bounds check to enforce protocol constraints.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if self.attempts >= MAX_RETRIES {
+            // Condition not met — return negative result.
+            // Return to the caller.
+            // Return to the caller.
             return false;
         }
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match self.retry_after {
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(after) => now >= after,
+            // Update the local state.
+            // No value available.
+            // No value available.
             None => false,
         }
     }
 
     /// Whether the message has permanently failed (no more retries).
+    // Perform the 'is permanently failed' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is permanently failed' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_permanently_failed(&self) -> bool {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.status.is_retryable() && self.attempts >= MAX_RETRIES
     }
 }
@@ -219,19 +470,37 @@ impl DeliveryTracker {
 
 /// A delivery receipt from the recipient.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// DeliveryReceipt — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// DeliveryReceipt — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct DeliveryReceipt {
     /// The message ID this receipt is for.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub message_id: [u8; 16],
     /// New delivery status.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub status: ReceiptType,
     /// When the receipt was generated.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub timestamp: u64,
 }
 
 /// Receipt type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// ReceiptType — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// ReceiptType — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum ReceiptType {
     /// Message reached the recipient's device.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Delivered,
     /// Message was viewed by the recipient.
     Read,

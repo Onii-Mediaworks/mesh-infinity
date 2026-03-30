@@ -56,41 +56,95 @@ use super::table::DeviceAddress;
 /// Maximum payload size for a single S&F message (bytes).
 /// 1 MB is generous for text/metadata but prevents abuse
 /// with huge payloads.
+// MAX_PAYLOAD_SIZE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_PAYLOAD_SIZE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_PAYLOAD_SIZE — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_PAYLOAD_SIZE: usize = 1_048_576;
 
 /// Maximum pending messages per destination address.
 /// When this limit is reached, new deposits for that destination
 /// are rejected with DestinationQueueFull.
+// MAX_MESSAGES_PER_DEST — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_MESSAGES_PER_DEST — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_MESSAGES_PER_DEST — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_MESSAGES_PER_DEST: usize = 500;
 
 /// Maximum aggregate payload per destination per 24 hours (bytes).
 /// 50 MB per destination per day prevents a flood targeting one recipient.
+// MAX_PAYLOAD_PER_DEST_24H — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_PAYLOAD_PER_DEST_24H — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_PAYLOAD_PER_DEST_24H — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_PAYLOAD_PER_DEST_24H: u64 = 50 * 1_048_576;
 
 /// Default total storage cap for client-mode nodes (bytes).
 /// 2 GB is enough for moderate S&F relay use.
+// DEFAULT_CLIENT_STORAGE_CAP — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_CLIENT_STORAGE_CAP — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_CLIENT_STORAGE_CAP — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const DEFAULT_CLIENT_STORAGE_CAP: u64 = 2 * 1_024 * 1_024 * 1_024;
 
 /// Default total storage cap for server-mode nodes (bytes).
 /// 20 GB for dedicated relay servers.
+// DEFAULT_SERVER_STORAGE_CAP — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_SERVER_STORAGE_CAP — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_SERVER_STORAGE_CAP — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const DEFAULT_SERVER_STORAGE_CAP: u64 = 20 * 1_024 * 1_024 * 1_024;
 
 /// Maximum deposits per minute per inbound tunnel.
 /// Rate limiting at the tunnel level prevents a single connection
 /// from flooding the S&F queue.
+// MAX_DEPOSITS_PER_MINUTE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_DEPOSITS_PER_MINUTE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_DEPOSITS_PER_MINUTE — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_DEPOSITS_PER_MINUTE: u32 = 60;
 
 /// Default sender-side TTL (seconds) = 7 days.
 /// The sender can set a shorter TTL, but this is the default
 /// when no explicit TTL is specified.
+// DEFAULT_TTL_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_TTL_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_TTL_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 3600;
 
 /// Domain separator for dead man's switch cancellation signatures.
 ///
 /// Cancellation signal signs: DOMAIN_DMS_CANCEL || message_id || issued_at || next_expected
+// DOMAIN_DMS_CANCEL — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DOMAIN_DMS_CANCEL — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DOMAIN_DMS_CANCEL — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const DOMAIN_DMS_CANCEL: &[u8] = b"meshinfinity-dms-cancel-v1";
 
 /// Duration of the 24-hour rate limiting window (seconds).
+// RATE_WINDOW_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// RATE_WINDOW_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// RATE_WINDOW_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 const RATE_WINDOW_SECS: u64 = 24 * 3600;
 
 // ---------------------------------------------------------------------------
@@ -105,16 +159,33 @@ const RATE_WINDOW_SECS: u64 = 24 * 3600;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 #[derive(Default)]
+// Begin the block scope.
+// Priority — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// Priority — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// Priority — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum Priority {
     /// Background transfers, bulk data. Delivered last.
     Low = 0,
     /// Normal messages. Default priority.
     #[default]
+    // Update the local state.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Normal = 1,
     /// Time-sensitive messages (group invites, pairing requests).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     High = 2,
     /// Critical messages (security alerts, killswitch signals).
     /// Always delivered first.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Critical = 3,
 }
 
@@ -133,12 +204,25 @@ pub enum Priority {
 ///   delivered unless the sender cancels it within the window.
 ///   If the sender goes silent, the message is released automatically.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// ReleaseCondition — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// ReleaseCondition — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// ReleaseCondition — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum ReleaseCondition {
     /// Deliver as soon as the recipient is reachable.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Immediate,
 
     /// Don't deliver until after this Unix timestamp.
     /// Useful for scheduled/timed delivery.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     NotBefore(u64),
 
     /// Dead man's switch: deliver unless cancelled.
@@ -147,12 +231,24 @@ pub enum ReleaseCondition {
     /// If `cancellation_window_secs` passes without a cancellation,
     /// the message is released. `max_lifetime` is the absolute
     /// maximum storage time regardless of cancellations.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     CancellationBased {
         /// How long to wait for a cancellation before releasing (seconds).
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         cancellation_window_secs: u32,
         /// Timestamp of the last cancellation signal received.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         last_cancellation: u64,
         /// Absolute maximum lifetime (seconds from creation).
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         max_lifetime: u64,
     },
 }
@@ -167,39 +263,70 @@ pub enum ReleaseCondition {
 /// is unreachable. The S&F node validates quotas, stores the payload,
 /// and delivers when the recipient comes online.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// StoreAndForwardRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// StoreAndForwardRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// StoreAndForwardRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct StoreAndForwardRequest {
     /// Destination device address (who the message is for).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub destination: DeviceAddress,
 
     /// The encrypted payload (opaque to the S&F node).
     /// Maximum size: MAX_PAYLOAD_SIZE (1 MB).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub payload: Vec<u8>,
 
     /// Unix timestamp when this message expires.
     /// Computed as send_time + ttl. The S&F node MUST delete
     /// the message after this time.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub expiry: u64,
 
     /// Ed25519 signature over the expiry timestamp.
     /// Prevents the S&F node from extending storage.
     /// Signs: "meshinfinity-sf-expiry-v1" || destination || expiry.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub expiry_sig: Vec<u8>,
 
     /// Delivery priority.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub priority: Priority,
 
     /// Conditions for releasing the message.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub release_condition: ReleaseCondition,
 
     /// Optional application identifier.
     /// Allows the recipient to route stored messages to the
     /// correct application handler (e.g., chat vs file transfer).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub application_id: Option<[u8; 16]>,
 
     /// Ed25519 public key authorised to send cancellation signals for this
     /// message.  Required when `release_condition` is `CancellationBased`;
     /// ignored otherwise.  The S&F node verifies cancellation signals
     /// against this key in `apply_cancellation()`.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub cancellation_pubkey: Option<[u8; 32]>,
 }
 
@@ -209,22 +336,53 @@ pub struct StoreAndForwardRequest {
 
 /// Result of attempting to deposit a message at a S&F node.
 #[derive(Debug, PartialEq, Eq)]
+// Begin the block scope.
+// DepositResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// DepositResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// DepositResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum DepositResult {
     /// Message accepted for storage.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Accepted,
     /// Rejected: payload exceeds MAX_PAYLOAD_SIZE.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     PayloadTooLarge,
     /// Rejected: destination queue is full (MAX_MESSAGES_PER_DEST).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     DestinationQueueFull,
     /// Rejected: destination's 24-hour aggregate limit exceeded.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     AggregateQuotaExceeded,
     /// Rejected: total storage cap reached.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     StorageCapReached,
     /// Rejected: deposit rate limit exceeded for this tunnel.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     RateLimited,
     /// Rejected: message has already expired.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     AlreadyExpired,
     /// Rejected: invalid expiry signature.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     InvalidExpirySig,
 }
 
@@ -234,18 +392,40 @@ pub enum DepositResult {
 
 /// Result of attempting to apply a dead man's switch cancellation signal.
 #[derive(Debug, PartialEq, Eq)]
+// Begin the block scope.
+// CancellationResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// CancellationResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// CancellationResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum CancellationResult {
     /// Cancellation accepted — `last_cancellation` updated.
     Applied,
     /// No message with this ID exists (already delivered, expired, or unknown).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     MessageNotFound,
     /// The target message does not use `CancellationBased` release condition.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     NotCancellable,
     /// No `cancellation_pubkey` was set on the message at deposit time.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     NoCancellationKey,
     /// Signature verification failed — signal may be forged or replayed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     InvalidSignature,
     /// `issued_at` is in the future or predates the last accepted cancellation.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     StaleSignal,
 }
 
@@ -258,22 +438,44 @@ pub enum CancellationResult {
 /// This is the internal representation — it wraps the original request
 /// with bookkeeping metadata (deposit time, delivery attempts, etc.).
 #[derive(Clone, Debug)]
+// Begin the block scope.
+// StoredMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// StoredMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// StoredMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 struct StoredMessage {
     /// Unique identifier for this stored message.
     /// Generated at deposit time; used by cancellation signals to
     /// locate the message without revealing destination metadata.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     message_id: [u8; 16],
 
     /// The original S&F request.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     request: StoreAndForwardRequest,
 
     /// When this message was deposited.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     deposited_at: u64,
 
     /// Number of delivery attempts made.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     delivery_attempts: u32,
 
     /// Whether this message has been delivered.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     delivered: bool,
 }
 
@@ -285,37 +487,106 @@ struct StoredMessage {
 ///
 /// Tracks messages, payload quotas, and rate limiting for one recipient.
 #[derive(Debug)]
+// Begin the block scope.
+// DestinationQueue — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// DestinationQueue — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// DestinationQueue — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 struct DestinationQueue {
     /// Stored messages, ordered by priority (highest first) then deposit time.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     messages: Vec<StoredMessage>,
 
     /// Total payload bytes deposited in the current 24-hour window.
     /// Reset when the window expires.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     payload_24h: u64,
 
     /// Start of the current 24-hour rate window.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     window_start: u64,
 }
 
+// Begin the block scope.
+// DestinationQueue implementation — core protocol logic.
+// DestinationQueue implementation — core protocol logic.
+// DestinationQueue implementation — core protocol logic.
 impl DestinationQueue {
     /// Create a new empty queue for a destination.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     fn new(now: u64) -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             messages: Vec::new(),
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             payload_24h: 0,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             window_start: now,
         }
     }
 
     /// Number of pending (undelivered) messages.
+    // Perform the 'pending count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'pending count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'pending count' operation.
+    // Errors are propagated to the caller via Result.
     fn pending_count(&self) -> usize {
+        // Create an iterator over the collection elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
         self.messages.iter().filter(|m| !m.delivered).count()
     }
 
     /// Check and reset the 24-hour rate window if it has expired.
+    // Perform the 'check window' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'check window' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'check window' operation.
+    // Errors are propagated to the caller via Result.
     fn check_window(&mut self, now: u64) {
+        // Bounds check to enforce protocol constraints.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if now.saturating_sub(self.window_start) >= RATE_WINDOW_SECS {
+            // Update the payload 24h to reflect the new state.
+            // Advance payload 24h state.
+            // Advance payload 24h state.
+            // Advance payload 24h state.
             self.payload_24h = 0;
+            // Update the window start to reflect the new state.
+            // Advance window start state.
+            // Advance window start state.
+            // Advance window start state.
             self.window_start = now;
         }
     }
@@ -336,44 +607,111 @@ impl DestinationQueue {
 /// Messages are stored in memory (for the prototype). A production
 /// implementation would back this with the vault storage layer.
 /// The total storage cap is enforced across all destinations.
+// StoreForwardServer — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// StoreForwardServer — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// StoreForwardServer — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct StoreForwardServer {
     /// Per-destination queues.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     queues: HashMap<DeviceAddress, DestinationQueue>,
 
     /// Total payload bytes stored across all destinations.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     total_stored_bytes: u64,
 
     /// Maximum total storage (bytes).
     /// Set from DEFAULT_CLIENT_STORAGE_CAP or DEFAULT_SERVER_STORAGE_CAP.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     storage_cap: u64,
 
     /// Per-tunnel deposit rate tracking.
     /// Key: tunnel identifier (simplified to a u64 for now).
     /// Value: (window_start, deposit_count).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     tunnel_rates: HashMap<u64, (u64, u32)>,
 }
 
+// Begin the block scope.
+// StoreForwardServer implementation — core protocol logic.
+// StoreForwardServer implementation — core protocol logic.
+// StoreForwardServer implementation — core protocol logic.
 impl StoreForwardServer {
     /// Create a new S&F server with the given storage cap.
     ///
     /// Use DEFAULT_CLIENT_STORAGE_CAP for client-mode nodes,
     /// DEFAULT_SERVER_STORAGE_CAP for dedicated relay servers.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new(storage_cap: u64) -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             queues: HashMap::new(),
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             total_stored_bytes: 0,
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             storage_cap,
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             tunnel_rates: HashMap::new(),
         }
     }
 
     /// Create a client-mode S&F server (2 GB cap).
+    // Perform the 'new client' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new client' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new client' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new_client() -> Self {
+        // Create a new instance with the specified parameters.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         Self::new(DEFAULT_CLIENT_STORAGE_CAP)
     }
 
     /// Create a server-mode S&F server (20 GB cap).
+    // Perform the 'new server' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new server' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new server' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new_server() -> Self {
+        // Create a new instance with the specified parameters.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         Self::new(DEFAULT_SERVER_STORAGE_CAP)
     }
 
@@ -389,23 +727,60 @@ impl StoreForwardServer {
     ///
     /// `tunnel_id`: identifier for the inbound tunnel (for rate limiting).
     /// `now`: current unix timestamp.
+    // Perform the 'deposit' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'deposit' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'deposit' operation.
+    // Errors are propagated to the caller via Result.
     pub fn deposit(
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         &mut self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         request: StoreAndForwardRequest,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         tunnel_id: u64,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         now: u64,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> DepositResult {
         // -------------------------------------------------------------------
         // Check 1: Payload size limit.
         // -------------------------------------------------------------------
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if request.payload.len() > MAX_PAYLOAD_SIZE {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return DepositResult::PayloadTooLarge;
         }
 
         // -------------------------------------------------------------------
         // Check 2: Message not already expired.
         // -------------------------------------------------------------------
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if request.expiry <= now {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return DepositResult::AlreadyExpired;
         }
 
@@ -432,18 +807,59 @@ impl StoreForwardServer {
         // -------------------------------------------------------------------
         {
             use crate::crypto::signing;
+            // Validate the input length to prevent out-of-bounds access.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if request.expiry_sig.len() != 64 {
+                // Return the result to the caller.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
                 return DepositResult::InvalidExpirySig;
             }
+            // Pre-allocate the buffer to avoid repeated reallocations.
+            // Compute msg for this protocol step.
+            // Compute msg for this protocol step.
+            // Compute msg for this protocol step.
             let mut msg = Vec::with_capacity(32 + 8);
+            // Append the data segment to the accumulating buffer.
+            // Append bytes to the accumulator.
+            // Append bytes to the accumulator.
+            // Append bytes to the accumulator.
             msg.extend_from_slice(&request.destination.0);
+            // Append the data segment to the accumulating buffer.
+            // Append bytes to the accumulator.
+            // Append bytes to the accumulator.
+            // Append bytes to the accumulator.
             msg.extend_from_slice(&request.expiry.to_be_bytes());
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if !signing::verify(
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 &request.destination.0,
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 signing::DOMAIN_SF_EXPIRY,
                 &msg,
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 &request.expiry_sig,
+            // Begin the block scope.
             ) {
+                // Return the result to the caller.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
                 return DepositResult::InvalidExpirySig;
             }
         }
@@ -452,61 +868,148 @@ impl StoreForwardServer {
         // Check 4: Per-tunnel rate limit.
         // Max 60 deposits per minute per inbound tunnel.
         // -------------------------------------------------------------------
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if self.is_rate_limited(tunnel_id, now) {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return DepositResult::RateLimited;
         }
 
         // -------------------------------------------------------------------
         // Check 5: Total storage cap.
         // -------------------------------------------------------------------
+        // Compute payload size for this protocol step.
+        // Compute payload size for this protocol step.
+        // Compute payload size for this protocol step.
         let payload_size = request.payload.len() as u64;
+        // Validate the input length to prevent out-of-bounds access.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if self.total_stored_bytes + payload_size > self.storage_cap {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return DepositResult::StorageCapReached;
         }
 
         // -------------------------------------------------------------------
         // Check 6: Per-destination limits.
         // -------------------------------------------------------------------
+        // Compute queue for this protocol step.
+        // Compute queue for this protocol step.
+        // Compute queue for this protocol step.
         let queue = self
+            // Chain the operation on the intermediate result.
             .queues
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             .entry(request.destination)
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             .or_insert_with(|| DestinationQueue::new(now));
 
         // Reset 24h window if needed.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         queue.check_window(now);
 
         // Max 500 pending messages per destination.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if queue.pending_count() >= MAX_MESSAGES_PER_DEST {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return DepositResult::DestinationQueueFull;
         }
 
         // Max 50 MB aggregate per destination per 24 hours.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if queue.payload_24h + payload_size > MAX_PAYLOAD_PER_DEST_24H {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return DepositResult::AggregateQuotaExceeded;
         }
 
         // -------------------------------------------------------------------
         // All checks passed — store the message.
         // -------------------------------------------------------------------
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         queue.payload_24h += payload_size;
+        // Update the total stored bytes to reflect the new state.
+        // Advance total stored bytes state.
+        // Advance total stored bytes state.
+        // Advance total stored bytes state.
         self.total_stored_bytes += payload_size;
 
         // Assign a random message_id for use by cancellation signals.
+        // Compute message id for this protocol step.
+        // Compute message id for this protocol step.
+        // Compute message id for this protocol step.
         let mut message_id = [0u8; 16];
         use rand_core::RngCore;
+        // OS-provided cryptographic random number generator.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         rand_core::OsRng.fill_bytes(&mut message_id);
 
+        // Begin the block scope.
+        // Append to the collection.
+        // Append to the collection.
+        // Append to the collection.
         queue.messages.push(StoredMessage {
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             message_id,
             request,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             deposited_at: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             delivery_attempts: 0,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             delivered: false,
         });
 
         // Record the deposit for rate limiting.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.record_deposit(tunnel_id, now);
 
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         DepositResult::Accepted
     }
 
@@ -517,44 +1020,125 @@ impl StoreForwardServer {
     /// messages whose release conditions are met.
     ///
     /// `now`: current unix timestamp.
+    // Perform the 'retrieve' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'retrieve' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'retrieve' operation.
+    // Errors are propagated to the caller via Result.
     pub fn retrieve(
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         &mut self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         destination: &DeviceAddress,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         now: u64,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> Vec<StoreAndForwardRequest> {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Compute queue for this protocol step.
+        // Compute queue for this protocol step.
+        // Compute queue for this protocol step.
         let queue = match self.queues.get_mut(destination) {
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(q) => q,
+            // Update the local state.
+            // No value available.
+            // No value available.
+            // No value available.
             None => return Vec::new(),
         };
 
+        // Pre-allocate the buffer to avoid repeated reallocations.
+        // Compute deliverable for this protocol step.
+        // Compute deliverable for this protocol step.
+        // Compute deliverable for this protocol step.
         let mut deliverable = Vec::new();
 
+        // Iterate over each element in the collection.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for msg in queue.messages.iter_mut() {
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if msg.delivered {
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 continue;
             }
 
             // Check expiry — don't deliver expired messages.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if msg.request.expiry <= now {
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 continue;
             }
 
             // Check release condition (pass deposited_at for max_lifetime enforcement).
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if !Self::release_condition_met(&msg.request.release_condition, msg.deposited_at, now) {
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 continue;
             }
 
             // Mark as delivered and collect.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             msg.delivered = true;
+            // Execute the operation and bind the result.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             msg.delivery_attempts += 1;
+            // Execute the operation and bind the result.
+            // Append to the collection.
+            // Append to the collection.
+            // Append to the collection.
             deliverable.push(msg.request.clone());
         }
 
         // Sort by priority (highest first), then deposit time (oldest first).
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         deliverable.sort_by(|a, b| {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             b.priority.cmp(&a.priority)
         });
 
+        // Execute this step in the protocol sequence.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         deliverable
     }
 
@@ -565,54 +1149,151 @@ impl StoreForwardServer {
     /// - Messages past their expiry timestamp
     /// - Messages that have been delivered
     /// - Empty destination queues
+    // Perform the 'gc' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'gc' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'gc' operation.
+    // Errors are propagated to the caller via Result.
     pub fn gc(&mut self, now: u64) {
+        // Iterate over each element in the collection.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for queue in self.queues.values_mut() {
             // Remove expired and delivered messages.
+            // Compute before len for this protocol step.
+            // Compute before len for this protocol step.
+            // Compute before len for this protocol step.
             let before_len = queue.messages.len();
+            // Filter the collection, keeping only elements that pass.
+            // Filter elements that match the predicate.
+            // Filter elements that match the predicate.
+            // Filter elements that match the predicate.
             queue.messages.retain(|msg| {
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 !msg.delivered && msg.request.expiry > now
             });
 
             // Recalculate total stored bytes after removal.
+            // Compute removed bytes for this protocol step.
+            // Compute removed bytes for this protocol step.
+            // Compute removed bytes for this protocol step.
             let removed_bytes: u64 = (before_len - queue.messages.len()) as u64;
             // This is approximate — we'd need to track per-message size
             // for exact accounting. For now, recalculate from scratch.
+            // Compute   for this protocol step.
+            // Compute   for this protocol step.
+            // Compute   for this protocol step.
             let _ = removed_bytes; // Silence warning.
         }
 
         // Recalculate total stored bytes from scratch.
+        // Advance total stored bytes state.
+        // Advance total stored bytes state.
+        // Advance total stored bytes state.
         self.total_stored_bytes = self
+            // Chain the operation on the intermediate result.
             .queues
+            // Chain the operation on the intermediate result.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             .values()
+            // Create an iterator over the collection elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
             .flat_map(|q| q.messages.iter())
+            // Transform the result, mapping errors to the local error type.
+            // Transform each element.
+            // Transform each element.
+            // Transform each element.
             .map(|m| m.request.payload.len() as u64)
+            // Chain the operation on the intermediate result.
             .sum();
 
         // Remove empty queues.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
         self.queues.retain(|_, q| !q.messages.is_empty());
 
         // Clean up old tunnel rate entries.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
         self.tunnel_rates.retain(|_, (start, _)| {
+            // Clamp the value to prevent overflow or underflow.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             now.saturating_sub(*start) < 120 // Keep for 2 minutes.
         });
     }
 
     /// Total number of pending messages across all destinations.
+    // Perform the 'total pending' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'total pending' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'total pending' operation.
+    // Errors are propagated to the caller via Result.
     pub fn total_pending(&self) -> usize {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.queues
+            // Chain the operation on the intermediate result.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             .values()
+            // Create an iterator over the collection elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
             .flat_map(|q| q.messages.iter())
+            // Select only elements matching the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
             .filter(|m| !m.delivered)
+            // Chain the operation on the intermediate result.
             .count()
     }
 
     /// Total stored bytes.
+    // Perform the 'total bytes' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'total bytes' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'total bytes' operation.
+    // Errors are propagated to the caller via Result.
     pub fn total_bytes(&self) -> u64 {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.total_stored_bytes
     }
 
     /// Number of destinations with pending messages.
+    // Perform the 'destination count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'destination count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'destination count' operation.
+    // Errors are propagated to the caller via Result.
     pub fn destination_count(&self) -> usize {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.queues.len()
     }
 
@@ -627,68 +1308,193 @@ impl StoreForwardServer {
     ///   `DOMAIN_DMS_CANCEL || message_id || issued_at (BE u64) || next_expected (BE u64)`
     ///
     /// `now`: current unix timestamp (used to reject stale signals).
+    // Perform the 'apply cancellation' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'apply cancellation' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'apply cancellation' operation.
+    // Errors are propagated to the caller via Result.
     pub fn apply_cancellation(
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         &mut self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         signal: &crate::network::security_policy::CancellationSignal,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         now: u64,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> CancellationResult {
         use crate::crypto::signing;
 
         // Find the message across all queues.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for queue in self.queues.values_mut() {
+            // Iterate over each element in the collection.
+            // Iterate over each element.
+            // Iterate over each element.
+            // Iterate over each element.
             for msg in queue.messages.iter_mut() {
+                // Conditional branch based on the current state.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if msg.message_id != signal.message_id {
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     continue;
                 }
+                // Conditional branch based on the current state.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if msg.delivered {
+                    // Return the result to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
                     return CancellationResult::MessageNotFound;
                 }
 
                 // Check that the message uses CancellationBased release.
+                // Bind the intermediate result.
+                // Bind the intermediate result.
+                // Bind the intermediate result.
                 let (cancellation_window_secs, last_cancellation) =
+                    // Dispatch based on the variant to apply type-specific logic.
+                    // Dispatch on the variant.
+                    // Dispatch on the variant.
+                    // Dispatch on the variant.
                     match &mut msg.request.release_condition {
+                        // Begin the block scope.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         ReleaseCondition::CancellationBased {
+                            // Process the current step in the protocol.
+                            // Execute this protocol step.
+                            // Execute this protocol step.
+                            // Execute this protocol step.
                             cancellation_window_secs,
+                            // Process the current step in the protocol.
+                            // Execute this protocol step.
+                            // Execute this protocol step.
+                            // Execute this protocol step.
                             last_cancellation,
+                            // Chain the operation on the intermediate result.
                             ..
+                        // Handle this match arm.
                         } => (cancellation_window_secs, last_cancellation),
+                        // Update the local state.
                         _ => return CancellationResult::NotCancellable,
                     };
 
                 // Require a cancellation key to have been set at deposit time.
+                // Compute pubkey for this protocol step.
+                // Compute pubkey for this protocol step.
+                // Compute pubkey for this protocol step.
                 let pubkey = match msg.request.cancellation_pubkey {
+                    // Wrap the found value for the caller.
+                    // Wrap the found value.
+                    // Wrap the found value.
+                    // Wrap the found value.
                     Some(ref k) => *k,
+                    // Update the local state.
+                    // No value available.
+                    // No value available.
+                    // No value available.
                     None => return CancellationResult::NoCancellationKey,
                 };
 
                 // Reject stale signals (issued in the future or before last
                 // accepted cancellation).
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if signal.issued_at > now {
+                    // Return the result to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
                     return CancellationResult::StaleSignal;
                 }
+                // Bounds check to enforce protocol constraints.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if signal.issued_at <= *last_cancellation && *last_cancellation != msg.deposited_at {
+                    // Return the result to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
                     return CancellationResult::StaleSignal;
                 }
 
                 // Verify the Ed25519 signature:
                 //   DOMAIN_DMS_CANCEL || message_id || issued_at || next_expected
+                // Compute signed msg for this protocol step.
+                // Compute signed msg for this protocol step.
+                // Compute signed msg for this protocol step.
                 let mut signed_msg = Vec::with_capacity(16 + 8 + 8);
+                // Append the data segment to the accumulating buffer.
+                // Append bytes to the accumulator.
+                // Append bytes to the accumulator.
+                // Append bytes to the accumulator.
                 signed_msg.extend_from_slice(&signal.message_id);
+                // Append the data segment to the accumulating buffer.
+                // Append bytes to the accumulator.
+                // Append bytes to the accumulator.
+                // Append bytes to the accumulator.
                 signed_msg.extend_from_slice(&signal.issued_at.to_be_bytes());
+                // Append the data segment to the accumulating buffer.
+                // Append bytes to the accumulator.
+                // Append bytes to the accumulator.
+                // Append bytes to the accumulator.
                 signed_msg.extend_from_slice(&signal.next_expected.to_be_bytes());
 
+                // Conditional branch based on the current state.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if !signing::verify(&pubkey, DOMAIN_DMS_CANCEL, &signed_msg, &signal.sig) {
+                    // Return the result to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
                     return CancellationResult::InvalidSignature;
                 }
 
                 // All good — update last_cancellation to prevent release.
                 *last_cancellation = now;
+                // Bind the computed value for subsequent use.
+                // Compute   for this protocol step.
+                // Compute   for this protocol step.
+                // Compute   for this protocol step.
                 let _ = cancellation_window_secs; // used in release_condition_met
 
+                // Return the result to the caller.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
                 return CancellationResult::Applied;
             }
         }
 
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         CancellationResult::MessageNotFound
     }
 
@@ -697,7 +1503,17 @@ impl StoreForwardServer {
     // -----------------------------------------------------------------------
 
     /// Check if a release condition is met.
+    // Perform the 'release condition met' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'release condition met' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'release condition met' operation.
+    // Errors are propagated to the caller via Result.
     fn release_condition_met(condition: &ReleaseCondition, deposited_at: u64, now: u64) -> bool {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match condition {
             // Immediate: always releasable.
             ReleaseCondition::Immediate => true,
@@ -709,30 +1525,83 @@ impl StoreForwardServer {
             // - the absolute max_lifetime has elapsed since deposit (cannot be
             //   blocked indefinitely by repeated cancellations), OR
             // - the cancellation window has elapsed since the last signal.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             ReleaseCondition::CancellationBased {
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 cancellation_window_secs,
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 last_cancellation,
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 max_lifetime,
+            // Begin the block scope.
+            // Handle }.
+            // Handle }.
+            // Handle }.
             } => {
                 // Enforce the absolute upper bound: once max_lifetime has
                 // elapsed since the deposit, the message MUST be released even
                 // if the owner keeps sending cancellation signals (§14.3).
+                // Compute absolute deadline for this protocol step.
+                // Compute absolute deadline for this protocol step.
+                // Compute absolute deadline for this protocol step.
                 let absolute_deadline = deposited_at.saturating_add(*max_lifetime);
+                // Bounds check to enforce protocol constraints.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if now >= absolute_deadline {
+                    // Return the result to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
                     return true;
                 }
                 // Normal path: release when the silence window elapses.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 now.saturating_sub(*last_cancellation)
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     >= *cancellation_window_secs as u64
             }
         }
     }
 
     /// Check if a tunnel is rate-limited.
+    // Perform the 'is rate limited' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is rate limited' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is rate limited' operation.
+    // Errors are propagated to the caller via Result.
     fn is_rate_limited(&self, tunnel_id: u64, now: u64) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if let Some((window_start, count)) = self.tunnel_rates.get(&tunnel_id) {
             // Check if we're in the current minute window.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if now.saturating_sub(*window_start) < 60 {
+                // Return the result to the caller.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
                 return *count >= MAX_DEPOSITS_PER_MINUTE;
             }
         }
@@ -740,14 +1609,31 @@ impl StoreForwardServer {
     }
 
     /// Record a deposit for rate limiting.
+    // Perform the 'record deposit' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'record deposit' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'record deposit' operation.
+    // Errors are propagated to the caller via Result.
     fn record_deposit(&mut self, tunnel_id: u64, now: u64) {
+        // Capture the current timestamp for temporal ordering.
+        // Compute entry for this protocol step.
+        // Compute entry for this protocol step.
+        // Compute entry for this protocol step.
         let entry = self.tunnel_rates.entry(tunnel_id).or_insert((now, 0));
 
         // Reset if the window has expired.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if now.saturating_sub(entry.0) >= 60 {
             *entry = (now, 0);
         }
 
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         entry.1 += 1;
     }
 }

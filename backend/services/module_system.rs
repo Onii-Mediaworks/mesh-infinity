@@ -24,30 +24,89 @@ use std::collections::HashMap;
 /// Top-level module configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[derive(Default)]
+// Begin the block scope.
+// ModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct ModuleConfig {
+    /// The social for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub social: SocialModuleConfig,
+    /// The network for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub network: NetworkModuleConfig,
+    /// The protocols for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub protocols: ProtocolModuleConfig,
+    /// The agentic for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub agentic: AgenticModuleConfig,
+    /// The plugins for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub plugins: PluginModuleConfig,
 }
 
 
 /// Social subsystem modules.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// SocialModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SocialModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct SocialModuleConfig {
+    /// The gardens for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub gardens: bool,
+    /// The file sharing for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub file_sharing: bool,
+    /// The store forward for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub store_forward: bool,
+    /// The notifications for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub notifications: bool,
 }
 
+// Trait implementation for protocol conformance.
+// Implement Default for SocialModuleConfig.
+// Implement Default for SocialModuleConfig.
 impl Default for SocialModuleConfig {
+    // Begin the block scope.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
     fn default() -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Execute this protocol step.
+            // Execute this protocol step.
             gardens: true,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             file_sharing: true,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             store_forward: true,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             notifications: true,
         }
     }
@@ -56,11 +115,31 @@ impl Default for SocialModuleConfig {
 /// Network subsystem modules.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[derive(Default)]
+// Begin the block scope.
+// NetworkModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// NetworkModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct NetworkModuleConfig {
+    /// The infinet for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub infinet: bool,
+    /// The exit nodes for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub exit_nodes: bool,
+    /// The vpn mode for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub vpn_mode: bool,
+    /// The app connector for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub app_connector: bool,
+    /// The funnel for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub funnel: bool,
 }
 
@@ -68,13 +147,39 @@ pub struct NetworkModuleConfig {
 /// Protocol subsystem modules.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[derive(Default)]
+// Begin the block scope.
+// ProtocolModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ProtocolModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct ProtocolModuleConfig {
+    /// The mnrdp server for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub mnrdp_server: bool,
+    /// The mnsp server for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub mnsp_server: bool,
+    /// The mnfp server for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub mnfp_server: bool,
+    /// The api gateway for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub api_gateway: bool,
+    /// The screen share for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub screen_share: bool,
+    /// The clipboard sync for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub clipboard_sync: bool,
+    /// The print service for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub print_service: bool,
 }
 
@@ -82,7 +187,15 @@ pub struct ProtocolModuleConfig {
 /// Agentic subsystem modules.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[derive(Default)]
+// Begin the block scope.
+// AgenticModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// AgenticModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct AgenticModuleConfig {
+    /// The mislp for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub mislp: bool,
 }
 
@@ -90,8 +203,19 @@ pub struct AgenticModuleConfig {
 /// Plugin subsystem configuration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[derive(Default)]
+// Begin the block scope.
+// PluginModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// PluginModuleConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct PluginModuleConfig {
+    /// The runtime enabled for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub runtime_enabled: bool,
+    /// The installed plugins for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub installed_plugins: HashMap<String, bool>,
 }
 

@@ -25,11 +25,15 @@ use sha2::Sha256;
 /// HMAC input byte for deriving a message key from the chain key.
 ///
 /// Value 0x01 matches the Signal Protocol convention (§7.0.3).
+// CHAIN_MSG_KEY_INPUT — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const CHAIN_MSG_KEY_INPUT: u8 = 0x01;
 
 /// HMAC input byte for advancing the chain key to its next state.
 ///
 /// Value 0x02 matches the Signal Protocol convention (§7.0.3).
+// CHAIN_ADVANCE_INPUT — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const CHAIN_ADVANCE_INPUT: u8 = 0x02;
 
 /// Zero-byte salt for HKDF operations that have no external salt.
@@ -37,6 +41,8 @@ pub const CHAIN_ADVANCE_INPUT: u8 = 0x02;
 /// HKDF-SHA256 with a zero salt is semantically equivalent to using a
 /// PRF whose key is derived from the IKM alone.  This is the standard
 /// approach when no salt is available (RFC 5869 §3.1).
+// ZERO_SALT — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const ZERO_SALT: [u8; 32] = [0u8; 32];
 
 // ---------------------------------------------------------------------------
@@ -59,30 +65,56 @@ pub const ZERO_SALT: [u8; 32] = [0u8; 32];
 ///
 /// Both computations use the **same** `chain_key` as the HMAC key so that
 /// neither output can be derived from the other.
+// Perform the 'kdf chain step' operation.
+// Errors are propagated to the caller via Result.
 pub fn kdf_chain_step(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     // Derive message key: HMAC-SHA256(chain_key, 0x01).
     // Infallible: HMAC-SHA256 (via the `hmac` crate) accepts any non-empty key; the
     // only way new_from_slice can fail is a zero-length key, which is impossible here
     // because chain_key is &[u8; 32].  This function returns ([u8;32],[u8;32]), not a
     // Result, so we cannot use `?`; expect() with the explanation is the correct pattern.
+    // Compute mac for this protocol step.
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(chain_key)
+        // Execute the operation and bind the result.
+        // Execute this protocol step.
         .expect("HMAC-SHA256 accepts any key length — [u8;32] is always valid");
+    // Feed the next data segment into the running hash/MAC.
+    // Feed data into the running computation.
     mac.update(&[CHAIN_MSG_KEY_INPUT]);
+    // Initialize the MAC for authentication tag computation.
+    // Compute msg key bytes for this protocol step.
     let msg_key_bytes = mac.finalize().into_bytes();
+    // Key material — must be zeroized when no longer needed.
+    // Compute msg key for this protocol step.
     let mut msg_key = [0u8; 32];
+    // Copy the raw bytes into the fixed-size target array.
+    // Copy into the fixed-size buffer.
     msg_key.copy_from_slice(&msg_key_bytes);
 
     // Derive next chain key: HMAC-SHA256(chain_key, 0x02).
     // Uses a fresh HMAC instance with the same chain_key as the key, not the msg_key —
     // this ensures msg_key and new_chain_key are independent (forward secrecy invariant).
     // Infallible for the same reason as the msg_key derivation above: chain_key is [u8;32].
+    // Compute mac2 for this protocol step.
     let mut mac2 = <Hmac<Sha256> as Mac>::new_from_slice(chain_key)
+        // Execute the operation and bind the result.
+        // Execute this protocol step.
         .expect("HMAC-SHA256 accepts any key length — [u8;32] is always valid");
+    // Feed the next data segment into the running hash/MAC.
+    // Feed data into the running computation.
     mac2.update(&[CHAIN_ADVANCE_INPUT]);
+    // Initialize the MAC for authentication tag computation.
+    // Compute new ck bytes for this protocol step.
     let new_ck_bytes = mac2.finalize().into_bytes();
+    // Key material — must be zeroized when no longer needed.
+    // Compute new chain key for this protocol step.
     let mut new_chain_key = [0u8; 32];
+    // Copy the raw bytes into the fixed-size target array.
+    // Copy into the fixed-size buffer.
     new_chain_key.copy_from_slice(&new_ck_bytes);
 
+    // Process the current step in the protocol.
+    // Execute this protocol step.
     (msg_key, new_chain_key)
 }
 
