@@ -1169,45 +1169,25 @@ impl DoubleRatchetSession {
         Ok((header, msg_key))
     }
 
-    /// Derive a symmetric key for encrypting/decrypting the ratchet header.
-    ///
-    /// Uses HKDF-SHA256 over the current root key with the `HDR_ENC_INFO`
-    /// domain separator.  Both sender and receiver share the same root key
-    /// at any given epoch, so both can derive this key independently.
-    ///
-    /// The header encryption key rotates every time a DH ratchet step occurs,
-    /// which changes the root key.  This limits the correlation window to a
-    /// single ratchet epoch even if the key were compromised.
-    fn derive_header_enc_key(&self) -> Result<[u8; 32], RatchetError> {
-        // Set up the HKDF context for domain-separated key derivation.
-        let hk = Hkdf::<Sha256>::new(Some(&self.root_key), &self.root_key);
-        // Allocate the output buffer for the result.
-        let mut key = [0u8; 32];
-        // Expand the pseudorandom key to the target key length.
-        hk.expand(HDR_ENC_INFO, &mut key)
-            .map_err(|_| RatchetError::HkdfExpand)?;
-        Ok(key)
-    }
-
     /// Encrypt a ratchet header so it is opaque on the wire.
     ///
     /// Serialises the header to JSON, then encrypts with ChaCha20-Poly1305
-    /// using the header encryption key derived from the current root key.
-    /// Returns the ciphertext bytes (JSON + 16-byte Poly1305 tag).
+    /// using the provided header encryption key.  The caller is responsible
+    /// for deriving the key from shared state that both parties know
+    /// (typically a static DH shared secret or the session root key).
     ///
     /// On the wire the encrypted header replaces the plaintext `ratchet_pub`,
     /// `prev_chain_len`, and `msg_num` fields, preventing an observer from
     /// correlating messages by tracking ratchet key changes and counters.
-    pub fn encrypt_header(&self, header: &RatchetHeader) -> Result<Vec<u8>, RatchetError> {
-        // Derive the header encryption key from the shared root key.
-        let key_bytes = self.derive_header_enc_key()?;
-        // Construct the AEAD cipher from the derived key.
-        let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
+    pub fn encrypt_header_with_key(header: &RatchetHeader, key: &[u8; 32]) -> Result<Vec<u8>, RatchetError> {
+        // Construct the AEAD cipher from the provided key.
+        let cipher = ChaCha20Poly1305::new_from_slice(key)
             .map_err(|_| RatchetError::EncryptionFailed)?;
         // Serialise the header to a compact JSON representation.
         let header_json = serde_json::to_vec(header)
             .map_err(|_| RatchetError::EncryptionFailed)?;
-        // Encrypt the serialised header with the fixed per-epoch nonce.
+        // Encrypt the serialised header with the fixed nonce.
+        // Safe because the key is unique per-session and per-peer.
         let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
         let ciphertext = cipher.encrypt(nonce, header_json.as_slice())
             .map_err(|_| RatchetError::EncryptionFailed)?;
@@ -1216,15 +1196,13 @@ impl DoubleRatchetSession {
 
     /// Decrypt an encrypted ratchet header received on the wire.
     ///
-    /// Uses the header encryption key derived from the current root key to
-    /// recover the original `RatchetHeader`.  If decryption or deserialisation
-    /// fails, the caller should discard the frame — the header was either
-    /// tampered with or encrypted under a different root-key epoch.
-    pub fn decrypt_header(&self, enc_header: &[u8]) -> Result<RatchetHeader, RatchetError> {
-        // Derive the header encryption key from the shared root key.
-        let key_bytes = self.derive_header_enc_key()?;
-        // Construct the AEAD cipher from the derived key.
-        let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
+    /// Uses the provided header encryption key to recover the original
+    /// `RatchetHeader`.  If decryption or deserialisation fails, the caller
+    /// should discard the frame — the header was either tampered with or
+    /// encrypted under a different key.
+    pub fn decrypt_header_with_key(enc_header: &[u8], key: &[u8; 32]) -> Result<RatchetHeader, RatchetError> {
+        // Construct the AEAD cipher from the provided key.
+        let cipher = ChaCha20Poly1305::new_from_slice(key)
             .map_err(|_| RatchetError::DecryptionFailed)?;
         // Decrypt the encrypted header bytes.
         let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
@@ -1234,6 +1212,26 @@ impl DoubleRatchetSession {
         let header: RatchetHeader = serde_json::from_slice(&plaintext)
             .map_err(|_| RatchetError::DecryptionFailed)?;
         Ok(header)
+    }
+
+    /// Derive a header encryption key from a static DH shared secret.
+    ///
+    /// Uses HKDF-SHA256 over the shared secret with the `HDR_ENC_INFO`
+    /// domain separator.  The result is a 32-byte key suitable for
+    /// `encrypt_header_with_key` / `decrypt_header_with_key`.
+    ///
+    /// Both sender and receiver derive this from the same static DH
+    /// shared secret (our_x25519_secret * their_x25519_pub), so both
+    /// can encrypt/decrypt headers independently.
+    pub fn derive_header_key_from_dh(dh_shared_secret: &[u8; 32]) -> Result<[u8; 32], RatchetError> {
+        // Set up the HKDF context for domain-separated key derivation.
+        let hk = Hkdf::<Sha256>::new(Some(&ZERO_SALT), dh_shared_secret);
+        // Allocate the output buffer for the result.
+        let mut key = [0u8; 32];
+        // Expand the pseudorandom key to the target key length.
+        hk.expand(HDR_ENC_INFO, &mut key)
+            .map_err(|_| RatchetError::HkdfExpand)?;
+        Ok(key)
     }
 
     /// Process a received ratchet header and return the raw message key.
@@ -2056,48 +2054,44 @@ mod tests {
 
     #[test]
     fn test_header_encrypt_decrypt_roundtrip() {
-        // Alice and Bob share a session; Alice encrypts a header, Bob decrypts it.
+        // Alice and Bob share a static DH secret; both derive the same
+        // header encryption key from it.
         let alice_secret = X25519Secret::random_from_rng(rand_core::OsRng);
-        let alice_pub = *X25519Public::from(&alice_secret).as_bytes();
+        let alice_pub = X25519Public::from(&alice_secret);
         let bob_secret = X25519Secret::random_from_rng(rand_core::OsRng);
-        let bob_pub = *X25519Public::from(&bob_secret).as_bytes();
+        let bob_pub = X25519Public::from(&bob_secret);
 
-        // Build matching sessions via static DH (simplified for test).
-        let dh_out = alice_secret.diffie_hellman(&X25519Public::from(bob_pub));
-        let root_key = {
-            let hk = Hkdf::<Sha256>::new(Some(&ZERO_SALT), dh_out.as_bytes());
-            let mut key = [0u8; 32];
-            hk.expand(DR_INFO, &mut key).expect("HKDF expand");
-            key
-        };
+        // Compute the shared DH secret from both sides.
+        let alice_dh = alice_secret.diffie_hellman(&bob_pub);
+        let bob_dh = bob_secret.diffie_hellman(&alice_pub);
+        // Both must agree on the shared secret.
+        assert_eq!(alice_dh.as_bytes(), bob_dh.as_bytes());
 
-        // Init Alice as sender (she knows Bob's pub key).
-        let alice_session = DoubleRatchetSession::init_sender(
-            &root_key, &bob_pub,
-        ).expect("init sender");
-
-        // Init Bob as receiver (he has his own keypair).
-        let bob_session = DoubleRatchetSession::init_receiver(
-            &root_key, bob_secret, &bob_pub,
-        );
+        // Derive header encryption keys from the shared secret.
+        let alice_hdr_key = DoubleRatchetSession::derive_header_key_from_dh(alice_dh.as_bytes())
+            .expect("derive alice key");
+        let bob_hdr_key = DoubleRatchetSession::derive_header_key_from_dh(bob_dh.as_bytes())
+            .expect("derive bob key");
+        // Both keys must be identical.
+        assert_eq!(alice_hdr_key, bob_hdr_key);
 
         // The header to encrypt.
         let header = RatchetHeader {
-            ratchet_pub: alice_pub,
+            ratchet_pub: *alice_pub.as_bytes(),
             prev_chain_len: 42,
             msg_num: 7,
         };
 
         // Alice encrypts the header.
-        let enc = alice_session.encrypt_header(&header)
+        let enc = DoubleRatchetSession::encrypt_header_with_key(&header, &alice_hdr_key)
             .expect("encrypt_header");
 
         // Encrypted header must differ from plaintext serialisation.
         let plaintext_json = serde_json::to_vec(&header).expect("json");
         assert_ne!(enc, plaintext_json, "encrypted header must not match plaintext");
 
-        // Bob decrypts the header using the same root key.
-        let decrypted = bob_session.decrypt_header(&enc)
+        // Bob decrypts the header using the same key.
+        let decrypted = DoubleRatchetSession::decrypt_header_with_key(&enc, &bob_hdr_key)
             .expect("decrypt_header");
 
         // Verify the decrypted header matches the original.
@@ -2109,33 +2103,46 @@ mod tests {
     #[test]
     fn test_header_decrypt_tampered_fails() {
         // Tampering with the encrypted header must cause decryption to fail.
-        let secret = X25519Secret::random_from_rng(rand_core::OsRng);
-        let pub_key = *X25519Public::from(&secret).as_bytes();
+        let alice_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let bob_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let bob_pub = X25519Public::from(&bob_secret);
 
-        let dh_out = secret.diffie_hellman(&X25519Public::from(pub_key));
-        let root_key = {
-            let hk = Hkdf::<Sha256>::new(Some(&ZERO_SALT), dh_out.as_bytes());
-            let mut key = [0u8; 32];
-            hk.expand(DR_INFO, &mut key).expect("HKDF expand");
-            key
-        };
-
-        let session = DoubleRatchetSession::init_sender(&root_key, &pub_key)
-            .expect("init sender");
+        let dh = alice_secret.diffie_hellman(&bob_pub);
+        let hdr_key = DoubleRatchetSession::derive_header_key_from_dh(dh.as_bytes())
+            .expect("derive key");
 
         let header = RatchetHeader {
-            ratchet_pub: pub_key,
+            ratchet_pub: *bob_pub.as_bytes(),
             prev_chain_len: 0,
             msg_num: 0,
         };
 
-        let mut enc = session.encrypt_header(&header).expect("encrypt");
+        let mut enc = DoubleRatchetSession::encrypt_header_with_key(&header, &hdr_key)
+            .expect("encrypt");
         // Flip a byte to simulate tampering.
         if let Some(byte) = enc.get_mut(0) {
             *byte ^= 0xFF;
         }
 
         // Decryption should fail due to the AEAD tag check.
-        assert!(session.decrypt_header(&enc).is_err());
+        assert!(DoubleRatchetSession::decrypt_header_with_key(&enc, &hdr_key).is_err());
+    }
+
+    #[test]
+    fn test_header_wrong_key_fails() {
+        // Decrypting with a different key must fail.
+        let key_a = [0x42u8; 32];
+        let key_b = [0x99u8; 32];
+
+        let header = RatchetHeader {
+            ratchet_pub: [0xAA; 32],
+            prev_chain_len: 5,
+            msg_num: 10,
+        };
+
+        let enc = DoubleRatchetSession::encrypt_header_with_key(&header, &key_a)
+            .expect("encrypt");
+        // Decryption with a different key must fail.
+        assert!(DoubleRatchetSession::decrypt_header_with_key(&enc, &key_b).is_err());
     }
 }

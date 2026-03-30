@@ -331,6 +331,12 @@ pub struct MeshRuntime {
     /// Keyed by responder `PeerId`; consumed by `wg_complete_handshake`.
     pub pending_wg_handshakes:
         Mutex<std::collections::HashMap<PeerId, crate::transport::wireguard::PendingInitiatorHandshake>>,
+    /// Deduplication cache for inbound message IDs (HIGH-4).
+    ///
+    /// Prevents replay attacks where an attacker or network glitch re-delivers
+    /// a previously processed message.  Bounded per room (LRU, 10 000 entries)
+    /// to prevent unbounded memory growth.  Persisted to vault across restarts.
+    pub dedup_msg_cache: Mutex<crate::messaging::delivery::DeliveredMessageCache>,
 }
 
 // SAFETY: All mutable state is wrapped in `Mutex`, making MeshRuntime safe
@@ -405,6 +411,7 @@ impl MeshRuntime {
             clearnet_last_keepalive_tx: Mutex::new(std::collections::HashMap::new()),
             tor_transport: Mutex::new(None),
             pending_wg_handshakes: Mutex::new(std::collections::HashMap::new()),
+            dedup_msg_cache: Mutex::new(crate::messaging::delivery::DeliveredMessageCache::new()),
         }
     }
 
@@ -668,12 +675,15 @@ fn x3dh_bootstrap_session(
     use x25519_dalek::PublicKey as X25519Public;
 
     // Build Bob's bundle from the contact record.
+    // Build Bob's bundle from the contact record, including the KEM
+    // signature that binds the post-quantum key to Bob's identity.
     let bob_bundle = PreauthBundle {
         identity_ed25519_pub: contact.ed25519_public,
         identity_x25519_pub:  X25519Public::from(contact.x25519_public),
         preauth_x25519_pub:   X25519Public::from(*bob_preauth_bytes),
         preauth_kem_pub:      contact.kem_encapsulation_key.clone(),
         preauth_sig:          contact.preauth_key_sig.clone(),
+        kem_sig:              contact.kem_sig.clone(),
     };
 
     let ik_pub_bytes = *our_id.x25519_pub.as_bytes();

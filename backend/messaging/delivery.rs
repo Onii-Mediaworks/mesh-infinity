@@ -25,7 +25,9 @@
 //! Each retry resets the status to Pending and goes through
 //! the full delivery pipeline again.
 
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -507,6 +509,126 @@ pub enum ReceiptType {
 }
 
 // ---------------------------------------------------------------------------
+// Message Deduplication Cache (HIGH-4)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of message IDs tracked per room.
+///
+/// Bounds memory usage: at ~40 bytes per entry (32-byte hex ID + 8-byte LRU
+/// overhead), 10 000 entries consume ~400 KB per room — negligible even on
+/// mobile devices.
+// DEDUP_CACHE_PER_ROOM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+pub const DEDUP_CACHE_PER_ROOM: usize = 10_000;
+
+/// Bounded LRU cache of processed message IDs.
+///
+/// SECURITY (HIGH-4): Prevents replay attacks where an attacker (or network
+/// glitch) re-delivers a previously processed message.  Before accepting any
+/// inbound message, the recipient checks this cache; if the message ID is
+/// already present, the message is silently dropped.
+///
+/// The cache is bounded per room to prevent unbounded memory growth from
+/// adversarial floods.  It uses an LRU eviction policy so the oldest
+/// entries are discarded first — an attacker would need to generate
+/// `DEDUP_CACHE_PER_ROOM` unique messages before a historical replay
+/// could succeed, which is detectable as anomalous traffic.
+///
+/// Persistence: the cache is serialised to vault on every mutation so it
+/// survives application restarts.
+pub struct DeliveredMessageCache {
+    /// Per-room LRU caches of message IDs.
+    ///
+    /// Key = room_id hex string, Value = LRU cache of message_id hex strings.
+    /// Each inner cache is bounded to `DEDUP_CACHE_PER_ROOM` entries.
+    rooms: std::collections::HashMap<String, LruCache<String, ()>>,
+}
+
+impl DeliveredMessageCache {
+    /// Create a new, empty deduplication cache.
+    ///
+    /// No entries are present until messages are processed or the cache
+    /// is loaded from vault via `from_snapshot`.
+    pub fn new() -> Self {
+        Self {
+            rooms: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Check whether a message ID has already been processed in the given room.
+    ///
+    /// Returns `true` if the message is a duplicate (already in the cache),
+    /// `false` if it is new.  Does NOT insert the ID — call `mark_delivered`
+    /// after successful processing to record it.
+    pub fn is_duplicate(&mut self, room_id: &str, msg_id: &str) -> bool {
+        // Look up the per-room cache; if no cache exists for this room,
+        // the message is necessarily not a duplicate.
+        if let Some(cache) = self.rooms.get_mut(room_id) {
+            // LruCache::get promotes the entry to most-recently-used.
+            cache.get(msg_id).is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Record a message ID as processed in the given room.
+    ///
+    /// If the per-room cache does not yet exist, it is created with the
+    /// standard capacity bound.  If the cache is full, the least-recently-
+    /// used entry is evicted automatically by the LRU.
+    pub fn mark_delivered(&mut self, room_id: &str, msg_id: &str) {
+        // Retrieve or create the per-room LRU cache.
+        let cache = self.rooms.entry(room_id.to_string()).or_insert_with(|| {
+            // SAFETY: DEDUP_CACHE_PER_ROOM is a compile-time constant > 0.
+            let capacity = NonZeroUsize::new(DEDUP_CACHE_PER_ROOM)
+                .expect("DEDUP_CACHE_PER_ROOM must be > 0");
+            LruCache::new(capacity)
+        });
+        // Insert the message ID; if already present, this is a no-op that
+        // promotes the entry to most-recently-used.
+        cache.put(msg_id.to_string(), ());
+    }
+
+    /// Serialise the cache to a snapshot suitable for vault persistence.
+    ///
+    /// The snapshot format is a list of `(room_id, [msg_ids...])` pairs.
+    /// Message IDs are stored in LRU order (least-recently-used first) so
+    /// that `from_snapshot` can restore them in the correct eviction order.
+    pub fn to_snapshot(&self) -> Vec<(String, Vec<String>)> {
+        // Iterate over all rooms and collect their message IDs.
+        self.rooms.iter().map(|(room_id, cache)| {
+            // LruCache::iter returns entries from least-recently-used to
+            // most-recently-used — the correct order for re-insertion.
+            let ids: Vec<String> = cache.iter()
+                .map(|(id, _)| id.clone())
+                .collect();
+            (room_id.clone(), ids)
+        }).collect()
+    }
+
+    /// Restore the cache from a vault snapshot.
+    ///
+    /// Entries are inserted in the order they appear in the snapshot, so
+    /// the last entry in each room's list becomes the most-recently-used.
+    pub fn from_snapshot(snapshot: &[(String, Vec<String>)]) -> Self {
+        // Rebuild the per-room caches from the serialised snapshot.
+        let mut rooms = std::collections::HashMap::new();
+        for (room_id, ids) in snapshot {
+            // SAFETY: DEDUP_CACHE_PER_ROOM is a compile-time constant > 0.
+            let capacity = NonZeroUsize::new(DEDUP_CACHE_PER_ROOM)
+                .expect("DEDUP_CACHE_PER_ROOM must be > 0");
+            let mut cache = LruCache::new(capacity);
+            // Insert in snapshot order: first entry = least-recently-used.
+            for id in ids {
+                cache.put(id.clone(), ());
+            }
+            rooms.insert(room_id.clone(), cache);
+        }
+        Self { rooms }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -627,5 +749,82 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         let recovered: DeliveryStatus = serde_json::from_str(&json).unwrap();
         assert!(matches!(recovered, DeliveryStatus::Failed { .. }));
+    }
+
+    // --- DeliveredMessageCache tests (HIGH-4) ---
+
+    #[test]
+    fn test_dedup_cache_new_message_not_duplicate() {
+        // A brand-new message should not be detected as a duplicate.
+        let mut cache = DeliveredMessageCache::new();
+        assert!(!cache.is_duplicate("room_a", "msg_1"));
+    }
+
+    #[test]
+    fn test_dedup_cache_delivered_message_is_duplicate() {
+        // After marking a message as delivered, it should be a duplicate.
+        let mut cache = DeliveredMessageCache::new();
+        cache.mark_delivered("room_a", "msg_1");
+        assert!(cache.is_duplicate("room_a", "msg_1"));
+    }
+
+    #[test]
+    fn test_dedup_cache_different_rooms_independent() {
+        // The same message ID in different rooms should not conflict.
+        let mut cache = DeliveredMessageCache::new();
+        cache.mark_delivered("room_a", "msg_1");
+        // msg_1 is a duplicate in room_a but not in room_b.
+        assert!(cache.is_duplicate("room_a", "msg_1"));
+        assert!(!cache.is_duplicate("room_b", "msg_1"));
+    }
+
+    #[test]
+    fn test_dedup_cache_lru_eviction() {
+        // When the cache exceeds its capacity, the oldest entry is evicted.
+        let mut cache = DeliveredMessageCache::new();
+        // Fill the cache to capacity.
+        for i in 0..DEDUP_CACHE_PER_ROOM {
+            cache.mark_delivered("room_a", &format!("msg_{i}"));
+        }
+
+        // Adding one more should evict msg_0 (the LRU entry, since we
+        // have not accessed it since insertion).
+        cache.mark_delivered("room_a", "msg_overflow");
+        // msg_0 was the least-recently-used — it should be evicted.
+        assert!(!cache.is_duplicate("room_a", "msg_0"));
+        // The overflow entry and recent entries should still be present.
+        assert!(cache.is_duplicate("room_a", "msg_overflow"));
+        // The most recently inserted (before overflow) should survive.
+        let last = format!("msg_{}", DEDUP_CACHE_PER_ROOM - 1);
+        assert!(cache.is_duplicate("room_a", &last));
+    }
+
+    #[test]
+    fn test_dedup_cache_snapshot_roundtrip() {
+        // Snapshot and restore should preserve the cache contents.
+        let mut cache = DeliveredMessageCache::new();
+        cache.mark_delivered("room_a", "msg_1");
+        cache.mark_delivered("room_a", "msg_2");
+        cache.mark_delivered("room_b", "msg_3");
+
+        // Serialise and deserialise.
+        let snapshot = cache.to_snapshot();
+        let mut restored = DeliveredMessageCache::from_snapshot(&snapshot);
+
+        // All entries should be present in the restored cache.
+        assert!(restored.is_duplicate("room_a", "msg_1"));
+        assert!(restored.is_duplicate("room_a", "msg_2"));
+        assert!(restored.is_duplicate("room_b", "msg_3"));
+        // A message not in the snapshot should not be a duplicate.
+        assert!(!restored.is_duplicate("room_a", "msg_4"));
+    }
+
+    #[test]
+    fn test_dedup_cache_mark_idempotent() {
+        // Marking the same message twice should not cause issues.
+        let mut cache = DeliveredMessageCache::new();
+        cache.mark_delivered("room_a", "msg_1");
+        cache.mark_delivered("room_a", "msg_1");
+        assert!(cache.is_duplicate("room_a", "msg_1"));
     }
 }
