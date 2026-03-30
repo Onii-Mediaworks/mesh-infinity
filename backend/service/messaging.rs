@@ -153,19 +153,49 @@ impl MeshRuntime {
         let msg_id          = field_str!("msg_id");
         let ts              = envelope.get("ts").and_then(|v| v.as_u64()).unwrap_or(0);
         let ciphertext_hex  = field_str!("ciphertext");
-        let ratchet_pub_hex = field_str!("ratchet_pub");
-        let prev_chain_len  = envelope.get("prev_chain_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let msg_num         = envelope.get("msg_num").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+        // SECURITY (HIGH-4): Check the deduplication cache BEFORE any
+        // expensive cryptographic work.  If the message ID has already been
+        // processed in this room, silently drop it.  This prevents replay
+        // attacks where an attacker re-delivers a previously processed
+        // message, potentially causing duplicate notifications or state
+        // corruption after session reload.
+        {
+            let mut dedup = self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if dedup.is_duplicate(&room_id_hex, &msg_id) {
+                // Duplicate detected — silently discard the frame.
+                eprintln!("[messaging] DEBUG: duplicate message {} in room {} — dropped", msg_id, room_id_hex);
+                return false;
+            }
+        }
+
+        // SECURITY (CRIT-2): Ratchet header is now encrypted.
+        //
+        // New-format frames carry `enc_header` (encrypted header blob).
+        // Legacy frames still carry plaintext `ratchet_pub` / `prev_chain_len`
+        // / `msg_num` — accepted for backward compatibility but the header
+        // inside the ciphertext is authoritative after decryption.
+        let enc_header_hex = envelope.get("enc_header").and_then(|v| v.as_str());
+
+        // Legacy fallback: read plaintext header fields if enc_header absent.
+        let legacy_ratchet_pub_hex = envelope.get("ratchet_pub").and_then(|v| v.as_str());
+        let legacy_prev_chain_len = envelope.get("prev_chain_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let legacy_msg_num = envelope.get("msg_num").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
         // Decode binary fields.
         let ciphertext = match hex::decode(&ciphertext_hex) {
             Ok(b) => b,
             Err(_) => return false,
         };
-        let ratchet_pub_bytes: [u8; 32] = match hex::decode(&ratchet_pub_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return false,
-        };
+
+        // Build the RatchetHeader from either encrypted or legacy fields.
+        // The encrypted path is preferred; legacy is only used for backward
+        // compatibility with peers that have not yet upgraded.
+        let legacy_ratchet_pub_bytes: Option<[u8; 32]> = legacy_ratchet_pub_hex
+            .and_then(|h| hex::decode(h).ok())
+            .filter(|b| b.len() == 32)
+            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+
         let sender_id_bytes: [u8; 32] = match hex::decode(&sender_hex) {
             Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
             _ => return false,
@@ -195,8 +225,50 @@ impl MeshRuntime {
             self.pqxdh_pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&sender_peer_id);
         }
 
+        // SECURITY (CRIT-2): Decrypt the ratchet header from enc_header, or
+        // fall back to legacy plaintext fields for backward compatibility.
+        //
+        // The encrypted path prevents observers from correlating messages by
+        // tracking ratchet public key changes and message counters.
+        let header = if let Some(enc_hex) = enc_header_hex {
+            // New-format: decrypt the header using a key derived from the
+            // static DH shared secret between us and the sender.
+            let enc_bytes = match hex::decode(enc_hex) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            // Derive the header encryption key from our X25519 secret and
+            // the sender's X25519 public key (from the contact record).
+            let our_x25519_for_hdr = {
+                let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(id) => X25519Secret::from(id.x25519_secret.to_bytes()),
+                    None => return false,
+                }
+            };
+            let their_x25519_pub_for_hdr = x25519_dalek::PublicKey::from(contact.x25519_public);
+            let dh_shared = our_x25519_for_hdr.diffie_hellman(&their_x25519_pub_for_hdr);
+            let hdr_key = match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
+                Ok(k) => k,
+                Err(_) => return false,
+            };
+            match DoubleRatchetSession::decrypt_header_with_key(&enc_bytes, &hdr_key) {
+                Ok(h) => h,
+                Err(_) => return false,
+            }
+        } else if let Some(ratchet_pub_bytes) = legacy_ratchet_pub_bytes {
+            // Legacy fallback: use plaintext header fields from the envelope.
+            RatchetHeader {
+                ratchet_pub: ratchet_pub_bytes,
+                prev_chain_len: legacy_prev_chain_len,
+                msg_num: legacy_msg_num,
+            }
+        } else {
+            // Neither encrypted nor legacy header present — malformed frame.
+            return false;
+        };
+
         // Advance the ratchet and derive message keys.
-        let header = RatchetHeader { ratchet_pub: ratchet_pub_bytes, prev_chain_len, msg_num };
         let (cipher_key, session_nonce, ratchet_msg_key) = {
             let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
             let session = match sessions.get_mut(&sender_peer_id) {
@@ -240,9 +312,41 @@ impl MeshRuntime {
             Err(_) => return false,
         };
 
-        let text = match String::from_utf8(plaintext) {
-            Ok(s) => s,
-            Err(_) => return false,
+        // SECURITY (CRIT-2): Extract message text from the inner payload.
+        //
+        // New-format ciphertexts contain JSON `{"hdr": {...}, "text": "..."}`.
+        // Legacy ciphertexts are bare UTF-8 text.  We detect the format by
+        // attempting JSON parse first; if it fails, treat as legacy plaintext.
+        let text = if let Ok(inner) = serde_json::from_slice::<serde_json::Value>(&plaintext) {
+            // New format: verify inner header matches the one used for key
+            // derivation, then extract the text field.
+            if let Some(inner_hdr) = inner.get("hdr") {
+                // Verify the inner header matches the envelope header to
+                // detect substitution attacks on the encrypted outer header.
+                let inner_rp = inner_hdr.get("ratchet_pub").and_then(|v| v.as_str()).unwrap_or("");
+                let inner_pcl = inner_hdr.get("prev_chain_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let inner_mn = inner_hdr.get("msg_num").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                // Verify the outer (encrypted) header matches the inner
+                // (AEAD-authenticated) header — a mismatch indicates the
+                // encrypted header blob was swapped by an attacker.
+                if inner_rp != hex::encode(header.ratchet_pub)
+                    || inner_pcl != header.prev_chain_len
+                    || inner_mn != header.msg_num
+                {
+                    return false;
+                }
+            }
+            // Extract the message text from the inner payload.
+            match inner.get("text").and_then(|v| v.as_str()) {
+                Some(t) => t.to_string(),
+                None => return false,
+            }
+        } else {
+            // Legacy format: bare UTF-8 plaintext.
+            match String::from_utf8(plaintext) {
+                Ok(s) => s,
+                Err(_) => return false,
+            }
         };
 
         // Auto-create a DM room if one doesn't exist for this conversation.
@@ -354,9 +458,17 @@ impl MeshRuntime {
             self.notifications.lock().unwrap_or_else(|e| e.into_inner()).submit(notif_event);
         }
 
+        // SECURITY (HIGH-4): Record this message ID in the deduplication cache
+        // so any future replay of the same message will be silently dropped.
+        {
+            let mut dedup = self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner());
+            dedup.mark_delivered(&room_id_hex, &msg_id);
+        }
+
         self.save_messages();
         self.save_rooms();
         self.save_ratchet_sessions();
+        self.save_dedup_cache();
         true
     }
 
@@ -555,16 +667,62 @@ impl MeshRuntime {
                     None => continue,
                 }
             };
+
+            // SECURITY (CRIT-2): Encrypt the ratchet header using a key
+            // derived from the static DH shared secret between us and the
+            // peer.  Both sides can independently derive this key from
+            // their long-term X25519 keypairs, so neither needs to know the
+            // other's ratchet state to decrypt the header.
+            let our_x25519_for_hdr = {
+                let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref() {
+                    Some(id) => x25519_dalek::StaticSecret::from(id.x25519_secret.to_bytes()),
+                    None => continue,
+                }
+            };
+            let their_x25519_pub_for_hdr = x25519_dalek::PublicKey::from(contact.x25519_public);
+            let dh_shared = our_x25519_for_hdr.diffie_hellman(&their_x25519_pub_for_hdr);
+            let hdr_key = match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+            let enc_header = match DoubleRatchetSession::encrypt_header_with_key(&ratchet_header, &hdr_key) {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
             let (cipher_key, session_nonce, ratchet_msg_key) =
                 match DoubleRatchetSession::expand_msg_key(&msg_key) {
                     Ok(k) => k,
                     Err(_) => continue,
                 };
 
-            // Four-layer encrypt.
+            // Build the inner plaintext: ratchet header + message text.
+            //
+            // SECURITY (CRIT-2): The ratchet header fields (ratchet_pub,
+            // prev_chain_len, msg_num) are placed INSIDE the AEAD ciphertext
+            // so an observer cannot correlate messages by tracking ratchet key
+            // changes and counters.  The outer envelope carries only an opaque
+            // encrypted header blob for the receiver to derive the decryption
+            // key, and the full header inside the ciphertext for tamper
+            // verification after decryption.
+            let inner_payload = serde_json::json!({
+                "hdr": {
+                    "ratchet_pub":    hex::encode(ratchet_header.ratchet_pub),
+                    "prev_chain_len": ratchet_header.prev_chain_len,
+                    "msg_num":        ratchet_header.msg_num,
+                },
+                "text": text,
+            });
+            // Serialise the inner payload to bytes for encryption.
+            let inner_bytes = match serde_json::to_vec(&inner_payload) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            // Four-layer encrypt the inner payload (header + text).
             let their_x25519_pub = x25519_dalek::PublicKey::from(contact.x25519_public);
             let ciphertext = match encrypt_message(
-                text.as_bytes(),
+                &inner_bytes,
                 &ratchet_msg_key,
                 &cipher_key,
                 &session_nonce,
@@ -576,16 +734,18 @@ impl MeshRuntime {
                 Err(_) => continue,
             };
 
-            // Build wire frame.
+            // Build wire frame — no plaintext header fields.
+            //
+            // The outer envelope contains only opaque blobs: the encrypted
+            // header (for ratchet key derivation) and the full ciphertext
+            // (which itself contains the header for verification).
             let mut frame = serde_json::json!({
-                "sender":         our_peer_id.to_hex(),
-                "room":           room_id_hex,
-                "msg_id":         msg_id_hex,
-                "ts":             ts,
-                "ratchet_pub":    hex::encode(ratchet_header.ratchet_pub),
-                "prev_chain_len": ratchet_header.prev_chain_len,
-                "msg_num":        ratchet_header.msg_num,
-                "ciphertext":     hex::encode(&ciphertext),
+                "sender":     our_peer_id.to_hex(),
+                "room":       room_id_hex,
+                "msg_id":     msg_id_hex,
+                "ts":         ts,
+                "enc_header": hex::encode(&enc_header),
+                "ciphertext": hex::encode(&ciphertext),
             });
 
             // Attach X3DH init header if this is our first message to this peer.

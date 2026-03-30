@@ -96,6 +96,12 @@ impl MeshRuntime {
         // X3DH init header on every app restart.
         self.load_ratchet_sessions();
 
+        // ---- Dedup cache (HIGH-4) ----
+        // Restore the message deduplication cache so replay attacks that span
+        // application restarts are caught.  Missing data is harmless — the
+        // cache rebuilds organically as new messages arrive.
+        self.load_dedup_cache();
+
         // ---- Derived state ----
         // Rebuild the routing table with direct entries for all known contacts.
         // This is derived state (not persisted) because routing entries can be
@@ -357,5 +363,43 @@ impl MeshRuntime {
                 crate::crypto::double_ratchet::DoubleRatchetSession::from_snapshot(snap);
             sessions.insert(peer_id, session);
         }
+    }
+
+    /// Persist the message deduplication cache to vault (HIGH-4).
+    ///
+    /// The cache survives application restarts so replay attacks that span
+    /// session boundaries are also caught.  The vault collection is
+    /// `dedup_msg_cache`; format is `Vec<(room_id, Vec<msg_id>)>`.
+    pub fn save_dedup_cache(&self) {
+        // Guard: vault must be available (identity unlocked).
+        let Some(vm) = self.vault.as_ref() else { return };
+        // Obtain the vault collection for the dedup cache.
+        let Ok(coll) = vm.collection("dedup_msg_cache") else { return };
+        // Serialise the in-memory cache to a snapshot.
+        let cache = self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let snapshot = cache.to_snapshot();
+        // Write the snapshot to the vault; log errors but do not propagate.
+        if let Err(e) = coll.save(&snapshot) {
+            eprintln!("[vault] ERROR: failed to persist dedup cache: {e}");
+        }
+    }
+
+    /// Load the message deduplication cache from vault.
+    ///
+    /// Called from `load_from_vault` to restore the cache across restarts.
+    /// Missing collection or corrupt data is silently ignored — the cache
+    /// rebuilds organically as new messages arrive.
+    pub fn load_dedup_cache(&self) {
+        // Guard: vault must be available (identity unlocked).
+        let Some(vm) = self.vault.as_ref() else { return };
+        // Obtain the vault collection for the dedup cache.
+        let Ok(coll) = vm.collection("dedup_msg_cache") else { return };
+        // Attempt to load the snapshot; silently ignore errors.
+        let Ok(Some(snapshot)) = coll.load::<Vec<(String, Vec<String>)>>() else {
+            return;
+        };
+        // Rebuild the in-memory cache from the snapshot.
+        let restored = crate::messaging::delivery::DeliveredMessageCache::from_snapshot(&snapshot);
+        *self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner()) = restored;
     }
 }

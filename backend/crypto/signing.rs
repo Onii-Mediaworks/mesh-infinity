@@ -212,6 +212,17 @@ pub const DOMAIN_GARDEN: &[u8] = b"meshinfinity-garden-v1";
 // Defined by the spec; must not change without a version bump.
 pub const DOMAIN_PLUGIN_SIGNATURE: &[u8] = b"meshinfinity-plugin-sig-v1";
 
+/// Domain separator for PQXDH KEM encapsulation key signatures (§3.4.1).
+///
+/// Used when signing `DOMAIN_PQXDH_KEM || kem_encapsulation_key` with the
+/// Ed25519 identity key to bind the ML-KEM-768 public key to the identity.
+/// Without this signature, an attacker could strip or substitute the KEM key
+/// in a preauth bundle, silently downgrading the session from post-quantum
+/// to classical X3DH without either party detecting the change.
+// DOMAIN_PQXDH_KEM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+pub const DOMAIN_PQXDH_KEM: &[u8] = b"meshinfinity-pqxdh-kem-v1";
+
 // ---------------------------------------------------------------------------
 // Signing
 // ---------------------------------------------------------------------------
@@ -617,6 +628,7 @@ mod tests {
             DOMAIN_KEY_CHANGE,
             DOMAIN_GARDEN,
             DOMAIN_PLUGIN_SIGNATURE,
+            DOMAIN_PQXDH_KEM,
         ];
 
         for i in 0..domains.len() {

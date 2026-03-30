@@ -184,6 +184,14 @@ pub struct ContactRecord {
     // Execute this protocol step.
     pub kem_encapsulation_key: Option<Vec<u8>>,
 
+    /// Ed25519 signature over `DOMAIN_PQXDH_KEM || kem_encapsulation_key`.
+    ///
+    /// SECURITY (HIGH-5): Binds the KEM public key to the peer's Ed25519
+    /// identity.  Without this signature an attacker could substitute the
+    /// KEM key to silently downgrade PQXDH to classical X3DH.
+    #[serde(default)]
+    pub kem_sig: Option<Vec<u8>>,
+
     /// Whether this peer advertises itself as an available exit node.
     #[serde(default)]
     /// The can be exit node for this instance.
@@ -337,6 +345,8 @@ impl ContactRecord {
             // Execute this protocol step.
             // Execute this protocol step.
             kem_encapsulation_key: None,
+            // KEM signature — populated when the peer sends a signed bundle.
+            kem_sig: None,
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
