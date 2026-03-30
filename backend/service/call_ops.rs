@@ -61,7 +61,9 @@ impl MeshRuntime {
                 .ok_or("identity not unlocked")?
         };
 
-        // Reject if another call is already active to prevent duplicate state.
+        // Only one call at a time is supported.  Reject if another call is
+        // active to prevent duplicate WebRTC sessions and confused UI state.
+        // The caller should check call_status() before offering.
         if self
             .active_call
             .lock()
@@ -103,7 +105,10 @@ impl MeshRuntime {
 
         let payload = serde_json::to_string(&signal).map_err(|e| e.to_string())?;
 
-        // Record in active_call before sending so a fast response can match it.
+        // Record in active_call BEFORE sending the offer frame so a fast
+        // response (answer or hangup arriving within the same tick) can find
+        // the matching call state.  If we sent first and recorded second, a
+        // race condition could cause the response handler to drop the reply.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -475,7 +480,11 @@ impl MeshRuntime {
             }
         };
 
-        // Derive per-channel PSK from the DH shared secret (§5.2).
+        // Derive a per-channel pre-shared key (PSK) from the static DH shared
+        // secret (§5.2).  The PSK is mixed into the WireGuard handshake to bind
+        // the tunnel to the existing identity relationship — an attacker who
+        // knows neither party's X25519 secret cannot forge a valid handshake,
+        // even if they can intercept the ephemeral key exchange.
         let our_secret = x25519_dalek::StaticSecret::from(our_secret_bytes);
         let psk = match derive_channel_key(&our_secret, &their_x25519, &our_peer_id, &initiator_id)
         {
@@ -572,8 +581,10 @@ impl MeshRuntime {
             }
         };
 
-        // Consume the pending initiator handshake — if absent the response is
-        // spurious (possibly a replay) and we discard it.
+        // Consume the pending initiator handshake from the map.  If absent,
+        // the response is either spurious (no matching initiation) or a replay
+        // of a previously consumed response — discard silently in both cases.
+        // Using remove() ensures each handshake can only be completed once.
         let pending = {
             let mut map = self
                 .pending_wg_handshakes

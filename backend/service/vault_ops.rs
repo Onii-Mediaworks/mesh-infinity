@@ -31,7 +31,9 @@ impl MeshRuntime {
     /// Also rebuilds the routing table from contacts and updates the
     /// announcement processor with our real peer address.
     pub fn load_from_vault(&mut self) {
-        // Nothing to do if no vault has been opened yet.
+        // Guard: the vault is only available after identity unlock; calling
+        // load_from_vault before unlock is a no-op (first-run is handled
+        // by the empty defaults in MeshRuntime::new).
         let vm = match self.vault.as_ref() {
             Some(v) => v,
             None => return,
@@ -39,6 +41,7 @@ impl MeshRuntime {
 
         // ---- Rooms ----
         // Restore the conversation list from the vault.
+        // Each room is a lightweight metadata record (no message bodies).
         if let Ok(coll) = vm.collection("rooms") {
             if let Ok(Some(rooms)) = coll.load::<Vec<Room>>() {
                 *self.rooms.lock().unwrap_or_else(|e| e.into_inner()) = rooms;
@@ -47,6 +50,8 @@ impl MeshRuntime {
 
         // ---- Contacts ----
         // Rebuild the ContactStore from the persisted list of ContactRecords.
+        // The store is reconstructed via upsert() to ensure its internal indices
+        // (lookup by PeerId, lookup by X25519 pub) are properly initialised.
         if let Ok(coll) = vm.collection("peers") {
             if let Ok(Some(contacts)) = coll.load::<Vec<ContactRecord>>() {
                 let mut store = ContactStore::new();
@@ -84,11 +89,17 @@ impl MeshRuntime {
         }
 
         // ---- Ratchet sessions ----
-        // Load persisted ratchet sessions (optional; missing collection is fine).
+        // Load persisted Double Ratchet sessions.  This is optional — if the
+        // collection is missing (first-run or vault corruption), sessions are
+        // bootstrapped on demand from static DH keys when the first message
+        // is sent or received.  Persisting sessions avoids the need for an
+        // X3DH init header on every app restart.
         self.load_ratchet_sessions();
 
         // ---- Derived state ----
-        // Reseed the routing table with direct entries for all known contacts.
+        // Rebuild the routing table with direct entries for all known contacts.
+        // This is derived state (not persisted) because routing entries can be
+        // cheaply reconstructed from the contact list.
         self.rebuild_routing_table_from_contacts();
 
         // Replace the placeholder announcement processor address with our real
@@ -299,6 +310,11 @@ impl MeshRuntime {
     /// Sessions are serialised as `Vec<(peer_id_hex, SessionSnapshot)>`.
     /// Called after each ratchet advancement to preserve forward secrecy
     /// across restarts.
+    ///
+    /// SECURITY: The snapshots contain chain keys and skipped message keys.
+    /// These are encrypted at rest by the vault layer (AES-256-GCM keyed
+    /// from the identity master key).  An attacker who obtains a vault dump
+    /// but not the master key cannot recover past or future message keys.
     pub fn save_ratchet_sessions(&self) {
         let Some(vm) = self.vault.as_ref() else { return };
         let Ok(coll) = vm.collection("ratchet_sessions") else { return };

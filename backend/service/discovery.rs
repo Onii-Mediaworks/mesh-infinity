@@ -167,6 +167,11 @@ impl MeshRuntime {
     ///
     /// The cooldown in `lan_discovery_seen` is updated regardless of outcome,
     /// so a non-responsive or malicious endpoint only wastes one probe per 60 s.
+    ///
+    /// SECURITY: The nonce ensures each handshake is fresh (prevents replay).
+    /// The Ed25519 signature proves the responder holds the private key
+    /// corresponding to the advertised public key (prevents impersonation).
+    /// No key material is sent by the initiator — the probe is read-only.
     pub fn advance_lan_discovery_handshakes(&self) {
         use std::io::Read;
 
@@ -275,9 +280,12 @@ impl MeshRuntime {
                 None => continue,
             };
 
-            // Verify: Ed25519_verify(ed_pub, DOMAIN_LAN_DISCOVER || nonce, sig).
-            // A failed verification means the responder is not who they claim;
-            // discard silently.
+            // SECURITY: Verify Ed25519_verify(ed_pub, DOMAIN_LAN_DISCOVER || nonce, sig).
+            // This proves the responder possesses the private key for ed_pub.
+            // The domain separator prevents cross-protocol signature reuse.
+            // The fresh nonce prevents replay of old acks.
+            // A failed verification means the responder is either not who they
+            // claim (MITM) or is responding with a stale/forged ack — discard.
             if !crate::crypto::signing::verify(
                 &ed_pub_bytes,
                 crate::crypto::signing::DOMAIN_LAN_DISCOVER,

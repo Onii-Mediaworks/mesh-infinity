@@ -39,10 +39,16 @@ impl MeshRuntime {
     ///
     /// Returns `Ok(())` on success, `Err(reason)` on malformed input.
     pub fn pair_peer(&self, payload_json: &str) -> Result<(), String> {
+        // Parse the pairing payload — this was scanned from a QR code or received
+        // as a deep link.  The payload is signed by Alice's identity key in the
+        // QR generation step, but we verify the signature later during the
+        // challenge-response handshake, not here (Bob's trust in the QR is
+        // established by the physical proximity of scanning it).
         let payload: serde_json::Value = serde_json::from_str(payload_json)
             .map_err(|_| "Payload is not valid JSON".to_string())?;
 
-        // Extract required Ed25519 public key.
+        // Extract required Ed25519 public key — this is Alice's long-term
+        // identity key from which her PeerId is derived.
         let ed_hex = payload.get("ed25519_public").and_then(|v| v.as_str())
             .ok_or("Missing ed25519_public")?;
         let ed_bytes: [u8; 32] = hex::decode(ed_hex)
@@ -58,7 +64,9 @@ impl MeshRuntime {
             .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
             .ok_or("Invalid x25519_public")?;
 
-        // Derive the canonical peer ID from the verified Ed25519 key.
+        // Derive the canonical peer ID by hashing the Ed25519 public key.
+        // This gives a stable identifier that does not change if the peer
+        // rotates their X25519 preauth key (which happens weekly).
         let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
         let name    = payload.get("display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
 
@@ -96,6 +104,8 @@ impl MeshRuntime {
         contact.tor_endpoint      = tor_endpoint;
 
         // Store ML-KEM-768 encapsulation key if advertised (PQXDH §3.4.1).
+        // This enables post-quantum key exchange with this peer; if absent,
+        // the session will use classical X3DH only.
         contact.kem_encapsulation_key = payload
             .get("kem_pub")
             .and_then(|v| v.as_str())
@@ -138,13 +148,19 @@ impl MeshRuntime {
             }
         }
 
-        // Snapshot the clearnet endpoint before moving `contact`.
+        // Snapshot the clearnet endpoint before moving `contact` into the store.
+        // We need this after the move to know where to send the pairing hello.
         let clearnet_ep = contact.clearnet_endpoint.clone();
 
+        // Persist the contact.  upsert() is used instead of insert() because
+        // the same peer could be paired multiple times (e.g. after a reinstall
+        // where only one side lost state).
         self.contacts.lock().unwrap_or_else(|e| e.into_inner()).upsert(contact);
         self.save_contacts();
 
-        // Two-way pairing hello: send our keys to Alice's clearnet endpoint.
+        // Two-way pairing hello (§8.3): send our own keys back to Alice so
+        // she can add Bob without needing to scan a second QR code.  This
+        // completes the pairing in one scan rather than two.
         if let Some(ref ep) = clearnet_ep {
             self.send_pairing_hello_to(ep);
         }
@@ -217,18 +233,27 @@ impl MeshRuntime {
             Err(_) => return false,
         };
 
-        // Verify Ed25519 signature over DOMAIN_PAIRING_HELLO | ed_bytes | x_bytes.
+        // SECURITY: Verify the Ed25519 signature over DOMAIN_PAIRING_HELLO || ed_bytes || x_bytes.
+        // The domain separator prevents cross-protocol signature reuse.
+        // The display_name is intentionally NOT signed — it is an untrusted
+        // display hint that the user can see and override via the contact's
+        // local nickname setting.  An attacker cannot impersonate a different
+        // peer because the peer_id is derived from the (signed) ed25519 key.
         let mut signed_msg = Vec::with_capacity(64);
         signed_msg.extend_from_slice(&ed_bytes);
         signed_msg.extend_from_slice(&x_bytes);
         if !signing::verify(&ed_bytes, signing::DOMAIN_PAIRING_HELLO, &signed_msg, &sig_bytes) {
+            // Signature invalid — possibly corrupted or forged frame.
+            // Silently discard (§7.2 error-silence rule).
             return false;
         }
 
         // Derive the canonical peer_id from the verified Ed25519 key.
         let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
 
-        // If we already have this peer, just emit PeerAdded to sync the UI.
+        // Idempotent: if we already have this peer in our contact store,
+        // re-emit PeerAdded to synchronise the Flutter UI (the UI may have
+        // been restarted or missed the original event).
         if self.contacts.lock().unwrap_or_else(|e| e.into_inner()).get(&peer_id).is_some() {
             let name = envelope.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
             self.push_event("PeerAdded", serde_json::json!({
@@ -460,7 +485,10 @@ impl MeshRuntime {
 
         let entry_peer_id = entry.peer_id;
 
-        // Merge into gossip map.
+        // Merge into the gossip engine's network map.  The gossip engine handles
+        // deduplication (via sequence numbers), age checks, and signature
+        // verification internally.  It returns false if the entry was stale,
+        // duplicate, or had an invalid signature.
         let accepted = {
             let mut gossip = self.gossip.lock().unwrap_or_else(|e| e.into_inner());
             gossip.receive_entry(entry.clone(), &entry_peer_id, TrustLevel::Unknown, now)
@@ -469,7 +497,10 @@ impl MeshRuntime {
 
         if !accepted { return false; }
 
-        // If we know this peer, refresh their preauth key and transport hints.
+        // If we know this peer (they are in our contact store), update their
+        // preauth key and transport hints from the gossip entry.  This is how
+        // peers learn about each other's address changes and SPK rotations
+        // without requiring a fresh pairing exchange.
         {
             let mut contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(contact) = contacts.get_mut(&entry_peer_id) {
@@ -797,7 +828,9 @@ impl MeshRuntime {
     /// Validates the request and, if S&F relay is enabled, buffers the message
     /// for delivery to the (currently offline) destination.
     pub fn process_sf_deposit_frame(&self, envelope: &serde_json::Value) -> bool {
-        // Honour the S&F relay toggle.
+        // Honour the S&F relay toggle (§17.13 module config).  When disabled,
+        // this node silently consumes deposit requests without buffering them.
+        // Returning true (not false) prevents the sender from retrying endlessly.
         let relay_enabled = {
             let mc = self.module_config.lock().unwrap_or_else(|e| e.into_inner());
             mc.social.store_forward
@@ -852,7 +885,9 @@ impl MeshRuntime {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs()).unwrap_or(0);
 
-        // Use a hash of the sender hex as tunnel_id for rate limiting.
+        // Derive a stable tunnel_id from the sender hex for per-sender rate
+        // limiting.  A simple multiplicative hash is sufficient here — it only
+        // needs to distinguish different senders, not be cryptographically secure.
         let sender_hex = envelope.get("sender").and_then(|v| v.as_str()).unwrap_or("0");
         let tunnel_id  = sender_hex.bytes().fold(
             0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64),
