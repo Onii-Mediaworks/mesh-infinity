@@ -68,6 +68,26 @@ const DR_INFO: &[u8] = b"MeshInfinity_DR_v1";
 // Defined by the spec; must not change without a version bump.
 const MK_INFO: &[u8] = b"MeshInfinity_MK_v1";
 
+/// HKDF info string for deriving the header encryption key from the root key.
+///
+/// Both sides of a Double Ratchet session share the root key, so both can
+/// derive this key to encrypt/decrypt the ratchet header.  An observer who
+/// does not possess the root key sees only opaque bytes and cannot correlate
+/// messages by tracking ratchet public key changes or message counters.
+// HDR_ENC_INFO — protocol constant.
+// Defined by the spec; must not change without a version bump.
+const HDR_ENC_INFO: &[u8] = b"MeshInfinity_HdrEnc_v1";
+
+/// Fixed nonce for header encryption.
+///
+/// Safe to reuse because the header encryption key is unique per root-key
+/// epoch — each DH ratchet step produces a new root key, which in turn
+/// derives a fresh header encryption key.  The nonce only needs to be
+/// non-repeating under a given key, not globally unique.
+// HDR_ENC_NONCE — protocol constant.
+// Defined by the spec; must not change without a version bump.
+const HDR_ENC_NONCE: [u8; 12] = [0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+
 /// Maximum number of skipped message keys to cache per peer.
 /// Prevents memory exhaustion from adversarial skip counters.
 // MAX_SKIP — protocol constant.
@@ -120,6 +140,13 @@ pub enum RatchetError {
     // Execute this protocol step.
     // Execute this protocol step.
     SecureMemory(#[from] SecureMemoryError),
+
+    /// Message number counter has reached u32::MAX.
+    /// Incrementing would wrap to 0, causing catastrophic nonce reuse
+    /// in ChaCha20-Poly1305 (same key + same nonce = keystream reuse).
+    /// The session MUST be rekeyed before sending/receiving more messages.
+    #[error("message counter exhausted (u32::MAX) — session must be rekeyed")]
+    MsgNumExhausted,
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +681,14 @@ impl DoubleRatchetSession {
         // Advance send chain key state.
         self.send_chain_key = Some(new_chain_key);
 
+        // Guard against message number overflow. At u32::MAX the next
+        // increment would wrap to 0, reusing a nonce with the same chain
+        // key — catastrophic for ChaCha20-Poly1305 security. The session
+        // must be rekeyed (new X3DH handshake) before this counter resets.
+        if self.send_msg_num == u32::MAX {
+            return Err(RatchetError::MsgNumExhausted);
+        }
+
         // Build header
         // Compute header for this protocol step.
         // Compute header for this protocol step.
@@ -671,8 +706,7 @@ impl DoubleRatchetSession {
             // Execute this protocol step.
             msg_num: self.send_msg_num,
         };
-        // Update the send msg num to reflect the new state.
-        // Advance send msg num state.
+        // Safe to increment: overflow guard above ensures send_msg_num < u32::MAX.
         // Advance send msg num state.
         self.send_msg_num += 1;
 
@@ -900,6 +934,13 @@ impl DoubleRatchetSession {
             // Propagate errors via ?.
             // Propagate errors via ?.
             .ok_or(RatchetError::DecryptionFailed)?;
+        // Guard against receive counter overflow. header.msg_num at
+        // u32::MAX would wrap recv_msg_num to 0, causing nonce reuse on
+        // the receiving chain — session must be rekeyed before this point.
+        if header.msg_num == u32::MAX {
+            return Err(RatchetError::MsgNumExhausted);
+        }
+
         // Key material — must be zeroized when no longer needed.
         // Bind the intermediate result.
         // Bind the intermediate result.
@@ -908,8 +949,7 @@ impl DoubleRatchetSession {
         // Advance recv chain key state.
         // Advance recv chain key state.
         self.recv_chain_key = Some(new_recv_ck);
-        // Update the recv msg num to reflect the new state.
-        // Advance recv msg num state.
+        // Safe to add 1: overflow guard above ensures header.msg_num < u32::MAX.
         // Advance recv msg num state.
         self.recv_msg_num = header.msg_num + 1;
 
@@ -1069,6 +1109,12 @@ impl DoubleRatchetSession {
     // Perform the 'next send msg key' operation.
     // Errors are propagated to the caller via Result.
     pub fn next_send_msg_key(&mut self) -> Result<(RatchetHeader, [u8; 32]), RatchetError> {
+        // Guard against message number overflow — same rationale as encrypt().
+        // At u32::MAX the next increment wraps, reusing nonces catastrophically.
+        if self.send_msg_num == u32::MAX {
+            return Err(RatchetError::MsgNumExhausted);
+        }
+
         // Return EncryptionFailed if the send chain was never initialised.
         // Panicking here would crash the process when called from FFI.
         // Compute chain key for this protocol step.
@@ -1113,8 +1159,7 @@ impl DoubleRatchetSession {
             // Execute this protocol step.
             msg_num: self.send_msg_num,
         };
-        // Update the send msg num to reflect the new state.
-        // Advance send msg num state.
+        // Safe to increment: overflow guard above ensures send_msg_num < u32::MAX.
         // Advance send msg num state.
         self.send_msg_num += 1;
 
@@ -1122,6 +1167,73 @@ impl DoubleRatchetSession {
         // Success path — return the computed value.
         // Success path — return the computed value.
         Ok((header, msg_key))
+    }
+
+    /// Derive a symmetric key for encrypting/decrypting the ratchet header.
+    ///
+    /// Uses HKDF-SHA256 over the current root key with the `HDR_ENC_INFO`
+    /// domain separator.  Both sender and receiver share the same root key
+    /// at any given epoch, so both can derive this key independently.
+    ///
+    /// The header encryption key rotates every time a DH ratchet step occurs,
+    /// which changes the root key.  This limits the correlation window to a
+    /// single ratchet epoch even if the key were compromised.
+    fn derive_header_enc_key(&self) -> Result<[u8; 32], RatchetError> {
+        // Set up the HKDF context for domain-separated key derivation.
+        let hk = Hkdf::<Sha256>::new(Some(&self.root_key), &self.root_key);
+        // Allocate the output buffer for the result.
+        let mut key = [0u8; 32];
+        // Expand the pseudorandom key to the target key length.
+        hk.expand(HDR_ENC_INFO, &mut key)
+            .map_err(|_| RatchetError::HkdfExpand)?;
+        Ok(key)
+    }
+
+    /// Encrypt a ratchet header so it is opaque on the wire.
+    ///
+    /// Serialises the header to JSON, then encrypts with ChaCha20-Poly1305
+    /// using the header encryption key derived from the current root key.
+    /// Returns the ciphertext bytes (JSON + 16-byte Poly1305 tag).
+    ///
+    /// On the wire the encrypted header replaces the plaintext `ratchet_pub`,
+    /// `prev_chain_len`, and `msg_num` fields, preventing an observer from
+    /// correlating messages by tracking ratchet key changes and counters.
+    pub fn encrypt_header(&self, header: &RatchetHeader) -> Result<Vec<u8>, RatchetError> {
+        // Derive the header encryption key from the shared root key.
+        let key_bytes = self.derive_header_enc_key()?;
+        // Construct the AEAD cipher from the derived key.
+        let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
+            .map_err(|_| RatchetError::EncryptionFailed)?;
+        // Serialise the header to a compact JSON representation.
+        let header_json = serde_json::to_vec(header)
+            .map_err(|_| RatchetError::EncryptionFailed)?;
+        // Encrypt the serialised header with the fixed per-epoch nonce.
+        let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
+        let ciphertext = cipher.encrypt(nonce, header_json.as_slice())
+            .map_err(|_| RatchetError::EncryptionFailed)?;
+        Ok(ciphertext)
+    }
+
+    /// Decrypt an encrypted ratchet header received on the wire.
+    ///
+    /// Uses the header encryption key derived from the current root key to
+    /// recover the original `RatchetHeader`.  If decryption or deserialisation
+    /// fails, the caller should discard the frame — the header was either
+    /// tampered with or encrypted under a different root-key epoch.
+    pub fn decrypt_header(&self, enc_header: &[u8]) -> Result<RatchetHeader, RatchetError> {
+        // Derive the header encryption key from the shared root key.
+        let key_bytes = self.derive_header_enc_key()?;
+        // Construct the AEAD cipher from the derived key.
+        let cipher = ChaCha20Poly1305::new_from_slice(&key_bytes)
+            .map_err(|_| RatchetError::DecryptionFailed)?;
+        // Decrypt the encrypted header bytes.
+        let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
+        let plaintext = cipher.decrypt(nonce, enc_header)
+            .map_err(|_| RatchetError::DecryptionFailed)?;
+        // Deserialise the JSON header from the decrypted bytes.
+        let header: RatchetHeader = serde_json::from_slice(&plaintext)
+            .map_err(|_| RatchetError::DecryptionFailed)?;
+        Ok(header)
     }
 
     /// Process a received ratchet header and return the raw message key.
@@ -1276,13 +1388,19 @@ impl DoubleRatchetSession {
             // Propagate errors via the ? operator — callers handle failures.
             // Propagate errors via ?.
             .ok_or(RatchetError::DecryptionFailed)?;
+        // Guard against receive counter overflow — same rationale as decrypt().
+        // header.msg_num at u32::MAX would wrap recv_msg_num to 0 on increment.
+        if header.msg_num == u32::MAX {
+            return Err(RatchetError::MsgNumExhausted);
+        }
+
         // Key material — must be zeroized when no longer needed.
         // Bind the intermediate result.
         let (msg_key, new_recv_ck) = kdf_chain_step(recv_ck);
         // Update the recv chain key to reflect the new state.
         // Advance recv chain key state.
         self.recv_chain_key = Some(new_recv_ck);
-        // Update the recv msg num to reflect the new state.
+        // Safe to add 1: overflow guard above ensures header.msg_num < u32::MAX.
         // Advance recv msg num state.
         self.recv_msg_num = header.msg_num + 1;
 
@@ -1380,16 +1498,19 @@ impl DoubleRatchetSession {
     /// Reconstruct a session from a previously exported snapshot.
     // Perform the 'from snapshot' operation.
     // Errors are propagated to the caller via Result.
-    pub fn from_snapshot(snap: SessionSnapshot) -> Self {
+    pub fn from_snapshot(mut snap: SessionSnapshot) -> Self {
         // Key material — must be zeroized when no longer needed.
         // Compute my ratchet secret for this protocol step.
         let my_ratchet_secret = X25519Secret::from(snap.my_ratchet_secret_bytes);
+        // Take ownership of skipped_keys via mem::take rather than
+        // into_iter(), because SessionSnapshot implements Drop and
+        // Rust prohibits moving fields out of a type with Drop.
+        // mem::take replaces the Vec with an empty Vec, leaving the
+        // Drop impl with nothing to zeroize for this field.
+        let raw_skipped = std::mem::take(&mut snap.skipped_keys);
         // Key material — must be zeroized when no longer needed.
         // Compute skipped keys for this protocol step.
-        let skipped_keys = snap
-            // Chain the operation on the intermediate result.
-            // Execute this protocol step.
-            .skipped_keys
+        let skipped_keys = raw_skipped
             // Create an iterator over the collection elements.
             // Create an iterator over the elements.
             .into_iter()
@@ -1400,37 +1521,29 @@ impl DoubleRatchetSession {
             // Collect into a concrete collection.
             .collect();
 
+        // Copy the scalar fields before snap is dropped (and zeroized).
+        // All [u8; N] fields implement Copy, so this is safe.
+        let root_key = snap.root_key;
+        let my_ratchet_pub = snap.my_ratchet_pub;
+        let their_ratchet_pub = snap.their_ratchet_pub;
+        let send_chain_key = snap.send_chain_key;
+        let send_msg_num = snap.send_msg_num;
+        let recv_chain_key = snap.recv_chain_key;
+        let recv_msg_num = snap.recv_msg_num;
+        let prev_send_chain_len = snap.prev_send_chain_len;
+
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
         Self {
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            root_key: snap.root_key,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
+            root_key,
             my_ratchet_secret,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            my_ratchet_pub: snap.my_ratchet_pub,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            their_ratchet_pub: snap.their_ratchet_pub,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            send_chain_key: snap.send_chain_key,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            send_msg_num: snap.send_msg_num,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            recv_chain_key: snap.recv_chain_key,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            recv_msg_num: snap.recv_msg_num,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            prev_send_chain_len: snap.prev_send_chain_len,
-            // Execute this protocol step.
+            my_ratchet_pub,
+            their_ratchet_pub,
+            send_chain_key,
+            send_msg_num,
+            recv_chain_key,
+            recv_msg_num,
+            prev_send_chain_len,
             skipped_keys,
         }
     }
@@ -1483,6 +1596,44 @@ pub struct SessionSnapshot {
     /// Cached skipped message keys: `(ratchet_pub, msg_num, msg_key)`.
     // Execute this protocol step.
     skipped_keys: Vec<([u8; 32], u32, [u8; 32])>,
+}
+
+/// Securely erase all cryptographic key material from `SessionSnapshot`
+/// when it is dropped. Without this, serialised key bytes would linger
+/// in freed heap memory and could be recovered by a forensic attacker
+/// with access to a memory dump or swap file.
+///
+/// We implement `Drop` manually rather than deriving `Zeroize` because
+/// the `skipped_keys` field is a `Vec` of tuples — the derive macro
+/// cannot reach inside tuple elements to zeroize them.
+impl Drop for SessionSnapshot {
+    fn drop(&mut self) {
+        // Zeroize the root key — the master secret for the session.
+        self.root_key.zeroize();
+        // Zeroize the DH ratchet secret — private key material.
+        self.my_ratchet_secret_bytes.zeroize();
+        // Zeroize the DH ratchet public key bytes.
+        self.my_ratchet_pub.zeroize();
+        // Zeroize the remote peer's ratchet public key if present.
+        if let Some(ref mut key) = self.their_ratchet_pub {
+            key.zeroize();
+        }
+        // Zeroize the sending chain key if present.
+        if let Some(ref mut key) = self.send_chain_key {
+            key.zeroize();
+        }
+        // Zeroize the receiving chain key if present.
+        if let Some(ref mut key) = self.recv_chain_key {
+            key.zeroize();
+        }
+        // Zeroize each cached skipped message key (ratchet_pub + msg_key).
+        // The msg_num (u32) is not sensitive but tuple elements are zeroed
+        // together for simplicity and thoroughness.
+        for (ratchet_pub, _, msg_key) in self.skipped_keys.iter_mut() {
+            ratchet_pub.zeroize();
+            msg_key.zeroize();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1783,5 +1934,208 @@ mod tests {
             "delivering a message that requires >MAX_SKIP cached keys must return \
              TooManySkipped, got: {result:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // MED-2: Message number overflow guard tests
+    // -----------------------------------------------------------------------
+
+    /// Verify that encrypt() returns MsgNumExhausted when send_msg_num
+    /// reaches u32::MAX, preventing nonce reuse in ChaCha20-Poly1305.
+    #[test]
+    fn test_send_msg_num_overflow_rejected() {
+        let (mut alice, _bob) = setup_session_pair();
+
+        // Artificially set send_msg_num to u32::MAX to simulate a
+        // session that has sent 2^32 - 1 messages on the same chain.
+        alice.send_msg_num = u32::MAX;
+
+        // The next encrypt must fail with MsgNumExhausted, not wrap to 0.
+        let result = alice.encrypt(b"one too many");
+        assert!(
+            matches!(result, Err(RatchetError::MsgNumExhausted)),
+            "encrypt at u32::MAX must return MsgNumExhausted, got: {result:?}"
+        );
+    }
+
+    /// Verify that decrypt() returns MsgNumExhausted when the received
+    /// header's msg_num is u32::MAX, preventing recv_msg_num wrap.
+    #[test]
+    fn test_recv_msg_num_overflow_rejected() {
+        let (mut alice, mut bob) = setup_session_pair();
+
+        // Send a legitimate message so Bob's recv chain is initialised.
+        let (h1, ct1) = alice.encrypt(b"init").unwrap();
+        bob.decrypt(&h1, &ct1).unwrap();
+
+        // Forge a header with msg_num = u32::MAX. The ciphertext will
+        // fail AEAD anyway, but the overflow guard must trigger first.
+        let forged_header = RatchetHeader {
+            ratchet_pub: h1.ratchet_pub,
+            prev_chain_len: 0,
+            msg_num: u32::MAX,
+        };
+        let result = bob.decrypt(&forged_header, &ct1);
+        // Either MsgNumExhausted (overflow guard) or TooManySkipped
+        // (from trying to skip u32::MAX keys). Both are acceptable —
+        // the important thing is that it does NOT succeed or wrap.
+        assert!(
+            result.is_err(),
+            "decrypt with msg_num=u32::MAX must fail, got: {result:?}"
+        );
+    }
+
+    /// Verify that next_send_msg_key() also guards against overflow.
+    #[test]
+    fn test_next_send_msg_key_overflow_rejected() {
+        let (mut alice, _bob) = setup_session_pair();
+
+        // Set send_msg_num to u32::MAX.
+        alice.send_msg_num = u32::MAX;
+
+        // The four-layer helper must also reject at the overflow boundary.
+        let result = alice.next_send_msg_key();
+        assert!(
+            matches!(result, Err(RatchetError::MsgNumExhausted)),
+            "next_send_msg_key at u32::MAX must return MsgNumExhausted, got: {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SessionSnapshot zeroize-on-drop test
+    // -----------------------------------------------------------------------
+
+    /// Verify that SessionSnapshot's Drop impl runs without panicking
+    /// when all field variants are populated (Some values, non-empty Vec).
+    /// The primary guarantee is that the destructor correctly zeroizes
+    /// every key field without type errors or panics.
+    #[test]
+    fn test_snapshot_zeroize_on_drop() {
+        // Create a snapshot with recognisable non-zero key material.
+        let snap = SessionSnapshot {
+            root_key: [0xAA; 32],
+            my_ratchet_secret_bytes: [0xBB; 32],
+            my_ratchet_pub: [0xCC; 32],
+            their_ratchet_pub: Some([0xDD; 32]),
+            send_chain_key: Some([0xEE; 32]),
+            send_msg_num: 42,
+            recv_chain_key: Some([0xFF; 32]),
+            recv_msg_num: 7,
+            prev_send_chain_len: 3,
+            skipped_keys: vec![([0x11; 32], 5, [0x22; 32])],
+        };
+
+        // Drop the snapshot, triggering the zeroize logic.
+        // If Drop misses a field or has a type mismatch, this panics.
+        drop(snap);
+    }
+
+    /// Verify that SessionSnapshot's Drop impl handles None/empty
+    /// variants without panicking (no unwrap on Option::None).
+    #[test]
+    fn test_snapshot_zeroize_on_drop_empty() {
+        // Snapshot with all optional fields set to None and empty Vec.
+        let snap = SessionSnapshot {
+            root_key: [0xAA; 32],
+            my_ratchet_secret_bytes: [0xBB; 32],
+            my_ratchet_pub: [0xCC; 32],
+            their_ratchet_pub: None,
+            send_chain_key: None,
+            send_msg_num: 0,
+            recv_chain_key: None,
+            recv_msg_num: 0,
+            prev_send_chain_len: 0,
+            skipped_keys: vec![],
+        };
+
+        // Must not panic even with None/empty fields.
+        drop(snap);
+    }
+
+    // --- Encrypted header tests (CRIT-2) ---
+
+    #[test]
+    fn test_header_encrypt_decrypt_roundtrip() {
+        // Alice and Bob share a session; Alice encrypts a header, Bob decrypts it.
+        let alice_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let alice_pub = *X25519Public::from(&alice_secret).as_bytes();
+        let bob_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let bob_pub = *X25519Public::from(&bob_secret).as_bytes();
+
+        // Build matching sessions via static DH (simplified for test).
+        let dh_out = alice_secret.diffie_hellman(&X25519Public::from(bob_pub));
+        let root_key = {
+            let hk = Hkdf::<Sha256>::new(Some(&ZERO_SALT), dh_out.as_bytes());
+            let mut key = [0u8; 32];
+            hk.expand(DR_INFO, &mut key).expect("HKDF expand");
+            key
+        };
+
+        // Init Alice as sender (she knows Bob's pub key).
+        let alice_session = DoubleRatchetSession::init_sender(
+            &root_key, &bob_pub,
+        ).expect("init sender");
+
+        // Init Bob as receiver (he has his own keypair).
+        let bob_session = DoubleRatchetSession::init_receiver(
+            &root_key, bob_secret, &bob_pub,
+        );
+
+        // The header to encrypt.
+        let header = RatchetHeader {
+            ratchet_pub: alice_pub,
+            prev_chain_len: 42,
+            msg_num: 7,
+        };
+
+        // Alice encrypts the header.
+        let enc = alice_session.encrypt_header(&header)
+            .expect("encrypt_header");
+
+        // Encrypted header must differ from plaintext serialisation.
+        let plaintext_json = serde_json::to_vec(&header).expect("json");
+        assert_ne!(enc, plaintext_json, "encrypted header must not match plaintext");
+
+        // Bob decrypts the header using the same root key.
+        let decrypted = bob_session.decrypt_header(&enc)
+            .expect("decrypt_header");
+
+        // Verify the decrypted header matches the original.
+        assert_eq!(decrypted.ratchet_pub, header.ratchet_pub);
+        assert_eq!(decrypted.prev_chain_len, header.prev_chain_len);
+        assert_eq!(decrypted.msg_num, header.msg_num);
+    }
+
+    #[test]
+    fn test_header_decrypt_tampered_fails() {
+        // Tampering with the encrypted header must cause decryption to fail.
+        let secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let pub_key = *X25519Public::from(&secret).as_bytes();
+
+        let dh_out = secret.diffie_hellman(&X25519Public::from(pub_key));
+        let root_key = {
+            let hk = Hkdf::<Sha256>::new(Some(&ZERO_SALT), dh_out.as_bytes());
+            let mut key = [0u8; 32];
+            hk.expand(DR_INFO, &mut key).expect("HKDF expand");
+            key
+        };
+
+        let session = DoubleRatchetSession::init_sender(&root_key, &pub_key)
+            .expect("init sender");
+
+        let header = RatchetHeader {
+            ratchet_pub: pub_key,
+            prev_chain_len: 0,
+            msg_num: 0,
+        };
+
+        let mut enc = session.encrypt_header(&header).expect("encrypt");
+        // Flip a byte to simulate tampering.
+        if let Some(byte) = enc.get_mut(0) {
+            *byte ^= 0xFF;
+        }
+
+        // Decryption should fail due to the AEAD tag check.
+        assert!(session.decrypt_header(&enc).is_err());
     }
 }

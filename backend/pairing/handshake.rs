@@ -32,10 +32,40 @@
 //! - If both parties assign Level 6+, X3DH key agreement
 //!   establishes a private channel
 
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
+use crate::error::MeshError;
 use crate::identity::peer_id::PeerId;
 use super::methods::PairingPayload;
+
+// ---------------------------------------------------------------------------
+// Size & rate-limiting constants
+// ---------------------------------------------------------------------------
+
+/// Maximum size in bytes for any incoming handshake frame (challenge or
+/// proof message) before deserialization. Handshake messages are small
+/// (challenge: 32-byte nonce + PeerId + timestamp; proof: 32-byte nonce
+/// + 64-byte signature + PeerId + optional 32-byte counter-challenge).
+/// 4 KiB is generous and prevents multi-GB OOM attacks from malicious
+/// peers sending oversized payloads.
+pub const MAX_HANDSHAKE_FRAME_SIZE: usize = 4096;
+
+/// Maximum number of pairing handshake attempts allowed per IP address
+/// within the rate-limiting window. Exceeding this limit causes the
+/// connection to be rejected with a brief error, mitigating flood attacks
+/// that exhaust CPU or file-descriptor resources.
+pub const MAX_PAIRING_ATTEMPTS_PER_IP: u32 = 5;
+
+/// Duration of the rate-limiting window in seconds. After this period
+/// elapses since the first tracked attempt, the counter resets and the
+/// IP is allowed to retry. 60 seconds is short enough to be friendly
+/// to legitimate users who mistype a pairing code, but long enough to
+/// deter automated flooding.
+pub const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 // ---------------------------------------------------------------------------
 // Handshake State
@@ -1040,6 +1070,118 @@ impl HandshakeSession {
 }
 
 // ---------------------------------------------------------------------------
+// Handshake frame size validation (Finding 3)
+// ---------------------------------------------------------------------------
+
+/// Validate that an incoming handshake frame does not exceed the maximum
+/// allowed size before attempting deserialization. Without this check, a
+/// malicious peer could send a multi-GB payload that exhausts memory
+/// during JSON/bincode deserialization.
+///
+/// Returns `Ok(())` if the frame is within bounds, or
+/// `Err(MeshError::MalformedFrame)` if it exceeds `MAX_HANDSHAKE_FRAME_SIZE`.
+///
+/// Callers MUST invoke this function on the raw bytes received from the
+/// network BEFORE passing them to `serde_json::from_slice` or any other
+/// deserializer.
+pub fn validate_handshake_frame_size(data: &[u8]) -> Result<(), MeshError> {
+    // Compare against the constant bound. Challenge messages are typically
+    // ~100 bytes; proof messages ~200 bytes. 4 KiB is 20-40x headroom.
+    if data.len() > MAX_HANDSHAKE_FRAME_SIZE {
+        return Err(MeshError::MalformedFrame(format!(
+            "handshake frame too large: {} bytes (max {})",
+            data.len(),
+            MAX_HANDSHAKE_FRAME_SIZE,
+        )));
+    }
+    // Frame size is acceptable — proceed with deserialization.
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Pairing rate limiter (Finding 4)
+// ---------------------------------------------------------------------------
+
+/// Per-IP rate limiter for incoming pairing handshake connections.
+///
+/// Tracks the number of pairing attempts from each IP address within a
+/// sliding window. When an IP exceeds `MAX_PAIRING_ATTEMPTS_PER_IP`
+/// within `RATE_LIMIT_WINDOW_SECS`, subsequent attempts are rejected
+/// until the window resets.
+///
+/// This mitigates denial-of-service attacks where an adversary floods
+/// the node with pairing TCP connections, exhausting CPU (signature
+/// verification), file descriptors, or memory (HandshakeSession state).
+pub struct PairingRateLimiter {
+    /// Map from IP address to (attempt_count, window_start_time).
+    /// The window starts when the first attempt from that IP is recorded.
+    /// After `RATE_LIMIT_WINDOW_SECS` seconds, the entry is reset.
+    entries: HashMap<IpAddr, (u32, Instant)>,
+}
+
+impl PairingRateLimiter {
+    /// Create a new empty rate limiter with no tracked IPs.
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Check whether a pairing attempt from `ip` should be allowed.
+    ///
+    /// Returns `Ok(())` if the attempt is within the rate limit, or
+    /// `Err(MeshError::Internal)` if the IP has exceeded its quota.
+    ///
+    /// Each call that returns `Ok` increments the attempt counter for
+    /// that IP. If the rate-limit window has expired since the first
+    /// tracked attempt, the counter resets before checking.
+    pub fn check_rate_limit(&mut self, ip: IpAddr) -> Result<(), MeshError> {
+        let now = Instant::now();
+
+        // Look up the existing entry for this IP, or create a fresh one.
+        let entry = self.entries.entry(ip).or_insert((0, now));
+
+        // Check if the current window has expired. If so, reset the
+        // counter and start a new window from the current time.
+        let elapsed = now.duration_since(entry.1).as_secs();
+        if elapsed >= RATE_LIMIT_WINDOW_SECS {
+            // Window expired — reset counter and start fresh.
+            entry.0 = 0;
+            entry.1 = now;
+        }
+
+        // Check whether the IP has exceeded the attempt limit.
+        if entry.0 >= MAX_PAIRING_ATTEMPTS_PER_IP {
+            // Rate limit exceeded — reject this attempt.
+            return Err(MeshError::Internal(format!(
+                "pairing rate limit exceeded for {} ({} attempts in {}s window)",
+                ip, MAX_PAIRING_ATTEMPTS_PER_IP, RATE_LIMIT_WINDOW_SECS,
+            )));
+        }
+
+        // Increment the attempt counter and allow the attempt.
+        entry.0 += 1;
+        Ok(())
+    }
+
+    /// Remove stale entries older than the rate-limit window.
+    ///
+    /// Call periodically (e.g., every 60 seconds) to prevent unbounded
+    /// growth of the entries map from many distinct IPs. In practice,
+    /// the number of unique IPs attempting pairing is small, but this
+    /// provides a safety valve against memory exhaustion.
+    pub fn cleanup_stale_entries(&mut self) {
+        let now = Instant::now();
+        // Retain only entries whose window has not yet expired.
+        // Expired entries are harmless (they'd be reset on next access)
+        // but removing them keeps the map from growing without bound.
+        self.entries.retain(|_ip, (_, window_start)| {
+            now.duration_since(*window_start).as_secs() < RATE_LIMIT_WINDOW_SECS
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1394,5 +1536,113 @@ mod tests {
 
         let result = session.process_proof(&proof, real_verify);
         assert!(result.is_ok(), "generate_proof output must verify with real crypto");
+    }
+
+    // -----------------------------------------------------------------------
+    // Finding 3: Handshake frame size validation tests
+    // -----------------------------------------------------------------------
+
+    /// Frames within the size limit must pass validation.
+    #[test]
+    fn test_frame_size_within_limit() {
+        // A typical handshake frame is ~100-200 bytes.
+        let small_frame = vec![0u8; 200];
+        assert!(
+            validate_handshake_frame_size(&small_frame).is_ok(),
+            "200-byte frame should be accepted"
+        );
+
+        // Exactly at the limit must also pass.
+        let exact_limit = vec![0u8; MAX_HANDSHAKE_FRAME_SIZE];
+        assert!(
+            validate_handshake_frame_size(&exact_limit).is_ok(),
+            "frame at exact limit should be accepted"
+        );
+    }
+
+    /// Frames exceeding the size limit must be rejected.
+    #[test]
+    fn test_frame_size_exceeds_limit() {
+        // One byte over the limit.
+        let oversized = vec![0u8; MAX_HANDSHAKE_FRAME_SIZE + 1];
+        let result = validate_handshake_frame_size(&oversized);
+        assert!(result.is_err(), "oversized frame must be rejected");
+
+        // Verify the error message mentions the size.
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("too large"),
+            "error should mention 'too large': {err_msg}"
+        );
+    }
+
+    /// Empty frames must pass validation (zero bytes is valid).
+    #[test]
+    fn test_frame_size_empty() {
+        assert!(
+            validate_handshake_frame_size(&[]).is_ok(),
+            "empty frame should be accepted"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Finding 4: Pairing rate limiter tests
+    // -----------------------------------------------------------------------
+
+    /// Basic rate limiter: up to MAX_PAIRING_ATTEMPTS_PER_IP attempts
+    /// should succeed, then the next attempt should be rejected.
+    #[test]
+    fn test_rate_limiter_basic_throttle() {
+        let mut limiter = PairingRateLimiter::new();
+        let ip: IpAddr = "192.168.1.1".parse().expect("valid IP");
+
+        // First MAX_PAIRING_ATTEMPTS_PER_IP attempts should all succeed.
+        for i in 0..MAX_PAIRING_ATTEMPTS_PER_IP {
+            assert!(
+                limiter.check_rate_limit(ip).is_ok(),
+                "attempt {} should be allowed", i + 1
+            );
+        }
+
+        // The next attempt should be rejected.
+        let result = limiter.check_rate_limit(ip);
+        assert!(
+            result.is_err(),
+            "attempt {} should be rejected (rate limit exceeded)",
+            MAX_PAIRING_ATTEMPTS_PER_IP + 1
+        );
+    }
+
+    /// Different IPs should have independent rate limits.
+    #[test]
+    fn test_rate_limiter_independent_ips() {
+        let mut limiter = PairingRateLimiter::new();
+        let ip_a: IpAddr = "10.0.0.1".parse().expect("valid IP");
+        let ip_b: IpAddr = "10.0.0.2".parse().expect("valid IP");
+
+        // Exhaust IP A's limit.
+        for _ in 0..MAX_PAIRING_ATTEMPTS_PER_IP {
+            limiter.check_rate_limit(ip_a).expect("A should be allowed");
+        }
+        // IP A is now blocked.
+        assert!(limiter.check_rate_limit(ip_a).is_err(), "A should be blocked");
+
+        // IP B should still be allowed — independent counter.
+        assert!(limiter.check_rate_limit(ip_b).is_ok(), "B should be allowed");
+    }
+
+    /// Cleanup should remove stale entries without affecting active ones.
+    #[test]
+    fn test_rate_limiter_cleanup() {
+        let mut limiter = PairingRateLimiter::new();
+        let ip: IpAddr = "172.16.0.1".parse().expect("valid IP");
+
+        // Record one attempt.
+        limiter.check_rate_limit(ip).expect("should be allowed");
+        assert_eq!(limiter.entries.len(), 1, "should have one entry");
+
+        // Cleanup should not remove an entry within the window.
+        limiter.cleanup_stale_entries();
+        assert_eq!(limiter.entries.len(), 1, "fresh entry should survive cleanup");
     }
 }
