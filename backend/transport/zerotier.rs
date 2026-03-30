@@ -359,7 +359,8 @@ impl ZeroTierTransport {
     /// Join a virtual network (records the network ID; membership is confirmed
     /// via the controller API).
     pub fn join_network(&self, network_id: &str) {
-        self.networks.lock().unwrap().push(network_id.to_owned());
+        // Mutex recovery: network list is still valid after a poisoned lock.
+        self.networks.lock().unwrap_or_else(|e| e.into_inner()).push(network_id.to_owned());
         tracing::info!(node = %self.node_id, network = network_id, "Joining ZeroTier network");
     }
 
@@ -380,7 +381,8 @@ impl ZeroTierTransport {
                             if verb == ZT_VERB_FRAME || verb == ZT_VERB_MULTICAST_FRAME {
                                 // Extract Ethernet frame from payload.
                                 let frame = pkt[35..].to_vec();
-                                transport.inbound.lock().unwrap().push(frame);
+                                // Mutex recovery: inbound queue is valid after poison.
+                                transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(frame);
                             }
                         }
                     }
@@ -406,7 +408,8 @@ impl ZeroTierTransport {
 
     /// Drain inbound Ethernet frames.
     pub fn drain_inbound(&self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut *self.inbound.lock().unwrap())
+        // Mutex recovery: drain is safe even after a poisoned lock.
+        std::mem::take(&mut *self.inbound.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Check whether a PLANET server is reachable.

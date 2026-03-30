@@ -187,7 +187,8 @@ impl Libp2pTransport {
     /// Publish `data` to a GossipSub topic.
     pub fn publish(&self, topic: &str, data: Vec<u8>) {
         let t = IdentTopic::new(topic);
-        self.outbound.lock().unwrap().push((t, data));
+        // Mutex recovery: outbound queue is valid after poison.
+        self.outbound.lock().unwrap_or_else(|e| e.into_inner()).push((t, data));
     }
 
     /// Publish a network map update.
@@ -202,13 +203,15 @@ impl Libp2pTransport {
 
     /// Drain all inbound events since the last call.
     pub fn drain_events(&self) -> Vec<Libp2pEvent> {
-        std::mem::take(&mut *self.inbound.lock().unwrap())
+        // Mutex recovery: drain is safe even after a poisoned lock.
+        std::mem::take(&mut *self.inbound.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Drain all GossipSub messages for a specific topic.
     pub fn drain_topic(&self, topic: &str) -> Vec<Vec<u8>> {
         let topic_hash = TopicHash::from_raw(topic);
-        let mut events = self.inbound.lock().unwrap();
+        // Mutex recovery: event queue is valid after poison.
+        let mut events = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
         let mut matching = Vec::new();
         events.retain(|e| {
             if let Libp2pEvent::GossipMessage { topic: t, data, .. } = e {
@@ -224,12 +227,14 @@ impl Libp2pTransport {
 
     /// Number of currently connected peers.
     pub fn connected_peer_count(&self) -> usize {
-        self.peers.lock().unwrap().len()
+        // Mutex recovery: peer set is valid after poison.
+        self.peers.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Current NAT status.
     pub fn nat_status(&self) -> NatStatus {
-        *self.nat_status.lock().unwrap()
+        // Mutex recovery: NAT status is valid after poison.
+        *self.nat_status.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether the libp2p transport is operational on this platform.

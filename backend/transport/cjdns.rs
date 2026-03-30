@@ -92,7 +92,8 @@ impl CjdnsFrame {
         if buf.len() < 4 {
             return None;
         }
-        let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
+        // Infallible: buf[..4] is exactly 4 bytes, matching [u8; 4].
+        let len = u32::from_be_bytes(buf[..4].try_into().expect("4-byte slice fits [u8; 4]")) as usize;
         if buf.len() < 4 + len {
             return None;
         }
@@ -170,7 +171,8 @@ impl CjdnsTransport {
                         reassembly.extend_from_slice(&buf[..n]);
                         while let Some((pkt, consumed)) = CjdnsFrame::decode(&reassembly) {
                             reassembly.drain(..consumed);
-                            transport.inbound.lock().unwrap().push(pkt);
+                            // Mutex recovery: data is still valid after a poisoned lock.
+                            transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(pkt);
                         }
                     }
                 })
@@ -180,7 +182,8 @@ impl CjdnsTransport {
 
     /// Drain inbound packets.
     pub fn drain_inbound(&self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut *self.inbound.lock().unwrap())
+        // Mutex recovery: drain is safe even after a poisoned lock.
+        std::mem::take(&mut *self.inbound.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Whether cjdns transport is available on this platform.

@@ -162,7 +162,8 @@ impl YggFrame {
         if buf.len() < 4 {
             return None;
         }
-        let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
+        // Infallible: buf[..4] is exactly 4 bytes, matching [u8; 4].
+        let len = u32::from_be_bytes(buf[..4].try_into().expect("4-byte slice fits [u8; 4]")) as usize;
         if buf.len() < 4 + len {
             return None;
         }
@@ -313,7 +314,8 @@ impl YggdrasilTransport {
                     buf.extend_from_slice(&tmp[..n]);
                     while let Some((packet, consumed)) = YggFrame::decode(&buf) {
                         buf.drain(..consumed);
-                        self.inbound.lock().unwrap().push(packet);
+                        // Mutex recovery: data is still valid after a poisoned lock.
+                        self.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(packet);
                     }
                 }
                 Err(_) => break,
@@ -334,7 +336,8 @@ impl YggdrasilTransport {
 
     /// Drain inbound packets.
     pub fn drain_inbound(&self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut *self.inbound.lock().unwrap())
+        // Mutex recovery: drain is safe even after a poisoned lock.
+        std::mem::take(&mut *self.inbound.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Whether Yggdrasil support is available on this platform.
