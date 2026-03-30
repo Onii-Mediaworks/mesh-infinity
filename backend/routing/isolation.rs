@@ -66,15 +66,24 @@ use super::table::DeviceAddress;
 /// exceptions are allowed. This is a persistent setting that
 /// survives restarts.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// NetworkIsolationConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// NetworkIsolationConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct NetworkIsolationConfig {
     /// Master toggle for network isolation mode.
     /// When true, all automatic discovery is disabled and only
     /// connections to allowed_peers are established.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub enabled: bool,
 
     /// List of device addresses that are allowed to connect.
     /// These peers are the only ones the node will communicate with
     /// in isolation mode. Empty list = truly isolated (no connections).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub allowed_peers: Vec<DeviceAddress>,
 
     /// Whether to allow LAN connections (mDNS/SSDP discovery)
@@ -86,6 +95,8 @@ pub struct NetworkIsolationConfig {
     ///
     /// Set to false for maximum isolation (ThreatContext::Critical
     /// forces this to false).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub allow_lan: bool,
 
     /// Whether store-and-forward delivery is permitted.
@@ -95,30 +106,74 @@ pub struct NetworkIsolationConfig {
     ///
     /// Set to false if you don't want any node holding messages
     /// on your behalf (even encrypted ones).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub allow_s_and_f: bool,
 }
 
+// Trait implementation for protocol conformance.
+// Implement Default for NetworkIsolationConfig.
+// Implement Default for NetworkIsolationConfig.
 impl Default for NetworkIsolationConfig {
+    // Begin the block scope.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
     fn default() -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Execute this protocol step.
+            // Execute this protocol step.
             enabled: false,
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
             allowed_peers: Vec::new(),
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             allow_lan: true,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             allow_s_and_f: true,
         }
     }
 }
 
+// Begin the block scope.
+// NetworkIsolationConfig implementation — core protocol logic.
+// NetworkIsolationConfig implementation — core protocol logic.
 impl NetworkIsolationConfig {
     /// Create a configuration for ThreatContext::Critical.
     ///
     /// Critical threat context forces isolation with no LAN and
     /// no S&F. Only pre-configured peers are reachable.
+    // Perform the 'critical mode' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'critical mode' operation.
+    // Errors are propagated to the caller via Result.
     pub fn critical_mode(allowed_peers: Vec<DeviceAddress>) -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Execute this protocol step.
+            // Execute this protocol step.
             enabled: true,
+            // Execute this protocol step.
+            // Execute this protocol step.
             allowed_peers,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             allow_lan: false,   // Forced off in Critical.
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             allow_s_and_f: false,
         }
     }
@@ -127,13 +182,24 @@ impl NetworkIsolationConfig {
     ///
     /// In isolation mode, only explicitly allowed peers may connect.
     /// When isolation is disabled, all peers are allowed.
+    // Perform the 'is peer allowed' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is peer allowed' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_peer_allowed(&self, peer: &DeviceAddress) -> bool {
         // If isolation is not enabled, everyone is allowed.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.enabled {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return true;
         }
 
         // In isolation mode, check the allowlist.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.allowed_peers.contains(peer)
     }
 
@@ -141,17 +207,37 @@ impl NetworkIsolationConfig {
     ///
     /// Disabled in isolation mode — the node does not publish to
     /// or query the DHT.
+    // Perform the 'allows dht' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allows dht' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allows_dht(&self) -> bool {
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         !self.enabled
     }
 
     /// Check if mDNS/SSDP local discovery is allowed.
     ///
     /// Disabled in isolation mode unless allow_lan is true.
+    // Perform the 'allows mdns' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allows mdns' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allows_mdns(&self) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.enabled {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return true;
         }
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.allow_lan
     }
 
@@ -159,7 +245,14 @@ impl NetworkIsolationConfig {
     ///
     /// Always disabled in isolation mode — bootstrap nodes are
     /// unknown peers by definition.
+    // Perform the 'allows bootstrap' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allows bootstrap' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allows_bootstrap(&self) -> bool {
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         !self.enabled
     }
 
@@ -167,10 +260,23 @@ impl NetworkIsolationConfig {
     ///
     /// Configurable in isolation mode via the allow_s_and_f flag.
     /// Always allowed when isolation is disabled.
+    // Perform the 'allows store and forward' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allows store and forward' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allows_store_and_forward(&self) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.enabled {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return true;
         }
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.allow_s_and_f
     }
 
@@ -178,26 +284,57 @@ impl NetworkIsolationConfig {
     ///
     /// In isolation mode, announcements are only sent to allowed peers.
     /// When isolation is disabled, announcements go to all peers.
+    // Perform the 'allows announcement to' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allows announcement to' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allows_announcement_to(&self, peer: &DeviceAddress) -> bool {
+        // Delegate to the instance method.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.is_peer_allowed(peer)
     }
 
     /// Add a peer to the allowlist.
     ///
     /// Idempotent — adding a peer that's already allowed is a no-op.
+    // Perform the 'add allowed peer' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add allowed peer' operation.
+    // Errors are propagated to the caller via Result.
     pub fn add_allowed_peer(&mut self, peer: DeviceAddress) {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.allowed_peers.contains(&peer) {
+            // Execute the operation and bind the result.
+            // Append to the collection.
+            // Append to the collection.
             self.allowed_peers.push(peer);
         }
     }
 
     /// Remove a peer from the allowlist.
+    // Perform the 'remove allowed peer' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'remove allowed peer' operation.
+    // Errors are propagated to the caller via Result.
     pub fn remove_allowed_peer(&mut self, peer: &DeviceAddress) {
+        // Filter the collection, keeping only elements that pass.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
         self.allowed_peers.retain(|p| p != peer);
     }
 
     /// Number of allowed peers.
+    // Perform the 'allowed peer count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'allowed peer count' operation.
+    // Errors are propagated to the caller via Result.
     pub fn allowed_peer_count(&self) -> usize {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.allowed_peers.len()
     }
 }

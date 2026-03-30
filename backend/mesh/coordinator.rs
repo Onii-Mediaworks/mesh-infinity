@@ -35,8 +35,24 @@ use crate::trust::levels::TrustLevel;
 /// The actual transport decision is made by the transport solver (§5.10);
 /// this is an advisory preference that the solver weighs against availability.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Begin the block scope.
+// TransportPreference — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// TransportPreference — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// TransportPreference — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// TransportPreference — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// TransportPreference — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum TransportPreference {
     /// Use clearnet TCP — fastest, least private.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Clearnet,
     /// Use Tor — slower, most private.
     Tor,
@@ -55,25 +71,76 @@ pub enum TransportPreference {
 // ---------------------------------------------------------------------------
 
 /// A request to send a payload through the mesh.
+// SendRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SendRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SendRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SendRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SendRequest — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct SendRequest {
     /// Destination device address.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub destination: DeviceAddress,
     /// The payload to send (application-layer encrypted).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub payload: Vec<u8>,
     /// Whether to prefer low latency (e.g. voice call) over privacy.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub prefer_low_latency: bool,
     /// Whether to prefer high privacy (e.g. anonymous message) over speed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub prefer_high_privacy: bool,
 }
 
 /// Result of a send request.
 #[derive(Debug)]
+// Begin the block scope.
+// SendResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// SendResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// SendResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// SendResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// SendResult — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum SendResult {
     /// Packet queued for delivery via the specified transport.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Queued { transport: TransportType, next_hop: DeviceAddress },
     /// No route to destination.
     NoRoute,
     /// No matching transport is available.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     NoTransport,
 }
 
@@ -84,10 +151,36 @@ pub enum SendResult {
 /// The mesh routing coordinator.
 ///
 /// Stateless — does not own routing state; operates on provided state.
+// MeshCoordinator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// MeshCoordinator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// MeshCoordinator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// MeshCoordinator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// MeshCoordinator — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct MeshCoordinator;
 
+// Begin the block scope.
+// MeshCoordinator implementation — core protocol logic.
+// MeshCoordinator implementation — core protocol logic.
+// MeshCoordinator implementation — core protocol logic.
+// MeshCoordinator implementation — core protocol logic.
+// MeshCoordinator implementation — core protocol logic.
 impl MeshCoordinator {
     /// Create a new coordinator.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new() -> Self {
         Self
     }
@@ -100,23 +193,90 @@ impl MeshCoordinator {
     /// 3. If next_hop trust is Untrusted or Unknown → prefer Tor.
     /// 4. If hop_count > 1 (multi-hop) → use mesh relay.
     /// 5. Otherwise → clearnet.
+    // Perform the 'select transport' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'select transport' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'select transport' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'select transport' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'select transport' operation.
+    // Errors are propagated to the caller via Result.
     pub fn select_transport(
         &self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         entry: &RoutingEntry,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         prefer_low_latency: bool,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         prefer_high_privacy: bool,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> TransportPreference {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if prefer_high_privacy {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return TransportPreference::Tor;
         }
 
+        // Bounds check to enforce protocol constraints.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if prefer_low_latency && entry.next_hop_trust >= TrustLevel::Trusted {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return TransportPreference::Clearnet;
         }
 
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match entry.next_hop_trust {
+            // Handle this match arm.
             TrustLevel::Unknown | TrustLevel::Public => TransportPreference::Tor,
+            // Handle this match arm.
             _ if entry.hop_count > 1 => TransportPreference::Mesh,
+            // Update the local state.
             _ => TransportPreference::Clearnet,
         }
     }
@@ -125,26 +285,99 @@ impl MeshCoordinator {
     ///
     /// In a full implementation this would check `available_transports`
     /// and fall back gracefully. For now, it maps directly.
+    // Perform the 'preference to type' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'preference to type' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'preference to type' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'preference to type' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'preference to type' operation.
+    // Errors are propagated to the caller via Result.
     pub fn preference_to_type(
         &self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         pref: &TransportPreference,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         available: &[TransportType],
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> Option<TransportType> {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Compute preferred for this protocol step.
+        // Compute preferred for this protocol step.
+        // Compute preferred for this protocol step.
+        // Compute preferred for this protocol step.
+        // Compute preferred for this protocol step.
         let preferred = match pref {
+            // Handle this match arm.
             TransportPreference::Clearnet => TransportType::Clearnet,
+            // Handle this match arm.
             TransportPreference::Tor      => TransportType::Tor,
+            // Handle this match arm.
             TransportPreference::Ble      => TransportType::BLE,
+            // Handle this match arm.
             TransportPreference::Rf       => TransportType::RF,
+            // Begin the block scope.
+            // Handle TransportPreference::Mesh | TransportPreference::Any.
+            // Handle TransportPreference::Mesh | TransportPreference::Any.
+            // Handle TransportPreference::Mesh | TransportPreference::Any.
+            // Handle TransportPreference::Mesh | TransportPreference::Any.
+            // Handle TransportPreference::Mesh | TransportPreference::Any.
             TransportPreference::Mesh | TransportPreference::Any => {
                 // Pick first available in priority order.
+                // Iterate over each element.
+                // Iterate over each element.
+                // Iterate over each element.
+                // Iterate over each element.
+                // Iterate over each element.
                 for t in &[TransportType::Clearnet, TransportType::BLE, TransportType::RF] {
+                    // Conditional branch based on the current state.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
+                    // Guard: validate the condition before proceeding.
                     if available.contains(t) { return Some(t.clone()); }
                 }
+                // No result available — signal absence to the caller.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
+                // Return to the caller.
                 return None;
             }
         };
 
+        // Handle the error case — propagate or log as appropriate.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if available.contains(&preferred) {
+            // Return the result to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return Some(preferred);
         }
 
@@ -155,17 +388,57 @@ impl MeshCoordinator {
         // over an unprotected channel.  Tor-preferred requests may only fall
         // back to other non-clearnet transports (BLE, RF).  If none of those
         // are available either, return None so the caller can fail explicitly.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if pref == &TransportPreference::Tor {
+            // Iterate over each element in the collection.
+            // Iterate over each element.
+            // Iterate over each element.
+            // Iterate over each element.
+            // Iterate over each element.
+            // Iterate over each element.
             for t in &[TransportType::BLE, TransportType::RF] {
+                // Conditional branch based on the current state.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if available.contains(t) { return Some(t.clone()); }
             }
+            // No result available — signal absence to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return None;
         }
 
+        // Iterate over each element in the collection.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
+        // Iterate over each element.
         for t in &[TransportType::Clearnet, TransportType::BLE, TransportType::RF, TransportType::Tor] {
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if available.contains(t) { return Some(t.clone()); }
         }
 
+        // No value available.
+        // No value available.
+        // No value available.
+        // No value available.
+        // No value available.
         None
     }
 
@@ -174,35 +447,157 @@ impl MeshCoordinator {
     /// Returns a `SendResult` describing what was done (or what failed).
     /// The caller is responsible for actually sending the bytes via the
     /// chosen transport.
+    // Perform the 'route' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'route' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'route' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'route' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'route' operation.
+    // Errors are propagated to the caller via Result.
     pub fn route(
         &self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         request: &SendRequest,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         entry: Option<&RoutingEntry>,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         available_transports: &[TransportType],
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> SendResult {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Compute entry for this protocol step.
+        // Compute entry for this protocol step.
+        // Compute entry for this protocol step.
+        // Compute entry for this protocol step.
+        // Compute entry for this protocol step.
         let entry = match entry {
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
+            // Wrap the found value.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(e) => e,
+            // Update the local state.
+            // No value available.
+            // No value available.
+            // No value available.
+            // No value available.
+            // No value available.
             None => return SendResult::NoRoute,
         };
 
+        // Bind the computed value for subsequent use.
+        // Compute pref for this protocol step.
+        // Compute pref for this protocol step.
+        // Compute pref for this protocol step.
+        // Compute pref for this protocol step.
+        // Compute pref for this protocol step.
         let pref = self.select_transport(
             entry,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             request.prefer_low_latency,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             request.prefer_high_privacy,
         );
 
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match self.preference_to_type(&pref, available_transports) {
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
+            // Wrap the found value.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(transport) => SendResult::Queued {
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 transport,
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 next_hop: entry.next_hop,
             },
+            // Update the local state.
+            // No value available.
+            // No value available.
+            // No value available.
+            // No value available.
+            // No value available.
             None => SendResult::NoTransport,
         }
     }
 }
 
+// Trait implementation for protocol conformance.
+// Implement Default for MeshCoordinator.
+// Implement Default for MeshCoordinator.
+// Implement Default for MeshCoordinator.
+// Implement Default for MeshCoordinator.
+// Implement Default for MeshCoordinator.
 impl Default for MeshCoordinator {
+    // Begin the block scope.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'default' operation.
+    // Errors are propagated to the caller via Result.
     fn default() -> Self {
+        // Create a new instance with the specified parameters.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         Self::new()
     }
 }

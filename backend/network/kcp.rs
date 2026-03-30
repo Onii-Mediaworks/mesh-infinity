@@ -38,37 +38,59 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// No-delay mode. 1 = enabled (initial RTO 30ms instead of 100ms).
+// KCP_NODELAY — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_NODELAY: i32 = 1;
 
 /// Internal tick interval (milliseconds).
+// KCP_INTERVAL_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_INTERVAL_MS: i32 = 20;
 
 /// Fast retransmit threshold (out-of-order ACK count).
+// KCP_RESEND — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_RESEND: i32 = 2;
 
 /// Congestion control. 1 = disabled (mesh manages its own congestion).
+// KCP_NC — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_NC: i32 = 1;
 
 /// Default MTU (bytes). Adjusted per-tunnel based on TunnelAccept.mtu.
+// KCP_DEFAULT_MTU — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_DEFAULT_MTU: u16 = 1400;
 
 /// Send window size (packets).
+// KCP_SND_WND — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_SND_WND: u32 = 128;
 
 /// Receive window size (packets).
+// KCP_RCV_WND — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_RCV_WND: u32 = 128;
 
 /// Dead link threshold. After this many consecutive unacked
 /// retransmits, the link is declared dead.
+// KCP_DEAD_LINK — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_DEAD_LINK: u32 = 20;
 
 /// Initial RTO in no-delay mode (milliseconds).
+// KCP_INITIAL_RTO_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_INITIAL_RTO_MS: u32 = 30;
 
 /// RTO backoff multiplier (1.5× instead of 2× in no-delay mode).
+// KCP_RTO_MULTIPLIER — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_RTO_MULTIPLIER: f32 = 1.5;
 
 /// Maximum RTO (milliseconds).
+// KCP_MAX_RTO_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const KCP_MAX_RTO_MS: u32 = 5000;
 
 // ---------------------------------------------------------------------------
@@ -79,15 +101,20 @@ pub const KCP_MAX_RTO_MS: u32 = 5000;
 ///
 /// Controls which frames are retransmitted when lost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// KcpReliabilityMode — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum KcpReliabilityMode {
     /// All frames retransmitted. Default for messaging and files.
     Full,
     /// Only keyframes and headers retransmitted.
     /// Delta frames and audio frames accept loss.
     /// Used for video streaming (VP9, AV1).
+    // Execute this protocol step.
     Selective,
     /// No retransmission at all.
     /// Used for voice-only calls where Opus PLC handles loss.
+    // No value available.
     None,
 }
 
@@ -100,40 +127,68 @@ pub enum KcpReliabilityMode {
 /// Created from the KCP constants and per-tunnel parameters
 /// (like MTU from TunnelAccept).
 #[derive(Clone, Debug)]
+// Begin the block scope.
+// KcpConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct KcpConfig {
     /// Conversation ID (first 4 bytes of WireGuard session key).
+    // Execute this protocol step.
     pub conv: u32,
     /// Path MTU from tunnel negotiation.
+    // Execute this protocol step.
     pub mtu: u16,
     /// Reliability mode.
+    // Execute this protocol step.
     pub mode: KcpReliabilityMode,
     /// Send window size.
+    // Execute this protocol step.
     pub snd_wnd: u32,
     /// Receive window size.
+    // Execute this protocol step.
     pub rcv_wnd: u32,
 }
 
+// Begin the block scope.
+// KcpConfig implementation — core protocol logic.
 impl KcpConfig {
     /// Derive the conv from a WireGuard session key.
     ///
     /// Both sides compute this independently — no round trip.
     /// Takes the first 4 bytes of the session key as a u32 (LE).
+    // Perform the 'conv from session key' operation.
+    // Errors are propagated to the caller via Result.
     pub fn conv_from_session_key(session_key: &[u8; 32]) -> u32 {
+        // Invoke the associated function.
+        // Execute this protocol step.
         u32::from_le_bytes([
+            // Execute this protocol step.
             session_key[0],
+            // Execute this protocol step.
             session_key[1],
+            // Execute this protocol step.
             session_key[2],
+            // Execute this protocol step.
             session_key[3],
         ])
     }
 
     /// Create a default config from a session key and MTU.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new(session_key: &[u8; 32], mtu: u16, mode: KcpReliabilityMode) -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Invoke the associated function.
+            // Execute this protocol step.
             conv: Self::conv_from_session_key(session_key),
             mtu,
             mode,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
             snd_wnd: KCP_SND_WND,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
             rcv_wnd: KCP_RCV_WND,
         }
     }

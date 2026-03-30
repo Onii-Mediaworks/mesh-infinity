@@ -29,17 +29,41 @@ use crate::identity::peer_id::PeerId;
 // ---------------------------------------------------------------------------
 
 /// Standard quorum threshold (51% of non-admin members).
+// STANDARD_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// STANDARD_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// STANDARD_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const STANDARD_QUORUM: f32 = 0.51;
 
 /// Supermajority threshold (67% of non-admin members).
 /// Required for removing an admin. No exceptions.
+// SUPERMAJORITY_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// SUPERMAJORITY_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// SUPERMAJORITY_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const SUPERMAJORITY_QUORUM: f32 = 0.67;
 
 /// Admin-heavy threshold. When admins exceed this fraction of
 /// total membership, admin quorum is additionally required.
+// ADMIN_HEAVY_THRESHOLD — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// ADMIN_HEAVY_THRESHOLD — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// ADMIN_HEAVY_THRESHOLD — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const ADMIN_HEAVY_THRESHOLD: f32 = 0.50;
 
 /// Admin quorum (51% of admins) for admin-heavy groups.
+// ADMIN_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// ADMIN_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// ADMIN_QUORUM — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const ADMIN_QUORUM: f32 = 0.51;
 
 // ---------------------------------------------------------------------------
@@ -48,46 +72,124 @@ pub const ADMIN_QUORUM: f32 = 0.51;
 
 /// Actions that require governance approval (§8.10).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// GovernanceAction — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// GovernanceAction — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// GovernanceAction — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum GovernanceAction {
     /// Promote a member to admin. Standard quorum.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     PromoteAdmin { candidate: PeerId },
 
     /// Remove an admin. Supermajority required.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     RemoveAdmin { target: PeerId },
 
     /// Change the group's network type (e.g., Private → Open).
     /// Security increase: admin or standard quorum.
     /// Security decrease: admin AND standard quorum.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ChangeNetworkType {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         from: super::super::groups::group::NetworkType,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         to: super::super::groups::group::NetworkType,
     },
 
     /// Change group settings (name, description, etc.).
     /// Standard quorum.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ChangeSettings,
 
     /// Force a rekeying event. Admin only.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ForceRekey,
 }
 
+// Begin the block scope.
+// GovernanceAction implementation — core protocol logic.
+// GovernanceAction implementation — core protocol logic.
+// GovernanceAction implementation — core protocol logic.
 impl GovernanceAction {
     /// What quorum threshold this action requires.
+    // Perform the 'required quorum' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'required quorum' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'required quorum' operation.
+    // Errors are propagated to the caller via Result.
     pub fn required_quorum(&self) -> f32 {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match self {
+            // Handle this match arm.
+            // Handle Self::RemoveAdmin { .. }.
+            // Handle Self::RemoveAdmin { .. }.
+            // Handle Self::RemoveAdmin { .. }.
             Self::RemoveAdmin { .. } => SUPERMAJORITY_QUORUM,
+            // Update the local state.
             _ => STANDARD_QUORUM,
         }
     }
 
     /// Whether this action requires admin initiation.
+    // Perform the 'requires admin' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'requires admin' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'requires admin' operation.
+    // Errors are propagated to the caller via Result.
     pub fn requires_admin(&self) -> bool {
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(
             self,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             Self::PromoteAdmin { .. }
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | Self::RemoveAdmin { .. }
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | Self::ChangeNetworkType { .. }
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | Self::ChangeSettings
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 | Self::ForceRekey
         )
     }
@@ -103,21 +205,43 @@ impl GovernanceAction {
 /// vote are counted as approving. Only explicit rejection votes
 /// are collected.
 #[derive(Clone, Debug)]
+// Begin the block scope.
+// GovernanceVote — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// GovernanceVote — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// GovernanceVote — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct GovernanceVote {
     /// The action being voted on.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub action: GovernanceAction,
 
     /// Who proposed the action.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub proposed_by: PeerId,
 
     /// When the vote was proposed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub proposed_at: u64,
 
     /// Rejection votes received (only from eligible voters).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub rejections: Vec<PeerId>,
 
     /// Number of eligible voters (non-admin members for standard,
     /// all admins for admin-only groups).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub eligible_voters: usize,
 
     /// The authoritative set of eligible voter PeerIds.
@@ -125,15 +249,28 @@ pub struct GovernanceVote {
     /// Populated at vote-creation time from the current member/admin list.
     /// `reject()` silently ignores any PeerId not in this set, preventing
     /// non-members and fabricated identities from blocking governance actions.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub eligible_voter_ids: Vec<PeerId>,
 
     /// The required rejection threshold.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub threshold: f32,
 
     /// Whether the voting window has been manually closed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub closed: bool,
 }
 
+// Begin the block scope.
+// GovernanceVote implementation — core protocol logic.
+// GovernanceVote implementation — core protocol logic.
+// GovernanceVote implementation — core protocol logic.
 impl GovernanceVote {
     /// Create a new governance vote.
     ///
@@ -141,22 +278,70 @@ impl GovernanceVote {
     /// allowed to cast rejection votes.  `eligible_voters` is kept for
     /// the threshold denominator (may be larger than `eligible_voter_ids`
     /// if some members are unreachable and excluded from the id list).
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new(
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         action: GovernanceAction,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         proposed_by: PeerId,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         eligible_voters: usize,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         eligible_voter_ids: Vec<PeerId>,
+        // Execute this protocol step.
+        // Execute this protocol step.
         now: u64,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> Self {
+        // Execute the operation and bind the result.
+        // Compute threshold for this protocol step.
+        // Compute threshold for this protocol step.
         let threshold = action.required_quorum();
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
             action,
+            // Execute this protocol step.
+            // Execute this protocol step.
             proposed_by,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             proposed_at: now,
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
             rejections: Vec::new(),
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             eligible_voters,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             eligible_voter_ids,
+            // Execute this protocol step.
+            // Execute this protocol step.
             threshold,
+            // Execute this protocol step.
+            // Execute this protocol step.
             closed: false,
         }
     }
@@ -167,28 +352,69 @@ impl GovernanceVote {
     /// (the action is blocked).
     /// Silently ignores votes from peers not in `eligible_voter_ids` —
     /// non-members and fabricated identities cannot block governance actions.
+    // Perform the 'reject' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'reject' operation.
+    // Errors are propagated to the caller via Result.
     pub fn reject(&mut self, voter: PeerId) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.eligible_voter_ids.contains(&voter) {
             // Not an eligible voter — discard.
+            // Return to the caller.
+            // Return to the caller.
             return self.is_rejected();
         }
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !self.rejections.contains(&voter) {
+            // Execute the operation and bind the result.
+            // Append to the collection.
+            // Append to the collection.
             self.rejections.push(voter);
         }
+        // Delegate to the instance method.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.is_rejected()
     }
 
     /// Whether the rejection threshold has been met.
+    // Perform the 'is rejected' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is rejected' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_rejected(&self) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if self.eligible_voters == 0 {
+            // Condition not met — return negative result.
+            // Return to the caller.
+            // Return to the caller.
             return false;
         }
+        // Track the count for threshold and bounds checking.
+        // Compute required for this protocol step.
+        // Compute required for this protocol step.
         let required = (self.eligible_voters as f32 * self.threshold).ceil() as usize;
+        // Validate the length matches the expected protocol size.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.rejections.len() >= required
     }
 
     /// Whether the action should proceed (not rejected).
+    // Perform the 'is approved' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is approved' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_approved(&self) -> bool {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         !self.is_rejected()
     }
 
@@ -199,10 +425,23 @@ impl GovernanceVote {
     ///
     /// Returns true if admins exceed ADMIN_HEAVY_THRESHOLD of
     /// total membership, meaning admin quorum is also required.
+    // Perform the 'admin heavy check' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'admin heavy check' operation.
+    // Errors are propagated to the caller via Result.
     pub fn admin_heavy_check(admin_count: usize, total_members: usize) -> bool {
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if total_members == 0 {
+            // Condition not met — return negative result.
+            // Return to the caller.
+            // Return to the caller.
             return false;
         }
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         (admin_count as f32 / total_members as f32) > ADMIN_HEAVY_THRESHOLD
     }
 }

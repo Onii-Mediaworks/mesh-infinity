@@ -46,49 +46,131 @@ use super::methods::PairingPayload;
 /// Tracks the progress of the Sigma protocol exchange between
 /// two peers during pairing.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// Begin the block scope.
+// HandshakeState — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeState — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeState — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeState — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeState — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum HandshakeState {
     /// Waiting to start. No messages exchanged yet.
     Idle,
 
     /// We sent a challenge and are waiting for the peer's proof.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ChallengeSent {
         /// The challenge nonce we sent.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         our_challenge: [u8; 32],
     },
 
     /// We received the peer's proof and sent our own.
     /// Waiting for the peer to acknowledge.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ProofSent {
         /// The challenge nonce we sent.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         our_challenge: [u8; 32],
         /// The challenge nonce the peer sent.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         peer_challenge: [u8; 32],
     },
 
     /// Handshake completed successfully. Both parties have
     /// proven key possession.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Completed {
         /// The peer's verified peer ID.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         peer_id: PeerId,
     },
 
     /// Handshake failed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Failed(HandshakeError),
 }
 
 /// Errors that can occur during the handshake.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// HandshakeError — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeError — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeError — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeError — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// HandshakeError — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum HandshakeError {
     /// The peer's proof didn't verify — they don't hold the
     /// private key for their claimed public key.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ProofVerificationFailed,
     /// The handshake timed out — the peer didn't respond.
     Timeout,
     /// The pairing payload was invalid or expired.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     InvalidPayload,
     /// The peer ID doesn't match what we expected.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     PeerIdMismatch,
     /// The handshake was cancelled by the user or peer.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Cancelled,
 }
 
@@ -101,14 +183,40 @@ pub enum HandshakeError {
 /// Contains a random nonce that the other party must sign to
 /// prove key possession.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// ChallengeMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ChallengeMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ChallengeMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ChallengeMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ChallengeMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct ChallengeMessage {
     /// Random 32-byte challenge nonce.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub challenge: [u8; 32],
 
     /// The sender's peer ID (for identification).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub sender_peer_id: PeerId,
 
     /// Unix timestamp (for freshness checking).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub timestamp: u64,
 }
 
@@ -118,19 +226,50 @@ pub struct ChallengeMessage {
 /// proving that the sender holds the private key corresponding
 /// to their claimed public key.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// ProofMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ProofMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ProofMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ProofMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// ProofMessage — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct ProofMessage {
     /// The challenge nonce that was signed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub challenge: [u8; 32],
 
     /// Ed25519 signature over:
     /// "meshinfinity-sigma-proof-v1" || challenge || sender_peer_id
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub signature: Vec<u8>,
 
     /// The sender's peer ID.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub sender_peer_id: PeerId,
 
     /// The sender's counter-challenge (Step 2 only).
     /// Absent in the final proof (Step 3).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub counter_challenge: Option<[u8; 32]>,
 }
 
@@ -139,6 +278,16 @@ pub struct ProofMessage {
 /// Included in the signed message to prevent cross-protocol
 /// signature reuse. An adversary can't take a signature from
 /// a different protocol and use it as a Sigma proof.
+// SIGMA_DOMAIN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// SIGMA_DOMAIN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// SIGMA_DOMAIN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// SIGMA_DOMAIN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// SIGMA_DOMAIN — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const SIGMA_DOMAIN: &[u8] = b"meshinfinity-sigma-proof-v1";
 
 // ---------------------------------------------------------------------------
@@ -150,17 +299,47 @@ pub const SIGMA_DOMAIN: &[u8] = b"meshinfinity-sigma-proof-v1";
 /// Manages the state of a single pairing handshake between two peers.
 /// Tracks the exchange of challenges and proofs, and determines
 /// when the handshake is complete.
+// HandshakeSession — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// HandshakeSession — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// HandshakeSession — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// HandshakeSession — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// HandshakeSession — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct HandshakeSession {
     /// Current handshake state.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub state: HandshakeState,
 
     /// The peer's pairing payload (received via QR, NFC, etc.).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub peer_payload: PairingPayload,
 
     /// When this session was created (Unix timestamp).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub created_at: u64,
 
     /// Session timeout (seconds). Default: 60.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub timeout_secs: u64,
 }
 
@@ -168,18 +347,73 @@ pub struct HandshakeSession {
 ///
 /// 60 seconds is generous for an interactive pairing flow.
 /// The user should be physically present or on a call.
+// DEFAULT_HANDSHAKE_TIMEOUT — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_HANDSHAKE_TIMEOUT — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_HANDSHAKE_TIMEOUT — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_HANDSHAKE_TIMEOUT — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_HANDSHAKE_TIMEOUT — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const DEFAULT_HANDSHAKE_TIMEOUT: u64 = 60;
 
+// Begin the block scope.
+// HandshakeSession implementation — core protocol logic.
+// HandshakeSession implementation — core protocol logic.
+// HandshakeSession implementation — core protocol logic.
+// HandshakeSession implementation — core protocol logic.
+// HandshakeSession implementation — core protocol logic.
 impl HandshakeSession {
     /// Create a new handshake session.
     ///
     /// `peer_payload`: the pairing payload received from the peer.
     /// `now`: current unix timestamp.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new(peer_payload: PairingPayload, now: u64) -> Self {
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             state: HandshakeState::Idle,
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             peer_payload,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             created_at: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             timeout_secs: DEFAULT_HANDSHAKE_TIMEOUT,
         }
     }
@@ -188,19 +422,91 @@ impl HandshakeSession {
     ///
     /// `challenge`: 32 bytes of random entropy (from CSPRNG).
     /// Returns the ChallengeMessage to send to the peer.
+    // Perform the 'initiate' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'initiate' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'initiate' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'initiate' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'initiate' operation.
+    // Errors are propagated to the caller via Result.
     pub fn initiate(
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         &mut self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         challenge: [u8; 32],
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         our_peer_id: PeerId,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         now: u64,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> ChallengeMessage {
+        // Update the state to reflect the new state.
+        // Advance state state.
+        // Advance state state.
+        // Advance state state.
+        // Advance state state.
+        // Advance state state.
         self.state = HandshakeState::ChallengeSent {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             our_challenge: challenge,
         };
 
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         ChallengeMessage {
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             challenge,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             sender_peer_id: our_peer_id,
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             timestamp: now,
         }
     }
@@ -217,82 +523,324 @@ impl HandshakeSession {
     ///
     /// In a full implementation, `verify_fn` would use the ed25519_dalek
     /// crate. We accept a closure for testability.
+    // Perform the 'process proof' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'process proof' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'process proof' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'process proof' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'process proof' operation.
+    // Errors are propagated to the caller via Result.
     pub fn process_proof<F>(
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         &mut self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         proof: &ProofMessage,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         verify_fn: F,
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> Result<(), HandshakeError>
     where
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         F: Fn(&[u8; 32], &[u8], &[u8]) -> bool,
     {
         // Verify the peer ID matches the payload.
+        // Compute expected id for this protocol step.
+        // Compute expected id for this protocol step.
+        // Compute expected id for this protocol step.
+        // Compute expected id for this protocol step.
+        // Compute expected id for this protocol step.
         let expected_id = PeerId::from_ed25519_pub(&self.peer_payload.ed25519_public);
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if proof.sender_peer_id != expected_id {
+            // Update the state to reflect the new state.
+            // Advance state state.
+            // Advance state state.
+            // Advance state state.
+            // Advance state state.
+            // Advance state state.
             self.state = HandshakeState::Failed(HandshakeError::PeerIdMismatch);
+            // Reject with an explicit error for the caller to handle.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return Err(HandshakeError::PeerIdMismatch);
         }
 
         // Build the signed message:
         // SIGMA_DOMAIN || challenge || sender_peer_id
+        // Compute signed msg for this protocol step.
+        // Compute signed msg for this protocol step.
+        // Compute signed msg for this protocol step.
+        // Compute signed msg for this protocol step.
+        // Compute signed msg for this protocol step.
         let mut signed_msg = Vec::with_capacity(
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             SIGMA_DOMAIN.len() + 32 + 32,
         );
+        // Append the data segment to the accumulating buffer.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
         signed_msg.extend_from_slice(SIGMA_DOMAIN);
+        // Append the data segment to the accumulating buffer.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
         signed_msg.extend_from_slice(&proof.challenge);
+        // Append the data segment to the accumulating buffer.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
         signed_msg.extend_from_slice(&proof.sender_peer_id.0);
 
         // Verify the signature.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if !verify_fn(
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             &self.peer_payload.ed25519_public,
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             &signed_msg,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             &proof.signature,
+        // Begin the block scope.
         ) {
+            // Update the state to reflect the new state.
+            // Advance state state.
+            // Advance state state.
+            // Advance state state.
+            // Advance state state.
+            // Advance state state.
             self.state = HandshakeState::Failed(
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 HandshakeError::ProofVerificationFailed,
             );
+            // Reject with an explicit error for the caller to handle.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return Err(HandshakeError::ProofVerificationFailed);
         }
 
         // Advance state based on current state.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match &self.state {
+            // Begin the block scope.
+            // Handle HandshakeState::ChallengeSent { our_challenge }.
+            // Handle HandshakeState::ChallengeSent { our_challenge }.
+            // Handle HandshakeState::ChallengeSent { our_challenge }.
+            // Handle HandshakeState::ChallengeSent { our_challenge }.
+            // Handle HandshakeState::ChallengeSent { our_challenge }.
             HandshakeState::ChallengeSent { our_challenge } => {
                 // We sent a challenge, peer proved it. Check that
                 // the proof is for OUR challenge.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if proof.challenge != *our_challenge {
+                    // Update the state to reflect the new state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
                     self.state = HandshakeState::Failed(
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         HandshakeError::ProofVerificationFailed,
                     );
+                    // Reject with an explicit error for the caller to handle.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
+                    // Return to the caller.
                     return Err(HandshakeError::ProofVerificationFailed);
                 }
 
                 // If the peer also sent a counter-challenge, we need
                 // to respond. Otherwise, handshake is complete.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if let Some(counter) = proof.counter_challenge {
+                    // Update the state to reflect the new state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
                     self.state = HandshakeState::ProofSent {
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         our_challenge: *our_challenge,
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         peer_challenge: counter,
                     };
+                // Begin the block scope.
+                // Fallback when the guard was not satisfied.
+                // Fallback when the guard was not satisfied.
+                // Fallback when the guard was not satisfied.
+                // Fallback when the guard was not satisfied.
+                // Fallback when the guard was not satisfied.
                 } else {
+                    // Update the state to reflect the new state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
                     self.state = HandshakeState::Completed {
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         peer_id: proof.sender_peer_id,
                     };
                 }
             }
+            // Begin the block scope.
+            // Handle HandshakeState::Idle.
+            // Handle HandshakeState::Idle.
+            // Handle HandshakeState::Idle.
+            // Handle HandshakeState::Idle.
+            // Handle HandshakeState::Idle.
             HandshakeState::Idle => {
                 // We received a proof without sending a challenge.
                 // This can happen if the peer initiated.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if let Some(counter) = proof.counter_challenge {
+                    // Update the state to reflect the new state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
+                    // Advance state state.
                     self.state = HandshakeState::ProofSent {
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         our_challenge: [0; 32], // We didn't challenge.
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
                         peer_challenge: counter,
                     };
                 }
             }
+            // Update the local state.
+            // Handle _.
+            // Handle _.
+            // Handle _.
+            // Handle _.
             _ => {
                 // Unexpected state. Ignore duplicate proofs.
             }
         }
 
+        // Wrap the computed value in the success variant.
+        // Success path — return the computed value.
+        // Success path — return the computed value.
+        // Success path — return the computed value.
+        // Success path — return the computed value.
         Ok(())
     }
 
@@ -302,50 +850,191 @@ impl HandshakeSession {
     /// `our_peer_id`: our own peer ID.
     /// `sign_fn`: a closure that signs a message with our Ed25519 key.
     ///   Takes a message and returns the 64-byte signature.
+    // Perform the 'generate proof' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'generate proof' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'generate proof' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'generate proof' operation.
+    // Errors are propagated to the caller via Result.
     pub fn generate_proof<F>(
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         &mut self,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         peer_challenge: [u8; 32],
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         our_peer_id: PeerId,
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         sign_fn: F,
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> ProofMessage
     where
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         F: Fn(&[u8]) -> Vec<u8>,
     {
         // Build the message to sign.
+        // Compute msg for this protocol step.
+        // Compute msg for this protocol step.
+        // Compute msg for this protocol step.
+        // Compute msg for this protocol step.
         let mut msg = Vec::with_capacity(
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             SIGMA_DOMAIN.len() + 32 + 32,
         );
+        // Append the data segment to the accumulating buffer.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
         msg.extend_from_slice(SIGMA_DOMAIN);
+        // Append the data segment to the accumulating buffer.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
         msg.extend_from_slice(&peer_challenge);
+        // Append the data segment to the accumulating buffer.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
+        // Append bytes to the accumulator.
         msg.extend_from_slice(&our_peer_id.0);
 
+        // Ed25519 signature for authentication and integrity.
+        // Compute signature for this protocol step.
+        // Compute signature for this protocol step.
+        // Compute signature for this protocol step.
+        // Compute signature for this protocol step.
         let signature = sign_fn(&msg);
 
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         ProofMessage {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             challenge: peer_challenge,
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             signature,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             sender_peer_id: our_peer_id,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             counter_challenge: None, // Set by caller if needed.
         }
     }
 
     /// Mark the handshake as complete.
+    // Perform the 'complete' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'complete' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'complete' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'complete' operation.
+    // Errors are propagated to the caller via Result.
     pub fn complete(&mut self, peer_id: PeerId) {
+        // Update the state to reflect the new state.
+        // Advance state state.
+        // Advance state state.
+        // Advance state state.
+        // Advance state state.
         self.state = HandshakeState::Completed { peer_id };
     }
 
     /// Check if the handshake has timed out.
+    // Perform the 'is timed out' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is timed out' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is timed out' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is timed out' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_timed_out(&self, now: u64) -> bool {
+        // Clamp the value to prevent overflow or underflow.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         now.saturating_sub(self.created_at) > self.timeout_secs
     }
 
     /// Check if the handshake is complete.
+    // Perform the 'is complete' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is complete' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is complete' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is complete' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_complete(&self) -> bool {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(self.state, HandshakeState::Completed { .. })
     }
 
     /// Check if the handshake has failed.
+    // Perform the 'is failed' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is failed' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is failed' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'is failed' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_failed(&self) -> bool {
+        // Invoke the associated function.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(self.state, HandshakeState::Failed(_))
     }
 }

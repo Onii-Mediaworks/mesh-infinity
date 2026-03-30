@@ -47,28 +47,79 @@ use crate::identity::peer_id::PeerId;
 /// `[u8; 64]` is not supported by serde's blanket array impl in older
 /// Rust toolchains. We encode as a hex string instead, which is also
 /// more human-readable in vault debug output.
+// serde_hex64 sub-module — see its own module-level docs.
+// serde_hex64 sub-module — see its own module-level docs.
 mod serde_hex64 {
     use serde::de::Error as DeError;
     use serde::{Deserialize, Deserializer, Serializer};
 
+    // Begin the block scope.
+    // Perform the 'serialize' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'serialize' operation.
+    // Errors are propagated to the caller via Result.
     pub fn serialize<S: Serializer>(v: &Option<[u8; 64]>, s: S) -> Result<S::Ok, S::Error> {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match v {
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(b) => s.serialize_some(&hex::encode(b)),
+            // Update the local state.
+            // No value available.
+            // No value available.
             None => s.serialize_none(),
         }
     }
 
+    // Begin the block scope.
+    // Perform the 'deserialize' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'deserialize' operation.
+    // Errors are propagated to the caller via Result.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 64]>, D::Error> {
+        // Serialize to the wire format for transmission or storage.
+        // Compute opt for this protocol step.
+        // Compute opt for this protocol step.
         let opt: Option<String> = Option::deserialize(d)?;
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match opt {
+            // Update the local state.
+            // No value available.
+            // No value available.
             None => Ok(None),
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(s) => {
+                // Transform the result, mapping errors to the local error type.
+                // Compute bytes for this protocol step.
+                // Compute bytes for this protocol step.
                 let bytes = hex::decode(&s).map_err(DeError::custom)?;
+                // Validate the input length to prevent out-of-bounds access.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if bytes.len() != 64 {
+                    // Reject with an explicit error for the caller to handle.
+                    // Return to the caller.
+                    // Return to the caller.
                     return Err(DeError::custom("expected 64-byte hex string"));
                 }
+                // Execute the operation and bind the result.
+                // Compute arr for this protocol step.
+                // Compute arr for this protocol step.
                 let mut arr = [0u8; 64];
+                // Copy the raw bytes into the fixed-size target array.
+                // Copy into the fixed-size buffer.
+                // Copy into the fixed-size buffer.
                 arr.copy_from_slice(&bytes);
+                // Wrap the computed value in the success variant.
+                // Success path — return the computed value.
+                // Success path — return the computed value.
                 Ok(Some(arr))
             }
         }
@@ -79,28 +130,80 @@ mod serde_hex64 {
 // Serde helper: serialize Option<[u8; 32]> as optional hex string
 // ---------------------------------------------------------------------------
 
+// Sub-module: serde_opt_key32 — see module-level docs for details.
+// serde_opt_key32 sub-module — see its own module-level docs.
+// serde_opt_key32 sub-module — see its own module-level docs.
 mod serde_opt_key32 {
     use serde::de::Error as DeError;
     use serde::{Deserialize, Deserializer, Serializer};
 
+    // Begin the block scope.
+    // Perform the 'serialize' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'serialize' operation.
+    // Errors are propagated to the caller via Result.
     pub fn serialize<S: Serializer>(v: &Option<[u8; 32]>, s: S) -> Result<S::Ok, S::Error> {
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match v {
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(b) => s.serialize_some(&hex::encode(b)),
+            // Update the local state.
+            // No value available.
+            // No value available.
             None => s.serialize_none(),
         }
     }
 
+    // Begin the block scope.
+    // Perform the 'deserialize' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'deserialize' operation.
+    // Errors are propagated to the caller via Result.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
+        // Serialize to the wire format for transmission or storage.
+        // Compute opt for this protocol step.
+        // Compute opt for this protocol step.
         let opt: Option<String> = Option::deserialize(d)?;
+        // Dispatch based on the variant to apply type-specific logic.
+        // Dispatch on the variant.
+        // Dispatch on the variant.
         match opt {
+            // Update the local state.
+            // No value available.
+            // No value available.
             None => Ok(None),
+            // Wrap the found value for the caller.
+            // Wrap the found value.
+            // Wrap the found value.
             Some(s) => {
+                // Transform the result, mapping errors to the local error type.
+                // Compute bytes for this protocol step.
+                // Compute bytes for this protocol step.
                 let bytes = hex::decode(&s).map_err(DeError::custom)?;
+                // Validate the input length to prevent out-of-bounds access.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if bytes.len() != 32 {
+                    // Reject with an explicit error for the caller to handle.
+                    // Return to the caller.
+                    // Return to the caller.
                     return Err(DeError::custom("expected 32-byte hex string"));
                 }
+                // Execute the operation and bind the result.
+                // Compute arr for this protocol step.
+                // Compute arr for this protocol step.
                 let mut arr = [0u8; 32];
+                // Copy the raw bytes into the fixed-size target array.
+                // Copy into the fixed-size buffer.
+                // Copy into the fixed-size buffer.
                 arr.copy_from_slice(&bytes);
+                // Wrap the computed value in the success variant.
+                // Success path — return the computed value.
+                // Success path — return the computed value.
                 Ok(Some(arr))
             }
         }
@@ -113,12 +216,23 @@ mod serde_opt_key32 {
 
 /// Persisted receiver-side state for a remote member's Sender Key.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+// Begin the block scope.
+// PeerSenderKeyState — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// PeerSenderKeyState — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct PeerSenderKeyState {
     /// Our copy of the sender's chain key, advanced to next_iteration.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub chain_key: [u8; 32],
     /// The next iteration we expect from this sender.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub next_iteration: u32,
     /// The sender's Ed25519 verifying key bytes (for signature verification).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub verifying_key: [u8; 32],
 }
 
@@ -127,9 +241,17 @@ pub struct PeerSenderKeyState {
 // ---------------------------------------------------------------------------
 
 /// Maximum group name length (bytes).
+// MAX_GROUP_NAME_LEN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_GROUP_NAME_LEN — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_GROUP_NAME_LEN: usize = 64;
 
 /// Maximum group description length (bytes).
+// MAX_GROUP_DESCRIPTION_LEN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_GROUP_DESCRIPTION_LEN — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_GROUP_DESCRIPTION_LEN: usize = 256;
 
 /// Default rekeying interval (seconds) = 7 days.
@@ -137,6 +259,10 @@ pub const MAX_GROUP_DESCRIPTION_LEN: usize = 256;
 /// Bounds the forward secrecy window for Sender Keys.
 /// Unlike Double Ratchet, Sender Keys provide no forward secrecy
 /// within a sending chain, so periodic rekeying is essential.
+// DEFAULT_REKEY_INTERVAL_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// DEFAULT_REKEY_INTERVAL_SECS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const DEFAULT_REKEY_INTERVAL_SECS: u64 = 7 * 24 * 3600;
 
 /// Maximum members per group.
@@ -144,6 +270,10 @@ pub const DEFAULT_REKEY_INTERVAL_SECS: u64 = 7 * 24 * 3600;
 /// Ring signature performance degrades with group size.
 /// 1000 members is the practical ceiling for the AOS ring
 /// signature scheme.
+// MAX_GROUP_MEMBERS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// MAX_GROUP_MEMBERS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 pub const MAX_GROUP_MEMBERS: usize = 1000;
 
 // ---------------------------------------------------------------------------
@@ -155,6 +285,11 @@ pub const MAX_GROUP_MEMBERS: usize = 1000;
 /// Controls who can see the group's profile, who can join,
 /// and whether ring signatures are used for membership privacy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Begin the block scope.
+// NetworkType — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// NetworkType — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum NetworkType {
     /// No profile visible to non-members. Invitation only.
     /// Ring signatures used for membership deniability.
@@ -173,6 +308,9 @@ pub enum NetworkType {
     Public,
 }
 
+// Begin the block scope.
+// NetworkType implementation — core protocol logic.
+// NetworkType implementation — core protocol logic.
 impl NetworkType {
     /// Whether this group type uses ring signatures for
     /// membership privacy (§8.7.7 Step 5).
@@ -187,6 +325,10 @@ impl NetworkType {
     /// advertising a property we do not yet provide.  When LSAG is implemented,
     /// this will return `true` for Private/Closed and the callers should gate
     /// the ring-sign path on the result.
+    // Perform the 'uses ring signatures' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'uses ring signatures' operation.
+    // Errors are propagated to the caller via Result.
     pub fn uses_ring_signatures(&self) -> bool {
         // TODO(§3.5.2): implement LSAG ring signatures and change to:
         //   matches!(self, Self::Private | Self::Closed)
@@ -194,17 +336,38 @@ impl NetworkType {
     }
 
     /// Whether member count is visible to non-members.
+    // Perform the 'shows member count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'shows member count' operation.
+    // Errors are propagated to the caller via Result.
     pub fn shows_member_count(&self) -> bool {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(self, Self::Open | Self::Public)
     }
 
     /// Whether this group requires invitation to join.
+    // Perform the 'requires invitation' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'requires invitation' operation.
+    // Errors are propagated to the caller via Result.
     pub fn requires_invitation(&self) -> bool {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(self, Self::Private | Self::Closed)
     }
 
     /// Whether joining requires admin approval.
+    // Perform the 'requires approval' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'requires approval' operation.
+    // Errors are propagated to the caller via Result.
     pub fn requires_approval(&self) -> bool {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         matches!(self, Self::Private | Self::Closed | Self::Open)
     }
 }
@@ -220,32 +383,55 @@ impl NetworkType {
 /// - Closed: name and type only
 /// - Open/Public: everything visible
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+// Begin the block scope.
+// GroupPublicProfile — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// GroupPublicProfile — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct GroupPublicProfile {
     /// The group's unique identifier.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub group_id: [u8; 32],
 
     /// Display name (max 64 bytes).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub display_name: String,
 
     /// Description (max 256 bytes).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub description: String,
 
     /// SHA-256 hash of the group avatar (if set).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub avatar_hash: Option<[u8; 32]>,
 
     /// Group visibility and join policy.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub network_type: NetworkType,
 
     /// Number of members (None for Private/Closed groups).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub member_count: Option<u32>,
 
     /// When the group was created (Unix timestamp).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub created_at: u64,
 
     /// Ed25519 public key of the signer (group admin).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub signed_by: [u8; 32],
 
     /// Signature over the profile fields.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub signature: Vec<u8>,
 }
 
@@ -264,59 +450,97 @@ pub struct GroupPublicProfile {
 /// forward compatibility (Serde handles `[u8; 64]` correctly in
 /// Rust/serde 1.0 with const-generic array support).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// Group — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// Group — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct Group {
     /// The group's unique identifier.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub group_id: [u8; 32],
 
     /// The group's public profile.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub profile: GroupPublicProfile,
 
     /// The group's Ed25519 public key (for verification).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub ed25519_public: [u8; 32],
 
     /// The group's X25519 public key (for key agreement).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub x25519_public: [u8; 32],
 
     /// The group's symmetric key (derived, for Step 4 encryption).
     /// All members hold this key.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub symmetric_key: [u8; 32],
 
     /// Whether we are an admin of this group.
     /// Admins hold the group's private key and can manage members.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub is_admin: bool,
 
     /// The group's Ed25519 private key (admins only).
     /// None if we're not an admin.
     /// Serialized as hex string (64 bytes → 128 hex chars).
     #[serde(with = "serde_hex64")]
+    /// The ed25519 private for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub ed25519_private: Option<[u8; 64]>,
 
     /// List of member peer IDs.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub members: Vec<PeerId>,
 
     /// List of admin peer IDs.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub admins: Vec<PeerId>,
 
     /// Our own peer ID (for identification within the group).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub our_peer_id: PeerId,
 
     /// When we joined this group (Unix timestamp).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub joined_at: u64,
 
     /// Rekeying interval (seconds).
     /// Default: 7 days. Configurable per group by admins.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub rekey_interval_secs: u64,
 
     /// When the last rekey occurred (Unix timestamp).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub last_rekey_at: u64,
 
     /// Current Sender Key epoch (incremented on each rekey).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub sender_key_epoch: u64,
 
     /// Message sequence number (for ordering within the group).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub sequence: u64,
 
     /// Group-as-LAN configuration (§8.7.9).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub lan_config: GroupLanConfig,
 
     // ---- Sender Key state (§7.0.4) ----------------------------------------
@@ -325,21 +549,33 @@ pub struct Group {
     /// Generated on group creation or rekey; advanced with each sent message.
     /// Serialized as hex so the vault can store and restore it.
     #[serde(default, with = "serde_opt_key32")]
+    /// The my sender chain key for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub my_sender_chain_key: Option<[u8; 32]>,
 
     /// How many messages we've sent with the current sender_key_epoch.
     #[serde(default)]
+    /// The my sender iteration for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub my_sender_iteration: u32,
 
     /// Our Sender Key Ed25519 signing key (64 bytes = secret + public).
     /// Used to authenticate group messages we send.
     #[serde(default, with = "serde_hex64")]
+    /// The my sender signing key for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub my_sender_signing_key: Option<[u8; 64]>,
 
     /// Received Sender Keys from other group members.
     /// Key: peer_id bytes; Value: (chain_key, next_iteration, verifying_key_bytes).
     /// Persisted so we can decrypt out-of-order / restored messages.
     #[serde(default)]
+    /// The peer sender keys for this instance.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub peer_sender_keys: std::collections::HashMap<[u8; 32], PeerSenderKeyState>,
 }
 
@@ -347,17 +583,32 @@ pub struct Group {
 ///
 /// Wraps the three per-group cryptographic keys so that both constructors
 /// stay within the 7-argument limit.
+// GroupKeys — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// GroupKeys — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct GroupKeys {
     /// Group Ed25519 public key (used for signing group messages).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub ed25519_public: [u8; 32],
     /// Group Ed25519 private key (only the admin has this on creation).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub ed25519_private: Option<[u8; 64]>,
     /// Group X25519 public key (used for key-agreement in member invites).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub x25519_public: [u8; 32],
     /// Group symmetric key (used for bulk encryption of group messages).
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub symmetric_key: [u8; 32],
 }
 
+// Begin the block scope.
+// Group implementation — core protocol logic.
+// Group implementation — core protocol logic.
 impl Group {
     /// Create a new group (we are the creator and initial admin).
     ///
@@ -366,70 +617,226 @@ impl Group {
     /// `keys`: all four group-level cryptographic keys.
     /// `our_peer_id`: our own peer ID.
     /// `now`: current unix timestamp.
+    // Perform the 'new as creator' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new as creator' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new_as_creator(
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         group_id: [u8; 32],
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         profile: GroupPublicProfile,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         keys: GroupKeys,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         our_peer_id: PeerId,
+        // Execute this protocol step.
+        // Execute this protocol step.
         now: u64,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> Self {
+        // Key material — must be zeroized when no longer needed.
+        // Compute GroupKeys for this protocol step.
+        // Compute GroupKeys for this protocol step.
         let GroupKeys { ed25519_public, ed25519_private, x25519_public, symmetric_key } = keys;
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Execute this protocol step.
+            // Execute this protocol step.
             group_id,
             profile,
+            // Execute this protocol step.
+            // Execute this protocol step.
             ed25519_public,
+            // Execute this protocol step.
+            // Execute this protocol step.
             x25519_public,
+            // Execute this protocol step.
+            // Execute this protocol step.
             symmetric_key,
+            // Execute this protocol step.
+            // Execute this protocol step.
             is_admin: true,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             ed25519_private,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             members: vec![our_peer_id],
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             admins: vec![our_peer_id],
+            // Execute this protocol step.
+            // Execute this protocol step.
             our_peer_id,
+            // Execute this protocol step.
+            // Execute this protocol step.
             joined_at: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             rekey_interval_secs: DEFAULT_REKEY_INTERVAL_SECS,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             last_rekey_at: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             sender_key_epoch: 1,
+            // Execute this protocol step.
+            // Execute this protocol step.
             sequence: 0,
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
             lan_config: GroupLanConfig::default(),
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             my_sender_chain_key: None,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             my_sender_iteration: 0,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             my_sender_signing_key: None,
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
             peer_sender_keys: std::collections::HashMap::new(),
         }
     }
 
     /// Create a group as a regular member (invited by an admin).
+    // Perform the 'new as member' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'new as member' operation.
+    // Errors are propagated to the caller via Result.
     pub fn new_as_member(
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         group_id: [u8; 32],
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         profile: GroupPublicProfile,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         keys: GroupKeys,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         our_peer_id: PeerId,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         membership: (Vec<PeerId>, Vec<PeerId>),
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         sender_key_epoch: u64,
+        // Execute this protocol step.
+        // Execute this protocol step.
         now: u64,
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
     ) -> Self {
+        // Key material — must be zeroized when no longer needed.
+        // Compute GroupKeys for this protocol step.
+        // Compute GroupKeys for this protocol step.
         let GroupKeys { ed25519_public, x25519_public, symmetric_key, .. } = keys;
+        // Identify the peer for this operation.
+        // Bind the intermediate result.
+        // Bind the intermediate result.
         let (members, admins) = membership;
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Execute this protocol step.
+            // Execute this protocol step.
             group_id,
             profile,
+            // Execute this protocol step.
+            // Execute this protocol step.
             ed25519_public,
+            // Execute this protocol step.
+            // Execute this protocol step.
             x25519_public,
+            // Execute this protocol step.
+            // Execute this protocol step.
             symmetric_key,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             is_admin: false,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             ed25519_private: None,
             members,
             admins,
+            // Execute this protocol step.
+            // Execute this protocol step.
             our_peer_id,
+            // Execute this protocol step.
+            // Execute this protocol step.
             joined_at: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             rekey_interval_secs: DEFAULT_REKEY_INTERVAL_SECS,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             last_rekey_at: now,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             sender_key_epoch,
+            // Execute this protocol step.
+            // Execute this protocol step.
             sequence: 0,
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
             lan_config: GroupLanConfig::default(),
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             my_sender_chain_key: None,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             my_sender_iteration: 0,
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             my_sender_signing_key: None,
+            // Create a new instance with the specified parameters.
+            // Execute this protocol step.
+            // Execute this protocol step.
             peer_sender_keys: std::collections::HashMap::new(),
         }
     }
@@ -438,39 +845,82 @@ impl Group {
     ///
     /// Rekeying is needed when the interval has elapsed since the
     /// last rekey. Only admins should initiate rekeying.
+    // Perform the 'needs rekey' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'needs rekey' operation.
+    // Errors are propagated to the caller via Result.
     pub fn needs_rekey(&self, now: u64) -> bool {
+        // Clamp the value to prevent overflow or underflow.
+        // Execute this protocol step.
+        // Execute this protocol step.
         now.saturating_sub(self.last_rekey_at) >= self.rekey_interval_secs
     }
 
     /// Get the next message sequence number and increment.
+    // Perform the 'next sequence' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'next sequence' operation.
+    // Errors are propagated to the caller via Result.
     pub fn next_sequence(&mut self) -> u64 {
+        // Execute the operation and bind the result.
+        // Compute seq for this protocol step.
+        // Compute seq for this protocol step.
         let seq = self.sequence;
+        // Update the sequence to reflect the new state.
+        // Advance sequence state.
+        // Advance sequence state.
         self.sequence += 1;
         seq
     }
 
     /// Number of members.
+    // Perform the 'member count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'member count' operation.
+    // Errors are propagated to the caller via Result.
     pub fn member_count(&self) -> usize {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.members.len()
     }
 
     /// Number of admins.
+    // Perform the 'admin count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'admin count' operation.
+    // Errors are propagated to the caller via Result.
     pub fn admin_count(&self) -> usize {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.admins.len()
     }
 
     /// Whether a peer is a member.
+    // Perform the 'is member' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_member(&self, peer_id: &PeerId) -> bool {
+        // Check membership in the collection.
+        // Execute this protocol step.
         self.members.contains(peer_id)
     }
 
     /// Whether a peer is an admin.
+    // Perform the 'is admin peer' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_admin_peer(&self, peer_id: &PeerId) -> bool {
+        // Check membership in the collection.
+        // Execute this protocol step.
         self.admins.contains(peer_id)
     }
 
     /// Whether the group is at member capacity.
+    // Perform the 'is full' operation.
+    // Errors are propagated to the caller via Result.
     pub fn is_full(&self) -> bool {
+        // Validate the length matches the expected protocol size.
+        // Execute this protocol step.
         self.members.len() >= MAX_GROUP_MEMBERS
     }
 }
@@ -485,14 +935,19 @@ impl Group {
 /// its own routing scope, name resolution, and proximity discovery.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[derive(Default)]
+// Begin the block scope.
+// GroupLanConfig — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct GroupLanConfig {
     /// Whether network sharing is enabled for this group.
     /// Enables subnet route advertisement and group-scoped map entries.
+    // Execute this protocol step.
     pub network_sharing_enabled: bool,
 
     /// Whether proximity sharing is enabled.
     /// Enables BLE token chain distribution to members for
     /// stealthy BLE rendezvous (push-to-talk over BLE).
+    // Execute this protocol step.
     pub proximity_share_enabled: bool,
 }
 

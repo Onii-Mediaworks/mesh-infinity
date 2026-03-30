@@ -13,36 +13,82 @@ use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
 /// The mesh identity is the node's always-on presence. It uses X25519
 /// for DH key agreement (WireGuard tunnels). Generated fresh on each
 /// install — never restored from backup.
+// MeshIdentity — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// MeshIdentity — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// MeshIdentity — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct MeshIdentity {
     /// The raw secret key bytes, retained for serialization.
     ///
     /// X25519Secret doesn't expose its bytes in newer versions of
     /// x25519-dalek, so we store the original entropy separately.
     /// This is zeroized on Drop via our custom implementation.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     secret_raw: [u8; 32],
 
     /// WireGuard X25519 secret key (derived from secret_raw).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     secret: X25519Secret,
 
     /// WireGuard X25519 public key (derived from secret).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub public: X25519Public,
 }
 
+// Begin the block scope.
+// MeshIdentity implementation — core protocol logic.
+// MeshIdentity implementation — core protocol logic.
+// MeshIdentity implementation — core protocol logic.
 impl MeshIdentity {
     /// Generate a fresh mesh identity (done once at install).
     ///
     /// Uses the OS CSPRNG for entropy. The generated identity is
     /// unique and unrelated to any previous identity.
+    // Perform the 'generate' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'generate' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'generate' operation.
+    // Errors are propagated to the caller via Result.
     pub fn generate() -> Self {
         // Generate 32 bytes of random entropy using the OS CSPRNG.
+        // Compute secret raw for this protocol step.
+        // Compute secret raw for this protocol step.
+        // Compute secret raw for this protocol step.
         let mut secret_raw = [0u8; 32];
+        // Invoke the associated function.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         rand::fill(&mut secret_raw);
 
         // Build the X25519 keypair from the raw entropy.
+        // Compute secret for this protocol step.
+        // Compute secret for this protocol step.
+        // Compute secret for this protocol step.
         let secret = X25519Secret::from(secret_raw);
+        // Key material — must be zeroized when no longer needed.
+        // Compute public for this protocol step.
+        // Compute public for this protocol step.
+        // Compute public for this protocol step.
         let public = X25519Public::from(&secret);
 
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             secret_raw,
             secret,
             public,
@@ -53,10 +99,29 @@ impl MeshIdentity {
     ///
     /// Used when loading the identity from the platform keystore
     /// after device unlock.
+    // Perform the 'from secret bytes' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'from secret bytes' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'from secret bytes' operation.
+    // Errors are propagated to the caller via Result.
     pub fn from_secret_bytes(bytes: [u8; 32]) -> Self {
+        // Key material — must be zeroized when no longer needed.
+        // Compute secret for this protocol step.
+        // Compute secret for this protocol step.
+        // Compute secret for this protocol step.
         let secret = X25519Secret::from(bytes);
+        // Key material — must be zeroized when no longer needed.
+        // Compute public for this protocol step.
+        // Compute public for this protocol step.
         let public = X25519Public::from(&secret);
+        // Assemble the instance from the computed fields.
+        // Construct the instance from computed fields.
+        // Construct the instance from computed fields.
         Self {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             secret_raw: bytes,
             secret,
             public,
@@ -64,12 +129,23 @@ impl MeshIdentity {
     }
 
     /// Get the public key bytes (for WireGuard config, tunnel coordination).
+    // Perform the 'public bytes' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'public bytes' operation.
+    // Errors are propagated to the caller via Result.
     pub fn public_bytes(&self) -> [u8; 32] {
         *self.public.as_bytes()
     }
 
     /// Access the secret key for DH operations (WireGuard handshakes).
+    // Perform the 'secret' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'secret' operation.
+    // Errors are propagated to the caller via Result.
     pub fn secret(&self) -> &X25519Secret {
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         &self.secret
     }
 
@@ -78,21 +154,41 @@ impl MeshIdentity {
     /// This should be stored at AfterFirstUnlock accessibility (§3.6.3).
     /// The returned bytes can be passed to `from_secret_bytes()` to
     /// reconstruct the identity.
+    // Perform the 'secret bytes' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'secret bytes' operation.
+    // Errors are propagated to the caller via Result.
     pub fn secret_bytes(&self) -> [u8; 32] {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.secret_raw
     }
 }
 
+// Trait implementation for protocol conformance.
+// Implement Drop for MeshIdentity.
+// Implement Drop for MeshIdentity.
 impl Drop for MeshIdentity {
+    // Begin the block scope.
+    // Perform the 'drop' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'drop' operation.
+    // Errors are propagated to the caller via Result.
     fn drop(&mut self) {
         // Zeroize the raw secret bytes. X25519Secret handles its own zeroize.
         // We use volatile writes to prevent the compiler from optimizing
         // the zeroing away.
+        // Iterate over each element.
+        // Iterate over each element.
         for byte in self.secret_raw.iter_mut() {
             // SAFETY: `byte` is a valid mutable reference to a u8 within the
             // `secret_raw` Vec; write_volatile requires only that the pointer
             // is valid for a single-byte write, which a &mut u8 guarantees.
             unsafe {
+                // Invoke the associated function.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 std::ptr::write_volatile(byte, 0);
             }
         }

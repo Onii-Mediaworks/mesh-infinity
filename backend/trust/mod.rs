@@ -9,9 +9,13 @@
 //! - Friend-Disavowed: InnerCircle peers flag device as seized
 //! - Compromised: permanent — both Self-Disavowed AND Friend-Disavowed threshold met
 
+// Sub-module: levels — see module-level docs for details.
 pub mod levels;
+// Sub-module: state_machine — see module-level docs for details.
 pub mod state_machine;
+// Sub-module: capabilities — see module-level docs for details.
 pub mod capabilities;
+// Sub-module: endorsement — see module-level docs for details.
 pub mod endorsement;
 pub mod promotion;
 pub mod acl;

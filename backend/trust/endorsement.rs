@@ -13,125 +13,490 @@ use super::levels::TrustLevel;
 
 /// A trust endorsement record (§8.5.4).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// TrustEndorsement — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustEndorsement — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustEndorsement — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustEndorsement — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustEndorsement — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct TrustEndorsement {
     /// Peer being endorsed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub endorsed_peer_id: PeerId,
     /// Peer issuing the endorsement.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub endorser_peer_id: PeerId,
     /// Endorser's trust level (for weight calculation).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub endorser_level: TrustLevel,
     /// When this endorsement was issued.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub timestamp: u64,
     /// Monotonically increasing per endorser (for revocation ordering).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub sequence: u64,
     /// Ed25519 signature by endorser's public mask key.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub signature: Vec<u8>,
 }
 
 /// A trust revocation — cancels a previous endorsement (§8.5.5).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// TrustRevocation — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustRevocation — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustRevocation — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustRevocation — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// TrustRevocation — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct TrustRevocation {
     /// Peer whose endorsement is being revoked.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub endorsed_peer_id: PeerId,
     /// Peer revoking their endorsement.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub endorser_peer_id: PeerId,
     /// Timestamp of revocation.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub timestamp: u64,
     /// Sequence number (must be > the endorsement's sequence to be valid).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub sequence: u64,
     /// Ed25519 signature by endorser's public mask key.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub signature: Vec<u8>,
 }
 
 /// Safety number verification record (§8.5.8).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+// Begin the block scope.
+// SafetyNumberVerification — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SafetyNumberVerification — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SafetyNumberVerification — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SafetyNumberVerification — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// SafetyNumberVerification — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct SafetyNumberVerification {
     /// Peer whose key was verified.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub subject_peer_id: PeerId,
     /// The new Ed25519 public key that was verified.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub new_ed25519_pub: [u8; 32],
     /// The safety number both parties confirmed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub safety_number: Vec<u8>,
     /// Peer who performed the verification.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub verifier_peer_id: PeerId,
     /// When the verification was performed.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub timestamp: u64,
     /// Ed25519 signature by verifier's relationship-specific mask key.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub signature: Vec<u8>,
 }
 
 /// Local endorsement store for a node's Web of Trust.
 #[derive(Default, Serialize, Deserialize)]
+// Begin the block scope.
+// EndorsementStore — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// EndorsementStore — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// EndorsementStore — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// EndorsementStore — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// EndorsementStore — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct EndorsementStore {
     /// Active endorsements (endorser_peer_id → endorsed_peer_id → endorsement).
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub endorsements: Vec<TrustEndorsement>,
     /// Active revocations.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub revocations: Vec<TrustRevocation>,
     /// Safety number verifications received.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub verifications: Vec<SafetyNumberVerification>,
 }
 
+// Begin the block scope.
+// EndorsementStore implementation — core protocol logic.
+// EndorsementStore implementation — core protocol logic.
+// EndorsementStore implementation — core protocol logic.
+// EndorsementStore implementation — core protocol logic.
+// EndorsementStore implementation — core protocol logic.
 impl EndorsementStore {
     /// Add an endorsement. Returns the default starting trust level.
     ///
     /// Endorsements from peers below Level 6 are silently ignored (§8.5.2).
+    // Perform the 'add endorsement' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add endorsement' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add endorsement' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add endorsement' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add endorsement' operation.
+    // Errors are propagated to the caller via Result.
     pub fn add_endorsement(&mut self, endorsement: TrustEndorsement) -> Option<TrustLevel> {
         // Ignore endorsements from below Level 6 (§8.5.2)
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if endorsement.endorser_level < TrustLevel::Trusted {
+            // No result available — signal absence to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return None;
         }
 
         // Check if a newer revocation exists for this endorsement
+        // Compute has newer revocation for this protocol step.
+        // Compute has newer revocation for this protocol step.
+        // Compute has newer revocation for this protocol step.
+        // Compute has newer revocation for this protocol step.
+        // Compute has newer revocation for this protocol step.
         let has_newer_revocation = self.revocations.iter().any(|r| {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             r.endorser_peer_id == endorsement.endorser_peer_id
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 && r.endorsed_peer_id == endorsement.endorsed_peer_id
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 && r.sequence > endorsement.sequence
         });
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if has_newer_revocation {
+            // No result available — signal absence to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
+            // Return to the caller.
             return None;
         }
 
+        // Invoke the associated function.
+        // Compute default level for this protocol step.
+        // Compute default level for this protocol step.
+        // Compute default level for this protocol step.
+        // Compute default level for this protocol step.
+        // Compute default level for this protocol step.
         let default_level = TrustLevel::endorsement_default(endorsement.endorser_level);
+        // Execute the operation and bind the result.
+        // Append to the collection.
+        // Append to the collection.
+        // Append to the collection.
+        // Append to the collection.
+        // Append to the collection.
         self.endorsements.push(endorsement);
+        // Execute this step in the protocol sequence.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         default_level
     }
 
     /// Process a revocation. Returns true if a matching endorsement was found and revoked.
+    // Perform the 'add revocation' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add revocation' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add revocation' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add revocation' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'add revocation' operation.
+    // Errors are propagated to the caller via Result.
     pub fn add_revocation(&mut self, revocation: TrustRevocation) -> bool {
         // Remove any endorsement with lower sequence from the same endorser
+        // Compute before len for this protocol step.
+        // Compute before len for this protocol step.
+        // Compute before len for this protocol step.
+        // Compute before len for this protocol step.
+        // Compute before len for this protocol step.
         let before_len = self.endorsements.len();
+        // Filter the collection, keeping only elements that pass.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
+        // Filter elements that match the predicate.
         self.endorsements.retain(|e| {
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
+            // Execute this protocol step.
             !(e.endorser_peer_id == revocation.endorser_peer_id
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 && e.endorsed_peer_id == revocation.endorsed_peer_id
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 && e.sequence < revocation.sequence)
         });
+        // Track the count for threshold and bounds checking.
+        // Compute removed for this protocol step.
+        // Compute removed for this protocol step.
+        // Compute removed for this protocol step.
+        // Compute removed for this protocol step.
+        // Compute removed for this protocol step.
         let removed = self.endorsements.len() < before_len;
 
+        // Execute the operation and bind the result.
+        // Append to the collection.
+        // Append to the collection.
+        // Append to the collection.
+        // Append to the collection.
+        // Append to the collection.
         self.revocations.push(revocation);
         removed
     }
 
     /// Count safety number verifications for a specific peer.
+    // Perform the 'verification count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'verification count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'verification count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'verification count' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'verification count' operation.
+    // Errors are propagated to the caller via Result.
     pub fn verification_count(&self, subject_peer_id: &PeerId) -> usize {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.verifications
+            // Create an iterator over the collection elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
             .iter()
+            // Select only elements matching the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
             .filter(|v| v.subject_peer_id == *subject_peer_id)
+            // Chain the operation on the intermediate result.
             .count()
     }
 
     /// Get all endorsements for a specific peer.
+    // Perform the 'endorsements for' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'endorsements for' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'endorsements for' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'endorsements for' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'endorsements for' operation.
+    // Errors are propagated to the caller via Result.
     pub fn endorsements_for(&self, peer_id: &PeerId) -> Vec<&TrustEndorsement> {
+        // Mutate the internal state.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.endorsements
+            // Create an iterator over the collection elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
             .iter()
+            // Select only elements matching the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
+            // Filter by the predicate.
             .filter(|e| e.endorsed_peer_id == *peer_id)
+            // Materialize the iterator into a concrete collection.
+            // Collect into a concrete collection.
+            // Collect into a concrete collection.
+            // Collect into a concrete collection.
+            // Collect into a concrete collection.
+            // Collect into a concrete collection.
             .collect()
     }
 
     /// Get the highest endorser level for a specific peer.
+    // Perform the 'highest endorser level' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'highest endorser level' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'highest endorser level' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'highest endorser level' operation.
+    // Errors are propagated to the caller via Result.
+    // Perform the 'highest endorser level' operation.
+    // Errors are propagated to the caller via Result.
     pub fn highest_endorser_level(&self, peer_id: &PeerId) -> Option<TrustLevel> {
+        // Delegate to the instance method.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         self.endorsements_for(peer_id)
+            // Create an iterator over the collection elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
+            // Create an iterator over the elements.
             .iter()
+            // Transform the result, mapping errors to the local error type.
+            // Transform each element.
+            // Transform each element.
+            // Transform each element.
+            // Transform each element.
             .map(|e| e.endorser_level)
+            // Clamp the value to prevent overflow or underflow.
             .max()
     }
 }

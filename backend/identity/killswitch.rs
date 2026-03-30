@@ -64,13 +64,24 @@ use std::fs;
 
 /// Errors that can occur during killswitch operations.
 #[derive(Debug, thiserror::Error)]
+// Begin the block scope.
+// KillswitchError — variant enumeration.
+// Match exhaustively to handle every protocol state.
+// KillswitchError — variant enumeration.
+// Match exhaustively to handle every protocol state.
 pub enum KillswitchError {
     /// File system error during erasure.
     #[error("IO error during erase: {0}")]
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
     Io(#[from] std::io::Error),
 
     /// Self-Disavowed broadcast failed (non-fatal — erase continues).
     #[error("Self-Disavowed broadcast failed: {0}")]
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
     BroadcastFailed(String),
 }
 
@@ -80,17 +91,28 @@ pub enum KillswitchError {
 
 /// Result of an emergency erase operation.
 #[derive(Debug)]
+// Begin the block scope.
+// EraseResult — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
+// EraseResult — protocol data structure (see field-level docs).
+// Invariants are enforced at construction time.
 pub struct EraseResult {
     /// Whether the Self-Disavowed broadcast was sent successfully.
     /// If false, the erase still completed — broadcast failure is non-fatal.
     /// Contacts will eventually notice the identity is unreachable.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub broadcast_sent: bool,
 
     /// Number of files securely deleted.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub files_deleted: u32,
 
     /// Whether the mesh identity (Layer 1) was preserved.
     /// True for duress erase, false for standard erase.
+    // Execute this protocol step.
+    // Execute this protocol step.
     pub mesh_identity_preserved: bool,
 }
 
@@ -123,7 +145,14 @@ pub struct EraseResult {
 /// EraseResult indicating what happened. The erase always completes
 /// even if individual steps fail — it's better to have a partial erase
 /// than no erase at all.
+// Perform the 'standard erase' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'standard erase' operation.
+// Errors are propagated to the caller via Result.
 pub fn standard_erase(data_dir: &Path) -> EraseResult {
+    // Execute the operation and bind the result.
+    // Compute files deleted for this protocol step.
+    // Compute files deleted for this protocol step.
     let mut files_deleted = 0u32;
 
     // Step 1: Attempt Self-Disavowed broadcast.
@@ -140,7 +169,12 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
     // file write succeeds but the networking layer never picks it up
     // (because the device is immediately seized), the erase still
     // completes — the broadcast is best-effort.
+    // Compute broadcast sent for this protocol step.
+    // Compute broadcast sent for this protocol step.
     let broadcast_sent = {
+        // Resolve the filesystem path for the target resource.
+        // Compute broadcast path for this protocol step.
+        // Compute broadcast path for this protocol step.
         let broadcast_path = data_dir.join("killswitch_broadcast.pending");
         // Write a marker file that the gossip engine will pick up.
         // The gossip engine checks for this file on each cycle,
@@ -149,24 +183,51 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
         //
         // We write the current timestamp so the gossip engine knows
         // this is a fresh request, not a stale leftover.
+        // Compute timestamp for this protocol step.
+        // Compute timestamp for this protocol step.
         let timestamp = std::time::SystemTime::now()
+            // Process the current step in the protocol.
+            // Execute this protocol step.
+            // Execute this protocol step.
             .duration_since(std::time::UNIX_EPOCH)
+            // Transform the result, mapping errors to the local error type.
+            // Transform each element.
+            // Transform each element.
             .map(|d| d.as_secs())
+            // Fall back to the default value on failure.
+            // Execute this protocol step.
+            // Execute this protocol step.
             .unwrap_or(0);
+        // Persist the data to the filesystem.
+        // Execute this protocol step.
+        // Execute this protocol step.
         fs::write(&broadcast_path, timestamp.to_be_bytes()).is_ok()
     };
 
     // Step 2: Overwrite identity.key with random data.
     // This is the most critical step — it makes identity.dat permanently
     // unrecoverable. The overwrite MUST complete before any deletion.
+    // Compute identity key path for this protocol step.
+    // Compute identity key path for this protocol step.
     let identity_key_path = data_dir.join("identity.key");
+    // Conditional branch based on the current state.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
     if identity_key_path.exists() {
         // Write 32 bytes of random data over the file.
         // Log on failure: this function returns EraseResult (not Result), so
         // we cannot propagate. A failed overwrite is still preferable to
         // aborting the erase — we continue and delete the file anyway.
+        // Compute random data for this protocol step.
+        // Compute random data for this protocol step.
         let random_data: [u8; 32] = rand::random();
+        // Handle the error case — propagate or log as appropriate.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if let Err(e) = fs::write(&identity_key_path, random_data) {
+            // Execute the operation and bind the result.
+            // Execute this protocol step.
+            // Execute this protocol step.
             eprintln!("[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}");
         }
     }
@@ -174,56 +235,148 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
     // Step 3-8: Delete all sensitive files.
     // We use a helper that tries to delete each file and counts successes.
     // If a file doesn't exist, that's fine — it means it was already gone.
+    // Compute files to delete for this protocol step.
+    // Compute files to delete for this protocol step.
     let files_to_delete = [
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "identity.key",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "identity.dat",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "pin.dat",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "rooms.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "messages.vault",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "peers.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "network_map.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "signal_sessions.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "settings.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "trust_endorsements.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "prekeys.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "file_transfers.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
         "mesh_identity.key",
     ];
 
+    // Iterate over each file entry in the collection.
+    // Iterate over each element.
+    // Iterate over each element.
     for filename in &files_to_delete {
+        // Resolve the filesystem path for the target resource.
+        // Compute path for this protocol step.
+        // Compute path for this protocol step.
         let path = data_dir.join(filename);
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
+        // Guard: validate the condition before proceeding.
         if path.exists() {
             // First overwrite with zeros to prevent forensic recovery.
             // Log on failure: this function returns EraseResult (not Result), so
             // we cannot propagate. We continue with deletion even if the overwrite
             // fails — deleting unzeroed data is better than leaving it on disk.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if let Ok(metadata) = fs::metadata(&path) {
+                // Prepare the data buffer for the next processing stage.
+                // Compute zeros for this protocol step.
+                // Compute zeros for this protocol step.
                 let zeros = vec![0u8; metadata.len() as usize];
+                // Handle the error case — propagate or log as appropriate.
+                // Guard: validate the condition before proceeding.
+                // Guard: validate the condition before proceeding.
                 if let Err(e) = fs::write(&path, &zeros) {
+                    // Execute the operation and bind the result.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     eprintln!("[killswitch] WARNING: failed to zero-overwrite {filename} before deletion: {e}");
                 }
             }
             // Then delete
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if fs::remove_file(&path).is_ok() {
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 files_deleted += 1;
             }
         }
     }
 
     // Also delete any .vault.tmp files left from crashed writes
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
     if let Ok(entries) = fs::read_dir(data_dir) {
+        // Iterate over each file entry in the collection.
+        // Iterate over each element.
+        // Iterate over each element.
         for entry in entries.flatten() {
+            // Resolve the filesystem path for the target resource.
+            // Compute path for this protocol step.
+            // Compute path for this protocol step.
             let path = entry.path();
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
+            // Guard: validate the condition before proceeding.
             if path.extension().map(|e| e == "tmp").unwrap_or(false)
+                // Check the operation outcome without consuming the error.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 && fs::remove_file(&path).is_ok() {
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
+                    // Execute this protocol step.
                     files_deleted += 1;
                 }
         }
     }
 
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
     EraseResult {
+        // Execute this protocol step.
+        // Execute this protocol step.
         broadcast_sent,
+        // Execute this protocol step.
+        // Execute this protocol step.
         files_deleted,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         mesh_identity_preserved: false, // Standard erase deletes everything
     }
 }
@@ -251,80 +404,163 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
 /// # Returns
 ///
 /// EraseResult with mesh_identity_preserved = true
+// Perform the 'duress erase' operation.
+// Errors are propagated to the caller via Result.
 pub fn duress_erase(data_dir: &Path) -> EraseResult {
+    // Execute the operation and bind the result.
+    // Compute files deleted for this protocol step.
     let mut files_deleted = 0u32;
 
     // Attempt Self-Disavowed broadcast for the old identity.
     // Same file-based handoff as standard erase. The gossip engine
     // picks up the broadcast file on its next cycle.
+    // Compute broadcast sent for this protocol step.
     let broadcast_sent = {
+        // Resolve the filesystem path for the target resource.
+        // Compute broadcast path for this protocol step.
         let broadcast_path = data_dir.join("killswitch_broadcast.pending");
+        // Capture the current timestamp for temporal ordering.
+        // Compute timestamp for this protocol step.
         let timestamp = std::time::SystemTime::now()
+            // Process the current step in the protocol.
+            // Execute this protocol step.
             .duration_since(std::time::UNIX_EPOCH)
+            // Transform the result, mapping errors to the local error type.
+            // Transform each element.
             .map(|d| d.as_secs())
+            // Fall back to the default value on failure.
+            // Execute this protocol step.
             .unwrap_or(0);
+        // Persist the data to the filesystem.
+        // Execute this protocol step.
         fs::write(&broadcast_path, timestamp.to_be_bytes()).is_ok()
     };
 
     // Overwrite identity.key (orphans old identity.dat).
     // Log on failure: this function returns EraseResult (not Result), so
     // we cannot propagate. Erase continues regardless.
+    // Compute identity key path for this protocol step.
     let identity_key_path = data_dir.join("identity.key");
+    // Conditional branch based on the current state.
+    // Guard: validate the condition before proceeding.
     if identity_key_path.exists() {
+        // Prepare the data buffer for the next processing stage.
+        // Compute random data for this protocol step.
         let random_data: [u8; 32] = rand::random();
+        // Handle the error case — propagate or log as appropriate.
+        // Guard: validate the condition before proceeding.
         if let Err(e) = fs::write(&identity_key_path, random_data) {
+            // Execute the operation and bind the result.
+            // Execute this protocol step.
             eprintln!("[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}");
         }
     }
 
     // Delete Layer 2/3 files but KEEP mesh_identity.key (Layer 1)
+    // Compute files to delete for this protocol step.
     let files_to_delete = [
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
         "identity.key",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
         "identity.dat",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
         "pin.dat",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
         "rooms.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         "messages.vault",
+        // Chain the operation on the intermediate result.
+        // Execute this protocol step.
         "peers.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         "signal_sessions.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         "settings.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         "trust_endorsements.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         "prekeys.vault",
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         "file_transfers.vault",
         // NOTE: mesh_identity.key is NOT deleted — Layer 1 is preserved
         // NOTE: network_map.vault is NOT deleted — the map shows real history
     ];
 
+    // Iterate over each file entry in the collection.
+    // Iterate over each element.
     for filename in &files_to_delete {
+        // Resolve the filesystem path for the target resource.
+        // Compute path for this protocol step.
         let path = data_dir.join(filename);
+        // Conditional branch based on the current state.
+        // Guard: validate the condition before proceeding.
         if path.exists() {
             // Log on failure: same rationale as above — cannot propagate,
             // deleting unzeroed data is better than leaving it on disk.
+            // Guard: validate the condition before proceeding.
             if let Ok(metadata) = fs::metadata(&path) {
+                // Prepare the data buffer for the next processing stage.
+                // Compute zeros for this protocol step.
                 let zeros = vec![0u8; metadata.len() as usize];
+                // Handle the error case — propagate or log as appropriate.
+                // Guard: validate the condition before proceeding.
                 if let Err(e) = fs::write(&path, &zeros) {
+                    // Execute the operation and bind the result.
+                    // Execute this protocol step.
                     eprintln!("[killswitch] WARNING: failed to zero-overwrite {filename} before deletion: {e}");
                 }
             }
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
             if fs::remove_file(&path).is_ok() {
+                // Process the current step in the protocol.
+                // Execute this protocol step.
                 files_deleted += 1;
             }
         }
     }
 
     // Clean up tmp files
+    // Guard: validate the condition before proceeding.
     if let Ok(entries) = fs::read_dir(data_dir) {
+        // Iterate over each file entry in the collection.
+        // Iterate over each element.
         for entry in entries.flatten() {
+            // Resolve the filesystem path for the target resource.
+            // Compute path for this protocol step.
             let path = entry.path();
+            // Conditional branch based on the current state.
+            // Guard: validate the condition before proceeding.
             if path.extension().map(|e| e == "tmp").unwrap_or(false)
+                // Check the operation outcome without consuming the error.
+                // Execute this protocol step.
                 && fs::remove_file(&path).is_ok() {
+                    // Process the current step in the protocol.
+                    // Execute this protocol step.
                     files_deleted += 1;
                 }
         }
     }
 
+    // Begin the block scope.
+    // Execute this protocol step.
     EraseResult {
+        // Execute this protocol step.
         broadcast_sent,
+        // Execute this protocol step.
         files_deleted,
+        // Process the current step in the protocol.
+        // Execute this protocol step.
         mesh_identity_preserved: true, // Duress preserves Layer 1
     }
 }

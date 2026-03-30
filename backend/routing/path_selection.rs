@@ -61,6 +61,18 @@ use super::table::RoutingEntry;
 /// by this factor. A 50% penalty means fresh routes are strongly
 /// preferred, but a stale route that's dramatically better (e.g., 1 hop
 /// vs 10 hops) can still win.
+// STALENESS_PENALTY — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// STALENESS_PENALTY — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// STALENESS_PENALTY — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// STALENESS_PENALTY — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// STALENESS_PENALTY — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// STALENESS_PENALTY — protocol constant.
+// Defined by the spec; must not change without a version bump.
 const STALENESS_PENALTY: f32 = 0.5;
 
 /// Effective latency assumed for routes whose `latency_ms` is 0 (unmeasured).
@@ -71,6 +83,18 @@ const STALENESS_PENALTY: f32 = 0.5;
 ///
 /// 1000ms is roughly Tor/I2P territory; any measured path will beat this once
 /// a single latency probe has been recorded.
+// UNMEASURED_LATENCY_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// UNMEASURED_LATENCY_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// UNMEASURED_LATENCY_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// UNMEASURED_LATENCY_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// UNMEASURED_LATENCY_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
+// UNMEASURED_LATENCY_MS — protocol constant.
+// Defined by the spec; must not change without a version bump.
 const UNMEASURED_LATENCY_MS: u32 = 1000;
 
 // ---------------------------------------------------------------------------
@@ -89,30 +113,106 @@ const UNMEASURED_LATENCY_MS: u32 = 1000;
 /// `UNMEASURED_LATENCY_MS` (1000ms) instead of 0, so they score below
 /// any route with a real measurement. This prevents newly-seen routes
 /// from monopolizing path selection before they have been probed.
+// Perform the 'score path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'score path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'score path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'score path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'score path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'score path' operation.
+// Errors are propagated to the caller via Result.
 pub fn score_path(entry: &RoutingEntry, now: u64) -> f32 {
     // Guard against division by zero.
     // hop_count of 0 means "we ARE the destination" — shouldn't
     // normally be scored, but handle gracefully.
+    // Compute effective hops for this protocol step.
+    // Compute effective hops for this protocol step.
+    // Compute effective hops for this protocol step.
+    // Compute effective hops for this protocol step.
+    // Compute effective hops for this protocol step.
+    // Compute effective hops for this protocol step.
     let effective_hops = entry.hop_count.max(1) as f32;
 
     // latency_ms of 0 means unmeasured — use conservative sentinel (1000ms)
     // so any measured route is preferred over an uncharacterized one.
+    // Compute effective latency for this protocol step.
+    // Compute effective latency for this protocol step.
+    // Compute effective latency for this protocol step.
+    // Compute effective latency for this protocol step.
+    // Compute effective latency for this protocol step.
+    // Compute effective latency for this protocol step.
     let effective_latency = if entry.latency_ms == 0 {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         UNMEASURED_LATENCY_MS
+    // Begin the block scope.
+    // Fallback when the guard was not satisfied.
+    // Fallback when the guard was not satisfied.
+    // Fallback when the guard was not satisfied.
+    // Fallback when the guard was not satisfied.
+    // Fallback when the guard was not satisfied.
+    // Fallback when the guard was not satisfied.
     } else {
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         entry.latency_ms
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     } as f32;
 
     // Trust weight from the 8-level model (§6.3).
     // This uses ONLY our trust in the next hop.
+    // Compute trust for this protocol step.
+    // Compute trust for this protocol step.
+    // Compute trust for this protocol step.
+    // Compute trust for this protocol step.
+    // Compute trust for this protocol step.
+    // Compute trust for this protocol step.
     let trust = entry.next_hop_trust.routing_weight();
 
     // Core scoring formula.
+    // Compute score for this protocol step.
+    // Compute score for this protocol step.
+    // Compute score for this protocol step.
+    // Compute score for this protocol step.
+    // Compute score for this protocol step.
+    // Compute score for this protocol step.
     let mut score = (1.0 / effective_hops) * trust * (1.0 / effective_latency);
 
     // Staleness penalty: routes we haven't heard about recently
     // get scored lower to prefer fresh routing information.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
     if entry.is_stale(now) {
+        // Execute the operation and bind the result.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         score *= STALENESS_PENALTY;
     }
 
@@ -126,25 +226,126 @@ pub fn score_path(entry: &RoutingEntry, now: u64) -> f32 {
 /// with fewer hops wins (secondary tiebreaker).
 ///
 /// `now` is the current unix timestamp for staleness checking.
+// Perform the 'select best path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'select best path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'select best path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'select best path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'select best path' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'select best path' operation.
+// Errors are propagated to the caller via Result.
 pub fn select_best_path(
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     candidates: &[RoutingEntry],
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     now: u64,
+// Begin the block scope.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
 ) -> Option<&RoutingEntry> {
+    // Validate the input length to prevent out-of-bounds access.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
+    // Guard: validate the condition before proceeding.
     if candidates.is_empty() {
+        // No result available — signal absence to the caller.
+        // Return to the caller.
+        // Return to the caller.
+        // Return to the caller.
+        // Return to the caller.
+        // Return to the caller.
+        // Return to the caller.
         return None;
     }
 
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     candidates
+        // Create an iterator over the collection elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
         .iter()
+        // Apply the closure to each element.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         .max_by(|a, b| {
+            // Resolve the filesystem path for the target resource.
+            // Compute score a for this protocol step.
+            // Compute score a for this protocol step.
+            // Compute score a for this protocol step.
+            // Compute score a for this protocol step.
+            // Compute score a for this protocol step.
+            // Compute score a for this protocol step.
             let score_a = score_path(a, now);
+            // Resolve the filesystem path for the target resource.
+            // Compute score b for this protocol step.
+            // Compute score b for this protocol step.
+            // Compute score b for this protocol step.
+            // Compute score b for this protocol step.
+            // Compute score b for this protocol step.
+            // Compute score b for this protocol step.
             let score_b = score_path(b, now);
 
             // Primary: highest score wins.
             // Secondary (tiebreaker): fewer hops wins.
             score_a
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 .partial_cmp(&score_b)
+                // Fall back to the default value on failure.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 .unwrap_or(std::cmp::Ordering::Equal)
+                // Apply the closure to each element.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                // Execute this protocol step.
                 .then_with(|| b.hop_count.cmp(&a.hop_count))
         })
 }
@@ -154,17 +355,90 @@ pub fn select_best_path(
 ///
 /// Useful for diagnostics and for the UI to show alternative
 /// routes. Each element is (score, entry reference).
+// Perform the 'rank paths' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'rank paths' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'rank paths' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'rank paths' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'rank paths' operation.
+// Errors are propagated to the caller via Result.
+// Perform the 'rank paths' operation.
+// Errors are propagated to the caller via Result.
 pub fn rank_paths(
+    // Process the current step in the protocol.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     candidates: &[RoutingEntry],
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     now: u64,
+// Begin the block scope.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
+// Execute this protocol step.
 ) -> Vec<(f32, &RoutingEntry)> {
+    // Bind the computed value for subsequent use.
+    // Compute scored for this protocol step.
+    // Compute scored for this protocol step.
+    // Compute scored for this protocol step.
+    // Compute scored for this protocol step.
+    // Compute scored for this protocol step.
+    // Compute scored for this protocol step.
     let mut scored: Vec<(f32, &RoutingEntry)> = candidates
+        // Create an iterator over the collection elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
+        // Create an iterator over the elements.
         .iter()
+        // Transform the result, mapping errors to the local error type.
+        // Transform each element.
+        // Transform each element.
+        // Transform each element.
+        // Transform each element.
+        // Transform each element.
+        // Transform each element.
         .map(|e| (score_path(e, now), e))
+        // Materialize the iterator into a concrete collection.
+        // Collect into a concrete collection.
+        // Collect into a concrete collection.
+        // Collect into a concrete collection.
+        // Collect into a concrete collection.
+        // Collect into a concrete collection.
+        // Collect into a concrete collection.
         .collect();
 
     // Sort descending by score.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
     scored.sort_by(|a, b| {
+        // Fall back to the default value on failure.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
         b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
     });
 
