@@ -213,6 +213,16 @@ pub struct PreauthBundle {
     // Execute this protocol step.
     // Execute this protocol step.
     pub preauth_sig: Option<Vec<u8>>,
+    /// Bob's Ed25519 signature over `DOMAIN_PQXDH_KEM || kem_encapsulation_key`.
+    ///
+    /// SECURITY (HIGH-5): When `preauth_kem_pub` is `Some`, this signature
+    /// binds the KEM public key to Bob's Ed25519 identity.  Without it, an
+    /// attacker could strip or substitute the KEM key to silently downgrade
+    /// the session from post-quantum (PQXDH) to classical (X3DH).
+    ///
+    /// `None` means the bundle predates this field — the PQXDH path is
+    /// skipped unless the signature is present and valid.
+    pub kem_sig: Option<Vec<u8>>,
 }
 
 // Begin the block scope.
@@ -435,50 +445,64 @@ pub fn x3dh_initiate(
     ikm.extend_from_slice(dh3.as_bytes());
 
     // PQXDH extension (§3.4.1): ML-KEM-768 encapsulation against Bob's KEM key.
-    // Compute Some for this protocol step.
-    // Compute Some for this protocol step.
+    //
+    // SECURITY (HIGH-5): Before encapsulating, verify that the KEM public key
+    // is signed by Bob's Ed25519 identity key.  Without this check, an
+    // attacker could strip or substitute the KEM key to silently downgrade
+    // the session from post-quantum (PQXDH) to classical (X3DH).
     let (is_pq, pqxdh_header) = if let Some(ref kem_pub_bytes) = bob_bundle.preauth_kem_pub {
-        // Dispatch based on the variant to apply type-specific logic.
-        // Dispatch on the variant.
-        // Dispatch on the variant.
-        match try_pqxdh_encapsulate(
-            // Execute this protocol step.
-            // Execute this protocol step.
-            kem_pub_bytes,
-            // Execute this protocol step.
-            // Execute this protocol step.
-            ik_a_pub,
-            // Execute this protocol step.
-            // Execute this protocol step.
-            &ek_a_secret,
-            // Execute this protocol step.
-            // Execute this protocol step.
-            &ek_a_pub,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            &bob_bundle.preauth_x25519_pub,
-            // Execute this protocol step.
-            // Execute this protocol step.
-            &mut ikm,
-        // Begin the block scope.
-        ) {
-            // Wrap the found value for the caller.
-            // Wrap the found value.
-            // Wrap the found value.
-            Some(ph) => (true, Some(ph)),
-            // Update the local state.
-            // No value available.
-            // No value available.
-            None => (false, None),
+        // Verify KEM key signature if the identity key is non-zero.
+        // Skip verification only for legacy bundles with zero identity key.
+        let kem_sig_valid = if !identity_is_zero {
+            // If kem_sig is present, verify it covers the KEM pub key.
+            // If kem_sig is absent, refuse to use the KEM key — the bundle
+            // may have been tampered with or is from a pre-signature peer.
+            if let Some(ref sig_bytes) = bob_bundle.kem_sig {
+                // Build the signed message: domain || kem_pub_bytes.
+                let mut kem_msg = Vec::with_capacity(
+                    crate::crypto::signing::DOMAIN_PQXDH_KEM.len() + kem_pub_bytes.len()
+                );
+                kem_msg.extend_from_slice(crate::crypto::signing::DOMAIN_PQXDH_KEM);
+                kem_msg.extend_from_slice(kem_pub_bytes);
+                // Verify the signature against Bob's identity key.
+                let vk = Ed25519VerifyingKey::from_bytes(&bob_bundle.identity_ed25519_pub)
+                    .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
+                let sig = Ed25519Signature::from_slice(sig_bytes)
+                    .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
+                // Use raw verify since we built the domain-separated message
+                // manually (matching crate::crypto::signing::sign format).
+                vk.verify(&kem_msg, &sig)
+                    .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
+                true
+            } else {
+                // No KEM signature present — skip PQXDH to avoid using an
+                // unsigned (potentially substituted) KEM key.
+                false
+            }
+        } else {
+            // Zero identity key (legacy bundle) — skip KEM sig check.
+            true
+        };
+
+        // Only proceed with PQXDH encapsulation if the KEM key is authenticated.
+        if kem_sig_valid {
+            match try_pqxdh_encapsulate(
+                kem_pub_bytes,
+                ik_a_pub,
+                &ek_a_secret,
+                &ek_a_pub,
+                &bob_bundle.preauth_x25519_pub,
+                &mut ikm,
+            ) {
+                Some(ph) => (true, Some(ph)),
+                None => (false, None),
+            }
+        } else {
+            // KEM key is unsigned — fall back to classical X3DH.
+            (false, None)
         }
-    // Begin the block scope.
-    // Fallback when the guard was not satisfied.
-    // Fallback when the guard was not satisfied.
     } else {
-        // Execute this step in the protocol sequence.
-        // Execute this protocol step.
-        // Execute this protocol step.
+        // No KEM public key in bundle — classical X3DH.
         (false, None)
     };
 
@@ -1269,6 +1293,7 @@ mod tests {
             preauth_x25519_pub: preauth_b_pub,
             preauth_kem_pub: None, // No PQXDH for this test
             preauth_sig: None,
+            kem_sig: None,
         };
 
         // Alice initiates
@@ -1351,6 +1376,7 @@ mod tests {
             preauth_x25519_pub: X25519Public::from(&preauth_b_secret),
             preauth_kem_pub: None,
             preauth_sig: None,
+            kem_sig: None,
         };
 
         let out1 = x3dh_initiate(&ik_a_secret, &ik_a_pub, &bob_bundle).unwrap();
@@ -1385,6 +1411,7 @@ mod tests {
             preauth_x25519_pub: preauth_b_pub,
             preauth_kem_pub: None,
             preauth_sig: Some(sig.to_bytes().to_vec()),
+            kem_sig: None,
         };
         (bundle, preauth_b_secret)
     }
@@ -1421,6 +1448,7 @@ mod tests {
             preauth_x25519_pub: preauth_b_pub,
             preauth_kem_pub: None,
             preauth_sig: Some(bad_sig.to_bytes().to_vec()),
+            kem_sig: None,
         };
         let result = x3dh_initiate(&ik_a_secret, &ik_a_pub, &bundle);
         assert!(result.is_ok(), "Zero identity key must skip sig check");
@@ -1463,5 +1491,110 @@ mod tests {
             matches!(result, Err(X3dhError::PreauthBundleSignatureInvalid)),
             "Tampered preauth key must cause PreauthBundleSignatureInvalid"
         );
+    }
+
+    // --- KEM signature tests (HIGH-5) ---
+
+    /// Helper: create a bundle with a signed KEM key.
+    fn make_bob_bundle_with_kem_sig() -> (PreauthBundle, X25519Secret) {
+        use ed25519_dalek::{SigningKey as Ed25519SigningKey, Signer};
+
+        let bob_ed25519_sk = Ed25519SigningKey::generate(&mut rand_core::OsRng);
+        let bob_ed25519_pk = bob_ed25519_sk.verifying_key();
+
+        let ik_b_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let preauth_b_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let preauth_b_pub = X25519Public::from(&preauth_b_secret);
+
+        // Sign the preauth key.
+        let preauth_msg = PreauthBundle::signed_message(&preauth_b_pub);
+        let preauth_sig = bob_ed25519_sk.sign(&preauth_msg);
+
+        // Generate a KEM key and sign it.
+        let kem_pub = vec![0x42u8; 1184]; // ML-KEM-768 encapsulation key size
+        let mut kem_msg = Vec::with_capacity(
+            crate::crypto::signing::DOMAIN_PQXDH_KEM.len() + kem_pub.len()
+        );
+        kem_msg.extend_from_slice(crate::crypto::signing::DOMAIN_PQXDH_KEM);
+        kem_msg.extend_from_slice(&kem_pub);
+        let kem_sig = bob_ed25519_sk.sign(&kem_msg);
+
+        let bundle = PreauthBundle {
+            identity_ed25519_pub: bob_ed25519_pk.to_bytes(),
+            identity_x25519_pub: X25519Public::from(&ik_b_secret),
+            preauth_x25519_pub: preauth_b_pub,
+            preauth_kem_pub: Some(kem_pub),
+            preauth_sig: Some(preauth_sig.to_bytes().to_vec()),
+            kem_sig: Some(kem_sig.to_bytes().to_vec()),
+        };
+        (bundle, preauth_b_secret)
+    }
+
+    #[test]
+    fn test_kem_sig_unsigned_kem_key_skips_pqxdh() {
+        // A bundle with a KEM key but no KEM signature should fall back to
+        // classical X3DH (not PQXDH).
+        let ik_a_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let ik_a_pub = *X25519Public::from(&ik_a_secret).as_bytes();
+
+        let (mut bundle, _) = make_bob_bundle_with_kem_sig();
+        // Remove the KEM signature to simulate an unsigned KEM key.
+        bundle.kem_sig = None;
+
+        let result = x3dh_initiate(&ik_a_secret, &ik_a_pub, &bundle);
+        assert!(result.is_ok(), "X3DH should succeed without PQXDH");
+        // The session should NOT be post-quantum because the KEM key was unsigned.
+        assert!(
+            !result.as_ref().map(|o| o.is_post_quantum).unwrap_or(true),
+            "Session must not be post-quantum when KEM key is unsigned"
+        );
+    }
+
+    #[test]
+    fn test_kem_sig_wrong_signature_skips_pqxdh() {
+        // A bundle with a KEM key and a wrong KEM signature should be rejected.
+        use ed25519_dalek::{SigningKey as Ed25519SigningKey, Signer};
+        let ik_a_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let ik_a_pub = *X25519Public::from(&ik_a_secret).as_bytes();
+
+        let (mut bundle, _) = make_bob_bundle_with_kem_sig();
+
+        // Replace kem_sig with a signature from a different key.
+        let attacker_sk = Ed25519SigningKey::generate(&mut rand_core::OsRng);
+        let fake_msg = b"some other message";
+        let fake_sig = attacker_sk.sign(fake_msg.as_slice());
+        bundle.kem_sig = Some(fake_sig.to_bytes().to_vec());
+
+        // This should fail because the KEM signature doesn't verify.
+        let result = x3dh_initiate(&ik_a_secret, &ik_a_pub, &bundle);
+        assert!(
+            matches!(result, Err(X3dhError::PreauthBundleSignatureInvalid)),
+            "Wrong KEM signature must cause PreauthBundleSignatureInvalid"
+        );
+    }
+
+    #[test]
+    fn test_kem_sig_zero_identity_skips_kem_verification() {
+        // With a zero identity key (legacy), KEM signature verification is skipped.
+        let ik_a_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let ik_a_pub = *X25519Public::from(&ik_a_secret).as_bytes();
+
+        let ik_b_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let preauth_b_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let preauth_b_pub = X25519Public::from(&preauth_b_secret);
+
+        let bundle = PreauthBundle {
+            identity_ed25519_pub: [0u8; 32], // Zero identity — legacy bundle
+            identity_x25519_pub: X25519Public::from(&ik_b_secret),
+            preauth_x25519_pub: preauth_b_pub,
+            preauth_kem_pub: Some(vec![0x42u8; 1184]),
+            preauth_sig: None,
+            kem_sig: None, // No signature, but zero identity should skip check
+        };
+
+        // Should succeed (classical X3DH since encapsulate will fail on dummy key,
+        // but the KEM sig check itself is skipped).
+        let result = x3dh_initiate(&ik_a_secret, &ik_a_pub, &bundle);
+        assert!(result.is_ok(), "Zero identity should skip KEM sig check");
     }
 }

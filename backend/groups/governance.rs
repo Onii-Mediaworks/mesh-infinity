@@ -690,16 +690,36 @@ pub fn tally_votes(
         return proposal.status;
     }
 
-    // Count the number of approve and reject votes.
-    // These counters drive the quorum and threshold calculations.
-    let approve_count = proposal
+    // Verify every vote's Ed25519 signature before counting.
+    // A vote with an invalid signature is treated as if it does not exist —
+    // it is excluded from both quorum and threshold calculations. This
+    // prevents an attacker who has compromised the proposal storage (but
+    // not the voters' keys) from injecting forged votes to sway outcomes.
+    //
+    // Note: we do NOT remove invalid votes from the Vec here because
+    // tally_votes takes `&mut Proposal` only for status updates, and
+    // mutating the vote list during iteration would require a separate
+    // pass. Instead, we count only verified votes below.
+    let verified_approve_count = proposal
         .votes
         .iter()
+        .filter(|v| verify_vote_signature(&proposal.id, v))
         .filter(|v| v.decision == VoteDecision::Approve)
         .count();
 
-    // Reject count is total votes minus approvals.
-    let total_votes = proposal.votes.len();
+    // Count total verified votes (regardless of decision).
+    let verified_total = proposal
+        .votes
+        .iter()
+        .filter(|v| verify_vote_signature(&proposal.id, v))
+        .count();
+
+    // Use the verified counts for all subsequent calculations.
+    // Votes with invalid signatures are silently excluded.
+    let approve_count = verified_approve_count;
+
+    // Reject count is total verified votes minus verified approvals.
+    let total_votes = verified_total;
     let reject_count = total_votes - approve_count;
 
     // Calculate the minimum number of votes needed for quorum.
@@ -1790,5 +1810,130 @@ mod tests {
         assert_eq!(p2.status, ProposalStatus::Open);
         assert!(p1.votes.is_empty());
         assert!(p2.votes.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // MED-3: Tally rejects forged vote signatures
+    // -----------------------------------------------------------------------
+
+    /// Verify that tally_votes excludes votes with forged signatures.
+    /// A vote injected directly into the proposal's Vec (bypassing
+    /// cast_vote) with an invalid signature must not count toward
+    /// quorum or approval thresholds.
+    #[test]
+    fn test_tally_rejects_forged_votes() {
+        let group_id = [0xFE; 16];
+        let (sk1, pk1) = test_keypair(200);
+        let (_, pk2) = test_keypair(201);
+        let proposer = peer_id(&pk1);
+        let policy = test_policy();
+
+        let mut proposal = test_proposal(
+            &group_id,
+            &proposer,
+            GovernanceAction::ChangeSettings {
+                settings_json: "{}".to_string(),
+            },
+        );
+
+        // Cast one legitimate vote (signed with the correct key).
+        // Use enough eligible voters so one vote alone won't decide.
+        let eligible = 3;
+        cast_vote(
+            &mut proposal,
+            &proposer,
+            &GroupRole::Admin,
+            VoteDecision::Approve,
+            &sk1,
+            &policy,
+            eligible,
+        )
+        .expect("legitimate vote should succeed");
+
+        // Inject a forged vote directly into the Vec (simulating an
+        // attacker who has write access to the proposal storage but
+        // does not possess voter2's Ed25519 private key).
+        let forged_vote = Vote {
+            voter: peer_id(&pk2),
+            decision: VoteDecision::Approve,
+            // Garbage signature — not a valid Ed25519 signature.
+            signature: vec![0xDE; 64],
+        };
+        proposal.votes.push(forged_vote);
+
+        // Reset status to Open so tally_votes re-evaluates.
+        proposal.status = ProposalStatus::Open;
+
+        // Tally should ignore the forged vote. With only 1 verified
+        // vote out of 3 eligible, quorum (ceil(0.5 * 3) = 2) is not
+        // met, so the proposal stays Open.
+        let result = tally_votes(&mut proposal, &policy, eligible);
+        assert_eq!(
+            result,
+            ProposalStatus::Open,
+            "forged vote must not count toward quorum or threshold"
+        );
+    }
+
+    /// Verify that tally_votes correctly approves when all votes have
+    /// valid signatures (regression test to ensure signature verification
+    /// does not accidentally reject legitimate votes).
+    #[test]
+    fn test_tally_accepts_valid_signatures() {
+        let group_id = [0xFD; 16];
+        let (sk1, pk1) = test_keypair(210);
+        let (sk2, pk2) = test_keypair(211);
+        let proposer = peer_id(&pk1);
+        let voter = peer_id(&pk2);
+
+        // Use a policy with low thresholds so 2 votes can approve.
+        let policy = GovernancePolicy {
+            quorum: 0.5,
+            approval_threshold: 0.5,
+            voting_period_secs: DEFAULT_VOTING_PERIOD_SECS,
+            proposer_roles: vec![GroupRole::Admin, GroupRole::Moderator],
+            voter_roles: vec![GroupRole::Admin, GroupRole::Moderator, GroupRole::Member],
+        };
+
+        let mut proposal = test_proposal(
+            &group_id,
+            &proposer,
+            GovernanceAction::ChangeSettings {
+                settings_json: "{}".to_string(),
+            },
+        );
+
+        let eligible = 3; // quorum = 2, threshold = ceil(0.5 * 2) = 1
+
+        // Two legitimate votes should approve.
+        cast_vote(
+            &mut proposal,
+            &proposer,
+            &GroupRole::Admin,
+            VoteDecision::Approve,
+            &sk1,
+            &policy,
+            eligible,
+        )
+        .expect("vote 1");
+
+        cast_vote(
+            &mut proposal,
+            &voter,
+            &GroupRole::Member,
+            VoteDecision::Approve,
+            &sk2,
+            &policy,
+            eligible,
+        )
+        .expect("vote 2");
+
+        // Both votes have valid signatures. With 2 of 3 eligible voting
+        // and both approving, the proposal should be Approved.
+        assert_eq!(
+            proposal.status,
+            ProposalStatus::Approved,
+            "proposal with valid signatures should be approved"
+        );
     }
 }
