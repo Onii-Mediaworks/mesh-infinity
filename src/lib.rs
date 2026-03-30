@@ -62,4 +62,7 @@ pub mod service;
 #[path = "../backend/ffi/lib.rs"]
 pub mod ffi;
 
+#[path = "../backend/testing/mod.rs"]
+pub mod testing;
+
 pub mod runtime;
