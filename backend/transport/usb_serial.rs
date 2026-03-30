@@ -692,7 +692,7 @@ impl UsbSerialTransport {
 
         #[cfg(unix)]
         {
-            let mut guard = self.fd.lock().unwrap();
+            let mut guard = self.fd.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(fd) = guard.take() {
                 // SAFETY: we own the fd and have just set the guard to None,
                 // so no other code path can close it again.
@@ -732,7 +732,7 @@ impl UsbSerialTransport {
 
         #[cfg(unix)]
         {
-            let guard = self.fd.lock().unwrap();
+            let guard = self.fd.lock().unwrap_or_else(|e| e.into_inner());
             let fd = guard.as_ref().copied().ok_or(UsbSerialError::PortNotOpen)?;
             write_all_fd(fd, &frame)?;
         }
@@ -754,7 +754,7 @@ impl UsbSerialTransport {
     ///
     /// [`send`]: UsbSerialTransport::send
     pub fn queue_outbound(&self, data: &[u8]) {
-        let mut q = self.outbound.lock().unwrap();
+        let mut q = self.outbound.lock().unwrap_or_else(|e| e.into_inner());
         q.push_back(data.to_vec());
     }
 
@@ -788,7 +788,7 @@ impl UsbSerialTransport {
             }
 
             let fd = {
-                let guard = self.fd.lock().unwrap();
+                let guard = self.fd.lock().unwrap_or_else(|e| e.into_inner());
                 match *guard {
                     Some(fd) => fd,
                     None => break,
@@ -821,7 +821,7 @@ impl UsbSerialTransport {
                 let bytes = &buf[..n as usize];
                 let frames = decoder.feed(bytes);
                 if !frames.is_empty() {
-                    let mut q = self.inbound.lock().unwrap();
+                    let mut q = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
                     for frame in frames {
                         q.push_back(frame);
                     }
@@ -842,7 +842,7 @@ impl UsbSerialTransport {
     /// Returns frames in the order they were received.  The internal queue is
     /// cleared by this call.
     pub fn drain_inbound(&self) -> Vec<Vec<u8>> {
-        let mut q = self.inbound.lock().unwrap();
+        let mut q = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
         q.drain(..).collect()
     }
 

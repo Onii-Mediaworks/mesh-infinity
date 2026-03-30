@@ -50,6 +50,7 @@ pub use trait_transport::Transport;
 pub use trait_transport::TransportExt;
 
 pub mod bluetooth;
+pub mod cover_traffic;
 pub mod can_bus;
 pub mod cjdns;
 pub mod i2p;

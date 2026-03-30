@@ -45,15 +45,28 @@ use std::collections::HashMap;
 // ────────────────────────────────────────────────────────────────────────────
 
 /// GossipSub topic for Mesh Infinity network map propagation.
+/// The version suffix (1.0.0) allows future incompatible map formats
+/// to use a different topic without interference from old nodes.
+/// GossipSub's flood/mesh hybrid propagation ensures high-reliability
+/// delivery without requiring every node to maintain a direct connection
+/// to every other node.
 pub const GOSSIPSUB_NETWORK_MAP_TOPIC: &str = "/meshinfinity/network-map/1.0.0";
 
 /// GossipSub topic for Mesh Infinity peer announcements.
+/// Separated from network-map because announcements are higher-frequency
+/// (peers come and go) and nodes may want to subscribe to maps without
+/// receiving every peer churn event.
 pub const GOSSIPSUB_PEER_ANNOUNCE_TOPIC: &str = "/meshinfinity/peer-announce/1.0.0";
 
 /// Rendezvous namespace for Mesh Infinity peer discovery.
+/// Rendezvous protocol (libp2p RFC 0062) allows nodes to register at
+/// well-known rendezvous points and discover peers by namespace — this
+/// provides bootstrap discovery without relying on a DHT, which would
+/// leak interest patterns (§4.8 privacy concern).
 pub const RENDEZVOUS_NAMESPACE: &str = "meshinfinity";
 
-/// Default libp2p TCP port.
+/// Default libp2p TCP port.  4001 is the standard IPFS/libp2p port;
+/// we reuse it for familiarity and firewall rule reuse.
 pub const LIBP2P_TCP_PORT: u16 = 4001;
 
 // ────────────────────────────────────────────────────────────────────────────

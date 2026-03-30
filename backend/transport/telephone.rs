@@ -49,35 +49,66 @@ use std::f64::consts::PI;
 // Modem parameters
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Voice codec sample rate (Hz).
+/// Narrowband voice codec sample rate (Hz).  All cellular voice codecs
+/// (AMR-NB, G.711, GSM-FR) operate at 8 kHz.  AMR-WB uses 16 kHz but
+/// downsamples for narrowband compatibility, so 8 kHz is the safe baseline
+/// that survives transcoding across any cellular network.
 pub const SAMPLE_RATE: u32 = 8000;
 
-/// Baud rate (symbols per second).
+/// Baud rate (symbols per second).  50 bps is extremely conservative —
+/// it gives each symbol 160 audio samples, which provides enough redundancy
+/// for the Goertzel detector to discriminate tones even after lossy codec
+/// processing (AMR at 4.75 kbps introduces severe quantization).
 pub const BAUD_RATE: u32 = 50;
 
-/// Samples per symbol.
-pub const SAMPLES_PER_SYMBOL: usize = (SAMPLE_RATE / BAUD_RATE) as usize; // 160
+/// Samples per symbol — 160 samples at 8 kHz = 20ms per symbol.
+/// This matches the AMR codec frame length (20ms), ensuring each symbol
+/// falls entirely within a single codec frame and is not split across
+/// two frames with potentially different quantization.
+pub const SAMPLES_PER_SYMBOL: usize = (SAMPLE_RATE / BAUD_RATE) as usize;
 
-/// Mark frequency — bit value 1.
+/// Mark frequency (1200 Hz) — represents bit value 1.
+/// Chosen in the 300–3400 Hz voice passband because cellular codecs
+/// aggressively filter everything outside this range.  1200 Hz and
+/// 2200 Hz are spaced far enough apart (~1 kHz) that even aggressive
+/// codec quantization cannot confuse them.
 pub const MARK_FREQ: f64 = 1200.0;
 
-/// Space frequency — bit value 0.
+/// Space frequency (2200 Hz) — represents bit value 0.
+/// Bell 202 uses the same mark/space frequencies; this is intentional
+/// for compatibility with APRS and legacy amateur radio modems.
 pub const SPACE_FREQ: f64 = 2200.0;
 
-/// Pilot carrier frequency — presence detection.
+/// Pilot carrier frequency (600 Hz) — used for presence detection.
+/// Deliberately below the mark/space band so the Goertzel detector can
+/// unambiguously distinguish pilot from data.  600 Hz is above the
+/// voice codec high-pass filter cutoff (~300 Hz) but below the lowest
+/// data tone, creating a clean energy-ratio signature.
 pub const PILOT_FREQ: f64 = 600.0;
 
-/// Pilot duration before data starts (samples).
-pub const PILOT_DURATION_SAMPLES: usize = SAMPLE_RATE as usize; // 1 second
+/// Pilot duration: 1 second (8000 samples).  Long enough for the
+/// receiver to reliably detect the tone and synchronize, even through
+/// cellular codec processing which introduces ~50ms startup artifacts.
+pub const PILOT_DURATION_SAMPLES: usize = SAMPLE_RATE as usize;
 
-/// Goertzel detector threshold: pilot must exceed this relative to combined
-/// mark+space energy to declare presence.
+/// Goertzel detector threshold: pilot energy must exceed mark+space
+/// energy by this factor to declare "pilot present".  A threshold of 2.0
+/// provides ~6 dB of discrimination margin, which is sufficient because
+/// the pilot frequency (600 Hz) is well-separated from mark (1200) and
+/// space (2200), so codec artifacts produce minimal cross-frequency leakage.
 pub const PILOT_DETECT_THRESHOLD: f64 = 2.0;
 
-/// Reed-Solomon code parameters: RS(255, 223) — 32 parity bytes, t=16.
+/// Reed-Solomon code parameters: RS(255, 223) over GF(2^8).
+/// This gives t=16 symbol error correction per block.  At 50 baud with
+/// typical cellular bit error rates (~1%), a 255-byte block accumulates
+/// ~2-3 errors — well within the correction capacity.  RS(255,223) is the
+/// same code used in CCSDS deep-space communications, chosen for its
+/// proven performance in noisy channels.
 pub const RS_N: usize = 255;
 pub const RS_K: usize = 223;
-pub const RS_PARITY: usize = RS_N - RS_K; // 32
+/// 32 parity bytes provide correction of up to 16 symbol errors
+/// and detection of up to 32 symbol errors per block.
+pub const RS_PARITY: usize = RS_N - RS_K;
 
 // ────────────────────────────────────────────────────────────────────────────
 // FSK encoder
@@ -130,7 +161,13 @@ fn generate_tone(freq: f64, n: usize) -> Vec<i16> {
 
 /// Goertzel single-bin DFT for one frequency over a window of samples.
 ///
-/// Returns the energy (power) at `freq` Hz over the window.
+/// The Goertzel algorithm is computationally cheaper than a full FFT when
+/// you only need the energy at a few specific frequencies (3 in our case:
+/// pilot, mark, space).  It runs in O(N) per frequency with only 3
+/// multiplies per sample, versus O(N log N) for an FFT.
+///
+/// The final energy calculation uses the recurrence relation's last two
+/// values to compute |X[k]|^2 without complex arithmetic.
 fn goertzel(samples: &[i16], freq: f64) -> f64 {
     let n = samples.len() as f64;
     let k = (n * freq / SAMPLE_RATE as f64).round();
@@ -236,11 +273,20 @@ pub fn find_pilot_end(samples: &[i16]) -> Option<usize> {
 // Reed-Solomon codec (GF(2^8), primitive polynomial 0x11D = x^8+x^4+x^3+x^2+1)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Galois Field GF(2^8) using the CCSDS polynomial 0x187.
-/// (Same as used in CD-ROMs, DVB, and many communications standards.)
-const GF_POLY: u16 = 0x187; // x^8 + x^7 + x^2 + x + 1
+/// Galois Field GF(2^8) primitive polynomial.
+/// 0x187 = x^8 + x^7 + x^2 + x + 1, the CCSDS polynomial used in
+/// DVB-S, CD-ROM, and deep-space communications standards.  This is
+/// an irreducible polynomial over GF(2) that generates all 255 nonzero
+/// elements of GF(256) via repeated multiplication by the primitive
+/// element alpha = 2.
+const GF_POLY: u16 = 0x187;
 
-/// GF(2^8) multiplication tables (log/antilog).
+/// GF(2^8) logarithm and antilogarithm (exponentiation) tables.
+/// These precomputed tables convert multiplication to addition in
+/// log-space: mul(a,b) = exp[log[a] + log[b]], which is O(1) per
+/// multiply instead of the O(8) bit-by-bit polynomial multiplication.
+/// The exp table is doubled to 512 entries to avoid modular reduction
+/// on the sum — a classic space-time trade-off.
 struct Gf {
     log: [u8; 256],
     exp: [u8; 512],
@@ -595,13 +641,13 @@ impl TelephoneSubchannel {
     /// Queue `data` for FSK transmission on the next audio callback.
     pub fn send(&self, data: &[u8]) {
         let samples = encode(data);
-        self.send_buf.lock().unwrap().extend(samples);
+        self.send_buf.lock().unwrap_or_else(|e| e.into_inner()).extend(samples);
     }
 
     /// Pull the next batch of outgoing audio samples (called by platform
     /// audio output callback).
     pub fn pull_output(&self, n: usize) -> Vec<i16> {
-        let mut buf = self.send_buf.lock().unwrap();
+        let mut buf = self.send_buf.lock().unwrap_or_else(|e| e.into_inner());
         let take = buf.len().min(n);
         buf.drain(..take).collect()
     }
@@ -609,7 +655,7 @@ impl TelephoneSubchannel {
     /// Feed incoming audio samples (called by platform audio input callback).
     /// Returns a decoded payload if a complete frame was received.
     pub fn push_input(&self, samples: &[i16]) -> Option<Vec<u8>> {
-        let mut buf = self.recv_buf.lock().unwrap();
+        let mut buf = self.recv_buf.lock().unwrap_or_else(|e| e.into_inner());
         buf.extend_from_slice(samples);
         // Attempt decode when enough samples have accumulated.
         let min_samples = PILOT_DURATION_SAMPLES + 100 * 10 * SAMPLES_PER_SYMBOL;

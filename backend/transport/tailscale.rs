@@ -45,14 +45,21 @@ use serde::{Deserialize, Serialize};
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Tailscale CGNAT address range: 100.64.0.0/10.
+/// RFC 6598 reserves 100.64.0.0/10 for Carrier-Grade NAT — Tailscale uses
+/// this range because it is guaranteed not to overlap with any globally-routed
+/// address, private RFC 1918 ranges, or link-local addresses.  This avoids
+/// conflicts regardless of the user's existing network configuration.
 pub const TS_IP_RANGE_START: Ipv4Addr = Ipv4Addr::new(100, 64, 0, 0);
-/// Prefix length for the Tailscale address space.
+/// Prefix length for the Tailscale address space (10-bit mask = ~4M addresses).
 pub const TS_PREFIX_LEN: u8 = 10;
 
-/// Default Tailscale coordination server URL.
+/// Default Tailscale coordination server URL.  For self-hosted Headscale
+/// deployments, this is overridden via `new_headscale()`.
 pub const TS_CONTROL_URL: &str = "https://controlplane.tailscale.com";
 
-/// DERP server port (WebSocket).
+/// DERP server port (WebSocket over TLS).  DERP relays always use 443 to
+/// traverse corporate firewalls that block non-standard ports — the protocol
+/// is designed to look like regular HTTPS traffic to middleboxes.
 pub const DERP_PORT: u16 = 443;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -275,7 +282,7 @@ impl TailscaleClient {
             .await?;
 
         // Update state.
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.authorized = resp.node_authorized;
         state.machine_name = resp.machine_name.clone();
         state.auth_url = resp.auth_url.clone();
@@ -290,8 +297,11 @@ impl TailscaleClient {
 
     /// Poll the coordination server for peer updates (long-poll).
     ///
-    /// This call blocks until the server sends an update.  Run in a dedicated
-    /// task/thread.
+    /// Sends a `map` request with `Stream: true`, which keeps the HTTP
+    /// connection open.  The server pushes updates whenever the peer list
+    /// or DERP map changes — this is how Tailscale achieves near-instant
+    /// peer discovery without polling.  Run in a dedicated task/thread
+    /// because this call blocks indefinitely until the server sends data.
     pub async fn poll_map(&self) -> Result<MapResponse, reqwest::Error> {
         let url = format!("{}/machine/map", self.control_url);
         let map: MapResponse = self
@@ -308,7 +318,7 @@ impl TailscaleClient {
             .json()
             .await?;
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.peers = map.peers.clone();
         state.derp_map = map.derp_map.clone();
         if let Some(ref s) = map.self_node {
@@ -325,10 +335,15 @@ impl TailscaleClient {
 
     /// Get the best DERP relay for our region (for fallback when direct
     /// WireGuard fails).
+    ///
+    /// DERP region IDs are assigned by Tailscale/Headscale with lower IDs
+    /// typically corresponding to geographically closer or higher-capacity
+    /// regions.  We sort ascending and take the first with a resolvable
+    /// IPv4 address — this is a coarse heuristic; a production implementation
+    /// would use latency-based probing (like Tailscale's netcheck).
     pub fn best_derp_relay(&self) -> Option<SocketAddr> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let derp = state.derp_map.as_ref()?;
-        // Pick the first region with any node (prefer lower region IDs = closer).
         let mut region_ids: Vec<u32> = derp.regions.keys().copied().collect();
         region_ids.sort_unstable();
         for rid in region_ids {
@@ -347,7 +362,7 @@ impl TailscaleClient {
 
     /// Return all currently known peers.
     pub fn peers(&self) -> Vec<TailscalePeer> {
-        self.state.lock().unwrap().peers.clone()
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).peers.clone()
     }
 
     /// Return all peers that have advertised exit-node capability.
@@ -363,6 +378,11 @@ impl TailscaleClient {
     }
 
     /// Our current Tailscale IP (first assigned IPv4, if any).
+    ///
+    /// Filters to the 100.64.0.0/10 CGNAT range because Tailscale may also
+    /// assign IPv6 addresses or, in some edge cases, IPs outside the range.
+    /// The mask check `(o[1] & 0xC0) == 64` verifies the top 2 bits of the
+    /// second octet match 01 (binary), which covers 100.64.0.0 – 100.127.255.255.
     pub fn our_ip(&self) -> Option<Ipv4Addr> {
         self.state
             .lock()
@@ -372,7 +392,6 @@ impl TailscaleClient {
             .find_map(|ip| {
                 if let IpAddr::V4(v4) = ip {
                     let o = v4.octets();
-                    // Must be in 100.64.0.0/10.
                     if o[0] == 100 && (o[1] & 0xC0) == 64 {
                         return Some(*v4);
                     }
@@ -427,7 +446,7 @@ mod tests {
     fn our_ip_in_cgnat_range() {
         let c = TailscaleClient::new_central(test_key(), "test");
         {
-            let mut state = c.state.lock().unwrap();
+            let mut state = c.state.lock().unwrap_or_else(|e| e.into_inner());
             state.assigned_ips.push("100.90.1.5".parse().unwrap());
         }
         let ip = c.our_ip().expect("should find a Tailscale IP");
@@ -440,7 +459,7 @@ mod tests {
     fn our_ip_non_cgnat_ignored() {
         let c = TailscaleClient::new_central(test_key(), "test");
         {
-            let mut state = c.state.lock().unwrap();
+            let mut state = c.state.lock().unwrap_or_else(|e| e.into_inner());
             state.assigned_ips.push("192.168.1.1".parse().unwrap()); // not in TS range
         }
         assert!(c.our_ip().is_none());
@@ -450,7 +469,7 @@ mod tests {
     fn exit_nodes_filter() {
         let c = TailscaleClient::new_central(test_key(), "test");
         {
-            let mut state = c.state.lock().unwrap();
+            let mut state = c.state.lock().unwrap_or_else(|e| e.into_inner());
             state.peers.push(TailscalePeer {
                 key: "keyA".into(),
                 addresses: vec!["100.90.1.1".into()],
@@ -479,7 +498,7 @@ mod tests {
     fn best_derp_selects_lowest_region() {
         let c = TailscaleClient::new_central(test_key(), "test");
         {
-            let mut state = c.state.lock().unwrap();
+            let mut state = c.state.lock().unwrap_or_else(|e| e.into_inner());
             let mut regions = HashMap::new();
             regions.insert(
                 5u32,

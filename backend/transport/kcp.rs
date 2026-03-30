@@ -50,66 +50,156 @@ use std::collections::VecDeque;
 // Protocol constants
 // ────────────────────────────────────────────────────────────────────────────
 
-/// KCP command: data push.
+/// KCP command: data push — carries a segment of user data.
+/// Wire value 81 (0x51) per the KCP protocol spec; values differ from TCP's
+/// SYN/ACK/FIN to avoid confusion when debugging mixed-protocol captures.
 const CMD_PUSH: u8 = 81;
-/// KCP command: ACK.
+
+/// KCP command: selective ACK — acknowledges receipt of a specific segment SN.
+/// Unlike TCP's cumulative ACK, KCP ACKs each segment individually so that
+/// only genuinely lost segments need retransmission.
 const CMD_ACK: u8 = 82;
-/// KCP command: window probe request.
+
+/// KCP command: window probe request — sent when the remote window is zero.
+/// Prevents deadlock: if the responder's last window update was lost, the
+/// sender would never learn the window has re-opened without this probe.
 const CMD_WASK: u8 = 83;
-/// KCP command: window size advertisement.
+
+/// KCP command: window size advertisement — reply to a WASK probe.
+/// The remote window size is carried in the `wnd` header field of this segment.
 const CMD_WINS: u8 = 84;
 
 /// Fixed overhead per KCP segment header (bytes).
+///
+/// Wire layout (all little-endian):
+///   conv(4) + cmd(1) + frg(1) + wnd(2) + ts(4) + sn(4) + una(4) + len(4) = 24
+/// This is subtracted from `mtu` to get the maximum segment size (MSS).
 pub const OVERHEAD: usize = 24;
 
 /// Mesh Infinity default configuration.
+///
+/// MTU set to 1400 to fit inside WireGuard's 1420-byte inner MTU after the
+/// KCP header (24 bytes), leaving margin for path MTU variance.
 pub const DEFAULT_MTU: usize = 1400;
+
+/// Send and receive windows are 4x the KCP default of 32 to accommodate
+/// the higher-latency paths common in mesh and overlay networks.  At 128
+/// segments and 20ms intervals, this supports ~175 KB in-flight data.
 pub const DEFAULT_SND_WND: u16 = 128;
 pub const DEFAULT_RCV_WND: u16 = 128;
+
+/// Nodelay mode enables a 30ms minimum RTO (vs 100ms in normal mode),
+/// which is critical for interactive messaging over mesh networks where
+/// a 100ms floor would unnecessarily amplify tail latency.
 pub const DEFAULT_NODELAY: bool = true;
+
+/// 20ms flush interval matches the WireGuard rekey timer granularity and
+/// keeps KCP responsive without excessive CPU wake-ups on battery devices.
 pub const DEFAULT_INTERVAL_MS: u32 = 20;
+
+/// Fast retransmit after 2 out-of-order ACKs (NACK-equivalent).  Lower
+/// values (e.g. 1) cause spurious retransmits on reordered paths; higher
+/// values delay recovery.  2 is the same trade-off TCP SACK uses.
 pub const DEFAULT_FAST_RESEND: u32 = 2;
+
+/// Declare a link dead after 20 consecutive unacked retransmissions.
+/// At 1.5x backoff from a 200ms initial RTO, this takes roughly 40 seconds
+/// of total silence before triggering a WireGuard session teardown.
 pub const DEFAULT_DEAD_LINK: u32 = 20;
 
 /// Minimum RTO in nodelay mode (ms).
+/// 30ms is roughly 2× the one-way latency of a local mesh hop, ensuring
+/// we retransmit fast without firing on every slightly-delayed ACK.
 const RTO_NDL: u32 = 30;
-/// Minimum RTO in normal mode (ms).
+
+/// Minimum RTO in normal mode (ms) — used only when nodelay is disabled.
 const RTO_MIN: u32 = 100;
-/// Initial RTO (ms).
+
+/// Initial RTO before any RTT samples (ms).  Conservative enough to avoid
+/// spurious retransmits during the first exchange, but low enough for
+/// responsive mesh startup.
 const RTO_DEF: u32 = 200;
-/// Maximum RTO (ms).
+
+/// RTO ceiling (ms).  Prevents exponential backoff from growing unboundedly
+/// on very lossy links — beyond 5 seconds the dead_link counter should be
+/// catching the problem anyway.
 const RTO_MAX: u32 = 5000;
-/// RTO backoff multiplier: 1.5× (stored as 3/2).
+
+/// 1.5× backoff (stored as 3/2 integer fraction to avoid floating point).
+/// TCP uses 2×; KCP's 1.5× recovers from isolated losses ~33% faster,
+/// which matters for short mesh messages that would otherwise stall.
 const RTO_BACKOFF_NUM: u32 = 3;
 const RTO_BACKOFF_DEN: u32 = 2;
 
-/// Probe window ask / answer flags.
+/// Bitflags controlling which probe messages to send in the next flush.
+/// ASK_SEND triggers a CMD_WASK (request the peer's window); ASK_TELL
+/// triggers a CMD_WINS (advertise our window).  Both are cleared after flush.
 const ASK_SEND: u32 = 1;
 const ASK_TELL: u32 = 2;
 
-/// After `PROBE_INIT_MS` without an ACK from a zero-window, send a probe.
+/// Initial zero-window probe delay (ms).  When the remote advertises a
+/// zero receive window, we wait this long before sending a CMD_WASK probe.
+/// 7 seconds is generous enough for the peer to drain its queue under
+/// normal conditions while still detecting stuck peers in reasonable time.
 const PROBE_INIT_MS: u32 = 7000;
-/// Maximum probe interval.
+
+/// Maximum probe interval (ms).  Probes use 1.5× exponential backoff
+/// starting from PROBE_INIT_MS, capped here at 2 minutes.  Beyond this,
+/// the dead_link mechanism should be catching the failure.
 const PROBE_LIMIT_MS: u32 = 120_000;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Internal segment
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Internal representation of a single KCP segment, used for both send and
+/// receive paths.  The wire layout of the header (24 bytes) is defined above
+/// in `OVERHEAD`; the `encode` method serialises it in little-endian order.
+///
+/// Fragment numbering (`frg`) counts DOWN from `total_fragments - 1` to 0,
+/// so the receiver can detect the final fragment (frg == 0) and begin
+/// reassembly without knowing the total count in advance.
 #[derive(Clone)]
 struct Segment {
+    /// Conversation ID — shared between both peers, derived from the
+    /// WireGuard session key.  Segments with a mismatched conv are silently
+    /// dropped, providing a lightweight demux for multiplexed channels.
     conv: u32,
     cmd: u8,
+    /// Fragment index, counting down.  0 = last (or only) fragment of a
+    /// message.  This design lets `recv()` detect completeness by peeking
+    /// at the first queued segment's frg without buffering metadata.
     frg: u8,
+    /// Advertised receive window (in segments).  Piggybacked on every
+    /// outgoing segment so the peer always has a recent window estimate
+    /// without needing a dedicated window-update message.
     wnd: u16,
+    /// Timestamp (ms) when this segment was last sent.  Used by the
+    /// receiver to compute RTT: `rtt = current - ack.ts`.
     ts: u32,
+    /// Sequence number.  Monotonically increasing per conversation,
+    /// wrapping at u32::MAX.  All comparisons use wrapping arithmetic
+    /// to handle the wraparound correctly.
     sn: u32,
+    /// Cumulative ACK: "I have received all segments with sn < una".
+    /// Piggybacked on every outgoing segment, allowing the sender to
+    /// bulk-release segments from `snd_buf` without individual ACKs.
     una: u32,
     data: Vec<u8>,
-    // Retransmission state (snd_buf only)
+
+    // --- Retransmission state (used only for segments in snd_buf) ---
+
+    /// Absolute timestamp (ms) when the next retransmission is due.
     resendts: u32,
+    /// Per-segment RTO, initialised from the global `rx_rto` and then
+    /// backed off by 1.5× on each timeout retransmit.
     rto: u32,
+    /// Number of out-of-order ACKs past this segment's SN.  When this
+    /// exceeds `fast_resend`, the segment is retransmitted immediately
+    /// without waiting for the RTO timer — the "fast retransmit" path.
     fastack: u32,
+    /// Transmission count.  Incremented each time the segment is sent
+    /// (including the initial transmission).  Drives the dead_link counter.
     xmit: u32,
 }
 
@@ -131,6 +221,10 @@ impl Segment {
         }
     }
 
+    /// Serialize this segment's header + payload into `buf` in the KCP wire
+    /// format.  All multi-byte fields are little-endian.  Multiple segments
+    /// may be packed into a single UDP datagram (up to MTU), which is why
+    /// `buf` is appended to rather than replaced.
     fn encode(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&self.conv.to_le_bytes());
         buf.push(self.cmd);
@@ -164,51 +258,79 @@ pub struct KcpState {
 
     // MTU / window
     mtu: usize,
+    /// Local send window cap.
     snd_wnd: u16,
+    /// Local receive window cap.
     rcv_wnd: u16,
+    /// Remote peer's last advertised receive window.  Limits how many
+    /// segments we can have in-flight to prevent overrunning the peer.
     rmt_wnd: u16,
+    /// Congestion window — unused when `nocwnd` is true (mesh default),
+    /// because mesh routing handles congestion at a higher layer.
     cwnd: u16,
 
     // Sequence numbers
+    /// Oldest unacknowledged sequence number (send-side cumulative ACK).
     snd_una: u32,
+    /// Next sequence number to assign to an outgoing segment.
     snd_nxt: u32,
+    /// Next expected receive sequence number.  Segments arriving with
+    /// sn == rcv_nxt are delivered immediately; others go to rcv_buf.
     rcv_nxt: u32,
 
-    // Queues
+    // Queues — the two-stage pipeline (queue → buf) separates flow control
+    // from the application interface: `send()` pushes to snd_queue without
+    // blocking; `flush()` moves segments to snd_buf up to the cwnd limit.
     snd_queue: VecDeque<Segment>,
     snd_buf: VecDeque<Segment>,
+    /// Fully ordered, ready-for-consumption segments.  `recv()` reads here.
     rcv_queue: VecDeque<Segment>,
+    /// Out-of-order receive buffer, sorted by SN.  Segments are promoted
+    /// to rcv_queue once the gap (rcv_nxt) is filled.
     rcv_buf: VecDeque<Segment>,
 
-    // ACK list accumulated during input()
+    /// ACKs accumulated during `input()`, flushed as CMD_ACK segments
+    /// in the next `flush()`.  Batching ACKs reduces per-segment overhead
+    /// on high-throughput links.
     acklist: Vec<(u32, u32)>, // (sn, ts) pairs
 
-    // RTT estimation
+    // RTT estimation — Jacobson/Karels algorithm (same as TCP RFC 6298),
+    // producing a smoothed RTT and a variance estimate that drive the
+    // retransmission timeout.
     rx_srtt: u32,
     rx_rttval: u32,
     rx_rto: u32,
     rx_minrto: u32,
 
-    // Timing
+    // Timing — all values are monotonic milliseconds, wrapping-safe.
     current: u32,
     interval: u32,
+    /// Next scheduled flush time.  `update()` calls `flush()` when
+    /// `current >= ts_flush`.
     ts_flush: u32,
 
-    // Probing
+    // Probing — handles the zero-window deadlock scenario (§5.31).
     probe: u32,
     ts_probe: u32,
     probe_wait: u32,
 
-    // Dead-link counter
+    // Dead-link detection — if the same segment is retransmitted
+    // `dead_link` times without any ACK, the link is declared dead
+    // and the WireGuard session should be torn down.
     dead_link: u32,
     /// Number of consecutive unacknowledged retransmissions.
     pub xmit_count: u32,
 
     // Config
+    /// Minimum out-of-order ACK count to trigger fast retransmit.
     fast_resend: u32,
-    nocwnd: bool, // nc=1
+    /// When true, congestion window is bypassed — send rate is limited
+    /// only by `snd_wnd` and `rmt_wnd`.  Enabled by default because the
+    /// mesh routing layer performs its own congestion management.
+    nocwnd: bool,
 
-    // Output callback: called with a frame slice to send over WireGuard.
+    /// Callback invoked with assembled KCP frame bytes ready for the
+    /// WireGuard layer.  Called from within `flush()`.
     output: KcpOutputFn,
 
     /// Set to `true` when `dead_link` threshold is reached.
@@ -275,13 +397,19 @@ impl KcpState {
         }
         let mss = self.mtu - OVERHEAD;
         let count = data.len().div_ceil(mss);
+        // Fragment index is a u8, so maximum 255 fragments.  At 1376 bytes
+        // per MSS (1400 MTU - 24 overhead), this limits a single KCP message
+        // to ~351 KB, which is sufficient for mesh control + messaging payloads.
         if count >= 256 {
             return Err("data too large");
         }
         for (i, chunk) in data.chunks(mss).enumerate() {
+            // Fragment index counts down: first chunk gets (count-1), last
+            // gets 0.  The receiver detects "message complete" when frg == 0.
             let frg = (count - 1 - i) as u8;
             let seg = Segment::new_data(self.conv, self.snd_nxt, frg, chunk.to_vec());
-            // snd_nxt advances in flush, not here; store with placeholder sn.
+            // SN is assigned later in flush() when the segment moves from
+            // snd_queue to snd_buf — this decouples queuing from flow control.
             self.snd_queue.push_back(seg);
         }
         Ok(data.len())
@@ -578,6 +706,16 @@ impl KcpState {
         }
     }
 
+    /// Jacobson/Karels RTT estimator (RFC 6298 §2).
+    ///
+    /// On the first sample, SRTT and RTTVAR are initialised directly.
+    /// Subsequent samples use exponentially weighted moving averages:
+    ///   RTTVAR = 3/4 * RTTVAR + 1/4 * |SRTT - R|
+    ///   SRTT   = 7/8 * SRTT   + 1/8 * R
+    ///   RTO    = SRTT + max(4 * RTTVAR, interval)
+    ///
+    /// The RTO is clamped between `rx_minrto` (30ms in nodelay) and
+    /// `RTO_MAX` (5s) to bound both aggressive and conservative behaviour.
     fn update_ack(&mut self, rtt: u32) {
         if self.rx_srtt == 0 {
             self.rx_srtt = rtt;
@@ -594,18 +732,28 @@ impl KcpState {
         self.rx_rto = rto.max(self.rx_minrto).min(RTO_MAX);
     }
 
+    /// Remove the individually-ACKed segment from the send buffer.
+    /// Wrapping arithmetic ensures correct comparison even after u32 rollover.
+    /// Any received ACK proves the link is alive, so the dead-link counter
+    /// is reset — this prevents a single successful ACK from being negated by
+    /// earlier accumulated retransmit counts.
     fn process_ack(&mut self, sn: u32) {
         if sn.wrapping_sub(self.snd_una) < self.snd_nxt.wrapping_sub(self.snd_una) {
             self.snd_buf.retain(|seg| seg.sn != sn);
-            self.xmit_count = 0; // reset dead-link counter on any ACK
+            self.xmit_count = 0;
         }
     }
 
+    /// Cumulative ACK: remove all segments with sn < una from the send buffer.
+    /// The wrapping comparison `sn - una < MAX/2` is the standard technique
+    /// for determining "sn is before una" in modular arithmetic.
     fn parse_una(&mut self, una: u32) {
         self.snd_buf
             .retain(|seg| seg.sn.wrapping_sub(una) < u32::MAX / 2);
     }
 
+    /// Update snd_una to reflect the current oldest unacknowledged segment.
+    /// Called after removing ACKed segments to advance the send window.
     fn shrink_buf(&mut self) {
         if let Some(seg) = self.snd_buf.front() {
             self.snd_una = seg.sn;
@@ -614,6 +762,10 @@ impl KcpState {
         }
     }
 
+    /// Insert a received data segment into the receive pipeline.
+    /// In-order segments (sn == rcv_nxt) skip the out-of-order buffer
+    /// entirely for zero-copy fast-path delivery.  Out-of-order segments
+    /// are inserted into rcv_buf in sorted order with deduplication.
     fn store_segment(&mut self, sn: u32, frg: u8, data: Vec<u8>) {
         if sn == self.rcv_nxt {
             // Fast path: in-order delivery.
@@ -660,6 +812,9 @@ impl KcpState {
         }
     }
 
+    /// Promote contiguous segments from the out-of-order buffer (rcv_buf)
+    /// to the reassembly queue (rcv_queue) once gaps are filled.  This is
+    /// called after every `input()` and `recv()` to keep the pipeline flowing.
     fn move_rcv_buf(&mut self) {
         while let Some(seg) = self.rcv_buf.front() {
             if seg.sn == self.rcv_nxt {

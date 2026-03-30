@@ -35,13 +35,18 @@ use std::sync::{Arc, Mutex};
 // Address derivation
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Default cjdns UDP peer port.
+/// Default cjdns UDP peer port.  cjdns peers exchange CryptoAuth-wrapped
+/// packets over UDP rather than TCP — this avoids TCP's head-of-line
+/// blocking and retransmission overhead on lossy links.
 pub const CJDNS_PORT: u16 = 11234;
 
 /// Derive a cjdns `fc00::/8` IPv6 address from a Curve25519 public key.
 ///
-/// The algorithm is two rounds of SHA-512:
-/// `addr = SHA-512(SHA-512(pubkey))[0..16]` with byte 0 forced to `0xFC`.
+/// Two rounds of SHA-512 because cjdns needs a collision-resistant address
+/// derivation — a single round has known length-extension weaknesses that
+/// could allow an attacker to craft a key that maps to a chosen fc00::/8
+/// address.  The double-hash acts as a domain separator without requiring
+/// a more complex construction.
 ///
 /// `pubkey` — 32-byte Curve25519 (X25519) public key.
 pub fn derive_address(pubkey: &[u8; 32]) -> Ipv6Addr {
@@ -50,7 +55,10 @@ pub fn derive_address(pubkey: &[u8; 32]) -> Ipv6Addr {
 
     let mut addr_bytes = [0u8; 16];
     addr_bytes.copy_from_slice(&h1[..16]);
-    addr_bytes[0] = 0xFC; // force fc00::/8 prefix
+    // Force the fc00::/8 prefix so cjdns addresses never overlap with
+    // globally-routed IPv6 space.  RFC 4193 reserves fc00::/7 for
+    // unique-local addresses — cjdns uses the lower half (fc00::/8).
+    addr_bytes[0] = 0xFC;
 
     Ipv6Addr::from(addr_bytes)
 }

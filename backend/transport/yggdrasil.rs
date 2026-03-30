@@ -175,10 +175,15 @@ impl YggFrame {
 // TUN interface management (Unix only)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Default Yggdrasil TCP peer port.
+/// Default Yggdrasil TCP peer port.  Unlike cjdns (which uses UDP),
+/// Yggdrasil peers communicate over TCP for reliable delivery.  The
+/// link-layer framing (length-prefixed) handles message boundaries.
 pub const YGGDRASIL_PORT: u16 = 9001;
 
-/// Default Yggdrasil prefix length.
+/// Yggdrasil uses `200::/7` (7-bit prefix), covering the range
+/// `0200::` to `03FF::`.  This prefix was chosen because it lies in the
+/// IANA "unassigned" IPv6 space, making collisions with production
+/// networks essentially impossible.
 pub const YGGDRASIL_PREFIX_LEN: u8 = 7;
 
 /// Yggdrasil transport state.

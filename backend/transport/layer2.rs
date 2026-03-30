@@ -57,7 +57,11 @@ use std::sync::{Arc, Mutex};
 ///
 /// 0x88B5 is allocated by IEEE for "IEEE Std 802 — Local Experimental
 /// EtherType" and is safe to use for private/experimental protocols on a
-/// local LAN segment.
+/// local LAN segment.  Unlike a registered EtherType, 0x88B5 will never be
+/// confused with production protocols (IPv4 = 0x0800, IPv6 = 0x86DD, ARP =
+/// 0x0806) by any switch, firewall, or network monitoring tool.  Frames with
+/// this EtherType will pass through unmanaged L2 switches but may be blocked
+/// by managed switches with strict VLAN/protocol filtering.
 pub const MESH_INFINITY_ETHERTYPE: u16 = 0x88B5;
 
 /// Ethernet broadcast MAC address — `FF:FF:FF:FF:FF:FF`.
@@ -385,7 +389,7 @@ mod linux {
                 pkt.set_payload(&inner);
             }
 
-            let mut guard = self.tx.lock().unwrap();
+            let mut guard = self.tx.lock().unwrap_or_else(|e| e.into_inner());
             let tx = guard.as_mut().ok_or_else(|| {
                 Layer2Error::IoError(
                     "TX channel has been consumed by the receive loop".to_owned(),
@@ -515,7 +519,7 @@ mod linux {
         /// This is the primary way for higher layers to consume received
         /// data.  Frames are returned in the order they were received.
         pub fn drain_inbound(&self) -> Vec<Layer2Frame> {
-            let mut guard = self.inbound.lock().unwrap();
+            let mut guard = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
             guard.drain(..).collect()
         }
 

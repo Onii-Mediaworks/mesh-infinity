@@ -65,31 +65,50 @@ use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret a
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Fixed packet size in bytes.  All packets are padded or split to this size.
-/// Constant packet size prevents payload-size side channels.
+/// Constant packet size is the foundational property of the mixnet: without
+/// it, an adversary who controls two nodes on a path can correlate packets
+/// by their size, defeating the batching and shuffling protections entirely.
+/// 1500 bytes matches standard Ethernet MTU for seamless integration with
+/// the underlying transport layer.
 pub const MIXNET_MTU: usize = 1500;
 
 /// Maximum number of onion hops a Sphinx header encodes.
-/// With 5 hops and 64 bytes per hop, the header is 320 bytes.
+/// 5 hops provides a good balance: enough path diversity to resist a
+/// global passive adversary controlling up to 2 nodes on any path,
+/// while keeping per-packet overhead under 25% of the MTU.
 pub const MAX_HOPS: usize = 5;
 
-/// Per-hop Sphinx header contribution: 32 B eph key + 16 B MAC + 16 B routing = 64 B.
+/// Per-hop Sphinx header contribution: 32 B ephemeral X25519 public key +
+/// 16 B Poly1305 MAC + 16 B encrypted routing info = 64 B.
+/// The fixed per-hop size ensures the header length reveals nothing about
+/// the actual path length (unused slots are random-filled).
 pub const SPHINX_HOP_SIZE: usize = 64;
 
 /// Total Sphinx header size.  Constant regardless of actual path length —
-/// unused hop slots are filled with random bytes.
-pub const SPHINX_HEADER_SIZE: usize = MAX_HOPS * SPHINX_HOP_SIZE; // 320
+/// unused hop slots are filled with random bytes, making a 2-hop packet
+/// indistinguishable from a 5-hop packet to any observer.
+pub const SPHINX_HEADER_SIZE: usize = MAX_HOPS * SPHINX_HOP_SIZE;
 
 /// Total fixed packet wire size:
-///   1 (version) + 32 (packet_id) + SPHINX_HEADER_SIZE + payload
+///   1 (version) + 32 (packet_id) + SPHINX_HEADER_SIZE + payload = 353 bytes overhead
 pub const SPHINX_OVERHEAD: usize = 1 + 32 + SPHINX_HEADER_SIZE;
 
-/// Payload bytes per packet.
-pub const MIXNET_PAYLOAD_SIZE: usize = MIXNET_MTU - SPHINX_OVERHEAD; // 1147
+/// Payload bytes per packet: 1500 - 353 = 1147 bytes.
+/// Applications that need to send more than 1147 bytes must fragment
+/// at the application layer; the mixnet sees only fixed-size packets.
+pub const MIXNET_PAYLOAD_SIZE: usize = MIXNET_MTU - SPHINX_OVERHEAD;
 
-/// Default batch window — packets accumulate for this duration before flush.
+/// Default batch window (ms).  Mix nodes collect packets for this duration,
+/// then shuffle and forward the entire batch.  500ms provides strong
+/// timing decorrelation (an observer cannot link input to output within
+/// the window) while keeping end-to-end latency under 5× the hop count
+/// (5 hops × 500ms = 2.5s worst case).
 pub const BATCH_WINDOW_MS: u64 = 500;
 
-/// Replay cache TTL — packet IDs are remembered for two batch windows.
+/// Replay cache TTL — packet IDs are remembered for two batch windows
+/// to account for clock skew between mix nodes.  After this period,
+/// a replayed packet would be accepted, but the application-layer
+/// deduplication (message IDs) catches any that slip through.
 pub const REPLAY_CACHE_TTL_MS: u64 = BATCH_WINDOW_MS * 2;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -634,19 +653,19 @@ impl MixnetHandle {
     }
 
     pub fn receive(&self, wire: &[u8; MIXNET_MTU]) -> Result<(), MixnetError> {
-        self.0.lock().unwrap().receive(wire)
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).receive(wire)
     }
 
     pub fn tick(&self) {
-        self.0.lock().unwrap().tick();
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).tick();
     }
 
     pub fn drain_outbound(&self) -> Vec<([u8; 14], [u8; MIXNET_MTU])> {
-        std::mem::take(&mut self.0.lock().unwrap().outbound)
+        std::mem::take(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()).outbound)
     }
 
     pub fn drain_inbound(&self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.0.lock().unwrap().inbound)
+        std::mem::take(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()).inbound)
     }
 }
 

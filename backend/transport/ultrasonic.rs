@@ -75,25 +75,42 @@ use std::sync::Mutex;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Default PCM sample rate (Hz).
+/// Default PCM sample rate (Hz).  44.1 kHz is the CD-quality standard
+/// supported by every consumer audio device.  The Nyquist limit for this
+/// rate is 22.05 kHz — comfortably above our highest tone (20 kHz).
 pub const DEFAULT_SAMPLE_RATE: u32 = 44_100;
 
-/// Default baud rate (symbols per second).
+/// Default baud rate (symbols per second).  100 bps gives 441 samples per
+/// symbol at 44.1 kHz, providing strong Goertzel discrimination between
+/// mark and space tones while keeping the effective data rate at ~10 bytes/s
+/// after UART framing overhead (10 symbols per byte).
 pub const DEFAULT_BAUD_RATE: u32 = 100;
 
-/// Pilot / sync tone frequency (Hz).
+/// Pilot / sync tone frequency (Hz).  18 kHz is above the hearing threshold
+/// for most adults (presbycusis typically cuts off at 15-17 kHz) but well
+/// within the microphone response range of every modern smartphone and laptop.
 pub const PILOT_FREQ: f64 = 18_000.0;
 
-/// Mark frequency — encodes bit value 1 (Hz).
+/// Mark frequency (19 kHz) — encodes bit value 1.
+/// Spaced 1 kHz from pilot and 1 kHz from space, giving each tone a clear
+/// spectral separation that survives even low-quality microphone/speaker
+/// frequency response roll-off in the near-ultrasonic band.
 pub const MARK_FREQ: f64 = 19_000.0;
 
-/// Space frequency — encodes bit value 0 (Hz).
+/// Space frequency (20 kHz) — encodes bit value 0.
+/// 20 kHz is the practical upper limit for consumer audio hardware; going
+/// higher would risk attenuation by the speaker's low-pass filter.
 pub const SPACE_FREQ: f64 = 20_000.0;
 
 /// Duration of the pilot burst at the start of every frame (milliseconds).
+/// 50ms is long enough for reliable Goertzel detection (50ms × 44.1kHz =
+/// 2205 samples ≈ 5 full cycles at 18kHz per Goertzel window).
 pub const PILOT_DURATION_MS: u32 = 50;
 
 /// Sync word sent immediately after the pilot tone.
+/// 0xAA = 10101010, 0x55 = 01010101 — these alternating bit patterns
+/// produce a distinctive mark/space alternation that is easy to detect
+/// and unlikely to appear in random noise or payload data.
 pub const SYNC_BYTE_0: u8 = 0xAA;
 pub const SYNC_BYTE_1: u8 = 0x55;
 

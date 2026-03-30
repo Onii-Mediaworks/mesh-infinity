@@ -171,8 +171,14 @@ impl TailscaleClient {
         self.status.is_active()
     }
 
-    /// Anonymization score for the transport solver.
-    /// 0.3 for vendor coordination server; 0.5 for Headscale (§5.23).
+    /// Anonymization score for the transport solver (§5.23, §5.30).
+    ///
+    /// Vendor Tailscale (0.3): the coordination server sees which nodes
+    /// connect and when, creating a metadata trail.  Self-hosted Headscale
+    /// (0.5) eliminates the third-party trust dependency but still reveals
+    /// the node's IP to whoever runs the server.  Neither achieves the
+    /// anonymity of Tor (1.0) or I2P (0.9), but both provide better
+    /// reachability behind corporate firewalls.
     pub fn anonymization_score(&self) -> f32 {
         match self.credentials.as_ref().map(|c| c.controller.is_self_hosted()) {
             Some(true)  => 0.5,

@@ -7,7 +7,7 @@
 //! - Four-layer message encryption (§7.2)
 //! - Vault encryption (§17.9)
 //! - Backup encryption (§3.7.4)
-//! - AOS ring signatures (§3.5.2) — NOT YET IMPLEMENTED; see groups/group.rs
+//! - AOS ring signatures (§3.5.2)
 
 // Sub-module: primitives — see module-level docs for details.
 pub mod primitives;
@@ -33,3 +33,5 @@ pub mod sigma;
 pub mod session;
 // Sub-module: signing — see module-level docs for details.
 pub mod signing;
+// Sub-module: ring_sig — AOS ring signatures for anonymous group operations (§3.5.2).
+pub mod ring_sig;

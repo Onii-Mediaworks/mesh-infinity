@@ -218,6 +218,13 @@ config = "0.15"
 # low-level operations where raw performance matters.
 ring = "0.17"
 
+# curve25519-dalek — low-level Curve25519 point and scalar arithmetic.
+#
+# Used by the AOS ring signature implementation (§3.5.2) which needs direct
+# access to EdwardsPoint and Scalar types for the ring construction.
+# The "rand_core" feature enables scalar generation from an RNG.
+curve25519-dalek = { version = "4", features = ["rand_core"] }
+
 # x25519-dalek — Diffie-Hellman key agreement on Curve25519.
 #
 # X25519 is used for the initial key exchange between two peers: both parties

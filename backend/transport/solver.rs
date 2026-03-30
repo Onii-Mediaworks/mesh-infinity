@@ -48,8 +48,12 @@ use super::health::{HealthState, TransportStatus};
 // ---------------------------------------------------------------------------
 
 /// Reference latency for normalization (§5.10.3).
-/// Latency scores are computed relative to this value.
-/// 500ms is chosen as a reasonable "average" latency.
+/// Latency scores use the formula `1 / (1 + lat/ref)`, which maps
+/// 0ms → 1.0, 500ms → 0.5, and higher latencies asymptotically toward 0.
+/// 500ms is chosen as the midpoint because it represents the typical
+/// round-trip time for a 3-hop Tor circuit — the most common anonymizing
+/// transport.  This ensures Tor gets a ~0.5 latency score rather than
+/// being heavily penalized against direct connections.
 const LATENCY_REFERENCE_MS: f32 = 500.0;
 
 // ---------------------------------------------------------------------------
@@ -184,6 +188,11 @@ struct Weights {
 
 impl Weights {
     /// Weights for Normal threat context.
+    ///
+    /// Balanced across all dimensions.  Anonymization (0.25) is the single
+    /// largest weight because even in Normal mode, Mesh Infinity defaults
+    /// to privacy-first.  Reliability and latency tie at 0.20 — both
+    /// matter for real-time messaging.
     fn normal() -> Self {
         Self {
             anonymization: 0.25,
@@ -196,6 +205,10 @@ impl Weights {
     }
 
     /// Weights for Elevated threat context.
+    ///
+    /// Anonymization jumps to 0.40 — the solver will strongly prefer
+    /// Tor/I2P over clearnet.  Battery drops to 0.05 because power
+    /// efficiency is secondary when the user faces active surveillance.
     fn elevated() -> Self {
         Self {
             anonymization: 0.40,
@@ -208,6 +221,11 @@ impl Weights {
     }
 
     /// Weights for Critical threat context.
+    ///
+    /// Anonymization dominates at 0.50 — half the total score.  Combined
+    /// with the Layer 1 hard gate that eliminates all non-anonymizing,
+    /// non-proximity transports in Critical mode, this ensures the solver
+    /// will never choose a transport that reveals the user's IP.
     fn critical() -> Self {
         Self {
             anonymization: 0.50,

@@ -360,7 +360,7 @@ impl TorTransport {
         port: u16,
     ) -> anyhow::Result<TcpStream> {
         let isolation = {
-            let mut stats = self.circuit_stats.lock().unwrap();
+            let mut stats = self.circuit_stats.lock().unwrap_or_else(|e| e.into_inner());
             let entry = stats.entry(peer_id_hex.to_string()).or_insert_with(CircuitStats::new);
             if entry.should_rotate() {
                 entry.rotate();
@@ -415,7 +415,7 @@ impl TorTransport {
     /// Returns a list of non-blocking `TcpStream`s ready for identification
     /// (the same pairing handshake flow as direct TCP connections).
     pub fn drain_inbound(&self) -> Vec<TcpStream> {
-        let guard = self.inbound_rx.lock().unwrap();
+        let guard = self.inbound_rx.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(rx) = guard.as_ref() {
             let mut out = Vec::new();
             while let Ok(stream) = rx.try_recv() {
@@ -433,7 +433,7 @@ impl TorTransport {
 
     /// Record a sent message on `peer_id_hex`'s circuit counter.
     pub fn record_message(&self, peer_id_hex: &str) {
-        let mut stats = self.circuit_stats.lock().unwrap();
+        let mut stats = self.circuit_stats.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = stats.get_mut(peer_id_hex) {
             s.message_count += 1;
         }
@@ -441,6 +441,6 @@ impl TorTransport {
 
     /// Remove circuit stats for a peer on disconnect.
     pub fn remove_peer(&self, peer_id_hex: &str) {
-        self.circuit_stats.lock().unwrap().remove(peer_id_hex);
+        self.circuit_stats.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id_hex);
     }
 }

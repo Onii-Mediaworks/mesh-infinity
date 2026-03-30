@@ -54,26 +54,39 @@ use std::sync::atomic::{AtomicU32, Ordering};
 // Kernel constants (from <linux/netlink.h> and <linux/nl80211.h>)
 // ────────────────────────────────────────────────────────────────────────────
 
+/// AF_NETLINK is Linux's address family for kernel↔userspace IPC.
+/// Generic netlink (family 16) is the modern extensible subsystem that
+/// cfg80211/nl80211 registers with — using it avoids the legacy ioctl
+/// interface and gives access to the full 802.11 configuration space.
 const AF_NETLINK: i32 = 16;
 const SOCK_RAW: i32 = 3;
 const NETLINK_GENERIC: i32 = 16;
 
-// Generic netlink (genlctrl family).
+/// Generic netlink uses a dynamic family-ID scheme: the control family
+/// (ID 16) provides a `GETFAMILY` command that resolves "nl80211" to its
+/// runtime-assigned ID.  This avoids hardcoding kernel-version-specific
+/// IDs that could break across kernel updates.
 const GENL_ID_CTRL: u16 = 16;
 const CTRL_CMD_GETFAMILY: u8 = 3;
 const CTRL_ATTR_FAMILY_NAME: u16 = 2;
 const CTRL_ATTR_FAMILY_ID: u16 = 1;
 
-// Netlink message types.
+// Netlink message types — these are fixed across all netlink families.
 const NLMSG_ERROR: u16 = 2;
 const NLMSG_DONE: u16 = 3;
 
-// Netlink flags.
+// Netlink flags — combined in message headers to request specific behaviour.
 const NLM_F_REQUEST: u16 = 0x01;
+/// Request an ACK (NLMSG_ERROR with code 0) so we know the kernel processed it.
 const NLM_F_ACK: u16 = 0x04;
-const NLM_F_DUMP: u16 = 0x300; // NLM_F_ROOT | NLM_F_MATCH
+/// NLM_F_ROOT | NLM_F_MATCH — triggers a "dump" operation that returns all
+/// matching entries (e.g. all wireless interfaces) as a multi-part response
+/// terminated by NLMSG_DONE.
+const NLM_F_DUMP: u16 = 0x300;
 
-// nl80211 commands.
+// nl80211 commands — these map 1:1 to the kernel's nl80211_commands enum.
+// Each command triggers a specific WiFi operation; the kernel routes
+// them through the driver's cfg80211_ops callbacks.
 pub const NL80211_CMD_GET_WIPHY: u8 = 1;
 pub const NL80211_CMD_GET_INTERFACE: u8 = 5;
 pub const NL80211_CMD_NEW_INTERFACE: u8 = 7;
@@ -91,6 +104,9 @@ pub const NL80211_CMD_REMAIN_ON_CHANNEL: u8 = 31;
 pub const NL80211_CMD_JOIN_MESH: u8 = 67;
 
 // nl80211 attributes (from <linux/nl80211.h>).
+// Attributes are the TLV payload of nl80211 messages.  Each operation
+// requires specific attributes (e.g. TRIGGER_SCAN needs IFINDEX to
+// identify which wireless interface to scan on).
 pub const NL80211_ATTR_WIPHY: u16 = 1;
 pub const NL80211_ATTR_WIPHY_NAME: u16 = 2;
 pub const NL80211_ATTR_IFINDEX: u16 = 3;
@@ -126,7 +142,9 @@ pub const NL80211_BSS_INFORMATION_ELEMENTS: u16 = 6;
 pub const NL80211_BSS_SIGNAL_MBM: u16 = 7;
 pub const NL80211_BSS_STATUS: u16 = 9;
 
-// Interface types.
+// Interface types — determines the operating mode of a WiFi interface.
+// Mesh Infinity uses STATION for connecting to APs, IBSS for ad-hoc cells,
+// MESH_POINT for 802.11s mesh, and P2P_DEVICE for WiFi Direct discovery.
 pub const NL80211_IFTYPE_STATION: u32 = 2;
 pub const NL80211_IFTYPE_AP: u32 = 3;
 pub const NL80211_IFTYPE_IBSS: u32 = 1;
@@ -139,22 +157,33 @@ pub const NL80211_IFTYPE_P2P_DEVICE: u32 = 10;
 pub const NL80211_AUTHTYPE_OPEN_SYSTEM: u32 = 0;
 
 // Cipher suites (from <linux/ieee80211.h>).
-/// WPA2-CCMP (AES-128-CCM).
+// The OUI prefix 00-0F-AC identifies IEEE 802.11 standard cipher suites.
+// We prefer CCMP (AES) over TKIP for all mesh connections — TKIP is only
+// included as a fallback for legacy hardware that cannot do AES in hardware.
+/// WPA2-CCMP (AES-128-CCM) — mandatory for WPA2 and all mesh connections.
 pub const WLAN_CIPHER_SUITE_CCMP: u32 = 0x000FAC04;
-/// TKIP (WPA1 — not recommended; included for compatibility).
+/// TKIP (WPA1 — known weak: Michael MIC attacks, no replay protection).
+/// Only used if the peer's hardware does not support CCMP.
 pub const WLAN_CIPHER_SUITE_TKIP: u32 = 0x000FAC02;
 
-// AKM suites.
-/// WPA2-PSK (pre-shared key).
+// AKM (Authentication and Key Management) suites.
+// These determine how the PMK (Pairwise Master Key) is derived.
+// Mesh Infinity always uses PSK because the PMK is derived from the
+// pairing exchange, not from an external RADIUS/EAP server.
+/// WPA2-PSK — PMK = PBKDF2(passphrase, SSID) or supplied directly.
 pub const WLAN_AKM_SUITE_PSK: u32 = 0x000FAC02;
-/// 802.1X / EAP.
+/// 802.1X / EAP — included for interop but not used by mesh connections.
 pub const WLAN_AKM_SUITE_8021X: u32 = 0x000FAC01;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Netlink message builder
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Global sequence counter for netlink messages.
+/// Global sequence counter for netlink messages.  Each message gets a
+/// unique sequence number so we can correlate responses with requests
+/// when multiple operations are in flight (the kernel echoes the seq
+/// back in its reply).  Starts at 1 because seq 0 has special meaning
+/// in some netlink subsystems.
 static NL_SEQ: AtomicU32 = AtomicU32::new(1);
 
 /// A netlink message being constructed.
@@ -209,12 +238,16 @@ impl NlMsg {
     }
 
     /// Append a raw-bytes attribute.
+    ///
+    /// Netlink attributes (nla) use a 4-byte header: `[nla_len: u16, nla_type: u16]`
+    /// followed by the value bytes.  The entire attribute (header + value) must be
+    /// padded to a 4-byte boundary so subsequent attributes are naturally aligned.
+    /// `nla_len` includes the 4-byte header but NOT the padding bytes.
     pub fn put_bytes(&mut self, attr_type: u16, data: &[u8]) {
         let nla_len = (4 + data.len()) as u16;
         self.buf.extend_from_slice(&nla_len.to_ne_bytes());
         self.buf.extend_from_slice(&attr_type.to_ne_bytes());
         self.buf.extend_from_slice(data);
-        // Pad to 4-byte boundary.
         let pad = (4 - (data.len() % 4)) % 4;
         self.buf.extend_from_slice(&[0u8; 4][..pad]);
     }
@@ -287,11 +320,17 @@ impl NlAttr {
 }
 
 /// Parse a flat list of `nlattr` TLVs from `data`.
+///
+/// The attribute type field has the upper 3 bits reserved for flags
+/// (NLA_F_NESTED, NLA_F_NET_BYTEORDER, etc.).  We mask with 0x1FFF to
+/// extract the actual type, matching the kernel's nla_type() helper.
+/// Parsing advances by NLA_ALIGN(nla_len) — rounding up to 4 bytes —
+/// to skip over padding between attributes.
 pub fn parse_attrs(mut data: &[u8]) -> Vec<NlAttr> {
     let mut attrs = Vec::new();
     while data.len() >= 4 {
         let nla_len = u16::from_ne_bytes([data[0], data[1]]) as usize;
-        let attr_type = u16::from_ne_bytes([data[2], data[3]]) & 0x1FFF; // mask flags
+        let attr_type = u16::from_ne_bytes([data[2], data[3]]) & 0x1FFF;
         if nla_len < 4 || nla_len > data.len() {
             break;
         }
@@ -381,6 +420,11 @@ impl NlSocket {
 
     /// Receive the next netlink message(s).  Returns all complete messages
     /// in the datagram.
+    ///
+    /// A single recv(2) call may return multiple netlink messages packed into
+    /// one datagram (multi-part responses).  The 64 KB buffer matches the
+    /// kernel's maximum netlink message size and guarantees we never truncate
+    /// a multi-part dump response.
     pub fn recv_msgs(&self) -> io::Result<Vec<NlResponse>> {
         let mut buf = vec![0u8; 65536];
         // SAFETY: `self.fd` is a valid open netlink socket; `buf` is a
@@ -966,10 +1010,18 @@ pub enum ConnectionMode {
     SoftApStation,
 }
 
-/// Attempt to connect two Mesh Infinity nodes directly over WiFi.
+/// Attempt to connect two Mesh Infinity nodes directly over WiFi (§5.8).
 ///
-/// Tries 802.11s mesh first (most appropriate for multi-hop mesh),
-/// then falls back to IBSS (ad-hoc).
+/// The strategy follows a degradation ladder:
+/// 1. **802.11s mesh** — ideal for multi-hop mesh: the kernel handles HWMP
+///    routing and the interface stays in mesh mode for additional peers.
+/// 2. **IBSS (ad-hoc)** — fallback when the driver lacks mesh support.
+///    Creates a peer-to-peer cell without an access point.
+///
+/// Both modes use a deterministic SSID `MI:<peer_id_hex[:16]>` so that
+/// both peers independently arrive at the same cell name without prior
+/// coordination — the first 16 hex characters of the peer ID provide
+/// enough uniqueness to avoid collisions in practice.
 ///
 /// `ifindex` — the WiFi interface to use (must be in station or managed mode).
 /// `peer_id_hex` — 64-character hex peer ID, used as the mesh/IBSS SSID.

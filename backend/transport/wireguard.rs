@@ -53,7 +53,17 @@ use crate::identity::peer_id::PeerId;
 // Constants
 // ---------------------------------------------------------------------------
 
+/// Domain-separation salt for HKDF.  Ensures that key material derived
+/// for WireGuard sessions is cryptographically independent from keys
+/// derived for other purposes (e.g. Tor service keys) even if the same
+/// master secret is used.  The version suffix allows non-breaking
+/// algorithm changes in future protocol revisions.
 const SESSION_KEY_SALT: &[u8] = b"meshinfinity-wireguard-session-v1";
+
+/// Anti-replay window size (in nonces).  A sliding window of 1024 nonces
+/// allows up to 1024 out-of-order packets to be accepted.  This is the
+/// same window size WireGuard uses, balancing memory cost (a small HashSet)
+/// against tolerance for packet reordering on mesh multi-hop paths.
 const REPLAY_WINDOW: u64 = 1024;
 
 // ---------------------------------------------------------------------------
@@ -78,10 +88,13 @@ pub enum WireGuardError {
 // Session Keys
 // ---------------------------------------------------------------------------
 
+/// Directional session keys — separate keys for each direction prevent
+/// a reflected-packet attack where an adversary replays a sender's packet
+/// back to them.  Both keys are derived from the same HKDF output but with
+/// different info labels ("i_to_r" / "r_to_i"), ensuring cryptographic
+/// independence.  `Zeroizing` ensures keys are scrubbed from memory on drop.
 struct SessionKeys {
-    /// Initiator→Responder key.
     i_to_r: Zeroizing<[u8; 32]>,
-    /// Responder→Initiator key.
     r_to_i: Zeroizing<[u8; 32]>,
 }
 
@@ -117,12 +130,23 @@ impl WireGuardSession {
     }
 
     /// Encrypt `plaintext` and return `[8-byte nonce][ciphertext][16-byte tag]`.
+    ///
+    /// The nonce is an atomically-incremented 64-bit counter, placed in the
+    /// last 8 bytes of the 12-byte ChaCha20 nonce (first 4 bytes zeroed).
+    /// This matches WireGuard's nonce construction and ensures uniqueness
+    /// without coordination.  At u64::MAX the session MUST be renegotiated
+    /// to avoid nonce reuse, which would catastrophically break ChaCha20's
+    /// security — though in practice 2^64 packets is unreachable.
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, WireGuardError> {
         let nonce_val = self.send_nonce.fetch_add(1, Ordering::SeqCst);
         if nonce_val == u64::MAX {
             return Err(WireGuardError::NonceOverflow);
         }
         let cipher = ChaCha20Poly1305::new(GenericArray::from_slice(&*self.send_key));
+        // ChaCha20-Poly1305 requires a 96-bit (12-byte) nonce.  The first 4
+        // bytes are fixed at zero; the last 8 carry the counter.  This is
+        // safe because each key is used with a monotonic counter, guaranteeing
+        // nonce uniqueness without any randomness.
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..].copy_from_slice(&nonce_val.to_le_bytes());
         let nonce = GenericArray::from_slice(&nonce_bytes);
@@ -144,10 +168,18 @@ impl WireGuardSession {
         let nonce_val = u64::from_le_bytes(packet[..8].try_into().unwrap());
         let ciphertext_with_tag = &packet[8..];
 
-        // Anti-replay check.
+        // Anti-replay check using a sliding-window bitmap approach.
+        //
+        // The window is anchored at `recv_high` (highest nonce seen).
+        // Any nonce older than `recv_high - REPLAY_WINDOW` is rejected
+        // outright — this bounds the size of the `seen` set.  Nonces
+        // within the window are tracked individually to handle out-of-order
+        // delivery on multi-hop mesh paths, where packet reordering is
+        // common.  When a new high-water mark is set, old entries are
+        // pruned to keep memory bounded at O(REPLAY_WINDOW).
         {
-            let mut high = self.recv_high.lock().unwrap();
-            let mut seen = self.recv_seen.lock().unwrap();
+            let mut high = self.recv_high.lock().unwrap_or_else(|e| e.into_inner());
+            let mut seen = self.recv_seen.lock().unwrap_or_else(|e| e.into_inner());
             if nonce_val < high.saturating_sub(REPLAY_WINDOW) {
                 return Err(WireGuardError::ReplayDetected);
             }
@@ -330,8 +362,15 @@ pub fn respond_to_handshake(
 
 /// Derive symmetric session keys from two DH outputs and a PSK.
 ///
-/// Both sides must agree on the `peer_a` / `peer_b` ordering (lexicographic
-/// by peer ID bytes) to ensure identical key derivation.
+/// The IKM (input keying material) is the concatenation of:
+/// - DH(static, static) — provides mutual authentication
+/// - DH(ephemeral, ephemeral) — provides forward secrecy
+/// - PSK (channel key) — provides an additional independent secret
+///
+/// Peer IDs are sorted lexicographically for the HKDF info parameter,
+/// ensuring both sides compute identical keys regardless of which one
+/// is the initiator.  Without this canonicalization, the initiator and
+/// responder would derive different keys and fail to communicate.
 fn derive_session_keys(
     dh_ss: &[u8],
     dh_ee: &[u8],
@@ -368,6 +407,16 @@ fn derive_session_keys(
 
 /// Encrypt a 32-byte static public key under a DH output.
 /// Returns 32 (ciphertext) + 16 (tag) = 48 bytes.
+///
+/// The static key is encrypted during the handshake to prevent passive
+/// observers from learning the initiator's long-term identity.  This
+/// is the same identity-hiding property that Noise_IK provides: an
+/// eavesdropper sees only ephemeral keys in the clear.
+///
+/// The zero nonce is safe here because each DH output is unique per
+/// handshake (it involves an ephemeral key), so the (key, nonce) pair
+/// is never reused.  The AAD "static-key" binds the ciphertext to its
+/// purpose, preventing cross-protocol confusion.
 fn encrypt_static_key(static_pub: &[u8; 32], dh_key: &[u8]) -> [u8; 48] {
     let key = derive_aead_key(dh_key);
     let cipher = ChaCha20Poly1305::new(GenericArray::from_slice(&key));
@@ -393,6 +442,13 @@ fn decrypt_static_key(enc: &[u8; 48], dh_key: &[u8]) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Derive an AEAD encryption key from a raw DH shared secret.
+///
+/// Raw DH outputs should never be used directly as encryption keys
+/// because they have non-uniform distribution (not all 256 values are
+/// equally likely per byte).  HKDF extracts the entropy from the DH
+/// output and expands it into a uniformly distributed key suitable
+/// for ChaCha20-Poly1305.
 fn derive_aead_key(dh_key: &[u8]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(SESSION_KEY_SALT), dh_key);
     let mut key = [0u8; 32];

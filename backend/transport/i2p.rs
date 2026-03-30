@@ -63,25 +63,37 @@ use rand_core::{OsRng, RngCore};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Default SAM bridge address (§5.4).
+/// SAM always listens on localhost because it provides unencrypted access
+/// to the I2P router — exposing it on a network interface would allow any
+/// LAN peer to hijack our I2P identity.
 pub const DEFAULT_SAM_ADDR: &str = "127.0.0.1:7656";
 
 /// SAM v3 minimum version we require.
+/// v3.0 introduced STREAM sessions which are essential for our TCP-like
+/// bidirectional data exchange model.
 const SAM_MIN_VERSION: &str = "3.0";
 
 /// SAM v3 maximum version we support.
+/// v3.3 adds features like signature type selection, which we use to
+/// request Ed25519 keys when available (faster than the default DSA-SHA1).
 const SAM_MAX_VERSION: &str = "3.3";
 
 /// TCP connect timeout when probing the SAM bridge.
+/// Short (2s) because SAM is local — if it doesn't respond in 2s, the
+/// I2P router is either not running or not accepting SAM connections.
 const SAM_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// TCP connect timeout for all other SAM connections.
+/// TCP connect timeout for SAM session and stream operations.
 const SAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long to wait for a single-line SAM reply before giving up.
+/// 30s is generous because I2P tunnel building can take 10-20s on a
+/// freshly started router with empty tunnel pools.
 const SAM_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long the accept loop waits for an inbound connection before re-trying.
-/// Long enough that it won't spin-burn CPU; short enough to notice shutdown.
+/// 60s balances CPU usage (no spin loop) against responsiveness (will notice
+/// shutdown within 1 minute when the transport is dropped).
 const ACCEPT_LOOP_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -442,7 +454,7 @@ impl I2pTransport {
     /// The caller is responsible for performing the mesh pairing handshake on
     /// each returned stream (same as for direct TCP and Tor transports).
     pub fn drain_inbound(&self) -> Vec<TcpStream> {
-        let mut guard = self.inbound.lock().unwrap();
+        let mut guard = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *guard)
     }
 

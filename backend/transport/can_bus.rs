@@ -88,16 +88,29 @@ impl std::error::Error for CanError {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Maximum mesh payload per CAN FD frame (64 - 3 byte header).
+/// CAN FD supports exactly 64 bytes per frame payload; the 3-byte
+/// fragment header (msg_id, total, seq) is always present, leaving
+/// 61 bytes for mesh data.  Classic CAN only supports 8 bytes per
+/// frame, but we require CAN FD for any practical throughput.
 pub const CANFD_PAYLOAD_BYTES: usize = 61;
 
 /// Maximum allowed mesh packet size over CAN bus per spec (4 KB).
+/// CAN bus is a shared medium with low bandwidth (~1 Mbps for CAN FD),
+/// so the spec caps mesh payloads to prevent bus monopolisation.
+/// At 61 bytes per fragment, 4 KB requires ~67 frames — already a
+/// significant burst on a multi-node CAN bus.
 pub const CAN_MAX_MESH_PAYLOAD: usize = 4096;
 
-/// Fragment a mesh payload into CAN FD payloads.
+/// Fragment a mesh payload into CAN FD-sized payloads.
 ///
-/// Returns a `Vec<[u8; 64]>` — one entry per CAN FD frame payload.
-/// The first 3 bytes of each entry are the fragment header:
-/// `[msg_id, total_frags, seq]`.
+/// Returns one `Vec<u8>` per CAN FD frame.  Each starts with the 3-byte
+/// fragment header `[msg_id, total_frags, seq]` followed by up to 61 bytes
+/// of mesh data.
+///
+/// `msg_id` is a rolling u8 counter that wraps at 256.  Since CAN bus
+/// is a low-bandwidth medium, 256 concurrent in-flight messages is more
+/// than sufficient.  The reassembler uses `msg_id` to group fragments
+/// from the same logical message, even when multiple nodes share the bus.
 pub fn fragment(msg_id: u8, data: &[u8]) -> Result<Vec<Vec<u8>>, CanError> {
     if data.len() > CAN_MAX_MESH_PAYLOAD {
         return Err(CanError::PayloadTooLarge);
@@ -115,6 +128,10 @@ pub fn fragment(msg_id: u8, data: &[u8]) -> Result<Vec<Vec<u8>>, CanError> {
 
 /// In-progress reassembly buffer for a single `msg_id`.
 /// `received.len()` equals the expected total fragment count.
+///
+/// Fragments may arrive out of order because CAN bus arbitration is
+/// priority-based (lower CAN ID wins), so a high-priority frame from
+/// another node can interleave with our fragment sequence.
 #[derive(Default)]
 struct ReassemblyBuf {
     received: Vec<Option<Vec<u8>>>,
@@ -122,10 +139,18 @@ struct ReassemblyBuf {
 }
 
 /// Reassembler — buffers fragments until all arrive for a `msg_id`.
+///
+/// Keyed by the 8-bit msg_id, so at most 256 concurrent incomplete
+/// messages can be tracked.  The timeout-based eviction prevents
+/// resource exhaustion from partial messages (e.g. sender lost bus
+/// arbitration mid-sequence and gave up).
 #[derive(Default)]
 pub struct Reassembler {
     buffers: HashMap<u8, ReassemblyBuf>,
     /// How long to keep an incomplete message before discarding.
+    /// CAN bus operates at ~1 Mbps, so a full 4 KB message completes
+    /// in ~30ms — a 5-second timeout is extremely generous and only
+    /// triggers on genuinely lost fragments.
     timeout: Duration,
 }
 
@@ -195,14 +220,26 @@ impl Reassembler {
 mod linux_impl {
     use super::*;
 
-    // AF_CAN = 29, CAN_RAW = 1, SOL_CAN_RAW = 101, CAN_RAW_FD_FRAMES = 5
+    // Linux kernel constants for SocketCAN (from <linux/can.h> and <linux/can/raw.h>).
+    // SocketCAN is Linux's native CAN subsystem — it exposes CAN hardware as
+    // network interfaces, allowing standard socket operations instead of
+    // vendor-specific ioctls.
     const AF_CAN: libc::c_int = 29;
     const CAN_RAW: libc::c_int = 1;
+    /// Socket option level for CAN-RAW-specific options.
     const SOL_CAN_RAW: libc::c_int = 101;
+    /// Enable CAN FD support on the socket.  Without this, the kernel
+    /// rejects frames larger than 8 bytes (classic CAN limit).
     const CAN_RAW_FD_FRAMES: libc::c_int = 5;
+    /// Extended Frame Format flag — uses the full 29-bit CAN ID space.
+    /// We need this because our CAN ID encoding (`0x4D49 << 11 | seq`)
+    /// exceeds the 11-bit standard CAN ID.
     const CAN_EFF_FLAG: u32 = 0x80000000;
     const CANFD_MAX_DLEN: usize = 64;
-    const CANFD_BRS: u8 = 0x01; // bit-rate switch flag
+    /// Bit Rate Switch — CAN FD feature that transmits the data phase at a
+    /// higher bitrate than the arbitration phase (e.g. 5 Mbps data vs 1 Mbps
+    /// arbitration), increasing effective throughput.
+    const CANFD_BRS: u8 = 0x01;
 
     /// SocketCAN `canfd_frame` as defined in `<linux/can/raw.h>`.
     #[repr(C)]
@@ -312,9 +349,16 @@ mod linux_impl {
         }
 
         /// Send `data` over CAN bus, fragmenting as needed.
+        ///
+        /// Each fragment gets a CAN ID encoding:
+        ///   `(0x4D49 << 11) | (seq & 0x7FF)`
+        /// where 0x4D49 is ASCII "MI" — this acts as a protocol identifier
+        /// in the extended CAN ID space.  The lower 11 bits carry the fragment
+        /// sequence, which also determines CAN bus arbitration priority
+        /// (fragment 0 = lowest CAN ID = highest priority).
         pub fn send(&self, data: &[u8]) -> Result<(), CanError> {
             let msg_id = {
-                let mut c = self.msg_counter.lock().unwrap();
+                let mut c = self.msg_counter.lock().unwrap_or_else(|e| e.into_inner());
                 let id = *c;
                 *c = c.wrapping_add(1);
                 id
@@ -388,7 +432,7 @@ mod linux_impl {
                 .spawn(move || loop {
                     match transport.recv_frame() {
                         Ok(Some(pkt)) => {
-                            transport.inbound.lock().unwrap().push(pkt);
+                            transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(pkt);
                         }
                         Ok(None) => {} // fragment received, waiting for more
                         Err(_) => break,
@@ -399,7 +443,7 @@ mod linux_impl {
 
         /// Drain all received mesh packets.
         pub fn drain_inbound(&self) -> Vec<Vec<u8>> {
-            std::mem::take(&mut *self.inbound.lock().unwrap())
+            std::mem::take(&mut *self.inbound.lock().unwrap_or_else(|e| e.into_inner()))
         }
 
         /// Check if SocketCAN is available (the `AF_CAN` family compiles in).
