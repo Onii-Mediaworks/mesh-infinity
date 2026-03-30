@@ -46,13 +46,20 @@ use sha2::{Digest, Sha256};
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `.mib` file magic bytes: ASCII "MIOT".
+/// `.mib` file magic bytes: ASCII "MIOT" (Mesh Infinity Offline Transport).
+/// Chosen to be unlikely to appear at the start of arbitrary files, allowing
+/// quick rejection of non-bundle data when scanning removable media.
 pub const BUNDLE_MAGIC: [u8; 4] = [0x4D, 0x49, 0x4F, 0x54];
 
-/// Current format version.
+/// Current format version.  Bumped on incompatible header changes.
+/// The parser rejects any version != 1 to prevent silent misparse
+/// of future formats (§5.28.1 forward-compatibility rule).
 pub const BUNDLE_VERSION: u8 = 1;
 
-/// Default bundle TTL: 30 days in seconds.
+/// Default bundle TTL: 30 days.  Physical transport latency (mail, USB
+/// drive, courier) can be days or weeks — this generous TTL ensures
+/// bundles remain valid for typical sneakernet round-trips while still
+/// expiring eventually to bound storage growth on the receiver.
 pub const DEFAULT_TTL_SECS: u64 = 30 * 24 * 3600;
 
 /// Serialised `PhysicalTransferHeader` size in bytes (fixed-width encoding).
@@ -79,6 +86,12 @@ pub const HEADER_SIZE: usize = 147;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Routing behaviour when a bundle is imported.
+///
+/// This field is critical for air-gapped networks (§5.28.4) where the
+/// receiving node must decide what to do with the bundle without any
+/// online coordination.  `PointToPoint` means "I am the final destination",
+/// `NeedsRouting` means "inject into the mesh for further forwarding",
+/// and `Broadcast` means "process on all receiving nodes".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RoutingMode {
@@ -453,12 +466,12 @@ impl BundleDeduplicator {
 
     /// Returns `true` if this bundle ID has already been processed.
     pub fn is_duplicate(&self, bundle_id: &[u8; 16]) -> bool {
-        self.seen.lock().unwrap().contains(bundle_id)
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).contains(bundle_id)
     }
 
     /// Mark a bundle ID as processed.
     pub fn mark_seen(&self, bundle_id: [u8; 16]) {
-        self.seen.lock().unwrap().insert(bundle_id);
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).insert(bundle_id);
     }
 }
 
@@ -475,11 +488,20 @@ impl Default for BundleDeduplicator {
 /// Maximum bundle size suitable for a single QR code (Base45-encoded).
 pub const QR_MAX_BYTES: usize = 2048;
 
-/// Base45 alphabet used for QR-code encoding of small bundles.
+/// Base45 alphabet (RFC 9285).  This specific character set was designed
+/// for QR code alphanumeric mode, which encodes pairs of these characters
+/// in 11 bits — roughly 45% more efficient than binary-mode QR for the
+/// same error correction level.  This makes it possible to fit a small
+/// mesh bundle (≤2 KB) into a single scannable QR code.
 const BASE45_ALPHABET: &[u8; 45] =
     b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
 
-/// Encode `data` as a Base45 string suitable for QR codes.
+/// Encode `data` as a Base45 string suitable for QR codes (RFC 9285).
+///
+/// Two input bytes are encoded as three Base45 characters (expansion ~1.33×).
+/// A trailing odd byte is encoded as two characters.  This is the same
+/// encoding used by EU Digital COVID Certificates, chosen here for its
+/// optimal QR code density.
 pub fn base45_encode(data: &[u8]) -> String {
     let mut out = Vec::with_capacity(data.len() * 2);
     let mut i = 0;

@@ -51,13 +51,20 @@ use sha2::{Digest, Sha512};
 // ZeroTier constants
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Default ZeroTier UDP port.
+/// Default ZeroTier UDP port.  All ZeroTier nodes listen on 9993/UDP.
+/// This port is intentionally outside the ephemeral range (49152-65535)
+/// to avoid conflicts with OS-assigned outbound connections.
 pub const ZT_UDP_PORT: u16 = 9993;
 
-/// ZeroTier protocol version.
+/// ZeroTier protocol version 11 (current as of ZeroTier 1.x).
+/// The HELLO handshake includes this version so the root can detect
+/// and reject incompatible clients before wasting bandwidth.
 pub const ZT_PROTO_VERSION: u8 = 11;
 
-/// ZeroTier packet verbs.
+/// ZeroTier packet verbs — each identifies the message type in the
+/// single-byte verb field at offset 34 of every ZeroTier packet.
+/// HELLO initiates the root handshake; WHOIS performs peer lookup;
+/// FRAME carries virtual Ethernet frames on the overlay network.
 pub const ZT_VERB_HELLO: u8 = 0x01;
 pub const ZT_VERB_OK: u8 = 0x04;
 pub const ZT_VERB_WHOIS: u8 = 0x09;
@@ -65,12 +72,15 @@ pub const ZT_VERB_FRAME: u8 = 0x06;
 pub const ZT_VERB_MULTICAST_FRAME: u8 = 0x0E;
 pub const ZT_VERB_NETWORK_CONFIG: u8 = 0x04;
 
-/// Packet flag: fragmented.
+/// Packet flag: fragmented — indicates this packet is one fragment of a
+/// larger ZeroTier message and must be reassembled before processing.
 pub const ZT_PACKET_FLAG_FRAGMENTED: u8 = 0x40;
 
 /// ZeroTier well-known root server (PLANET) addresses.
-/// These are Zerotier Inc.'s infrastructure; self-hosted deployments use
-/// custom MOON server configurations.
+/// These are ZeroTier Inc.'s infrastructure root servers — they perform
+/// initial peer discovery but never see the contents of encrypted frames.
+/// Self-hosted deployments use custom MOON server configurations that
+/// bypass these roots entirely.
 pub const ZT_PLANET_ROOTS: &[&str] = &[
     "195.181.173.159:9993",
     "84.17.53.155:9993",
@@ -89,7 +99,11 @@ pub struct ZtNodeId(pub [u8; 5]);
 impl ZtNodeId {
     /// Derive a ZeroTier Node ID from an Ed25519 public key.
     ///
-    /// The Node ID is the first 5 bytes of SHA-512(pubkey).
+    /// The real ZeroTier protocol derives Node IDs from P-384/Curve25519
+    /// keypairs, but we simplify by using SHA-512 of our Ed25519 key.
+    /// The first 40 bits provide 2^40 = ~1 trillion possible addresses,
+    /// which gives negligible collision probability for mesh networks
+    /// of any practical size.
     pub fn from_ed25519(pubkey: &[u8; 32]) -> Self {
         let hash: [u8; 64] = Sha512::digest(pubkey.as_slice()).into();
         let mut id = [0u8; 5];

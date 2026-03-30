@@ -195,6 +195,12 @@ pub const DOMAIN_PAIRING_HELLO: &[u8] = b"meshinfinity-pairing-hello-v1";
 // Defined by the spec; must not change without a version bump.
 pub const DOMAIN_LAN_DISCOVER: &[u8] = b"meshinfinity-lan-discover-v1";
 
+/// Domain separator for group governance votes (§8.10).
+pub const DOMAIN_GROUP_GOVERNANCE: &[u8] = b"meshinfinity-group-governance-v1";
+
+/// Domain separator for key change validation signatures (§4.6).
+pub const DOMAIN_KEY_CHANGE: &[u8] = b"meshinfinity-key-change-v1";
+
 // ---------------------------------------------------------------------------
 // Signing
 // ---------------------------------------------------------------------------
@@ -595,6 +601,9 @@ mod tests {
             DOMAIN_RETIREMENT,
             DOMAIN_CANCELLATION,
             DOMAIN_PAIRING_HELLO,
+            DOMAIN_LAN_DISCOVER,
+            DOMAIN_GROUP_GOVERNANCE,
+            DOMAIN_KEY_CHANGE,
         ];
 
         for i in 0..domains.len() {

@@ -516,7 +516,7 @@ mod linux_impl {
                 });
             }
 
-            *self.peer_devices.lock().unwrap() = discovered.clone();
+            *self.peer_devices.lock().unwrap_or_else(|e| e.into_inner()) = discovered.clone();
             discovered
         }
 
@@ -582,7 +582,7 @@ mod linux_impl {
                 .name("wifi-direct-listener".into())
                 .spawn(move || {
                     for stream in listener.incoming().flatten() {
-                        transport.inbound.lock().unwrap().push(stream);
+                        transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(stream);
                     }
                 })
                 .map_err(WifiDirectError::Io)?;
@@ -591,7 +591,7 @@ mod linux_impl {
 
         /// Drain all inbound streams accepted since the last call.
         pub fn drain_inbound(&self) -> Vec<TcpStream> {
-            std::mem::take(&mut *self.inbound.lock().unwrap())
+            std::mem::take(&mut *self.inbound.lock().unwrap_or_else(|e| e.into_inner()))
         }
 
         /// Remove all active P2P / mesh interfaces created by this transport.
@@ -726,7 +726,7 @@ impl MdnsDiscovery {
 
     /// Return all services discovered so far.
     pub fn discovered(&self) -> Vec<MdnsService> {
-        self.discovered.lock().unwrap().clone()
+        self.discovered.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Spawn a background thread that periodically broadcasts mDNS
@@ -810,7 +810,7 @@ impl MdnsDiscovery {
                 .name("mdns-scan-drain".into())
                 .spawn(move || {
                     for svc in rx {
-                        let mut guard = inner_discovered.lock().unwrap();
+                        let mut guard = inner_discovered.lock().unwrap_or_else(|e| e.into_inner());
                         // Deduplicate by peer_id_hex.
                         if !guard.iter().any(|s| s.peer_id_hex == svc.peer_id_hex) {
                             guard.push(svc);

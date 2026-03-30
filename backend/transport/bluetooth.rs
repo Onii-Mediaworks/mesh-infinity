@@ -96,6 +96,11 @@ pub const TX_CHAR_UUID: uuid::Uuid = uuid::Uuid::from_u128(TX_CHAR_UUID_U128);
 pub const RX_CHAR_UUID: uuid::Uuid = uuid::Uuid::from_u128(RX_CHAR_UUID_U128);
 
 /// Maximum number of raw advertisement bytes stored per discovered peer.
+/// BLE 4.x advertisements carry at most 31 bytes of user data; BLE 5.0
+/// extended advertisements can carry up to 255 bytes, but we use the 4.x
+/// limit for maximum compatibility with older hardware.  The peer ID hex
+/// (64 bytes) exceeds this limit, so it is split across the advertisement
+/// data and the GATT service characteristic.
 pub const MAX_ADVERTISEMENT_BYTES: usize = 31;
 
 /// Peer ID hex length (32 raw bytes → 64 hex characters).
@@ -283,7 +288,7 @@ impl BluetoothTransport {
     /// returned `Vec`.  Returns an empty `Vec` if no peers have been
     /// discovered.
     pub fn drain_inbound(&self) -> Vec<BluetoothPeer> {
-        let mut guard = self.inbound.lock().unwrap();
+        let mut guard = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *guard)
     }
 
@@ -541,7 +546,7 @@ mod native {
                 advertisement_data,
             };
 
-            let mut queue = self.inbound.lock().unwrap();
+            let mut queue = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
             // Deduplicate: update existing entry if the peer is already queued.
             if let Some(existing) = queue.iter_mut().find(|p| p.peer_id_hex == peer.peer_id_hex) {
                 existing.rssi = peer.rssi;
@@ -781,7 +786,7 @@ mod tests {
     fn drain_inbound_clears_queue() {
         let transport = BluetoothTransport::new();
         {
-            let mut q = transport.inbound.lock().unwrap();
+            let mut q = transport.inbound.lock().unwrap_or_else(|e| e.into_inner());
             q.push(BluetoothPeer {
                 peer_id_hex: "aa".repeat(32),
                 rssi: Some(-70),

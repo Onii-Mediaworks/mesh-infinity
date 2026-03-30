@@ -67,7 +67,9 @@ use std::sync::{Arc, Mutex};
 ///
 /// NFC-DEP I-frames carry up to 253 bytes; overhead (sequence numbers,
 /// information field prefix) consumes 9 bytes, leaving 244 bytes for
-/// application payload per frame.
+/// application payload per frame.  This is small enough that even a
+/// minimal pairing payload (~200 bytes of JSON) fits in a single frame,
+/// avoiding the complexity of NFC-level fragmentation for the common case.
 pub const NFC_MAX_FRAME_BYTES: usize = 244;
 
 /// NDEF Type Name Format: Well-Known type (§4.2 of NFC Forum NDEF spec).
@@ -76,16 +78,24 @@ pub const TNF_WELL_KNOWN: u8 = 0x01;
 /// NDEF Type Name Format: External type (`meshinfinity.io:pairing`).
 pub const TNF_EXTERNAL: u8 = 0x04;
 
+// NDEF record flag bits — packed into the first byte of each NDEF record
+// along with the Type Name Format (TNF) in the lower 3 bits.  These
+// flags control message boundaries and length encoding.  For single-record
+// pairing messages, MB+ME+SR are all set (0xD0 | TNF), giving a compact
+// 1-byte payload length encoding suitable for the small pairing payload.
+
 /// NDEF flags: Message Begin bit (byte 7 of flags+TNF octet).
 const NDEF_MB: u8 = 0x80;
 
 /// NDEF flags: Message End bit (byte 6 of flags+TNF octet).
 const NDEF_ME: u8 = 0x40;
 
-/// NDEF flags: Short Record bit — payload length encoded in 1 byte.
+/// NDEF flags: Short Record bit — payload length fits in 1 byte (≤255).
+/// Without this flag, payload length is a 4-byte big-endian u32.
 const NDEF_SR: u8 = 0x10;
 
-/// NDEF flags: ID Length present bit.
+/// NDEF flags: ID Length present — indicates an optional ID field follows
+/// the type field.  Mesh Infinity pairing records omit the ID field.
 const NDEF_IL: u8 = 0x08;
 
 /// TNF mask (lower 3 bits of flags+TNF octet).
@@ -563,7 +573,7 @@ impl NfcTransport {
     ///
     /// Returns `None` when no frames are available.
     pub fn recv(&self) -> Option<Vec<u8>> {
-        let mut guard = self.inbound.lock().unwrap();
+        let mut guard = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
         guard.pop_front()
     }
 
@@ -573,7 +583,7 @@ impl NfcTransport {
     /// (started via `start_poll_loop`) drains this queue and writes frames
     /// via the NFC socket.
     pub fn queue_outbound(&self, data: &[u8]) {
-        let mut guard = self.outbound.lock().unwrap();
+        let mut guard = self.outbound.lock().unwrap_or_else(|e| e.into_inner());
         guard.push_back(data.to_vec());
     }
 
@@ -609,7 +619,7 @@ impl NfcTransport {
             loop {
                 // --- Drain outbound queue ---
                 let pending: Vec<Vec<u8>> = {
-                    let mut guard = self.outbound.lock().unwrap();
+                    let mut guard = self.outbound.lock().unwrap_or_else(|e| e.into_inner());
                     guard.drain(..).collect()
                 };
                 for frame in pending {
@@ -629,7 +639,7 @@ impl NfcTransport {
                 // --- Poll for inbound frames ---
                 match linux_impl::read_nfc_frame(fd) {
                     Ok(frame) => {
-                        let mut guard = self.inbound.lock().unwrap();
+                        let mut guard = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
                         guard.push_back(frame);
                     }
                     Err(NfcError::TransmitError(_)) => {
@@ -968,7 +978,7 @@ mod tests {
 
         // Manually push into the inbound queue to simulate received frames.
         {
-            let mut guard = transport.inbound.lock().unwrap();
+            let mut guard = transport.inbound.lock().unwrap_or_else(|e| e.into_inner());
             guard.push_back(b"frame_one".to_vec());
             guard.push_back(b"frame_two".to_vec());
         }
@@ -988,7 +998,7 @@ mod tests {
         };
 
         transport.queue_outbound(b"send_me");
-        let guard = transport.outbound.lock().unwrap();
+        let guard = transport.outbound.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(guard.front().map(|v| v.as_slice()), Some(b"send_me" as &[u8]));
     }
 

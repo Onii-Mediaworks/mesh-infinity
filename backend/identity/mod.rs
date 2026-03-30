@@ -20,3 +20,5 @@ pub mod peer_id;
 pub mod pin;
 pub mod killswitch;
 pub mod profile;
+// Sub-module: key_change — key change validation with 72h wait (§4.6).
+pub mod key_change;

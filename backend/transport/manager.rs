@@ -181,8 +181,11 @@ impl TransportManager {
     /// Get the number of distinct active transport types.
     ///
     /// Used by the solver for diversity scoring (§5.10.5).
-    /// The target is 3 — below that, the solver applies pressure
-    /// to diversify.
+    /// The target is 3 distinct types — below that, the solver increases
+    /// the diversity weight to encourage the node to activate additional
+    /// transports.  Transport diversity protects against single-point-of-
+    /// failure censorship: if an adversary blocks one transport type
+    /// (e.g. Tor), the node automatically falls back to alternatives.
     pub fn active_transport_type_count(&self) -> usize {
         self.available_types().len()
     }
