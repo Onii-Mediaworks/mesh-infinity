@@ -229,7 +229,9 @@ impl MeshRuntime {
         peer_id_hex: &str,
         path: &str,
     ) -> Result<String, String> {
-        // Gate on file_sharing module flag (§17.13).
+        // Gate on the file_sharing module flag (§17.13).  The module system
+        // allows individual features to be disabled for compliance or bandwidth
+        // reasons.  Reject early to avoid wasting I/O on a disabled feature.
         if !self
             .module_config
             .lock()
@@ -286,7 +288,11 @@ impl MeshRuntime {
             match std::fs::File::open(path) {
                 Ok(mut file) => {
                     // Compute SHA-256 content hash as the canonical file_id (§16.2).
-                    // This allows the receiver to deduplicate and verify integrity.
+                    // This serves two purposes:
+                    // 1. Integrity verification: the receiver can hash the reassembled
+                    //    file and compare to detect corruption or tampering.
+                    // 2. Deduplication: if the same file is sent twice, the receiver
+                    //    can detect the duplicate by file_id without storing content.
                     let file_id: [u8; 32] = {
                         use sha2::Digest as _;
                         use std::io::{Read as _, Seek as _};

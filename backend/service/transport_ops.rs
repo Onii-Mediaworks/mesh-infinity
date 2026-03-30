@@ -171,7 +171,9 @@ impl MeshRuntime {
     ///
     /// Idempotent — returns `Ok(())` if Tor is already running.
     pub fn tor_enable(&self) -> Result<(), String> {
-        // Already running — nothing to do.
+        // Idempotent: if Tor is already running, return success immediately.
+        // This allows Flutter to call tor_enable() on every app resume without
+        // worrying about double-bootstrap.
         if self
             .tor_transport
             .lock()
@@ -181,7 +183,11 @@ impl MeshRuntime {
             return Ok(());
         }
 
-        // Require an unlocked identity to derive the onion address.
+        // Require an unlocked identity because the Tor v3 onion address is
+        // deterministically derived from the identity master key via
+        // HKDF-SHA256 with domain "meshinfinity-tor-service-v1".  This means
+        // the same identity always produces the same onion address, which
+        // allows peers to reach us at a stable .onion even across restarts.
         let (master_key, peer_id_hex) = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             let id = guard.as_ref().ok_or("identity not unlocked")?;
@@ -261,9 +267,13 @@ impl MeshRuntime {
     /// `mdns_running = true`, and resets the announce timer so the first
     /// presence broadcast is sent on the next poll tick.
     ///
+    /// The socket is set to broadcast mode (SO_BROADCAST) and non-blocking
+    /// so presence packets can be sent to `255.255.255.255:7235` and received
+    /// without stalling the poll loop.
+    ///
     /// Emits `MdnsStarted`.
     pub fn mdns_enable(&self) {
-        // Bind the UDP discovery socket if not already bound.
+        // Bind the UDP discovery socket if not already bound (idempotent).
         {
             let mut sock_guard = self
                 .lan_discovery_socket
@@ -643,7 +653,11 @@ impl MeshRuntime {
             _ => SdrDriverType::Simulated,
         };
 
-        // Resolve hop key for FHSS profiles (required but gracefully defaults).
+        // Resolve the FHSS hop key for frequency-hopping profiles.
+        // The hop key determines the pseudo-random frequency sequence;
+        // all nodes in a mesh must share the same hop key to communicate.
+        // Defaults to all-zeros (which produces a fixed sequence) if not
+        // provided — suitable for testing but NOT secure in production.
         let hop_key: [u8; 32] = parsed
             .get("hop_key_hex")
             .and_then(|v| v.as_str())
@@ -1464,10 +1478,16 @@ impl MeshRuntime {
     // Emergency / duress erase (§3.9)
     // -----------------------------------------------------------------------
 
-    /// Standard emergency erase: destroy all identity layers.
+    /// Standard emergency erase: destroy all identity layers (§3.9).
     ///
-    /// Calls `killswitch::standard_erase` on disk and clears all in-memory
-    /// state.  Non-reversible.
+    /// Calls `killswitch::standard_erase` on disk (overwrite + unlink) and
+    /// clears all in-memory state.  Non-reversible.  This is the "panic
+    /// button" — after this call, the app must be set up from scratch.
+    ///
+    /// SECURITY: in-memory clearing (setting fields to None / clear()) is
+    /// best-effort — the Rust allocator may leave freed data in the heap.
+    /// For high-assurance scenarios, the spec recommends process termination
+    /// after disk erase (which releases all process memory to the OS).
     pub fn emergency_erase(&mut self) {
         let data_dir = std::path::Path::new(&self.data_dir);
         crate::identity::killswitch::standard_erase(data_dir);
@@ -1479,9 +1499,12 @@ impl MeshRuntime {
         self.vault = None;
     }
 
-    /// Duress erase: destroy Layers 2 and 3, preserve Layer 1.
+    /// Duress erase: destroy Layers 2 and 3, preserve Layer 1 (§3.9).
     ///
     /// Calls `killswitch::duress_erase` on disk.  Non-reversible.
+    /// Layer 1 (the identity master key) is preserved so the user can
+    /// re-create the device identity after the duress situation passes.
+    /// All social state (contacts, rooms, messages) is destroyed.
     pub fn duress_erase(&mut self) {
         let data_dir = std::path::Path::new(&self.data_dir);
         crate::identity::killswitch::duress_erase(data_dir);

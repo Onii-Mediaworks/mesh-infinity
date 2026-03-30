@@ -10,6 +10,16 @@
 //!   them offline.
 //! - At most one keepalive probe is sent per 10 s gap to avoid storms.
 
+// Imports for the poll cycle:
+// - `PeerId` for peer identity lookups in the contact store.
+// - `DeviceAddress` for routing table operations (same 32 bytes as PeerId but
+//   typed separately to distinguish identity from routing concerns).
+// - `FileDirection`, `CHUNKS_PER_TICK`, `FILE_CHUNK_SIZE` for file transfer
+//   throttling — the poll loop sends at most CHUNKS_PER_TICK 64KiB chunks
+//   per transfer per tick to stay responsive.
+// - `write_tcp_frame`, `try_read_frame`, `extract_frame_sender` are the
+//   length-prefixed TCP frame helpers shared across all TCP paths.
+// - `TrustLevel` and `RoutingEntry` for routing table updates.
 use crate::identity::peer_id::PeerId;
 use crate::routing::table::DeviceAddress;
 use crate::service::runtime::{MeshRuntime, FileDirection, CHUNKS_PER_TICK, FILE_CHUNK_SIZE};
@@ -27,25 +37,45 @@ impl MeshRuntime {
     /// Called from `mi_poll_events` approximately every 200 ms.
     /// Returns after all non-blocking sub-system steps have been run.
     pub fn advance_clearnet_transport(&self) {
-        // Accept new TCP connections and drain Tor inbound streams.
+        // Phase 1 — Connection management: accept new TCP connections from
+        // both clearnet and Tor hidden service listeners.  Tor inbound streams
+        // are mixed into the same pending queue so the identification path
+        // is transport-agnostic (§5.3 transport abstraction).
         self.clearnet_accept_new_connections();
         self.tor_drain_inbound();
-        // Identify pending connections and process identified ones.
+
+        // Phase 2 — Frame processing: identify pending (anonymous) connections
+        // by reading their first frame to extract the sender's peer ID, then
+        // process all identified connections to dispatch complete frames.
+        // This ordering ensures a newly identified connection's first frame
+        // is processed in the same tick it was promoted.
         self.clearnet_process_pending_incoming();
         self.clearnet_process_identified();
-        // Retry any queued outbox messages.
+
+        // Phase 3 — Delivery: retry any queued outbox messages that failed
+        // delivery on previous ticks (peer was offline or connection broken).
+        // Tries clearnet TCP first, then Tor if enabled (§5.1 local S&F).
         self.clearnet_flush_outbox();
-        // LAN discovery ticks.
+
+        // Phase 4 — LAN discovery: broadcast our presence on the local
+        // network and perform TCP challenge-response handshakes with
+        // newly discovered peers (§4.9.5).
         self.advance_lan_discovery();
         self.advance_lan_discovery_handshakes();
-        // File transfer chunks.
+
+        // Phase 5 — File transfers: send the next batch of chunks for each
+        // active outgoing transfer.  Throttled to CHUNKS_PER_TICK per transfer
+        // to keep the event loop responsive.
         self.advance_file_transfers();
-        // S&F server GC, group rekeying, notifications, and gossip cleanup.
+
+        // Phase 6 — Housekeeping: garbage-collect store-and-forward entries,
+        // trigger scheduled group Sender Key rekeying, dispatch coalesced
+        // notifications, prune stale gossip map entries, and send keepalive
+        // probes to idle peers.
         self.advance_sf_gc();
         self.advance_group_rekeys();
         self.advance_notifications();
         self.advance_gossip_cleanup();
-        // Keepalive probes and stale connection pruning.
         self.advance_keepalives();
     }
 
@@ -59,16 +89,22 @@ impl MeshRuntime {
     /// - > 30 s no data received  → send keepalive frame (at most once per 10 s).
     /// - > 120 s no data received → close the connection; emit PeerUpdated(offline).
     pub fn advance_keepalives(&self) {
-        /// Seconds of idle before we probe.
+        /// Seconds of idle (no data received) before we send a keepalive probe.
+        /// 30 seconds balances prompt detection with bandwidth conservation.
         const KEEPALIVE_INTERVAL_SECS: u64 = 30;
-        /// Seconds of silence before declaring the peer dead.
+        /// Seconds of total silence before declaring the peer dead and closing
+        /// the TCP connection.  120 seconds allows for transient network drops
+        /// without prematurely disconnecting.
         const KEEPALIVE_TIMEOUT_SECS: u64 = 120;
-        /// Minimum gap between successive probes to the same peer.
+        /// Minimum gap between successive keepalive probes to the same peer.
+        /// Prevents a flood of probes if the peer is slow to respond — we
+        /// send at most one probe per 10-second window.
         const KEEPALIVE_TX_MIN_GAP_SECS: u64 = 10;
 
         let now = std::time::Instant::now();
 
-        // Snapshot the peer list without holding the lock across the loop body.
+        // Snapshot the peer list first to avoid holding the connection lock
+        // across the entire keepalive loop, which could block incoming I/O.
         let peer_ids: Vec<String> = self
             .clearnet_connections
             .lock()
@@ -118,9 +154,13 @@ impl MeshRuntime {
             }
         }
 
-        // Close stale connections and update routing / Flutter state.
+        // Close stale connections and clean up all per-peer state.
+        // We remove from five separate maps: connections, recv buffers,
+        // last_rx timestamps, last_keepalive_tx timestamps, and the routing
+        // table.  The order does not matter since each map is independently
+        // locked; what matters is that ALL maps are cleaned to prevent
+        // resource leaks from orphaned entries.
         for peer_hex in to_drop {
-            // Remove all per-peer data structures atomically (best effort).
             self.clearnet_connections
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -203,7 +243,9 @@ impl MeshRuntime {
         use crate::routing::announcement::{AnnouncementScope, ReachabilityAnnouncement};
         use crate::service::runtime::try_random_fill;
 
-        // Gather our peer ID and Ed25519 signing key.
+        // Gather our peer ID and signing key bytes.  We clone the bytes out
+        // of the identity lock so we can drop the lock before the broadcast
+        // loop (which acquires the clearnet_connections lock).
         let (peer_id_bytes, signing_key_bytes) = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_ref() {
@@ -224,6 +266,9 @@ impl MeshRuntime {
         }
 
         // Sign: destination || announcement_id || timestamp.
+        // The domain separator (DOMAIN_ROUTING_ANNOUNCEMENT) prevents cross-protocol
+        // signature reuse.  The announcement_id provides deduplication at receivers
+        // and the timestamp enables age-based filtering (§6.2).
         let mut signed_msg = Vec::with_capacity(72);
         signed_msg.extend_from_slice(&peer_id_bytes);
         signed_msg.extend_from_slice(&announcement_id);
@@ -299,7 +344,9 @@ impl MeshRuntime {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Zero announcement_id for direct entries — they are not gossip-originated.
+        // Zero announcement_id for direct entries — they are locally observed,
+        // not received via gossip.  This distinguishes them from gossip-propagated
+        // routes so the routing table can apply different expiry policies.
         let entry = RoutingEntry {
             destination:     addr,
             next_hop:        addr,
@@ -397,7 +444,9 @@ impl MeshRuntime {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Collect groups that need a rekey without holding the lock long.
+        // Snapshot the groups that need rekeying without holding the groups
+        // lock during the expensive encrypt-and-send loop below.  This prevents
+        // blocking inbound group message processing during rekey distribution.
         let rekey_targets: Vec<(usize, [u8; 32], Vec<[u8; 32]>)> = {
             let groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
             groups
@@ -476,7 +525,9 @@ impl MeshRuntime {
                         match session.next_send_msg_key() {
                             Ok((header, msg_key)) => {
                                 let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
-                                // All-zero 12-byte nonce — safe because msg_key is single-use.
+                                // All-zero 12-byte nonce is safe because the ratchet msg_key
+                                // is never reused — each next_send_msg_key() produces a
+                                // unique key, so (key, nonce) pair uniqueness is guaranteed.
                                 let nonce = Nonce::<ChaCha20Poly1305>::default();
                                 match cipher.encrypt(&nonce, payload_bytes.as_ref()) {
                                     Ok(ct) => {
@@ -542,6 +593,9 @@ impl MeshRuntime {
     pub fn advance_file_transfers(&self) {
         use std::io::Read;
 
+        // Snapshot the active transfer IDs to avoid holding the active_file_io
+        // lock during I/O operations.  New transfers added mid-tick will be
+        // picked up on the next poll cycle — a 200ms delay is acceptable.
         let transfer_ids: Vec<String> = self
             .active_file_io
             .lock()
@@ -657,6 +711,12 @@ impl MeshRuntime {
     // -----------------------------------------------------------------------
 
     /// Accept new TCP connections from the clearnet listener into the pending queue.
+    ///
+    /// Drains all pending `accept()` results in a tight loop until `WouldBlock`
+    /// (the listener is non-blocking).  Each accepted stream is set to
+    /// non-blocking mode immediately so that subsequent `read()` calls in the
+    /// poll loop never stall.  The streams are placed in the "pending" queue
+    /// where they await identification (their first frame tells us the peer ID).
     pub fn clearnet_accept_new_connections(&self) {
         let new_streams: Vec<std::net::TcpStream> = {
             let guard = self.clearnet_listener.lock().unwrap_or_else(|e| e.into_inner());
@@ -714,9 +774,14 @@ impl MeshRuntime {
     ///
     /// In Critical threat mode (isolation, §3.4), connections from unknown
     /// peers are silently dropped — the socket is closed without reply.
+    /// This provides plausible deniability — an adversary cannot distinguish
+    /// between "no node is running" and "node is in isolation mode".
     pub fn clearnet_process_pending_incoming(&self) {
         use std::io::Read;
 
+        // Take ownership of the pending queue atomically, releasing the lock
+        // immediately.  This allows new connections to be accepted during the
+        // (potentially slow) identification loop below.
         let pending_conns: Vec<(std::net::TcpStream, Vec<u8>)> = {
             let mut guard =
                 self.clearnet_pending_incoming.lock().unwrap_or_else(|e| e.into_inner());
@@ -873,7 +938,11 @@ impl MeshRuntime {
                 }
             }
 
-            // Flush any S&F-buffered messages for this peer (§6.8).
+            // Flush store-and-forward-buffered messages for this peer (§6.8).
+            // When a peer comes online, we check whether we have any queued S&F
+            // messages waiting for them and deliver them immediately.  This
+            // provides transparent offline message delivery without the sender
+            // needing to know whether the recipient was online at send time.
             if let Ok(peer_bytes) = hex::decode(peer_id_hex) {
                 if peer_bytes.len() == 32 {
                     let mut addr_bytes = [0u8; 32];
@@ -989,6 +1058,11 @@ impl MeshRuntime {
     /// - Otherwise try clearnet (TCP connect + send).
     /// - Otherwise try Tor if enabled and the peer advertises an onion address.
     /// - Undeliverable entries remain in the outbox for the next cycle.
+    ///
+    /// The attempt order (existing connection → clearnet TCP → Tor) reflects
+    /// a latency-first strategy: reusing an existing TCP stream is fastest,
+    /// a fresh clearnet connection is next, and Tor (with circuit establishment
+    /// overhead) is the fallback of last resort.
     pub fn clearnet_flush_outbox(&self) {
         use crate::service::runtime::DEFAULT_HS_PORT;
 

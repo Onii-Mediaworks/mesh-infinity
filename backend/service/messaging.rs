@@ -653,6 +653,10 @@ impl MeshRuntime {
             self.push_event("RoomUpdated", summary);
         }
 
+        // Persist all three interdependent collections atomically.
+        // Ratchet sessions MUST be saved after every send because the chain
+        // state has advanced — failing to persist would cause out-of-sync
+        // ratchets on crash-recovery.
         self.save_messages();
         self.save_rooms();
         self.save_ratchet_sessions();
@@ -661,6 +665,12 @@ impl MeshRuntime {
 
     // -----------------------------------------------------------------------
     // send_raw_frame — internal transport helper
+    //
+    // This is the single chokepoint for all outbound frame transmission.
+    // Every operation that needs to send data to a peer (messaging, call
+    // signalling, file transfers, keepalives, pairing, routing, etc.)
+    // routes through this method.  It handles optional WireGuard encryption
+    // and the TCP length-prefix framing transparently.
     // -----------------------------------------------------------------------
 
     /// Serialise `frame` and send it to `peer_id_hex` over the clearnet connection.
@@ -937,7 +947,14 @@ impl MeshRuntime {
         };
         let sender_peer_id = crate::identity::peer_id::PeerId(sender_bytes);
 
-        // Bootstrap ratchet session if X3DH header is present.
+        // Bootstrap a ratchet session from the X3DH header if one is embedded
+        // in the group_invite frame.  Group invites often come from a peer we
+        // have not yet exchanged direct messages with, so this X3DH bootstrap
+        // establishes the ratchet session needed to decrypt the invite payload.
+        // The pattern here (check x3dh_eph_pub + x3dh_encrypted_ik → x3dh_respond
+        // → init_receiver) is identical to the direct-message bootstrap in
+        // bootstrap_session_from_frame, but inlined because group frames carry
+        // the ratchet header in a different JSON location.
         {
             let contact = self.contacts.lock().unwrap_or_else(|e| e.into_inner())
                 .get(&sender_peer_id).cloned();
@@ -945,11 +962,14 @@ impl MeshRuntime {
                 if !self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
                     .contains_key(&sender_peer_id)
                 {
+                    // Extract Alice's ephemeral X25519 public key (32 bytes).
                     let eph_pub_opt = envelope.get("x3dh_eph_pub")
                         .and_then(|v| v.as_str())
                         .and_then(|s| hex::decode(s).ok())
                         .filter(|b| b.len() == 32)
                         .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+                    // Extract Alice's encrypted identity key (48 bytes: 32-byte
+                    // IK + 16-byte AES-GCM tag).
                     let enc_ik_opt = envelope.get("x3dh_encrypted_ik")
                         .and_then(|v| v.as_str())
                         .and_then(|s| hex::decode(s).ok())
@@ -960,6 +980,8 @@ impl MeshRuntime {
                         });
                     if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
                         use crate::crypto::x3dh::{x3dh_respond, X3dhInitHeader};
+                        // Perform the Bob-side X3DH computation: derive the shared
+                        // secret from our preauth keypair and Alice's ephemeral key.
                         let session_result: Option<DoubleRatchetSession> = {
                             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
                             guard.as_ref().and_then(|id| {
@@ -968,6 +990,9 @@ impl MeshRuntime {
                                     .ok()
                                     .map(|out| {
                                         let master = out.master_secret.as_bytes();
+                                        // Bob is always the receiver in X3DH —
+                                        // use our preauth keypair as the initial
+                                        // ratchet key pair.
                                         let preauth_secret = x25519_dalek::StaticSecret::from(
                                             id.preauth_x25519_secret.to_bytes());
                                         let preauth_pub = *id.preauth_x25519_pub.as_bytes();
@@ -986,7 +1011,9 @@ impl MeshRuntime {
             }
         }
 
-        // Decrypt the invite payload using the ratchet session.
+        // Decrypt the invite payload using the ratchet session's message key.
+        // The ratchet header is carried in a top-level "ratchet_header" JSON
+        // field (not inline with the ciphertext as in direct messages).
         let header_val = match envelope.get("ratchet_header") {
             Some(v) => v.clone(),
             None => return false,
