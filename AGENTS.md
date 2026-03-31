@@ -43,6 +43,13 @@ When an agent (Claude, Codex, or other) discovers a security vulnerability or sp
 4. Findings must be verified before filing — do not file speculative issues without reading the relevant spec/code sections.
 5. A finding is resolved only when the fix is in `SPEC.md` or the codebase, not merely when a fix is proposed.
 
+## LLM and Gitignore Rules
+
+- Files matched by `.gitignore`, and files inside folders or subfolders matched by `.gitignore`, must never be committed or pushed.
+- If such files were committed, they must be removed from the index and from published history before further pushes.
+- LLMs must not create commits that include gitignored files or files under gitignored directory trees.
+- LLMs must not treat `.gitignore` as advisory. It is a hard boundary for repository contents.
+
 ## Compliant Code Standards (Minimum)
 
 These are the minimum standards code must meet to be considered **compliant**. Compliant code satisfies all three of: (1) these standards, (2) adherence to `SPEC.md`, and (3) accuracy as determined by human review.
