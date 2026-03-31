@@ -253,36 +253,86 @@ Each transport gets a detail screen accessible from the health grid:
 
 **Current:** 4-level trust (spec requires 9).
 
-**Proposal:** Update to 9-level trust with Authentik-style permission cards:
-- Each trust level shows a clear card listing what this level allows
+**Proposal:** Update to 9-level trust with Authentik's three-layer permission model:
+
+**Layer 1 — Trust levels as groups:** Each level (0–8) is a "group" that inherits all permissions from the levels below. Level 3 (Acquaintance) automatically gets everything Level 2 (Vouched) has, plus its own additions.
+
+**Layer 2 — Permission cards per level:** Each trust level shows a clear card listing what it permits:
+- "Level 0: Unknown — Can discover you on LAN, nothing else"
 - "Level 3: Acquaintance — Can send messages, share files up to 10MB, join your public Gardens"
 - "Level 7: Highly Trusted — Full access, can relay traffic, admin in your Gardens"
 
+**Layer 3 — Per-object permissions tab:** Every peer, transport, and plugin in the UI has a "Permissions" tab showing exactly which trust levels can access it. This is Authentik's most powerful pattern — you never have to hunt for who has access to what.
+
 ### 5.2 Identity Dashboard
 
-**Proposal:** Combine the scattered identity screens into a single dashboard:
-- **My Identity** card: peer ID, display name, avatar, public key fingerprint
-- **Masks** section: list of active masks with per-mask stats (messages sent, contacts using this mask)
-- **Security** section: active threats, key expiry, backup status
-- **Sessions** section: active sessions/devices (like Authentik's session management)
+**Proposal:** Combine the scattered identity screens into a single dashboard (Authentik's tabbed user detail pattern):
 
-### 5.3 Plugin Permissions (Authentik Policy Model)
+- **Overview** tab: peer ID, display name, avatar, public key fingerprint, QR code
+- **Masks** tab: list of active masks with per-mask stats (messages sent, contacts using this mask)
+- **Sessions** tab: active connections/devices with revoke capability (like Authentik's session management)
+- **Security** tab: active threats, key expiry countdown, backup status, safety number verification status
+- **Activity** tab: recent events for this identity (logins, key changes, trust level changes)
 
-**Proposal:** For the §18 plugin system, use Authentik's permission binding pattern:
-- Plugin list shows each plugin as a card with name, author, status (Active/Suspended)
-- Tap → detail screen with:
-  - Requested permissions as a checklist (✅ Read Messages, ✅ Network Access, ❌ Crypto Access)
-  - Toggle individual permissions on/off
-  - "Hooks" section showing which events this plugin listens to
-  - Activity log (last 10 invocations with timing)
+### 5.3 Plugin Permissions (Authentik Policy Binding Model)
 
-### 5.4 Audit Log (Authentik Model)
+**Proposal:** Use Authentik's three-part binding architecture:
 
-**Proposal:** Add an audit/activity log accessible from Settings:
-- Chronological list of security-relevant events
-- Event types: key change, trust level change, login, plugin activity, pairing attempt
-- Filter by severity (info, warning, alert)
-- Tap → detail view with full context
+**Plugin list** — card grid (like Authentik's Application cards):
+- Icon, name, author, version, status badge (Active ● / Suspended ○)
+- Tap → detail screen
+
+**Plugin detail** — tabbed view:
+- **Overview**: description, version, author
+- **Permissions**: checklist of requested vs granted permissions (✅ Read Messages, ✅ Network Access, ❌ Crypto Access). Toggle individual permissions on/off.
+- **Hooks**: which events this plugin listens to, with enable/disable per hook
+- **Activity**: last 10 invocations with timing (from `HookInvocation` data)
+- **Permissions tab on other objects**: when viewing a transport or peer, a "Plugins" sub-tab shows which plugins have access to it
+
+**Policy engine for plugins** — adopt Authentik's ALL/ANY model:
+- "Plugin X requires: Trust Level ≥ 3 **AND** Network Access permission" (ALL mode)
+- "Plugin Y requires: Trust Level ≥ 5 **OR** Manual admin approval" (ANY mode)
+
+### 5.4 Audit Log (Authentik Event Model)
+
+**Proposal:** Full audit/activity log accessible from Settings → Security:
+
+**Event list:**
+- Chronological, with volume histogram at the top (Authentik's key pattern for spotting spikes without reading individual entries)
+- Event types: key change, trust level change, pairing attempt, plugin activity, connection failure, transport change
+- Severity: info (gray), warning (amber), alert (red)
+- Filter with advanced query: `action=trust_change peer~alice`
+
+**Event detail:**
+- Full context: who, what, when, which transport, which peer
+- Automatic credential stripping (no key material in logs, per §15.1)
+
+**Notification rules** (Authentik's event-matcher pattern):
+- "Notify me when a peer's trust level changes" → local notification
+- "Alert on 5+ failed connections from unknown peer in 1 hour" → security alert
+- Configurable per-event-type: local bell, push notification, or silent log-only
+
+### 5.5 Trust Workflows (Authentik Flow Model)
+
+**New proposal:** Map Authentik's "Flow as sequence of Stages" to peer trust promotion:
+
+Each trust level transition is a "flow" with configurable stages:
+- **Level 0 → 1 (Discovery → Seen)**: Automatic after first successful handshake
+- **Level 1 → 2 (Seen → Vouched)**: Requires: mutual QR scan OR vouching by a Level 5+ peer
+- **Level 2 → 3 (Vouched → Acquaintance)**: Requires: 24h waiting period + one successful message exchange
+- Higher levels: configurable by the user (like Authentik's flow customization)
+
+Each stage can have policies bound: "skip the 24h wait if the peer was vouched by 2+ inner-circle contacts" (Authentik's per-stage policy binding).
+
+### 5.6 Reputation Scoring (Authentik Reputation Policy)
+
+**New proposal:** Automatic trust scoring based on peer behavior:
+- Track connection success/failure ratio per peer
+- Track message delivery reliability
+- Track uptime/availability history
+- Display as a small trend indicator (↑ improving, → stable, ↓ declining) next to the trust badge
+- Reputation drops below threshold → automatic trust demotion warning
+- Configurable thresholds (Settings → Security → Reputation)
 
 ---
 
