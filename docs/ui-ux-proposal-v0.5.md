@@ -404,6 +404,60 @@ Full dark mode support. Follow system preference by default, with manual overrid
 
 ---
 
+---
+
+## 11. Mesh-Specific Patterns (from Briar, Meshtastic, Tailscale, Retroshare)
+
+### 11.1 Message Delivery Status (Briar + Meshtastic)
+
+**Critical for mesh:** Messages may be queued, in-transit across hops, or delivered. Users MUST see distinct states:
+- ○ **Queued** (hollow circle) — stored locally, peer offline
+- ◐ **In transit** (half-filled) — forwarded by relay/intermediate node, awaiting final delivery
+- ● **Delivered** (filled circle) — peer confirmed receipt
+- ✕ **Failed** (red X) — max retransmissions reached
+
+**Why:** Briar's biggest UX flaw is showing "sent" for queued messages. Meshtastic's green/yellow/red outline system is more honest. Mesh users need to understand that "sent" ≠ "delivered."
+
+### 11.2 Transport Indicator (Meshtastic Traffic-Light)
+
+Per-peer connection quality using Meshtastic's color system:
+- 🟢 **Direct** — peer-to-peer, low latency
+- 🟡 **Relayed** — via intermediate node(s), higher latency
+- 🔴 **Unreachable** — no active route
+- Plus a small label: "Direct", "1 hop", "2 hops", "Tor"
+
+### 11.3 Silent Connection Upgrade (Tailscale)
+
+**Pattern:** All connections start relayed, then silently upgrade to direct when possible. Show users the RESULT, not the negotiation. Never show "connecting... trying NAT traversal... falling back to relay..." — just show "Connected (relayed)" → "Connected (direct)" when the upgrade completes.
+
+### 11.4 Name-Based Addressing (Tailscale MagicDNS)
+
+Peers should be addressable by display name, not peer ID hex strings. The UI should never show `a4f2c8...` to users — always resolve to a display name. Peer IDs are for the protocol layer, names are for the human layer.
+
+### 11.5 Network Health Status Bar (Retroshare)
+
+Persistent mini-bar at the bottom of the screen (desktop) or in the Network section header (mobile):
+- Connected peers count
+- Active transports (icons: 🌐 Clearnet, 🧅 Tor, 📡 BLE)
+- Bandwidth: ↑ 2.4 KB/s ↓ 8.1 KB/s
+- NAT status: Full cone / Restricted / Symmetric
+
+### 11.6 QR Mutual Scan for Pairing (Briar Gold Standard)
+
+The pairing screen should show BOTH the user's QR code AND a camera viewfinder simultaneously (split screen). Both peers scan each other. This is the highest-trust pairing method and should be the primary flow.
+
+### 11.7 Progressive Disclosure (Meshtastic + Tailscale)
+
+- **Tap** → basic info (peer name, status, trust level)
+- **Long-press** → power actions (copy peer ID, ping, block, change trust)
+- **Navigate to detail** → full diagnostics (route, transport, latency, key info)
+
+### 11.8 Offline-First Forum Sync (Retroshare + Briar)
+
+Garden channels should support offline read/write. Messages composed offline are queued and auto-sync when connectivity returns. The UI shows a subtle "offline" badge on queued messages but does NOT block the user from composing.
+
+---
+
 ## Appendix: Research Sources
 
 - **Signal:** Conversation list, message bubbles, reactions, voice messages, read receipts, disappearing messages, safety numbers
