@@ -508,6 +508,264 @@ Garden channels should support offline read/write. Messages composed offline are
 
 ---
 
+---
+
+## 12. Network Management Dashboard — NetBox / Grafana / LibreNMS / Unifi Inspired
+
+### 12.1 "Is Everything OK?" View (LibreNMS Availability Grid)
+
+The Network section's first screen should answer one question: **is everything working?**
+
+**Availability tile grid:** One colored tile per active transport + one per connected peer.
+- 🟩 Green = healthy (connected, low latency)
+- 🟨 Yellow = degraded (high latency, packet loss, relay-only)
+- 🟥 Red = down (disconnected, unreachable)
+- ⬜ Gray = disabled (transport off, peer offline)
+
+For 10-100 nodes this is scannable at a glance. Above 100, group by trust level or Garden membership and show group-level aggregates.
+
+**Why:** LibreNMS and Zabbix both use this as their primary monitoring view. When everything is green, the operator sees a wall of green and moves on. A single red tile draws the eye instantly.
+
+### 12.2 KPI Stat Row (Grafana Stat Panels)
+
+Top of the Network dashboard — a row of 4-5 stat panels:
+- **Peers Online**: big number + sparkline trend (e.g., "14" with a 24h micro-chart)
+- **Active Transports**: count + icons (🌐 🧅 📡)
+- **Messages/sec**: throughput indicator
+- **Bandwidth**: ↑ 2.4 KB/s ↓ 8.1 KB/s
+- **Alerts**: count with severity coloring (0 = green, 1+ = amber/red)
+
+**Why:** Grafana's stat panel pattern is the industry standard for operational dashboards. One row tells you the health of the system in 2 seconds.
+
+### 12.3 Mesh Topology Visualization (Grafana Node Graph + LibreNMS Maps)
+
+**Node graph panel** — interactive mesh topology view:
+- **Your node** in the center, highlighted
+- **Peers** as circles radiating outward, sized by trust level
+- **Arc segments** on each node showing connection type proportions (60% clearnet = blue arc, 40% Tor = purple arc)
+- **Edges** (connections) with:
+  - Color gradient for quality: green → yellow → red (based on latency/loss)
+  - Thickness for bandwidth
+  - Dashed lines for relay, solid for direct
+  - Dotted for Tor circuits
+- **Layout modes:** Force-directed (default), Grid (sorted by trust level or latency), Manual (user-placed)
+
+**Interaction:**
+- Tap a node → peer detail popover
+- Tap an edge → connection detail (transport, latency, hops)
+- Pinch to zoom, pan to scroll
+- Long-press a node → context menu (ping, trace route, block, change trust)
+
+**Why:** Grafana's node graph panel with arc segments is the most expressive graph visualization available. LibreNMS's utilization color gradient is universally understood.
+
+### 12.4 Connection Route Tracing (NetBox Cable Trace)
+
+**Tap an edge or select "Trace Route" from a peer's context menu:**
+- Show the full path: Your Node → Relay A → Relay B → Destination Peer
+- Each hop as a card: node name, transport type, latency for that hop
+- Highlight the path on the topology graph
+- Total end-to-end latency at the top
+
+**Why:** NetBox's cable trace with path highlighting is the gold standard for "how does data get from A to B?" This is critical for mesh debugging.
+
+### 12.5 Transport Health Cards (Cockpit + pfSense)
+
+Replace the current transport toggle list with detailed cards per transport:
+
+```
+┌─────────────────────────┐
+│ 🌐 Clearnet       [ON] │
+│ Port 7234 · 8 peers     │
+│ ↑ 2.1 KB/s  ↓ 5.3 KB/s │
+│ ▃▅▇▅▃▂▅▇▅▃ (24h graph) │
+└─────────────────────────┘
+```
+
+Each card shows: transport icon + name, enable/disable toggle, connected peer count, bandwidth sparkline, and tap → full detail screen.
+
+**Why:** Cockpit's per-interface cards with inline graphs are the cleanest way to show multiple transport statuses simultaneously.
+
+### 12.6 Alert Management (Prometheus AlertManager)
+
+**Three-state alerts:** Pending → Firing → Resolved (with color coding)
+
+**Alert grouping:** Similar alerts bundled (e.g., "3 peers unreachable via Tor" instead of 3 separate alerts)
+
+**Silencing:** When doing maintenance or testing, create a silence:
+- Match: "transport = tor" or "peer = alice"
+- Duration: 1h, 4h, 24h, custom
+- Reason: "Tor exit node maintenance"
+
+**Inhibition:** Suppress downstream alerts when root cause is firing (e.g., suppress all "peer unreachable" alerts when "clearnet transport down" is active)
+
+**Why:** AlertManager's grouping + silencing + inhibition triad is the only proven approach to preventing alert fatigue in systems with many interconnected components.
+
+### 12.7 Trust Zone Matrix (pfSense/OPNsense Zone Firewall)
+
+A grid showing what each trust level can do with each transport/feature:
+
+```
+              │ Clearnet │  Tor  │  BLE  │ Files │ Gardens │
+─────────────┼──────────┼───────┼───────┼───────┼─────────┤
+ Unknown (0) │    ─     │   ─   │  ─    │  ─    │   ─     │
+ Seen (1)    │    R     │   ─   │  R    │  ─    │   ─     │
+ Vouched (2) │    RW    │   R   │  RW   │  R    │   R     │
+ Trusted (5) │    RW    │   RW  │  RW   │  RW   │   RW    │
+ Inner (8)   │    RW+   │   RW+ │  RW+  │  RW+  │   RW+   │
+```
+
+(R = read, W = write, + = admin, ─ = blocked)
+
+**Why:** pfSense's zone matrix is the fastest way to audit "who can do what" across the entire system. One screen, complete visibility.
+
+### 12.8 Peer Adoption Flow (Unifi Device Adoption)
+
+When a new peer is discovered on the network:
+1. **Pending** state — appears in a "New Peers" section with a pulsing indicator
+2. **Preview** — tap to see peer info (public key fingerprint, transport, trust level 0)
+3. **Adopt** — one-tap to promote to Seen (trust level 1), or scan QR for higher trust
+4. **Configure** — optionally set display name, assign to a Garden, set initial trust level
+
+**Why:** Unifi's adopt-then-configure flow is the cleanest onboarding pattern for new network members.
+
+### 12.9 State Timeline (Grafana)
+
+Per-peer connectivity history as horizontal swim lanes:
+```
+Alice  ████████████░░░░████████████████
+Bob    ████████████████████████░░████████
+Tor    ████████████████████████████████
+BLE    ░░░░░░░░░░░░████░░░░░░░░░░░░░░░
+       |--- 24h ago ---|--- 12h ---|-- now
+```
+
+Green = connected, gray = disconnected, amber = degraded.
+
+**Why:** Grafana's state timeline compresses 24h of node history into a single line. Patterns (daily disconnections, intermittent failures) become immediately visible.
+
+---
+
+---
+
+## 13. Mesh Routing & Anonymity Network Patterns — cjdns / Yggdrasil / I2P / Tor / ZeroTier
+
+### 13.1 Circuit/Tunnel Visualization (Tor Nyx + I2P Console)
+
+**For Tor connections:** Show the circuit as a chain of relay nodes:
+```
+You → Guard (DE) → Middle (CH) → Exit (NL) → destination.onion
+      45ms          82ms          120ms
+```
+
+Each relay shows: country flag, latency for that hop, and a "New Circuit" button to request a fresh path. This is how Tor Browser displays circuits.
+
+**For I2P tunnels:** Show inbound and outbound tunnel health:
+- Tunnel count (target vs actual)
+- Participation rate (how many transit tunnels you're serving)
+- Bandwidth allocation sliders (share %, speed limit)
+
+**For mesh multi-hop:** Show the path through relay peers:
+```
+You → Alice (direct, 12ms) → Bob (relay, 45ms) → Charlie (direct, 8ms)
+```
+
+### 13.2 Peer Health Metrics (I2P Peer Profiles)
+
+I2P profiles each peer on three dimensions — adopt this for mesh:
+- **Speed**: bandwidth capacity tier (1-4 stars)
+- **Capacity**: how many tunnels/connections this peer can handle
+- **Integration**: how well-connected this peer is in the network (analogous to routing table completeness)
+
+Display as a compact 3-bar mini-chart next to each peer in the peer list.
+
+### 13.3 Network Database Explorer (I2P NetDB)
+
+For power users, expose a searchable "Network Map" explorer:
+- List of known peers with: peer ID (truncated), trust level, last seen, transport types, speed tier
+- Filter by: trust level, online status, transport capability
+- Sort by: last seen, speed, hop count
+
+This is I2P's NetDB browser adapted for mesh context.
+
+### 13.4 ZeroTier Member Authorization Model
+
+When a new peer joins the mesh, use ZeroTier Central's pattern:
+- New peer appears as **unauthorized** in the member list
+- Admin sees a toggle to **authorize** (grant network access)
+- Authorized peers can be assigned to **flow groups** (like ZeroTier's flow rules)
+- De-authorization immediately drops all connections
+
+This maps directly to trust level promotion: Level 0 (discovered) → admin authorizes → Level 1+ (seen/vouched).
+
+---
+
+## 14. File Sharing & Storage — Syncthing / IPFS / qBittorrent / OnionShare Inspired
+
+### 14.1 Sync Status Three-Metric Model (Syncthing)
+
+For distributed files, show three numbers per shared folder:
+- **Global**: total files/bytes across all peers (the "truth")
+- **Local**: what this device has (your copy)
+- **Out of Sync**: the delta (what needs to be fetched/sent)
+
+```
+┌─────────────────────────────────────┐
+│ 📁 Project Files                    │
+│ Global: 142 files, 2.3 GB          │
+│ Local:  138 files, 2.1 GB          │
+│ ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 97% synced    │
+│ Syncing... 4 files remaining        │
+└─────────────────────────────────────┘
+```
+
+**Why:** Syncthing's Global/Local/Delta model is the clearest way to communicate distributed file state. Users immediately understand what they have vs what exists.
+
+### 14.2 Piece Map (qBittorrent)
+
+For large file transfers, show a visual piece map:
+- Horizontal bar divided into segments
+- Green = downloaded, gray = missing, blue = in progress
+- Hover/tap a segment to see which peer is providing it
+
+This is particularly relevant for mesh file sharing where chunks may come from different peers.
+
+### 14.3 Peer Contribution per Transfer (qBittorrent Peer List)
+
+Per active transfer, show which peers are contributing:
+```
+Peers for "report.pdf":
+  Alice  ████████░░  80%  ↓ 45 KB/s  (direct)
+  Bob    ██░░░░░░░░  20%  ↓ 12 KB/s  (relay)
+```
+
+### 14.4 Share Management (Nextcloud + OnionShare)
+
+For publishing files to the mesh:
+- **Share link generation**: create a link with permissions (view/download/upload)
+- **Expiry**: set an auto-expire time
+- **Password**: optional passphrase protection
+- **Access log**: who accessed the share, when
+
+OnionShare's pattern of **ephemeral one-time addresses** is perfect for sensitive shares — the address disappears after the first download.
+
+### 14.5 Pending Device/Share Notifications (Syncthing)
+
+When a peer offers to share a file or folder:
+- A notification card appears in the Files section
+- Shows: peer name, file/folder name, size
+- Actions: **Accept**, **Ignore**, **Block**
+- Ignored offers don't reappear; blocked peers can't send new offers
+
+### 14.6 Bandwidth Throttling (Syncthing + qBittorrent)
+
+Settings → Network → Bandwidth:
+- Incoming rate limit (KB/s slider)
+- Outgoing rate limit (KB/s slider)
+- "Limit on metered connections" toggle (auto-detect Wi-Fi vs cellular)
+- Per-transport limits (e.g., limit Tor to 50 KB/s, no limit on clearnet)
+
+---
+
 ## Appendix: Research Sources
 
 - **Signal:** Conversation list, message bubbles, reactions, voice messages, read receipts, disappearing messages, safety numbers
@@ -517,3 +775,19 @@ Garden channels should support offline read/write. Messages composed offline are
 - **Element (Matrix):** Spaces, room directory, encryption verification
 - **Briar:** Transport status indicators, QR pairing, offline messaging UX
 - **Meshtastic:** Mesh topology visualization, radio configuration UX
+- **NetBox:** Path tracing, tag system, role-based coloring, IPAM sunburst
+- **LibreNMS:** Availability tile grid, link utilization color gradients, custom network maps
+- **Grafana:** Stat panels, node graph with arc segments, state timeline, variable dropdowns
+- **Prometheus/AlertManager:** Three-state alerts, grouping, silencing, inhibition
+- **Cockpit:** Stacked area graphs, per-interface cards, zone-based firewall
+- **pfSense/OPNsense:** Drag-to-reorder rules, zone matrix, live rule matching
+- **Unifi:** Auto-layout topology, device adoption flow, signal strength bars
+- **cjdns/Yggdrasil:** DHT routing table display, spanning tree visualization
+- **I2P:** Tunnel management, peer profiles (speed/capacity/integration), NetDB explorer
+- **Tor/Nyx:** Circuit visualization, bandwidth graphs, relay detail
+- **ZeroTier:** Member authorization toggle, flow rules editor
+- **Syncthing:** Global/Local/Delta sync model, pending device notifications, folder types
+- **IPFS:** Content-addressed browsing, pin management
+- **qBittorrent:** Piece map, per-peer contribution, bandwidth scheduling
+- **OnionShare:** Ephemeral one-time shares, receive mode
+- **Nextcloud:** Share management with expiry/password/access log
