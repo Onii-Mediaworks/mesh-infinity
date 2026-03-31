@@ -247,7 +247,7 @@
   - [22.3 Navigation Shell](#223-navigation-shell)
   - [22.4 Global Widgets](#224-global-widgets)
   - [22.5 Chat Section](#225-chat-section)
-  - [22.6 Communities Section](#226-communities-section)
+  - [22.6 Garden Section](#226-garden-section)
   - [22.7 Files Section](#227-files-section)
   - [22.8 Contacts Section](#228-contacts-section)
   - [22.9 Network Section](#229-network-section)
@@ -357,7 +357,7 @@ This is not optional and it is not a bug. It is the mechanism by which the netwo
 
 Mesh Infinity starts as a chat app. Additional capabilities can be enabled as needed:
 
-- **Social** (always on): Chat, communities, contacts, and settings. This is the full experience for most users.
+- **Social** (always on): Chat, Garden, contacts, and settings. This is the full experience for most users.
 - **File Sharing** (opt-in): Send files to contacts and publish files to the distributed storage network.
 - **Network Controls** (opt-in): Exit nodes, VPN mode, and advanced transport configuration.
 
@@ -14193,7 +14193,7 @@ A docked phone (Android DeX, Samsung DeX, iPad external display) reports a large
 ```dart
 enum AppSection {
   chat,
-  communities,
+  garden,
   files,
   contacts,
   network,
@@ -14303,11 +14303,11 @@ Widget _detailPaneFor(ShellState shell, BuildContext context) {
     AppSection.chat => shell.selectedRoomId != null
         ? ThreadScreen(roomId: shell.selectedRoomId!)
         : const _EmptyDetail(icon: Icons.chat_bubble_outline, label: 'Select a conversation'),
-    AppSection.communities => shell.selectedChannelId != null
+    AppSection.garden => shell.selectedChannelId != null
         ? ChannelScreen(channelId: shell.selectedChannelId!)
         : shell.selectedCommunityId != null
             ? CommunityOverviewScreen(communityId: shell.selectedCommunityId!)
-            : const _EmptyDetail(icon: Icons.groups_outlined, label: 'Select a community'),
+            : const _EmptyDetail(icon: Icons.groups_outlined, label: 'Select a garden'),
     AppSection.contacts => shell.selectedPeerId != null
         ? ContactDetailScreen(peerId: shell.selectedPeerId!)
         : const _EmptyDetail(icon: Icons.people_outline, label: 'Select a contact'),
@@ -16100,11 +16100,11 @@ EmptyState(
 
 ---
 
-### 22.6 Communities Section
+### 22.6 Garden Section
 
-#### 22.6.1 CommunityListScreen
+#### 22.6.1 GardenListScreen
 
-**File**: `features/communities/screens/community_list_screen.dart`
+**File**: `features/garden/screens/garden_list_screen.dart`
 
 **AppBar:**
 ```
@@ -16112,7 +16112,7 @@ AppBar(
   leading: [mask avatar — same as Chat],
   title: Text('Garden'),
   actions: [
-    IconButton(icon: Icon(Icons.search), tooltip: 'Search communities', onPressed: _search),
+    IconButton(icon: Icon(Icons.search), tooltip: 'Search gardens', onPressed: _search),
     IconButton(icon: Icon(Icons.add_outlined), tooltip: 'Join or create', onPressed: _openJoinCreate),
     SizedBox(width: 4),
   ],
@@ -16130,7 +16130,7 @@ Center(
   child: Column(mainAxisSize: MainAxisSize.min, children: [
     Icon(Icons.groups_outlined, size: 64, color: colorScheme.outline),
     SizedBox(height: 16),
-    Text('No communities yet', style: textTheme.titleMedium),
+    Text('No gardens yet', style: textTheme.titleMedium),
     SizedBox(height: 8),
     Text('Join or create one to get started.',
       style: textTheme.bodyMedium.copyWith(color: colorScheme.onSurfaceVariant),
@@ -16148,16 +16148,16 @@ Center(
 **Body - populated:**
 ```
 RefreshIndicator(
-  onRefresh: communities.load,
+  onRefresh: gardens.load,
   child: ListView.builder(
     padding: EdgeInsets.symmetric(vertical: 4),
-    itemCount: communities.list.length,
-    itemBuilder: (ctx, i) => _CommunityTile(community: communities.list[i]),
+    itemCount: gardens.list.length,
+    itemBuilder: (ctx, i) => _GardenTile(garden: gardens.list[i]),
   ),
 )
 ```
 
-**_CommunityTile:**
+**_GardenTile:**
 ```
 ListTile(
   contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 6),

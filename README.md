@@ -87,6 +87,28 @@ FFI bridge: `frontend/lib/backend/backend_bridge.dart` ↔ `backend/ffi/lib.rs`
 
 ## Contributing
 
+### Development stages
+
+Mesh Infinity uses staged delivery rules for implementation maturity and review:
+
+| Stage | Meaning |
+|---|---|
+| `0.0`–`0.4.x` | Pre-0.5 exploratory development |
+| `0.5.0` | Feature-complete **untrusted prototype** |
+| `0.5.0`–`0.9.x` | Human review and rewrite phase toward release |
+| `1.0.0` | Full release |
+| `>1.0.0` | Post-release maintenance and feature development |
+
+### AI code policy by stage
+
+- Up to `0.5.0`, AI-generated code is permitted.
+- From `0.5.0` to `1.0.0`, AI-generated code is not permitted as authored implementation. This stage is for human review, human rewrite, and hardening of the feature-complete prototype.
+- After `1.0.0`, AI assistance is permitted again as an assistive tool, but every code change must be owned by the human submitter and reviewed by both:
+  - the human submitter
+  - the human approver who accepts the change
+
+These contribution rules are project policy. `SPEC.md` remains the technical source of truth.
+
 ### Adding a feature
 
 1. Implement in `backend/{module}/`

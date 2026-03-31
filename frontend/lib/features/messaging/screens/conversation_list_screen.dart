@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/widgets/empty_state.dart';
 import '../messaging_state.dart';
 import '../../../shell/shell_state.dart';
 import '../widgets/thread_list_tile.dart';
-import 'create_group_screen.dart';
 import 'create_room_screen.dart';
 import 'thread_screen.dart';
 import 'search_screen.dart';
@@ -17,10 +17,11 @@ class ConversationListScreen extends StatelessWidget {
     final messaging = context.watch<MessagingState>();
     final shell = context.watch<ShellState>();
     final isWide = MediaQuery.sizeOf(context).width >= 1200;
+    final directRooms = messaging.rooms.where((room) => !room.isGroup).toList();
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Conversations'),
+        title: const Text('Chat'),
         actions: [
           IconButton(
             icon: const Icon(Icons.search_outlined),
@@ -28,19 +29,12 @@ class ConversationListScreen extends StatelessWidget {
             onPressed: () async {
               final roomId = await Navigator.push<String>(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => const MessageSearchScreen(),
-                ),
+                MaterialPageRoute(builder: (_) => const MessageSearchScreen()),
               );
               if (roomId != null && context.mounted) {
                 _openRoom(context, roomId, false);
               }
             },
-          ),
-          IconButton(
-            icon: const Icon(Icons.group_add_outlined),
-            tooltip: 'New group',
-            onPressed: () => _openCreateGroup(context),
           ),
           IconButton(
             icon: const Icon(Icons.edit_outlined),
@@ -51,12 +45,21 @@ class ConversationListScreen extends StatelessWidget {
       ),
       body: RefreshIndicator(
         onRefresh: messaging.loadRooms,
-        child: messaging.rooms.isEmpty
-            ? _EmptyState(onCreateTap: () => _openCreateRoom(context))
+        child: directRooms.isEmpty
+            ? EmptyState(
+                icon: Icons.chat_bubble_outline,
+                title: 'No conversations yet',
+                body: 'Add a contact, then start chatting.',
+                action: FilledButton.icon(
+                  onPressed: () => shell.selectSection(AppSection.contacts),
+                  icon: const Icon(Icons.person_add_outlined),
+                  label: const Text('Add a contact'),
+                ),
+              )
             : ListView.builder(
-                itemCount: messaging.rooms.length,
+                itemCount: directRooms.length,
                 itemBuilder: (context, i) {
-                  final room = messaging.rooms[i];
+                  final room = directRooms[i];
                   return ThreadListTile(
                     room: room,
                     selected: isWide && shell.selectedRoomId == room.id,
@@ -72,16 +75,6 @@ class ConversationListScreen extends StatelessWidget {
         child: const Icon(Icons.add),
       ),
     );
-  }
-
-  Future<void> _openCreateGroup(BuildContext context) async {
-    final roomId = await Navigator.push<String>(
-      context,
-      MaterialPageRoute(builder: (_) => const CreateGroupScreen()),
-    );
-    if (roomId != null && context.mounted) {
-      _openRoom(context, roomId, MediaQuery.sizeOf(context).width >= 1200);
-    }
   }
 
   Future<void> _openCreateRoom(BuildContext context) async {
@@ -103,32 +96,5 @@ class ConversationListScreen extends StatelessWidget {
         MaterialPageRoute(builder: (_) => ThreadScreen(roomId: roomId)),
       );
     }
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.onCreateTap});
-
-  final VoidCallback onCreateTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.chat_bubble_outline, size: 64, color: cs.outline),
-          const SizedBox(height: 16),
-          Text('No conversations yet', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          TextButton.icon(
-            onPressed: onCreateTap,
-            icon: const Icon(Icons.add),
-            label: const Text('Create one'),
-          ),
-        ],
-      ),
-    );
   }
 }

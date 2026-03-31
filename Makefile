@@ -254,7 +254,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  --exclude=ios/Podfile \
 	  "$(FRONTEND_DIR)/" "$$src_dir/"; \
 	rsync -a "$(ROOT_DIR)/assets/" "$(BUILD_DIR)/intermediates/ios/$$profile/assets/"; \
-	mkdir -p "$$src_dir/ios"; \
+	mkdir -p "$$src_dir/ios" "$$src_dir/Flutter"; \
 	\
 	cp "$$rust_src" "$$rust_out/libmesh_infinity.a"; \
 	\
@@ -279,10 +279,9 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  "FLUTTER_BUILD_NAME=$(APP_VERSION)" \
 	  "FLUTTER_BUILD_NUMBER=$(APP_BUILD_NUMBER)" \
 	  > "$(BUILD_DIR)/intermediates/apple/flutter/Flutter-Generated.xcconfig"; \
-	( cd "$$src_dir/ios" && \
-	  FLUTTER_ROOT="$$flutter_root" \
-	  FLUTTER_APPLICATION_PATH="$$src_dir" \
-	  pod install ); \
+	export FLUTTER_ROOT="$$flutter_root"; \
+	export FLUTTER_APPLICATION_PATH="$$src_dir"; \
+	( cd "$$src_dir/ios" && pod install ); \
 	\
 	xcodebuild \
 	  -workspace "$$src_dir/ios/Runner.xcworkspace" \

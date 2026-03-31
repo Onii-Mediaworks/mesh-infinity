@@ -71,11 +71,12 @@ import 'package:flutter/foundation.dart';
 /// Declaration order therefore matters: it must match the visual order of
 /// tabs/rail items in the navigation widgets.
 enum AppSection {
-  chat,      // Encrypted group chats / direct messages
-  files,     // Peer-to-peer file transfers
-  peers,     // Known contacts and trust management
-  network,   // Transport settings, mDNS discovery, stats
-  settings,  // Identity, appearance, and app-level settings
+  chat, // Encrypted group chats / direct messages
+  garden, // Group/community conversations
+  files, // Peer-to-peer file transfers
+  contacts, // Known contacts and trust management
+  network, // Transport settings, mDNS discovery, stats
+  settings, // Identity, appearance, and app-level settings
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,9 @@ class ShellState extends ChangeNotifier {
   /// variable (or use the `!` operator to assert it is non-null).
   String? _selectedRoomId;
 
+  /// The ID of the selected Garden/community room.
+  String? _selectedCommunityId;
+
   /// The ID of the peer the user has tapped in the Peers list.
   /// Null means no peer detail panel is open.
   String? _selectedPeerId;
@@ -166,6 +170,9 @@ class ShellState extends ChangeNotifier {
   /// The room that is open in the detail pane (desktop) or thread screen
   /// (mobile/tablet).  Null when no conversation is open.
   String? get selectedRoomId => _selectedRoomId;
+
+  /// The selected Garden/community room ID, or null.
+  String? get selectedCommunityId => _selectedCommunityId;
 
   /// The peer whose detail card is open.  Null when none is selected.
   String? get selectedPeerId => _selectedPeerId;
@@ -218,6 +225,13 @@ class ShellState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Mark a Garden/community room as open. Pass null to deselect.
+  void selectCommunity(String? communityId) {
+    if (_selectedCommunityId == communityId) return;
+    _selectedCommunityId = communityId;
+    notifyListeners();
+  }
+
   /// Mark a peer as selected so their detail card appears.
   /// Pass null to deselect.
   void selectPeer(String? peerId) {
@@ -248,6 +262,7 @@ class ShellState extends ChangeNotifier {
   ///     of trying to render a detail view with a missing ID.
   void clearSelections() {
     _selectedRoomId = null;
+    _selectedCommunityId = null;
     _selectedPeerId = null;
     _selectedTransferId = null;
     notifyListeners(); // Rebuild the detail pane — it should show the placeholder.
