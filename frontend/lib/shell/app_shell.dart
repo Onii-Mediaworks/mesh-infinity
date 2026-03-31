@@ -80,6 +80,7 @@ import 'shell_state.dart';
 
 // Feature screens — each of these is the "list" view for its section.
 import '../features/messaging/screens/conversation_list_screen.dart';
+import '../features/messaging/screens/garden_screen.dart';
 import '../features/messaging/screens/thread_screen.dart';
 import '../features/files/screens/transfers_screen.dart';
 import '../features/peers/screens/peer_list_screen.dart';
@@ -224,7 +225,10 @@ class _DesktopShell extends StatelessWidget {
           // Pane 1 — navigation rail (icons + labels down the left edge).
           // We pass shell.selectSection as the callback so tapping a rail
           // item updates ShellState, which in turn rebuilds this widget.
-          _SectionRail(selected: shell.activeSection, onSelect: shell.selectSection),
+          _SectionRail(
+            selected: shell.activeSection,
+            onSelect: shell.selectSection,
+          ),
 
           // VerticalDivider draws a 1-pixel hairline between panes so they
           // look visually separated.  width: 1 means the divider takes up
@@ -284,7 +288,10 @@ class _TabletShell extends StatelessWidget {
           // Same navigation rail as desktop — icons on the left edge.
           // The rail is identical regardless of whether we're in tablet or
           // desktop mode; only the right-side content differs.
-          _SectionRail(selected: shell.activeSection, onSelect: shell.selectSection),
+          _SectionRail(
+            selected: shell.activeSection,
+            onSelect: shell.selectSection,
+          ),
 
           const VerticalDivider(width: 1),
 
@@ -346,8 +353,8 @@ class _MobileShell extends StatelessWidget {
         // enum values in declaration order.
         //
         // indexOf() returns the position of an element in a list.  Because
-        // AppSection.values returns [chat, files, peers, network, settings]
-        // in that order, indexOf(AppSection.peers) returns 2.
+        // AppSection.values returns [chat, garden, files, contacts, network, settings]
+        // in that order, indexOf(AppSection.contacts) returns 3.
         selectedIndex: AppSection.values.indexOf(shell.activeSection),
 
         // When the user taps a tab, convert the index back to an enum value
@@ -368,11 +375,30 @@ class _MobileShell extends StatelessWidget {
           // Material 3 design guideline that makes the selected tab visually
           // stand out without relying on colour alone (important for
           // accessibility and colour-blind users).
-          NavigationDestination(icon: Icon(Icons.chat_bubble_outline), label: 'Chat'),
-          NavigationDestination(icon: Icon(Icons.folder_outlined),     label: 'Files'),
-          NavigationDestination(icon: Icon(Icons.people_outline),      label: 'Peers'),
-          NavigationDestination(icon: Icon(Icons.router_outlined),     label: 'Network'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined),   label: 'Settings'),
+          NavigationDestination(
+            icon: Icon(Icons.chat_bubble_outline),
+            label: 'Chat',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.forum_outlined),
+            label: 'Garden',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.folder_outlined),
+            label: 'Files',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.people_outline),
+            label: 'Contacts',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.router_outlined),
+            label: 'Network',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            label: 'Settings',
+          ),
         ],
       ),
     );
@@ -424,6 +450,11 @@ class _SectionRail extends StatelessWidget {
           label: Text('Chat'),
         ),
         NavigationRailDestination(
+          icon: Icon(Icons.forum_outlined),
+          selectedIcon: Icon(Icons.forum),
+          label: Text('Garden'),
+        ),
+        NavigationRailDestination(
           icon: Icon(Icons.folder_outlined),
           selectedIcon: Icon(Icons.folder),
           label: Text('Files'),
@@ -431,7 +462,7 @@ class _SectionRail extends StatelessWidget {
         NavigationRailDestination(
           icon: Icon(Icons.people_outline),
           selectedIcon: Icon(Icons.people),
-          label: Text('Peers'),
+          label: Text('Contacts'),
         ),
         NavigationRailDestination(
           icon: Icon(Icons.router_outlined),
@@ -485,10 +516,11 @@ Widget _listPaneFor(AppSection section, BuildContext context) {
   // performance optimisation for widgets that never need constructor arguments
   // to vary.
   return switch (section) {
-    AppSection.chat     => const ConversationListScreen(),
-    AppSection.files    => const TransfersScreen(),
-    AppSection.peers    => const PeerListScreen(),
-    AppSection.network  => const NetworkScreen(),
+    AppSection.chat => const ConversationListScreen(),
+    AppSection.garden => const GardenScreen(),
+    AppSection.files => const TransfersScreen(),
+    AppSection.contacts => const PeerListScreen(),
+    AppSection.network => const NetworkScreen(),
     AppSection.settings => const SettingsScreen(),
   };
 }
@@ -512,22 +544,44 @@ Widget _detailPaneFor(ShellState shell, BuildContext context) {
     // null-assertion operator: it tells Dart "I know this is non-null; treat
     // it as String (not String?)."  It is safe here because we just checked
     // `!= null` on the line above.
-    AppSection.chat => shell.selectedRoomId != null
-        ? ThreadScreen(roomId: shell.selectedRoomId!)
-        : const _EmptyDetail(icon: Icons.chat_bubble_outline, label: 'Select a conversation'),
+    AppSection.chat =>
+      shell.selectedRoomId != null
+          ? ThreadScreen(roomId: shell.selectedRoomId!)
+          : const _EmptyDetail(
+              icon: Icons.chat_bubble_outline,
+              label: 'Select a chat',
+            ),
+
+    AppSection.garden =>
+      shell.selectedCommunityId != null
+          ? ThreadScreen(roomId: shell.selectedCommunityId!)
+          : const _EmptyDetail(
+              icon: Icons.forum_outlined,
+              label: 'Select a garden',
+            ),
 
     // Peers section: show the peer detail card, or a placeholder.
-    AppSection.peers => shell.selectedPeerId != null
-        ? PeerDetailScreen(peerId: shell.selectedPeerId!)
-        : const _EmptyDetail(icon: Icons.people_outline, label: 'Select a peer'),
+    AppSection.contacts =>
+      shell.selectedPeerId != null
+          ? PeerDetailScreen(peerId: shell.selectedPeerId!)
+          : const _EmptyDetail(
+              icon: Icons.people_outline,
+              label: 'Select a contact',
+            ),
 
     // Files, Network, Settings show contextual help in the detail pane.
     AppSection.files => const _EmptyDetail(
-        icon: Icons.folder_outlined, label: 'File transfers and sharing'),
+      icon: Icons.folder_outlined,
+      label: 'File transfers and sharing',
+    ),
     AppSection.network => const _EmptyDetail(
-        icon: Icons.hub_outlined, label: 'Transport and mesh configuration'),
+      icon: Icons.hub_outlined,
+      label: 'Transport and mesh configuration',
+    ),
     AppSection.settings => const _EmptyDetail(
-        icon: Icons.settings_outlined, label: 'Identity, services, and preferences'),
+      icon: Icons.settings_outlined,
+      label: 'Identity, services, and preferences',
+    ),
   };
 }
 

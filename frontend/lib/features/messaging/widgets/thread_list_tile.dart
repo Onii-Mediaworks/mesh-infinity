@@ -19,17 +19,30 @@ class ThreadListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final leadingIcon = room.isGroup
+        ? Icons.forum_outlined
+        : Icons.person_outline;
+    final fallbackLabel = room.isGroup ? 'Garden' : 'Chat';
     return ListTile(
       selected: selected,
       selectedTileColor: cs.primaryContainer.withValues(alpha: 0.3),
       leading: CircleAvatar(
         backgroundColor: cs.primaryContainer,
-        child: Text(
-          room.name.isNotEmpty ? room.name[0].toUpperCase() : '?',
-          style: TextStyle(color: cs.onPrimaryContainer, fontWeight: FontWeight.bold),
-        ),
+        child: room.name.isNotEmpty
+            ? Text(
+                room.name[0].toUpperCase(),
+                style: TextStyle(
+                  color: cs.onPrimaryContainer,
+                  fontWeight: FontWeight.bold,
+                ),
+              )
+            : Icon(leadingIcon, color: cs.onPrimaryContainer),
       ),
-      title: Text(room.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Text(
+        room.name.isNotEmpty ? room.name : fallbackLabel,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       subtitle: room.lastMessage.isNotEmpty
           ? Text(
               room.lastMessage,

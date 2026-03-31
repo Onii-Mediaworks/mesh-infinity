@@ -603,6 +603,13 @@ tun-tap = "0.1"
 # wintun provides the equivalent Windows TUN driver (same library used by WireGuard).
 wintun = "0.5"
 
+# windows-sys — low-level Win32 bindings used by USB serial enumeration.
+#
+# usb_serial.rs probes COM ports via CreateFileW/CloseHandle and related
+# constants. Those symbols live in windows-sys, so the Windows build needs the
+# crate linked explicitly for target-specific compilation.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 # =============================================================================
 # [dev-dependencies] — dependencies used ONLY during testing
 # =============================================================================

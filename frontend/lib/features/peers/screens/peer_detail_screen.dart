@@ -2,11 +2,46 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../peers_state.dart';
 import '../../../backend/models/peer_models.dart';
-import '../../../features/settings/settings_state.dart';
-import '../../../features/calls/calls_state.dart';
+import '../../../shell/shell_state.dart';
+import '../../calls/calls_state.dart';
+import '../../messaging/messaging_state.dart';
+import '../../messaging/screens/thread_screen.dart';
+import '../../settings/settings_state.dart';
+import '../peers_state.dart';
 import '../widgets/trust_badge.dart';
+
+Future<void> _openConversation(BuildContext context, PeerModel peer) async {
+  final messaging = context.read<MessagingState>();
+  final shell = context.read<ShellState>();
+  final messenger = ScaffoldMessenger.of(context);
+  final navigator = Navigator.of(context);
+  final isWide = MediaQuery.sizeOf(context).width >= 1200;
+  final roomName = peer.name.isNotEmpty ? peer.name : peer.id.substring(0, 12);
+  final roomId = await messaging.createRoom(roomName);
+  if (roomId == null || !navigator.mounted) {
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Failed to open conversation')),
+    );
+    return;
+  }
+
+  await messaging.selectRoom(roomId);
+  if (!navigator.mounted) return;
+  shell.selectSection(AppSection.chat);
+  shell.selectRoom(roomId);
+
+  if (isWide) {
+    messenger.showSnackBar(
+      SnackBar(content: Text('Opened chat with $roomName')),
+    );
+    return;
+  }
+
+  navigator.push(
+    MaterialPageRoute(builder: (_) => ThreadScreen(roomId: roomId)),
+  );
+}
 
 class PeerDetailScreen extends StatelessWidget {
   const PeerDetailScreen({super.key, required this.peerId});
@@ -21,11 +56,13 @@ class PeerDetailScreen extends StatelessWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(peer.name.isNotEmpty ? peer.name : 'Peer')),
+      appBar: AppBar(title: Text(peer.name.isNotEmpty ? peer.name : 'Contact')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           _HeaderCard(peer: peer),
+          const SizedBox(height: 12),
+          _QuickActions(peer: peer),
           const SizedBox(height: 12),
           _InfoCard(peer: peer),
           const SizedBox(height: 12),
@@ -47,16 +84,16 @@ class PeerDetailScreen extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          // Actions
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Actions',
-                      style: Theme.of(context).textTheme.titleMedium),
+                  Text(
+                    'More Actions',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                   const SizedBox(height: 8),
                   ListTile(
                     leading: const Icon(Icons.call_outlined),
@@ -70,21 +107,17 @@ class PeerDetailScreen extends StatelessWidget {
                     leading: const Icon(Icons.videocam_outlined),
                     title: const Text('Video Call'),
                     onTap: () {
-                      context.read<CallsState>().startCall(peer.id, video: true);
+                      context.read<CallsState>().startCall(
+                        peer.id,
+                        video: true,
+                      );
                       Navigator.of(context).pop();
                     },
                   ),
                   ListTile(
                     leading: const Icon(Icons.chat_outlined),
-                    title: const Text('Start Conversation'),
-                    onTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                            content: Text(
-                                'Create a room for ${peer.name.isNotEmpty ? peer.name : "this peer"} from the Chat tab')),
-                      );
-                      Navigator.of(context).pop();
-                    },
+                    title: const Text('Open Chat'),
+                    onTap: () => _openConversation(context, peer),
                   ),
                   ListTile(
                     leading: const Icon(Icons.send_outlined),
@@ -93,17 +126,22 @@ class PeerDetailScreen extends StatelessWidget {
                       Navigator.of(context).pop();
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                            content:
-                                Text('File transfer: select a file to send')),
+                          content: Text('File transfer: select a file to send'),
+                        ),
                       );
                     },
                   ),
                   ListTile(
-                    leading: Icon(Icons.block_outlined,
-                        color: Theme.of(context).colorScheme.error),
-                    title: Text('Remove Peer',
-                        style: TextStyle(
-                            color: Theme.of(context).colorScheme.error)),
+                    leading: Icon(
+                      Icons.block_outlined,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                    title: Text(
+                      'Remove Contact',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
                     onTap: () => _confirmRemovePeer(context, peer),
                   ),
                 ],
@@ -119,11 +157,11 @@ class PeerDetailScreen extends StatelessWidget {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Remove Peer?'),
+        title: const Text('Remove Contact?'),
         content: Text(
           'This will revoke trust and remove '
-          '${peer.name.isNotEmpty ? peer.name : "this peer"} '
-          'from your peer list.',
+          '${peer.name.isNotEmpty ? peer.name : "this contact"} '
+          'from your contact list.',
         ),
         actions: [
           TextButton(
@@ -156,6 +194,79 @@ class PeerDetailScreen extends StatelessWidget {
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => _TrustSheet(peer: peer),
+    );
+  }
+}
+
+class _QuickActions extends StatelessWidget {
+  const _QuickActions({required this.peer});
+
+  final PeerModel peer;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: _ActionButton(
+            icon: Icons.chat_bubble_outline,
+            label: 'Chat',
+            onTap: () => _openConversation(context, peer),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _ActionButton(
+            icon: Icons.folder_outlined,
+            label: 'Files',
+            onTap: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Open Files to send something')),
+              );
+            },
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _ActionButton(
+            icon: Icons.call_outlined,
+            label: 'Call',
+            onTap: () => context.read<CallsState>().startCall(peer.id),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ActionButton extends StatelessWidget {
+  const _ActionButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton(
+      onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        minimumSize: const Size(double.infinity, 48),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 22),
+          const SizedBox(height: 4),
+          Text(label, style: Theme.of(context).textTheme.labelSmall),
+        ],
+      ),
     );
   }
 }
@@ -199,7 +310,10 @@ class _HeaderCard extends StatelessWidget {
                 Container(
                   width: 8,
                   height: 8,
-                  decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    shape: BoxShape.circle,
+                  ),
                 ),
                 const SizedBox(width: 6),
                 Text(peer.status, style: Theme.of(context).textTheme.bodySmall),
@@ -232,7 +346,10 @@ class _InfoCard extends StatelessWidget {
                 Expanded(
                   child: SelectableText(
                     peer.id,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
                   ),
                 ),
                 IconButton(
