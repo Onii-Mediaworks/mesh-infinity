@@ -20,6 +20,14 @@ require File.expand_path(
   ENV.fetch('FLUTTER_ROOT') { raise 'FLUTTER_ROOT must be set before running pod install' }
 )
 
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+flutter_ios_podfile_setup
+
 # The shared xcodeproj contains both a macOS target (Runner) and the iOS target
 # (RunnerIOS).  CocoaPods 1.16.x errors if it sees a target with no platform
 # declaration in the Podfile, so we declare Runner explicitly as macOS with no pods.
@@ -28,15 +36,20 @@ target 'Runner' do
 end
 
 target 'RunnerIOS' do
-  use_frameworks!
-  use_modular_headers!
+  use_frameworks! :linkage => :static
+
+  flutter_app_root = ENV['FLUTTER_APPLICATION_PATH']
+  flutter_ios_application_path =
+    if flutter_app_root && File.exist?(File.join(flutter_app_root, '.flutter-plugins-dependencies'))
+      File.join(flutter_app_root, 'ios')
+    else
+      File.dirname(__FILE__)
+    end
 
   # Install all Flutter plugin pods (reads .flutter-plugins-dependencies from
-  # FLUTTER_APPLICATION_PATH, which is the src directory written by the Makefile).
-  flutter_install_all_ios_pods(
-    ENV['FLUTTER_APPLICATION_PATH'] ||
-    File.expand_path('../..', __FILE__)
-  )
+  # the Flutter app root. Podhelper expects the iOS directory here so it can
+  # walk back to ../.flutter-plugins-dependencies and discover plugin pods.
+  flutter_install_all_ios_pods(flutter_ios_application_path)
 end
 
 post_install do |installer|
