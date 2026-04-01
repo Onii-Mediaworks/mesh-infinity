@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
 import '../../backend/backend_bridge.dart';
 import '../../backend/event_bus.dart';
@@ -20,10 +20,18 @@ class SettingsState extends ChangeNotifier {
   SettingsModel? _settings;
   LocalIdentitySummary? _identity;
   List<ServiceModel> _services = const [];
+  ThemeMode _themeMode = ThemeMode.system;
 
   SettingsModel? get settings => _settings;
   LocalIdentitySummary? get identity => _identity;
   List<ServiceModel> get services => _services;
+  ThemeMode get themeMode => _themeMode;
+
+  void setThemeMode(ThemeMode mode) {
+    if (_themeMode == mode) return;
+    _themeMode = mode;
+    notifyListeners();
+  }
 
   Future<void> loadAll() async {
     _settings = _bridge.fetchSettings();

@@ -3668,6 +3668,201 @@ pub unsafe extern "C" fn mi_routing_lookup(
 }
 
 // ---------------------------------------------------------------------------
+// Garden — posts and discovery (§22.6)
+// ---------------------------------------------------------------------------
+
+/// Return the post feed for a specific garden as a JSON array.
+///
+/// Each element: `{ "id": str, "authorId": str, "authorName": str,
+/// "gardenId": str, "content": str, "timestamp": i64, "reactionCount": u32 }`.
+/// Returns an empty array `[]` until §22.6 Garden post storage is implemented.
+///
+/// # Safety
+/// `ctx` must be non-null. `garden_id` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_garden_posts(
+    ctx: *mut MeshContext,
+    _garden_id: *const c_char,
+) -> *const c_char {
+    if ctx.is_null() { return ptr::null(); }
+    let ctx = unsafe { &*ctx };
+    // TODO(backend/garden): query the Garden post store for this garden_id and
+    // return the posts sorted by timestamp descending.
+    ctx.set_response("[]")
+}
+
+/// Return a list of gardens discoverable on the local mesh as a JSON array.
+///
+/// Each element: `{ "id": str, "name": str, "description": str,
+/// "memberCount": u32, "networkType": str }`.
+/// Returns an empty array `[]` until §22.6 Garden discovery is implemented.
+///
+/// # Safety
+/// `ctx` must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mi_garden_discover(ctx: *mut MeshContext) -> *const c_char {
+    if ctx.is_null() { return ptr::null(); }
+    let ctx = unsafe { &*ctx };
+    // TODO(backend/garden): run mesh-local garden discovery broadcast and
+    // return gardens that have advertised themselves on the local overlay.
+    ctx.set_response("[]")
+}
+
+/// Publish a post to a garden.
+///
+/// `post_json`: `{ "gardenId": str, "content": str }`.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null. `post_json` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_garden_post(
+    ctx: *mut MeshContext,
+    _post_json: *const c_char,
+) -> i32 {
+    if ctx.is_null() { return -1; }
+    // TODO(backend/garden): encrypt and broadcast the post to the garden's
+    // subscriber list via the mesh routing layer.
+    -1
+}
+
+// ---------------------------------------------------------------------------
+// Files — distributed storage (§22.7)
+// ---------------------------------------------------------------------------
+
+/// Return storage usage statistics as JSON.
+///
+/// Shape: `{ "usedBytes": u64, "totalBytes": u64, "publishedFiles": u32 }`.
+/// Returns `{"usedBytes":0,"totalBytes":0,"publishedFiles":0}` until
+/// §22.7 distributed storage is implemented.
+///
+/// # Safety
+/// `ctx` must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mi_storage_stats(ctx: *mut MeshContext) -> *const c_char {
+    if ctx.is_null() { return ptr::null(); }
+    let ctx = unsafe { &*ctx };
+    // TODO(backend/storage): query the local chunk store for used/total bytes
+    // and count of published file manifests.
+    ctx.set_response(r#"{"usedBytes":0,"totalBytes":0,"publishedFiles":0}"#)
+}
+
+/// Return the list of files this node has published to distributed storage as JSON.
+///
+/// Each element: `{ "id": str, "name": str, "sizeBytes": u64,
+/// "mimeType": str, "publishedAt": i64, "downloadCount": u32 }`.
+/// Returns `[]` until §22.7 distributed storage is implemented.
+///
+/// # Safety
+/// `ctx` must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mi_published_files(ctx: *mut MeshContext) -> *const c_char {
+    if ctx.is_null() { return ptr::null(); }
+    let ctx = unsafe { &*ctx };
+    // TODO(backend/storage): enumerate published file manifests from the
+    // local chunk store and return their metadata.
+    ctx.set_response("[]")
+}
+
+/// Publish a local file to distributed storage.
+///
+/// `path` is the absolute path of the file to publish.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null. `path` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_publish_file(
+    ctx: *mut MeshContext,
+    _path: *const c_char,
+) -> i32 {
+    if ctx.is_null() { return -1; }
+    // TODO(backend/storage): chunk the file, encrypt each chunk, build a
+    // manifest, and announce the manifest hash to the mesh DHT.
+    -1
+}
+
+/// Unpublish a previously published file by its manifest ID.
+///
+/// Returns 0 on success, -1 if the ID is not found.
+///
+/// # Safety
+/// `ctx` must be non-null. `file_id` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_unpublish_file(
+    ctx: *mut MeshContext,
+    _file_id: *const c_char,
+) -> i32 {
+    if ctx.is_null() { return -1; }
+    // TODO(backend/storage): remove the manifest from the chunk store and
+    // broadcast a retraction to the mesh DHT.
+    -1
+}
+
+// ---------------------------------------------------------------------------
+// Services — mesh-hosted service discovery and hosting config (§22.54)
+// ---------------------------------------------------------------------------
+
+/// Return services discovered on the local mesh as a JSON array.
+///
+/// Each element: `{ "id": str, "name": str, "type": str, "hostPeerId": str,
+/// "hostName": str, "address": str, "trustRequired": u32 }`.
+/// Returns `[]` until §22.54 mesh service discovery is implemented.
+///
+/// # Safety
+/// `ctx` must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mi_mesh_services_discover(ctx: *mut MeshContext) -> *const c_char {
+    if ctx.is_null() { return ptr::null(); }
+    let ctx = unsafe { &*ctx };
+    // TODO(backend/services): query the service advertisement DHT for services
+    // being hosted by reachable peers and return the result set.
+    ctx.set_response("[]")
+}
+
+/// Return this node's hosting configuration as JSON.
+///
+/// Shape: `{ "remoteDesktop": bool, "remoteShell": bool, "fileAccess": bool,
+/// "apiGateway": bool, "clipboardSync": bool, "screenShare": bool,
+/// "printService": bool }`.
+/// Returns all-false until §22.54 service hosting config is implemented.
+///
+/// # Safety
+/// `ctx` must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mi_hosting_config(ctx: *mut MeshContext) -> *const c_char {
+    if ctx.is_null() { return ptr::null(); }
+    let ctx = unsafe { &*ctx };
+    // TODO(backend/services): read the persisted service hosting flags from
+    // the settings store and return them.
+    ctx.set_response(
+        r#"{"remoteDesktop":false,"remoteShell":false,"fileAccess":false,
+            "apiGateway":false,"clipboardSync":false,"screenShare":false,
+            "printService":false}"#,
+    )
+}
+
+/// Enable or disable a named hosted service.
+///
+/// `service_id` is one of: "remoteDesktop", "remoteShell", "fileAccess",
+/// "apiGateway", "clipboardSync", "screenShare", "printService".
+/// Returns 0 on success, -1 if the service_id is unrecognised.
+///
+/// # Safety
+/// `ctx` must be non-null. `service_id` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_hosting_set(
+    ctx: *mut MeshContext,
+    _service_id: *const c_char,
+    _enabled: i32,
+) -> i32 {
+    if ctx.is_null() { return -1; }
+    // TODO(backend/services): validate service_id, persist the enabled flag,
+    // and start/stop the corresponding service listener.
+    -1
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

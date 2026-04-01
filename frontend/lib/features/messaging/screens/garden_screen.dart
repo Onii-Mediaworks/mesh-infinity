@@ -50,7 +50,7 @@ class GardenScreen extends StatelessWidget {
                   return ThreadListTile(
                     room: community,
                     selected:
-                        isWide && shell.selectedCommunityId == community.id,
+                        isWide && shell.selectedRoomId == community.id,
                     onTap: () => _openCommunity(context, community.id, isWide),
                     onDelete: () => messaging.deleteRoom(community.id),
                   );
@@ -80,7 +80,7 @@ class GardenScreen extends StatelessWidget {
     messaging.selectRoom(roomId);
 
     if (isWide) {
-      context.read<ShellState>().selectCommunity(roomId);
+      context.read<ShellState>().selectRoom(roomId);
     } else {
       Navigator.push(
         context,

@@ -247,11 +247,12 @@
   - [22.3 Navigation Shell](#223-navigation-shell)
   - [22.4 Global Widgets](#224-global-widgets)
   - [22.5 Chat Section](#225-chat-section)
-  - [22.6 Garden Section](#226-garden-section)
-  - [22.7 Files Section](#227-files-section)
-  - [22.8 Contacts Section](#228-contacts-section)
-  - [22.9 Network Section](#229-network-section)
+  - [22.6 Garden Section](#226-garden-section) — sub-pages: Channels, Feed, Explore
+  - [22.7 Files Section](#227-files-section) — sub-pages: Transfers, Shared
+  - [22.8 Contacts Section](#228-contacts-section) — sub-pages: All, Online, Requests
+  - [22.9 Network Section](#229-network-section) — sub-pages: Status, Nodes, Transports
   - [22.10 Settings Section](#2210-settings-section)
+  - [22.11 You Section](#2211-you-section)
 - [Part B — UX](#part-b-ux)
   - [22.21 Foundational Principle](#2221-foundational-principle)
   - [22.22 Plain Language Requirement](#2222-plain-language-requirement)
@@ -282,7 +283,7 @@
   - [22.51 Error States Summary](#2251-error-states-summary)
   - [22.52 Remote Session UI](#2252-remote-session-ui)
   - [22.53 Tier Discovery Screen](#2253-tier-discovery-screen)
-  - [22.54 Services Screen (Tier 4)](#2254-services-screen-tier-4)
+  - [22.54 Services Section](#2254-services-section) — sub-pages: My Services, Browse, Hosting
   - [22.55 Settings Screen Updates](#2255-settings-screen-updates)
 
 ---
@@ -14173,151 +14174,249 @@ UI decisions are **width-only, never platform-based**. Remove all `Platform.isIO
 - Camera/file picker: capability detection
 - APNs: notification tier — not layout
 
-**Breakpoints (unchanged from existing shell):**
+**Breakpoints:**
 
-| Width | Layout | Navigation |
-|-------|---------|------------|
-| < 760px | Mobile | Bottom `NavigationBar` (height: 64) |
-| 760–1199px | Tablet | Left `NavigationRail` (width: 72) |
-| ≥ 1200px | Desktop | Left `NavigationRail` + list pane (300px) + detail pane |
+| Width | Class | Navigation |
+|-------|-------|------------|
+| < 760px | Mobile (`_MobileShell`) | Hamburger → slide-in `NavDrawer` (280px) + contextual `SectionBottomBar` |
+| 760–1199px | Wide / Tablet (`_WideShell`) | Permanent `NavDrawer` (280px) left of content + `SectionBottomBar` |
+| ≥ 1200px | Desktop (`_DesktopShell`) | Permanent `NavDrawer` (280px) + content pane + optional 3rd detail pane for Chat/Contacts |
 
-A docked phone (Android DeX, Samsung DeX, iPad external display) reports a larger window width to `MediaQuery` and automatically receives the desktop layout. No special handling required.
+Constants (do not change):
+```dart
+const double _kPermanentDrawerBreak = 760.0;
+const double _kDesktopBreak = 1200.0;
+const double _kDrawerWidth = 280.0;
+```
+
+A docked phone (Android DeX, Samsung DeX, iPad external display) reports a larger window width to `MediaQuery` and automatically receives the tablet or desktop layout. No special handling required.
 
 **`MediaQuery.sizeOf(context).width`** drives all layout decisions. Never use `MediaQuery.of(context).size.width` (causes unnecessary rebuilds on any MediaQuery change).
 
 
 ### 22.3 Navigation Shell
 
-#### 22.3.1 AppSection Enum Update
+Section switching always happens via `NavDrawer`. Sub-page switching always happens via `SectionBottomBar`. `NavigationBar` and `NavigationRail` are **not used** anywhere in the shell.
+
+#### 22.3.1 AppSection Enum
+
+Eight top-level sections in two logical groups:
 
 ```dart
 enum AppSection {
+  // Social group (shown above divider in drawer)
   chat,
   garden,
   files,
   contacts,
+  services,
+  you,
+  // Operator group (shown below divider in drawer)
   network,
   settings,
 }
 ```
 
-#### 22.3.2 ShellState Update
+#### 22.3.2 Sub-Page Enums and ShellState
+
+Each section has zero or more sub-pages; `SectionBottomBar` is hidden when `subPageCount == 0`.
 
 ```dart
+enum ChatSubPage     { rooms, direct }
+enum GardenSubPage   { channels, feed, explore }
+enum FilesSubPage    { transfers, shared }
+enum ContactsSubPage { all, online, requests }
+enum ServicesSubPage { myServices, browse, hosting }
+enum NetworkSubPage  { status, nodes, transports }
+// You and Settings have no sub-pages.
+
+List<String> subPageLabels(AppSection section) => switch (section) {
+  AppSection.chat      => ['Rooms', 'Direct'],
+  AppSection.garden    => ['Channels', 'Feed', 'Explore'],
+  AppSection.files     => ['Transfers', 'Shared'],
+  AppSection.contacts  => ['All', 'Online', 'Requests'],
+  AppSection.services  => ['My Services', 'Browse', 'Hosting'],
+  AppSection.network   => ['Status', 'Nodes', 'Transports'],
+  AppSection.you       => [],
+  AppSection.settings  => [],
+};
+
 class ShellState extends ChangeNotifier {
   AppSection _activeSection = AppSection.chat;
+  int _activeSubPageIndex = 0;
+  bool _inDetailView = false;
+
   String? _selectedRoomId;
-  String? _selectedCommunityId;
-  String? _selectedChannelId;
   String? _selectedPeerId;
   String? _selectedTransferId;
 
-  // Security state — READ ONLY from Rust via SecurityState provider
-  // ShellState does NOT own security state
+  AppSection get activeSection      => _activeSection;
+  int        get activeSubPageIndex => _activeSubPageIndex;
+  bool       get inDetailView       => _inDetailView;
+  bool       get hasSubPages        => subPageCount(_activeSection) > 0;
 
-  AppSection get activeSection => _activeSection;
-  String? get selectedRoomId => _selectedRoomId;
-  String? get selectedCommunityId => _selectedCommunityId;
-  String? get selectedChannelId => _selectedChannelId;
-  String? get selectedPeerId => _selectedPeerId;
-  String? get selectedTransferId => _selectedTransferId;
+  String? get selectedRoomId      => _selectedRoomId;
+  String? get selectedPeerId      => _selectedPeerId;
+  String? get selectedTransferId  => _selectedTransferId;
 
-  void selectSection(AppSection section) {
-    if (_activeSection == section) return;
-    _activeSection = section;
-    notifyListeners();
-  }
-  void selectRoom(String? id) { ... }
-  void selectCommunity(String? id) { ... }
-  void selectChannel(String? id) { ... }
-  void selectPeer(String? id) { ... }
+  int subPageCount(AppSection section) => switch (section) { ... };
+
+  void selectSection(AppSection section) { ... }  // resets sub-page to 0, clears inDetailView
+  void selectSubPage(int index) { ... }            // clears inDetailView
+  void enterDetailView() { ... }
+  void exitDetailView() { ... }
+  void selectRoom(String? id) { ... }    // sets _inDetailView = (id != null)
+  void selectPeer(String? id) { ... }    // sets _inDetailView = (id != null)
   void selectTransfer(String? id) { ... }
   void clearSelections() { ... }
 }
 ```
 
-#### 22.3.3 Navigation Destinations (all layouts)
+#### 22.3.3 NavDrawer — Drawer Rows and Grouping
 
-Order and properties — do not change order:
+`NavDrawer` (`shell/nav_drawer.dart`) is used in all three shell variants. On mobile it appears as a slide-in overlay; on tablet/desktop it is wrapped in `_PermanentDrawerFrame` and rendered inline in a `Row`.
 
-```dart
-const _destinations = [
-  // index 0
-  NavigationDestination(
-    icon: Icon(Icons.chat_bubble_outline),
-    selectedIcon: Icon(Icons.chat_bubble),
-    label: 'Chat',
-  ),
-  // index 1
-  NavigationDestination(
-    icon: Icon(Icons.groups_outlined),
-    selectedIcon: Icon(Icons.groups),
-    label: 'Garden',
-  ),
-  // index 2
-  NavigationDestination(
-    icon: Icon(Icons.folder_outlined),
-    selectedIcon: Icon(Icons.folder),
-    label: 'Files',
-  ),
-  // index 3
-  NavigationDestination(
-    icon: Icon(Icons.people_outline),
-    selectedIcon: Icon(Icons.people),
-    label: 'Contacts',
-  ),
-  // index 4
-  NavigationDestination(
-    icon: Icon(Icons.router_outlined),
-    selectedIcon: Icon(Icons.router),
-    label: 'Network',
-  ),
-  // index 5
-  NavigationDestination(
-    icon: Icon(Icons.settings_outlined),
-    selectedIcon: Icon(Icons.settings),
-    label: 'Settings',
-  ),
-];
+**Header:** Tapping the header navigates to `AppSection.you`. Shows active identity name (from `SettingsState.identity`) and first 8 chars of peer ID.
+
+**Drawer row order** (do not change):
+```
+[avatar]  Display name / peer-id short          → taps to You
+───────────────────────────────────────────────
+[icon]  Chat              [T2] [T1]
+[icon]  Garden            [T2] [T1]
+[icon]  Files             [T2] [T1]
+[icon]  Contacts          [T2] [T1]
+[icon]  Services          [T2] [T1]
+[icon]  You
+─── divider ────────────────────────────────────
+[icon]  Network                [T1]
+[icon]  Settings          [T2]
+[icon]  Help
 ```
 
-#### 22.3.4 AppShell Changes
+Each row is `_DrawerItem`: an `InkWell` + `AnimatedContainer` with 12px border radius, horizontal 8px margin, and a 12px×10px symmetric padding. Active row uses `MeshTheme.brand` at 12% opacity background.
 
-Add `SecurityStatusBar` above the body:
+#### 22.3.4 AppShell Layout
 
+**`_MobileShell`** (< 760px):
 ```dart
-// In _DesktopShell, _TabletShell, _MobileShell — all three:
-// Wrap body in Column:
-body: Column(
-  children: [
-    const SecurityStatusBar(),  // ADD THIS
-    Expanded(child: _existingContent),
-  ],
-),
+Scaffold(
+  appBar: AppBar(
+    leading: hamburger → Scaffold.of(ctx).openDrawer(),
+    title: Text(_sectionTitle(shell.activeSection)),
+    actions: _appBarActions(context, shell),  // section-specific actions
+  ),
+  drawer: const NavDrawer(),
+  body: _SectionBody(),
+  bottomNavigationBar: const SectionBottomBar(),
+)
 ```
 
-Desktop detail pane routing — add community/channel cases:
+**`_WideShell`** (760–1199px):
 ```dart
-Widget _detailPaneFor(ShellState shell, BuildContext context) {
-  return switch (shell.activeSection) {
-    AppSection.chat => shell.selectedRoomId != null
-        ? ThreadScreen(roomId: shell.selectedRoomId!)
-        : const _EmptyDetail(icon: Icons.chat_bubble_outline, label: 'Select a conversation'),
-    AppSection.garden => shell.selectedChannelId != null
-        ? ChannelScreen(channelId: shell.selectedChannelId!)
-        : shell.selectedCommunityId != null
-            ? CommunityOverviewScreen(communityId: shell.selectedCommunityId!)
-            : const _EmptyDetail(icon: Icons.groups_outlined, label: 'Select a garden'),
-    AppSection.contacts => shell.selectedPeerId != null
-        ? ContactDetailScreen(peerId: shell.selectedPeerId!)
-        : const _EmptyDetail(icon: Icons.people_outline, label: 'Select a contact'),
-    AppSection.files => shell.selectedTransferId != null
-        ? TransferDetailScreen(transferId: shell.selectedTransferId!)
-        : const _EmptyDetail(icon: Icons.folder_outlined, label: 'Select a transfer'),
-    _ => const SizedBox.shrink(),
-  };
-}
+Scaffold(
+  body: Row(children: [
+    SizedBox(width: 280, child: _PermanentDrawerFrame(child: NavDrawer())),
+    VerticalDivider(width: 1),
+    Expanded(child: Scaffold(
+      body: _SectionBody(),
+      bottomNavigationBar: const SectionBottomBar(),
+    )),
+  ]),
+)
 ```
+
+**`_DesktopShell`** (≥ 1200px):
+```dart
+// showDetailPane = Chat with selected room OR Contacts with selected peer
+Scaffold(
+  body: Row(children: [
+    SizedBox(width: 280, child: _PermanentDrawerFrame(child: NavDrawer())),
+    VerticalDivider(width: 1),
+    if (showDetailPane) ...[
+      SizedBox(width: 320, child: Scaffold(
+        body: _SectionBody(),
+        bottomNavigationBar: const SectionBottomBar(),
+      )),
+      VerticalDivider(width: 1),
+      Expanded(child: _detailPane(shell)),  // ThreadScreen or PeerDetailScreen
+    ] else
+      Expanded(child: Scaffold(
+        body: _SectionBody(),
+        bottomNavigationBar: const SectionBottomBar(),
+      )),
+  ]),
+)
+```
+
+`_detailPane` routes:
+```dart
+Widget _detailPane(ShellState shell) => switch (shell.activeSection) {
+  AppSection.chat     => shell.selectedRoomId != null
+      ? ThreadScreen(roomId: shell.selectedRoomId!)
+      : const _EmptyDetail(icon: Icons.chat_bubble_outline, label: 'Select a chat'),
+  AppSection.contacts => shell.selectedPeerId != null
+      ? PeerDetailScreen(peerId: shell.selectedPeerId!)
+      : const _EmptyDetail(icon: Icons.people_outline, label: 'Select a contact'),
+  _ => const SizedBox.shrink(),
+};
+```
+
+**AppBar actions** (section-specific, mobile only — tablet/desktop use inline controls):
+- Chat: search icon → `MessageSearchScreen`, edit icon → `CreateRoomScreen`
+- Contacts: person_add icon → `PairPeerScreen`
+- You: QR icon → bottom sheet `_YouQrSheet`
+- All others: no actions
+
+#### 22.3.5 SectionBottomBar
+
+`SectionBottomBar` (`shell/section_bottom_bar.dart`) is the sub-page switcher. It is hidden (`SizedBox.shrink()`) when:
+- `shell.inDetailView` is true
+- `shell.hasSubPages` is false (You, Settings)
+
+It renders `NavigationBar` with one `NavigationDestination` per sub-page, driven by `subPageLabels(shell.activeSection)`. Active index is `shell.activeSubPageIndex`; tapping calls `shell.selectSubPage(index)`.
+
+#### 22.3.6 Two-Tier Badge System (Iteration 9)
+
+Badges use two independent visual tiers. Neither tier suppresses the other. Both columns are always reserved in nav row layout to prevent label jump.
+
+**Nav row column layout** (both in `_DrawerItem` and bottom bar tabs):
+```
+[icon]  Section Name             [T2: 16px] [gap: 6px] [T1: 28px]
+```
+
+**Tier 1 — Critical (always on, non-configurable):**
+
+| Section | Indicator | Trigger |
+|---------|-----------|---------|
+| Chat | Brand blue count pill | Unread messages in any room |
+| Garden | Brand blue count pill | Unread @mentions across all gardens |
+| Files | Brand blue count pill | Active in-progress transfers |
+| Contacts | Brand blue count pill | Pending pairing / trust requests |
+| Services | Red dot (no count) | Any hosted service degraded or offline |
+| Network | Colored dot (always visible) | Green = connected peers, Amber = transport up but no peers, Red = no transports |
+
+**Tier 2 — Ambient (off by default, user-configurable per section):**
+
+| Section | Default | Trigger when enabled |
+|---------|---------|---------------------|
+| Chat | Off | Non-@mention activity in followed rooms |
+| Garden | Off | Unread content (non-mention) in followed gardens |
+| Files | Off | Transfer completed |
+| Contacts | Off | Paired contact came online |
+| Services | Off | New service in Browse; plugin/service update available |
+| Network | Off | Topology change: node joined or left |
+| Settings | Off | App update available |
+| You | Never | No ambient trigger exists |
+
+**Visual spec:**
+- Tier 1 count pill: `MeshTheme.brand` background, white text, `BorderRadius.circular(10)`, min-width 20px, capped at `99+`
+- Tier 1 health dot: 9×9px circle, color = `MeshTheme.secGreen/secAmber/secRed`
+- Tier 2 ambient dot: 6×6px filled square (`borderRadius: 1`), color = `MeshTheme.ambientBadge` (`#4A5280`)
+
+**`BadgeState`** (`shell/badge_state.dart`): `ChangeNotifier` with global ambient toggle and per-section ambient enable/disable. Exposes `ambientVisibleFor(AppSection)` which returns `ambientGlobalEnabled && sectionAmbientToggle(section)`.
+
+User controls: Settings → Notifications → Ambient indicators (global toggle + per-section toggles, both in `AmbientScreen`).
 
 ---
 
@@ -16102,17 +16201,19 @@ EmptyState(
 
 ### 22.6 Garden Section
 
-#### 22.6.1 GardenListScreen
+Garden has three sub-pages via `SectionBottomBar`: **Channels**, **Feed**, **Explore**.
 
-**File**: `features/garden/screens/garden_list_screen.dart`
+#### 22.6.1 ChannelsScreen (sub-page: Channels)
+
+**File**: `features/garden/channels_screen.dart`
+
+Lists all group rooms the user has joined. Garden communities use the same `RoomSummary` model as Chat — group rooms (`isGroup == true`) appear here. Tapping a garden opens `ThreadScreen` for that room (mobile: push navigation; desktop ≥1200px: detail pane).
 
 **AppBar:**
 ```
 AppBar(
-  leading: [mask avatar — same as Chat],
   title: Text('Garden'),
   actions: [
-    IconButton(icon: Icon(Icons.search), tooltip: 'Search gardens', onPressed: _search),
     IconButton(icon: Icon(Icons.add_outlined), tooltip: 'Join or create', onPressed: _openJoinCreate),
     SizedBox(width: 4),
   ],
@@ -16216,7 +16317,23 @@ Container(
 // Labels: 'Public', 'Open', 'Closed', 'Private'
 ```
 
-#### 22.6.2 CommunityScreen (Desktop three-pane / mobile full-screen)
+#### 22.6.2 FeedScreen (sub-page: Feed)
+
+**File**: `features/garden/feed_screen.dart`
+
+Aggregated post feed from all joined garden rooms. Shows posts in reverse-chronological order with author avatar (initials), name, timestamp, content, and reaction count. Pull-to-refresh reloads. `EmptyState` shown when no posts exist.
+
+Backend call: `bridge.fetchGardenPosts('')` — empty string means all joined gardens.
+
+#### 22.6.3 ExploreScreen (sub-page: Explore)
+
+**File**: `features/garden/explore_screen.dart`
+
+Discovery screen for public/open gardens on the mesh. Calls `bridge.discoverGardens()`. Each `_GardenTile` shows name, network type badge (Public=brand, Open=green, Closed=amber, Private=purple), member count, and description with a "Join" button (TODO: join garden action backed by `bridge.joinGarden(id)`).
+
+`EmptyState` shown when no discoverable gardens found.
+
+#### 22.6.4 CommunityScreen (Desktop three-pane / mobile full-screen)
 
 **Desktop layout** (width ≥ 1200):
 ```
@@ -16355,7 +16472,7 @@ Column(children: [
 ])
 ```
 
-#### 22.6.3 JoinCreateCommunityScreen
+#### 22.6.5 JoinCreateCommunityScreen
 
 **AppBar**: `'Join or Create'`, `CloseButton`.
 
@@ -16462,27 +16579,13 @@ Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
 
 ### 22.7 Files Section
 
-#### 22.7.1 FilesScreen
+Files has two sub-pages via `SectionBottomBar`: **Transfers** and **Shared**.
 
-**File**: `features/files/screens/files_screen.dart`
+#### 22.7.1 TransfersScreen (sub-page: Transfers)
 
-**AppBar:**
-```
-AppBar(
-  title: Text('Files'),
-  actions: [
-    IconButton(icon: Icon(Icons.upload_file_outlined), tooltip: 'Send a file',
-      onPressed: _openSendSheet),
-    SizedBox(width: 4),
-  ],
-  bottom: TabBar(tabs: [
-    Tab(text: 'Transfers'),
-    Tab(text: 'Storage'),
-  ]),
-)
-```
+**File**: `features/files/screens/transfers_screen.dart`
 
-#### 22.7.2 Transfers Tab
+#### 22.7.2 Transfers sub-page content
 
 **Loading state:** 3× shimmer transfer tiles.
 
@@ -16566,7 +16669,15 @@ ListTile(
 )
 ```
 
-#### 22.7.3 Storage Tab
+#### 22.7.3 SharedScreen (sub-page: Shared)
+
+**File**: `features/files/shared_screen.dart`
+
+Previously called "Storage Tab" in earlier spec iterations. Renamed to "Shared" to better describe its purpose: files the user has published to the distributed mesh storage network.
+
+Backend calls: `bridge.fetchStorageStats()` (usage bar) + `bridge.fetchPublishedFiles()` (file list). Unpublish calls `bridge.unpublishFile(fileId)`. Publish action: file picker → `bridge.publishFile(path)` (TODO).
+
+#### 22.7.4 Shared sub-page content
 
 **Loading:** shimmer storage card + shimmer file tiles.
 
@@ -16815,6 +16926,13 @@ Security level descriptions:
 ---
 
 ### 22.8 Contacts Section
+
+Contacts has three sub-pages via `SectionBottomBar`: **All**, **Online**, **Requests**.
+
+Files:
+- `features/contacts/all_contacts_screen.dart` — all paired contacts
+- `features/contacts/online_screen.dart` — currently online contacts
+- `features/contacts/requests_screen.dart` — pending pairing/trust requests
 
 #### 22.8.1 ContactListScreen
 
@@ -17999,6 +18117,13 @@ Profile source helpers map the same logic as `_profileTierLabel` in ContactDetai
 ---
 
 ### 22.9 Network Section
+
+Network has three sub-pages via `SectionBottomBar`: **Status**, **Nodes**, **Transports**.
+
+Files:
+- `features/network/status_screen.dart` — transport toggles, peer stats, mDNS
+- `features/network/nodes_screen.dart` — known mesh nodes
+- `features/network/transports_screen.dart` — transport configuration
 
 #### 22.9.1 NetworkScreen
 
@@ -21737,6 +21862,36 @@ ListView(
 
 ---
 
+### 22.11 You Section
+
+**File**: `features/you/you_screen.dart`
+
+`You` is a top-level navigation section (between `Services` and `Network` in the drawer) that shows the user's own identity. It has no sub-pages — `SectionBottomBar` is hidden.
+
+**Body:**
+
+```dart
+ListView(padding: EdgeInsets.all(16), children: [
+  _SelfCard(identity: identity),
+  SizedBox(height: 24),
+  _MasksSection(),
+])
+```
+
+**`_SelfCard`:** Large `CircleAvatar` (radius 40, initials), display name (`headlineSmall`, bold), truncated peer ID (monospace, tappable to copy), inline `QrImageView` (160×160, white background), `OutlinedButton.icon('Edit profile')` → `ProfileEditScreen`.
+
+**`_MasksSection`:** Row with "Masks" title and "New mask" button (disabled until backend implements masks), followed by an empty-state `Card` explaining masks are contextual identities coming in a future update.
+
+Loading state (identity == null): `Center(child: CircularProgressIndicator())`.
+
+**AppBar (mobile only):** QR icon action → bottom sheet `_YouQrSheet` showing QR code and "Copy peer ID" button. Defined in `app_shell.dart` AppBar actions for `AppSection.you`.
+
+**Backend:** `bridge.fetchIdentity()` via `SettingsState.loadAll()`. Pull-to-refresh calls `settings.loadAll()`.
+
+**Masks:** Not yet implemented in backend. `_MasksSection` renders empty state. When implemented, masks will be stored via `bridge.fetchMasks()` / `bridge.createMask(...)` / `bridge.setActiveMask(id)`.
+
+---
+
 ## Part B — UX
 
 
@@ -24631,13 +24786,42 @@ Padding(
 
 ---
 
-### 22.54 Services Screen (Tier 4)
+### 22.54 Services Section
 
-**File:** `features/services/screens/services_screen.dart`
+The Services section is a Tier 4 navigation destination (§22.28). It has three sub-pages via `SectionBottomBar`: **My Services**, **Browse**, **Hosting**.
 
-The Services section is a Tier 4 navigation destination (§22.28). It lists all §20 protocol servers and their current state. This is the primary UI for enabling, configuring, and monitoring hosted services.
+#### 22.54.1 MyServicesScreen (sub-page: My Services)
 
-**AppBar:** `'Services'`, no leading (it's a top-level nav destination). Action: `IconButton(Icons.help_outline)` → opens a brief explainer sheet.
+**File:** `features/services/my_services_screen.dart`
+
+Dashboard of services the user has pinned/discovered and is actively using. Shows `GridView` of `_ServiceTile` cards (`maxCrossAxisExtent: 180`, `mainAxisExtent: 136`) — each shows service icon, name, health dot (green/amber/red), status label, and address in monospace.
+
+Empty state: prompt to browse and pin services from the mesh.
+
+Backend: `ServicesState.services` from `bridge.fetchHostingConfig()`.
+
+#### 22.54.2 BrowseScreen (sub-page: Browse)
+
+**File:** `features/services/browse_screen.dart`
+
+Discover mesh services offered by connected peers. Calls `bridge.discoverMeshServices()`. Each `_ServiceTile` shows service type icon, host name, trust level requirement, description, and a "Connect" button (TODO: connect action).
+
+Empty state: `EmptyState(icon: Icons.hub_outlined, title: 'No services found', body: 'Services offered by mesh peers will appear here.')`.
+
+#### 22.54.3 HostingScreen (sub-page: Hosting)
+
+**File:** `features/services/hosting_screen.dart`
+
+Enable/disable which services this device hosts for others. Grouped into sections:
+- **Remote Access:** Remote Desktop, Remote Shell
+- **Files & Data:** File Access, API Gateway
+- **Sharing:** Clipboard Sync, Screen Share, Print Services
+
+Each row is a `_ServiceTile` `Card` with `Switch` calling `bridge.setHostedService(serviceId, enabled: v)`.
+
+Calls `bridge.fetchHostingConfig()` on load.
+
+**AppBar (legacy, pre-sub-page spec):** `'Services'`, no leading. Action: `IconButton(Icons.help_outline)` → brief explainer sheet.
 
 **Body:**
 
