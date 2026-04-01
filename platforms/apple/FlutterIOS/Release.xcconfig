@@ -1,2 +1,4 @@
+#include? "../Pods/Target Support Files/Pods-RunnerIOS/Pods-RunnerIOS.release.xcconfig"
+#include? "../Pods/Target Support Files/Pods-RunnerIOS/Pods-RunnerIOS.profile.xcconfig"
 #include "../../../build/intermediates/apple/flutter/Flutter-Generated.xcconfig"
 #include "../../apple/Configs/AppleShared.xcconfig"
