@@ -1,3 +1,82 @@
+// ---------------------------------------------------------------------------
+// MessageRequest — pending inbound conversation from a low-trust peer (§22.5.4)
+// ---------------------------------------------------------------------------
+//
+// WHAT IS A MESSAGE REQUEST?
+// When a peer whose trust level is 0–5 (below "ally" threshold) sends us a
+// first message, the Rust backend does NOT deliver it to the main room list.
+// Instead it queues it here as a MessageRequest.  The UI then shows it in
+// MessageRequestsScreen, where the user can Accept or Decline.
+//
+// WHY HOLD LOW-TRUST MESSAGES SEPARATELY?
+// The main chat list is a curated, trusted space.  Delivering low-trust
+// messages directly there would train users to treat unknown senders as
+// implicitly safe.  The request inbox is the intentional friction point.
+//
+// RATE LIMITS (enforced in Rust, NOT in this model):
+//   - Max 5 pending requests per unique sender (prevents request flooding).
+//   - Total queue cap: 200 requests.
+//   - Requests older than 30 days are automatically expired.
+//
+// RELATIONSHIP TO MessageModel
+// MessageRequest is a lightweight summary, not the full message thread.
+// [messagePreview] is the first ~100 characters of the first message — just
+// enough for the user to decide whether to accept.  The full message is only
+// accessible after accepting (at which point a real room + MessageModels are
+// created in the backend).
+
+/// A single pending inbound message request (§22.5.4).
+///
+/// Returned by [BackendBridge.fetchMessageRequests] and stored in
+/// [MessagingState._requests].
+class MessageRequest {
+  const MessageRequest({
+    required this.id,
+    required this.peerId,
+    required this.senderName,
+    required this.trustLevel,
+    required this.messagePreview,
+    required this.timestamp,
+  });
+
+  /// Opaque backend identifier for this request.  Passed to
+  /// [BackendBridge.acceptMessageRequest] / [declineMessageRequest].
+  final String id;
+
+  /// The peer ID of the sender — used to open their PeerDetailScreen
+  /// so the user can evaluate who is making the request.
+  final String peerId;
+
+  /// Display name of the sender, or a hex-prefix of their peer ID if unnamed.
+  final String senderName;
+
+  /// Raw trust level integer (0–8).  Use [TrustLevel.fromInt(trustLevel)]
+  /// to convert to the typed enum for display in [TrustBadge].
+  final int trustLevel;
+
+  /// First ~100 chars of the first message — shown in the request tile so
+  /// the user can gauge intent without accepting the full conversation.
+  final String messagePreview;
+
+  /// ISO-8601 timestamp string of when the request arrived.
+  /// Displayed in the tile's trust-context row.
+  final String timestamp;
+
+  /// Deserialise from the JSON returned by the Rust backend.
+  ///
+  /// Every field uses `?? ''` / `?? 0` fallbacks so that a missing or null
+  /// JSON key never causes a runtime cast exception — the worst outcome is
+  /// that a field shows as blank, which is recoverable by the user.
+  factory MessageRequest.fromJson(Map<String, dynamic> json) => MessageRequest(
+    id: json['id'] as String? ?? '',
+    peerId: json['peerId'] as String? ?? '',
+    senderName: json['senderName'] as String? ?? '',
+    trustLevel: json['trustLevel'] as int? ?? 0,
+    messagePreview: json['messagePreview'] as String? ?? '',
+    timestamp: json['timestamp'] as String? ?? '',
+  );
+}
+
 class ReactionModel {
   const ReactionModel({
     required this.emoji,

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../peers/screens/pair_peer_screen.dart';
+import 'screens/pair_contact_screen.dart';
 
 // Requests screen — shows incoming pairing requests.
 // Backend pending-request list not yet implemented; shows the pairing UI.
@@ -27,7 +27,7 @@ class RequestsScreen extends StatelessWidget {
             FilledButton.tonal(
               onPressed: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const PairPeerScreen()),
+                MaterialPageRoute(builder: (_) => const PairContactScreen()),
               ),
               child: const Text('Pair a new contact'),
             ),

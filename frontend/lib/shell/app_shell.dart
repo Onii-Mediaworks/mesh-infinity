@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'shell_state.dart';
 import 'nav_drawer.dart';
 import 'section_bottom_bar.dart';
+import 'security_status_bar.dart';
 import '../features/settings/settings_state.dart';
 
 // Section screens and navigation targets
@@ -28,10 +29,11 @@ import '../features/network/nodes_screen.dart';
 import '../features/network/transports_screen.dart';
 import '../features/settings/screens/settings_screen.dart';
 import '../features/messaging/screens/thread_screen.dart';
-import '../features/messaging/screens/search_screen.dart';
+import '../features/messaging/screens/conversation_search_screen.dart';
+import '../features/messaging/screens/message_requests_screen.dart';
 import '../features/messaging/screens/create_room_screen.dart';
-import '../features/peers/screens/peer_detail_screen.dart';
-import '../features/peers/screens/pair_peer_screen.dart';
+import '../features/contacts/screens/contact_detail_screen.dart';
+import '../features/contacts/screens/pair_contact_screen.dart';
 
 // ---------------------------------------------------------------------------
 // Layout breakpoints
@@ -99,7 +101,7 @@ class _MobileShell extends StatelessWidget {
         actions: _appBarActions(context, shell),
       ),
       drawer: const NavDrawer(),
-      body: _SectionBody(),
+      body: _BodyWithSecurityBar(),
       bottomNavigationBar: const SectionBottomBar(),
     );
   }
@@ -124,7 +126,7 @@ class _WideShell extends StatelessWidget {
           const VerticalDivider(width: 1),
           Expanded(
             child: Scaffold(
-              body: _SectionBody(),
+              body: _BodyWithSecurityBar(),
               bottomNavigationBar: const SectionBottomBar(),
             ),
           ),
@@ -186,7 +188,7 @@ class _DesktopShell extends StatelessWidget {
           ? ThreadScreen(roomId: shell.selectedRoomId!)
           : const _EmptyDetail(icon: Icons.chat_bubble_outline, label: 'Select a chat'),
       AppSection.contacts => shell.selectedPeerId != null
-          ? PeerDetailScreen(peerId: shell.selectedPeerId!)
+          ? ContactDetailScreen(peerId: shell.selectedPeerId!)
           : const _EmptyDetail(icon: Icons.people_outline, label: 'Select a contact'),
       _ => const SizedBox.shrink(),
     };
@@ -208,6 +210,22 @@ class _PermanentDrawerFrame extends StatelessWidget {
       color: Theme.of(context).drawerTheme.backgroundColor ??
           Theme.of(context).colorScheme.surface,
       child: child,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _BodyWithSecurityBar — SecurityStatusBar above the section content (§22.4.1)
+// ---------------------------------------------------------------------------
+
+class _BodyWithSecurityBar extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const SecurityStatusBar(),
+        Expanded(child: _SectionBody()),
+      ],
     );
   }
 }
@@ -279,7 +297,15 @@ List<Widget> _appBarActions(BuildContext context, ShellState shell) {
           tooltip: 'Search messages',
           onPressed: () => Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const MessageSearchScreen()),
+            MaterialPageRoute(builder: (_) => const ConversationSearchScreen()),
+          ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.mark_unread_chat_alt_outlined),
+          tooltip: 'Message requests',
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const MessageRequestsScreen()),
           ),
         ),
         IconButton(
@@ -297,7 +323,7 @@ List<Widget> _appBarActions(BuildContext context, ShellState shell) {
           tooltip: 'Add contact',
           onPressed: () => Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const PairPeerScreen()),
+            MaterialPageRoute(builder: (_) => const PairContactScreen()),
           ),
         ),
       ],

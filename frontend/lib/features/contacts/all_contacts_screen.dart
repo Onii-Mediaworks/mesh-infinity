@@ -3,8 +3,8 @@ import 'package:provider/provider.dart';
 
 import '../../shell/shell_state.dart';
 import '../peers/peers_state.dart';
-import '../peers/screens/peer_detail_screen.dart';
-import '../peers/screens/pair_peer_screen.dart';
+import 'screens/contact_detail_screen.dart';
+import 'screens/pair_contact_screen.dart';
 import '../peers/widgets/peer_tile.dart';
 
 class AllContactsScreen extends StatelessWidget {
@@ -48,7 +48,7 @@ class AllContactsScreen extends StatelessWidget {
     if (width < 1200) {
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => PeerDetailScreen(peerId: peerId)),
+        MaterialPageRoute(builder: (_) => ContactDetailScreen(peerId: peerId)),
       ).then((_) => shell.selectPeer(null));
     }
   }
@@ -56,7 +56,7 @@ class AllContactsScreen extends StatelessWidget {
   void _openPairing(BuildContext context) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const PairPeerScreen()),
+      MaterialPageRoute(builder: (_) => const PairContactScreen()),
     );
   }
 }

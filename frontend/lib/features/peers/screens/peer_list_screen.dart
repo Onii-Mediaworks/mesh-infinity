@@ -5,8 +5,8 @@ import '../../../core/widgets/empty_state.dart';
 import '../peers_state.dart';
 import '../../../shell/shell_state.dart';
 import '../widgets/peer_tile.dart';
-import 'pair_peer_screen.dart';
-import 'peer_detail_screen.dart';
+import '../../contacts/screens/pair_contact_screen.dart';
+import '../../contacts/screens/contact_detail_screen.dart';
 
 class PeerListScreen extends StatefulWidget {
   const PeerListScreen({super.key});
@@ -136,7 +136,7 @@ class _PeerListScreenState extends State<PeerListScreen> {
   Future<void> _openPair(BuildContext context) async {
     await Navigator.push<bool>(
       context,
-      MaterialPageRoute(builder: (_) => const PairPeerScreen()),
+      MaterialPageRoute(builder: (_) => const PairContactScreen()),
     );
   }
 
@@ -146,7 +146,7 @@ class _PeerListScreenState extends State<PeerListScreen> {
     } else {
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => PeerDetailScreen(peerId: peerId)),
+        MaterialPageRoute(builder: (_) => ContactDetailScreen(peerId: peerId)),
       );
     }
   }

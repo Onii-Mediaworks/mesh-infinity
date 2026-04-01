@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../shell/shell_state.dart';
 import '../peers/peers_state.dart';
-import '../peers/screens/peer_detail_screen.dart';
+import 'screens/contact_detail_screen.dart';
 import '../peers/widgets/peer_tile.dart';
 
 class OnlineScreen extends StatelessWidget {
@@ -55,7 +55,7 @@ class OnlineScreen extends StatelessWidget {
                           context,
                           MaterialPageRoute(
                             builder: (_) =>
-                                PeerDetailScreen(peerId: peer.id),
+                                ContactDetailScreen(peerId: peer.id),
                           ),
                         ).then((_) => shell.selectPeer(null));
                       }
