@@ -6,6 +6,7 @@ import '../backend/event_bus.dart';
 import '../app/app_theme.dart';
 import '../shell/shell_state.dart';
 import '../shell/badge_state.dart';
+import '../shell/security_status_bar.dart';
 import '../shell/app_shell.dart';
 import '../onboarding/onboarding_screen.dart';
 import '../features/messaging/messaging_state.dart';
@@ -16,6 +17,7 @@ import '../features/settings/settings_state.dart';
 import '../features/calls/calls_state.dart';
 import '../features/calls/call_overlay.dart';
 import '../features/services/services_state.dart';
+import '../features/tidbits/tidbits.dart'; // Playful Tidbits init (§22.12)
 
 class MeshInfinityApp extends StatefulWidget {
   const MeshInfinityApp({super.key, required this.bridge});
@@ -33,6 +35,10 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
   void initState() {
     super.initState();
     _hasIdentity = widget.bridge.hasIdentity();
+
+    // Register all Playful Tidbits (§22.12) at startup.
+    // This is a fast, synchronous operation — no I/O, no network.
+    initTidbits();
 
     if (widget.bridge.isAvailable) {
       if (_hasIdentity) {
@@ -65,6 +71,7 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
         ChangeNotifierProvider(create: (_) => SettingsState(widget.bridge)),
         ChangeNotifierProvider(create: (_) => ServicesState(widget.bridge)),
         ChangeNotifierProvider(create: (_) => CallsState(widget.bridge)),
+        ChangeNotifierProvider(create: (_) => SecurityState()),
       ],
       child: Consumer<SettingsState>(
         builder: (_, settings, _) => MaterialApp(
@@ -85,6 +92,8 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
         onComplete: () => setState(() => _onboardingComplete = true),
       );
     }
-    return const CallOverlay(child: AppShell());
+    // SnowfallLayer wraps the entire shell.  It self-deactivates outside
+    // the winter window (Dec 1 – Jan 15) — zero overhead on other dates.
+    return const SnowfallLayer(child: CallOverlay(child: AppShell()));
   }
 }

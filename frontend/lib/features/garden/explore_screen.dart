@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../backend/backend_bridge.dart';
 import '../../core/widgets/empty_state.dart';
 import '../../app/app_theme.dart';
+import '../tidbits/widgets/garden_gnome.dart'; // §22.12.5 #20 Garden Gnome
 
 class GardenExploreScreen extends StatefulWidget {
   const GardenExploreScreen({super.key});
@@ -31,10 +32,18 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
     if (_gardens.isEmpty) {
-      return const EmptyState(
-        icon: Icons.explore_outlined,
-        title: 'No gardens found nearby',
-        body: 'Public and open gardens on the local mesh will appear here.',
+      // GardenGnomeWidget appears on ~1-in-5 days (§22.12.5 #20).
+      // It sits below the real empty state and never replaces it.
+      return const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          EmptyState(
+            icon: Icons.explore_outlined,
+            title: 'No gardens found nearby',
+            body: 'Public and open gardens on the local mesh will appear here.',
+          ),
+          GardenGnomeWidget(),
+        ],
       );
     }
     return RefreshIndicator(
