@@ -7,6 +7,7 @@ import '../../app/app_theme.dart';
 import '../../backend/models/settings_models.dart';
 import '../settings/settings_state.dart';
 import '../settings/screens/profile_edit_screen.dart';
+import '../tidbits/tidbits.dart'; // Copy Confetti §22.12.5 #7, TapTrigger
 
 // ---------------------------------------------------------------------------
 // YouScreen
@@ -95,6 +96,8 @@ class _SelfCard extends StatelessWidget {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Peer ID copied')),
                 );
+                // §22.12.5 #7 Copy Confetti — tiny celebration on peer ID copy.
+                TidbitRegistry.instance.show('copy_confetti', context);
               },
               child: Text(
                 shortId,
