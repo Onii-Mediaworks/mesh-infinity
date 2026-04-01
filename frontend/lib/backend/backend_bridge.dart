@@ -1113,6 +1113,58 @@ class BackendBridge {
   }
 
   // ---------------------------------------------------------------------------
+  // Message requests (§22.5.4)
+  // ---------------------------------------------------------------------------
+
+  /// Fetch all pending message requests (inbound conversations from peers
+  /// below trust Level 6 that are awaiting user acceptance).
+  ///
+  /// Returns a list of [MessageRequest] objects decoded from JSON.
+  /// Returns an empty list when the backend is unavailable (stub mode)
+  /// or when there are no pending requests.
+  ///
+  /// Backend symbol (once implemented): `mi_message_requests_json(ctx)`
+  /// Expected JSON: `[{ "id": "...", "peerId": "...", ... }, ...]`
+  List<MessageRequest> fetchMessageRequests() {
+    // isAvailable is false on platforms where the native library did not
+    // load (e.g. desktop dev without the .so present).  Return safe default.
+    if (!isAvailable) return const [];
+    // TODO(backend): wire to mi_message_requests_json when the Rust service
+    // implements the message request queue (§22.5.4).
+    return const [];
+  }
+
+  /// Accept a message request by ID.
+  ///
+  /// Instructs Rust to promote the pending request into a full room in the
+  /// main conversation list.  The sender is notified via a normal message
+  /// receipt — they do NOT receive an "accepted" event (the first response
+  /// message serves as implicit confirmation).
+  ///
+  /// Returns true if the backend confirmed the acceptance.
+  /// Returns false if the backend is unavailable or the request was not found.
+  bool acceptMessageRequest(String requestId) {
+    if (!isAvailable) return false;
+    // TODO(backend): wire to mi_accept_message_request(ctx, requestId)
+    // when the Rust service implements the accept flow (§22.5.4).
+    return false;
+  }
+
+  /// Decline a message request by ID.
+  ///
+  /// Instructs Rust to remove the request from the pending queue.
+  /// The sender receives NO notification — this is intentional to prevent
+  /// the sender from using decline responses to infer user activity.
+  ///
+  /// Returns true if the backend confirmed the removal.
+  bool declineMessageRequest(String requestId) {
+    if (!isAvailable) return false;
+    // TODO(backend): wire to mi_decline_message_request(ctx, requestId)
+    // when the Rust service implements the decline flow (§22.5.4).
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
   // Overlay networks (Tailscale / ZeroTier)
   // ---------------------------------------------------------------------------
 

@@ -16,9 +16,21 @@ import '../widgets/composer_bar.dart';
 import 'group_detail_screen.dart';
 
 class ThreadScreen extends StatefulWidget {
-  const ThreadScreen({super.key, required this.roomId});
+  const ThreadScreen({
+    super.key,
+    required this.roomId,
+    // Optional: if provided, the thread will scroll to this message on open.
+    // Set by ConversationSearchScreen (§22.5.5) when the user taps a result.
+    // Scroll implementation is TODO — the parameter is wired here so the
+    // call site is correct when the scroll feature is built out.
+    this.scrollToMessageId,
+  });
 
   final String roomId;
+
+  /// If non-null, the thread attempts to scroll to this message ID on open.
+  /// Used by ConversationSearchScreen to deep-link to a specific result (§22.5.5).
+  final String? scrollToMessageId;
 
   @override
   State<ThreadScreen> createState() => _ThreadScreenState();

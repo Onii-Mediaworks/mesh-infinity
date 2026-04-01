@@ -3,11 +3,22 @@ import 'package:provider/provider.dart';
 
 import '../../../backend/backend_bridge.dart';
 import '../../../app/app_theme.dart';
+import '../settings_state.dart';
 import 'identity_screen.dart';
-import 'killswitch_screen.dart';
+import 'pin_screen.dart';
+import 'emergency_erase_screen.dart';
+import 'potential_extremes_screen.dart';
+import 'known_limitations_screen.dart';
 
 // ---------------------------------------------------------------------------
-// SecurityScreen — threat context, emergency erase, and advanced identity.
+// SecurityScreen — threat context, PIN, emergency erase, and advanced identity.
+//
+// Sub-screens reachable from here (§22.10):
+//   PinScreen             — §22.10.x  app lock PIN configuration
+//   EmergencyEraseScreen  — §22.10.11 emergency data destruction triggers
+//   PotentialExtremesScreen — §22.10.4 advanced features with risk disclosures
+//   KnownLimitationsScreen  — §22.10.5 honest list of what we can't protect
+//   IdentityScreen        — cryptographic keys and pairing payload
 // ---------------------------------------------------------------------------
 
 class SecurityScreen extends StatefulWidget {
@@ -93,19 +104,75 @@ class _SecurityScreenState extends State<SecurityScreen> {
           ),
           const Divider(height: 1),
 
+          // ── App lock ────────────────────────────────────────────────
+          // PIN protects the app from casual access without affecting the
+          // mesh identity itself.  Configuring a PIN is optional but
+          // recommended on shared or mobile devices (§22.10.x).
+          const _SectionHeader('App lock'),
+          Consumer<SettingsState>(
+            builder: (context, settings, _) => ListTile(
+              leading: const Icon(Icons.pin_outlined),
+              title: const Text('App PIN'),
+              subtitle: Text(
+                settings.pinEnabled ? 'PIN enabled — tap to change' : 'No PIN set',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => PinScreen(
+                    mode: settings.pinEnabled
+                        ? PinScreenMode.change
+                        : PinScreenMode.setup,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const Divider(height: 1),
+
           // ── Emergency ───────────────────────────────────────────────
+          // EmergencyEraseScreen lets the user configure duress PIN,
+          // wrong-PIN wipe threshold, remote trigger, and manual erase.
+          // Replaces the old one-tap kill-switch with a richer flow (§22.10.11).
           const _SectionHeader('Emergency'),
           ListTile(
-            leading: Icon(Icons.warning_amber_rounded, color: cs.error),
+            leading: Icon(Icons.emergency_outlined, color: cs.error),
             title: Text(
-              'Emergency data destruction',
+              'Emergency erase',
               style: TextStyle(color: cs.error),
             ),
-            subtitle: const Text('Permanently destroy all local data'),
+            subtitle: const Text('Configure and activate data destruction'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const KillswitchScreen()),
+              MaterialPageRoute(builder: (_) => const EmergencyEraseScreen()),
+            ),
+          ),
+          const Divider(height: 1),
+
+          // ── Advanced ────────────────────────────────────────────────
+          // Two informational/advanced screens the spec requires to be
+          // reachable from the Security section (§22.10.4, §22.10.5).
+          const _SectionHeader('Advanced'),
+          ListTile(
+            leading: const Icon(Icons.warning_amber_outlined),
+            title: const Text('Potential extremes'),
+            subtitle: const Text('Advanced features with explicit risk disclosures'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const PotentialExtremesScreen()),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.info_outline),
+            title: const Text('Known limitations'),
+            subtitle: const Text('What Mesh Infinity cannot protect against'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const KnownLimitationsScreen()),
             ),
           ),
           const Divider(height: 1),

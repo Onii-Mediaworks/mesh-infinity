@@ -66,6 +66,7 @@ import '../../backend/event_models.dart';
 import '../../backend/models/message_models.dart';
 // MessageModel — a typed Dart object representing one chat message.
 // Fields: id, roomId, sender, text, timestamp, isOutgoing.
+// MessageRequest — a pending inbound conversation from a low-trust peer.
 import '../../backend/models/room_models.dart';
 // RoomSummary — a typed Dart object representing one room (conversation).
 // Fields: id, name, lastMessage, unreadCount, timestamp.
@@ -166,6 +167,9 @@ class MessagingState extends ChangeNotifier {
   /// Cleared on room switch.  The UI reads this to show "Alice is typing…".
   final Set<String> _typingPeers = {};
 
+  /// Pending message requests from low-trust peers (§22.5.4).
+  List<MessageRequest> _requests = const [];
+
   // -------------------------------------------------------------------------
   // Public getters — read-only access for the UI
   // -------------------------------------------------------------------------
@@ -188,6 +192,9 @@ class MessagingState extends ChangeNotifier {
 
   /// Peer IDs currently typing in the active room (§10.2.1).
   Set<String> get typingPeers => Set.unmodifiable(_typingPeers);
+
+  /// Pending message requests from low-trust peers (§22.5.4).
+  List<MessageRequest> get requests => _requests;
 
   // -------------------------------------------------------------------------
   // Load / refresh operations
@@ -384,6 +391,82 @@ class MessagingState extends ChangeNotifier {
   /// Search messages across all rooms.
   List<MessageModel> searchMessages(String query) {
     return _bridge.searchMessages(query);
+  }
+
+  // -------------------------------------------------------------------------
+  // Message requests (§22.5.4)
+  // -------------------------------------------------------------------------
+  //
+  // Message requests are inbound conversations from peers whose trust level
+  // is 0–5 (below the "ally" threshold).  They are held in a separate queue
+  // so they do NOT appear in the main chat list until explicitly accepted.
+  //
+  // The flow is:
+  //   1. Rust queues the request when the first message arrives from a
+  //      low-trust peer.
+  //   2. The UI calls loadRequests() on MessageRequestsScreen open.
+  //   3. The user taps Accept → acceptRequest() → room appears in chat list.
+  //      OR taps Decline → declineRequest() → request is removed silently.
+  //
+  // These methods follow the same notifyListeners() pattern as the room and
+  // message operations above — all mutations go through state methods so
+  // the UI always reflects the latest data.
+
+  /// Fetches the current pending request list from the backend and notifies
+  /// all watching widgets (e.g. MessageRequestsScreen) to rebuild.
+  ///
+  /// Called from MessageRequestsScreen.initState() (initial load) and from
+  /// the Undo action in the decline SnackBar.
+  Future<void> loadRequests() async {
+    // fetchMessageRequests() returns an empty list until the Rust backend
+    // implements the request queue; at that point this will populate.
+    _requests = _bridge.fetchMessageRequests();
+    // Guard against calling notifyListeners after dispose (same pattern as
+    // loadRooms / loadMessages above).
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Accepts a message request — promotes it to a full room in the main
+  /// chat list and removes it from the pending queue.
+  ///
+  /// Returns true if the backend confirmed acceptance.
+  /// On success:
+  ///   - The request is removed from [_requests] immediately (optimistic).
+  ///   - [loadRooms] is called so the new room appears in ConversationListScreen.
+  ///
+  /// WHY optimistic removal?
+  /// Same reasoning as deleteMessage: the user expects instant feedback.
+  /// If the backend fails (unlikely), the next loadRequests() will re-sync.
+  Future<bool> acceptRequest(String requestId) async {
+    final ok = _bridge.acceptMessageRequest(requestId);
+    if (ok) {
+      // Immediately filter out the accepted request so the tile disappears
+      // without waiting for a server round-trip.
+      _requests = _requests.where((r) => r.id != requestId).toList();
+      if (!_disposed) notifyListeners();
+      // Load rooms so the new conversation shows up in the chat list.
+      await loadRooms();
+    }
+    return ok;
+  }
+
+  /// Declines a message request — removes it from the queue.
+  ///
+  /// The sender receives NO notification (intentional — see §22.5.4).
+  /// Returns true if the backend confirmed removal.
+  ///
+  /// After decline, the request is filtered out of [_requests] so the tile
+  /// disappears immediately.  The Undo action in the SnackBar calls
+  /// loadRequests() to re-fetch from the backend rather than trying to
+  /// reconstruct the removed item locally.
+  Future<bool> declineRequest(String requestId) async {
+    final ok = _bridge.declineMessageRequest(requestId);
+    if (ok) {
+      // Optimistic removal: filter from local list before notifying.
+      _requests = _requests.where((r) => r.id != requestId).toList();
+      if (!_disposed) notifyListeners();
+    }
+    return ok;
   }
 
   /// Forward a message from one room to another.

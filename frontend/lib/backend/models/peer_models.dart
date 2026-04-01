@@ -1,28 +1,58 @@
-enum TrustLevel {
-  untrusted(0),
-  caution(1),
-  trusted(2),
-  highlyTrusted(3);
+import 'package:flutter/material.dart';
 
-  const TrustLevel(this.value);
-  final int value;
+/// Nine-level trust scale as defined in §22.4.2.
+///
+/// The backend currently issues levels 0–3; higher values are reserved for
+/// future implementation. [fromInt] clamps to the defined range safely.
+enum TrustLevel {
+  unknown,       // 0 — no trust relationship
+  public,        // 1 — public contact, unverified
+  vouched,       // 2 — vouched by a known peer
+  referenced,    // 3 — referenced in the web-of-trust
+  ally,          // 4 — active ally relationship
+  acquaintance,  // 5 — known acquaintance
+  trusted,       // 6 — explicitly trusted
+  highlyTrusted, // 7 — highly trusted
+  innerCircle;   // 8 — inner circle (maximum trust)
 
   static TrustLevel fromInt(int v) =>
-      TrustLevel.values.firstWhere((e) => e.value == v, orElse: () => TrustLevel.untrusted);
+      TrustLevel.values[v.clamp(0, TrustLevel.values.length - 1)];
 
-  String get label => switch (this) {
-    TrustLevel.untrusted => 'Untrusted',
-    TrustLevel.caution => 'Caution',
-    TrustLevel.trusted => 'Trusted',
-    TrustLevel.highlyTrusted => 'Highly Trusted',
-  };
+  int get value => index;
+
+  String get label => const [
+    'Unknown', 'Public', 'Vouched', 'Referenced', 'Ally',
+    'Acquaintance', 'Trusted', 'Highly Trusted', 'Inner Circle',
+  ][index];
+
+  String get shortLabel => const [
+    '?', 'P', 'V', 'R', 'A', 'Aq', 'T', 'HT', 'IC',
+  ][index];
+
+  Color get color => const [
+    Color(0xFF9CA3AF), Color(0xFF6B7280), Color(0xFF60A5FA),
+    Color(0xFF3B82F6), Color(0xFF22D3EE), Color(0xFF6EE7B7),
+    Color(0xFF34D399), Color(0xFF059669), Color(0xFFF59E0B),
+  ][index];
+
+  IconData get icon => const [
+    Icons.help_outline,
+    Icons.person_outline,
+    Icons.thumb_up_outlined,
+    Icons.star_outline,
+    Icons.handshake_outlined,
+    Icons.chat_outlined,
+    Icons.verified_outlined,
+    Icons.shield_outlined,
+    Icons.workspace_premium_outlined,
+  ][index];
 }
 
 class PeerModel {
   const PeerModel({
     required this.id,
     required this.name,
-    this.trustLevel = TrustLevel.untrusted,
+    this.trustLevel = TrustLevel.unknown,
     this.status = 'offline',
     this.canBeExitNode = false,
     this.canBeWrapperNode = false,

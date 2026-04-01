@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'network_state.dart';
+import 'screens/metrics_screen.dart';
+import 'screens/exit_node_screen.dart';
+import 'screens/app_connector_screen.dart';
 
 class NetworkStatusScreen extends StatelessWidget {
   const NetworkStatusScreen({super.key});
@@ -149,6 +152,48 @@ class NetworkStatusScreen extends StatelessWidget {
                 ),
               ),
             ],
+
+            // ── Quick links to sub-screens ─────────────────────────────
+            // MetricsScreen and AppConnectorScreen are separate destinations
+            // rather than inline content — they're too detailed for a status
+            // overview but reachable with one tap from here.
+            const SizedBox(height: 12),
+            ListTile(
+              leading: const Icon(Icons.analytics_outlined),
+              title: const Text('Detailed metrics'),
+              subtitle: const Text('Privacy, cover traffic, transport usage'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const MetricsScreen(),
+                ),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.route_outlined),
+              title: const Text('Exit Node'),
+              subtitle: const Text('Route internet traffic through a trusted contact'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ExitNodeScreen(),
+                ),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.apps_outlined),
+              title: const Text('App Connector'),
+              subtitle: const Text('Route selected apps through the mesh'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const AppConnectorScreen(),
+                ),
+              ),
+            ),
           ],
         ),
       ),
