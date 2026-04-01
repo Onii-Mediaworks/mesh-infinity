@@ -1478,6 +1478,117 @@ class BackendBridge {
   }
 
   // ---------------------------------------------------------------------------
+  // Garden — posts and discovery (§22.6)
+  // ---------------------------------------------------------------------------
+
+  /// Fetch posts for a garden. Returns a list of post maps, or empty list.
+  List<Map<String, dynamic>> fetchGardenPosts(String gardenId) {
+    if (!isAvailable) return const [];
+    final ptr = gardenId.toNativeUtf8();
+    final json = _readString(_bindings!.gardenPosts(_context, ptr));
+    calloc.free(ptr);
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.cast<Map<String, dynamic>>();
+  }
+
+  /// Discover gardens advertised on the local mesh.
+  List<Map<String, dynamic>> discoverGardens() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.gardenDiscover(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.cast<Map<String, dynamic>>();
+  }
+
+  /// Publish a post to a garden. Returns true on success.
+  bool postToGarden(String gardenId, String content) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode({'gardenId': gardenId, 'content': content})
+        .toNativeUtf8();
+    final result = _bindings!.gardenPost(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Files — distributed storage (§22.7)
+  // ---------------------------------------------------------------------------
+
+  /// Fetch distributed storage usage stats.
+  Map<String, dynamic>? fetchStorageStats() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.storageStats(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Fetch the list of files this node has published. Returns empty list.
+  List<Map<String, dynamic>> fetchPublishedFiles() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.publishedFiles(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.cast<Map<String, dynamic>>();
+  }
+
+  /// Publish a local file to distributed storage. Returns true on success.
+  bool publishFile(String path) {
+    if (!isAvailable) return false;
+    final ptr = path.toNativeUtf8();
+    final result = _bindings!.publishFile(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Unpublish a previously published file by its ID. Returns true on success.
+  bool unpublishFile(String fileId) {
+    if (!isAvailable) return false;
+    final ptr = fileId.toNativeUtf8();
+    final result = _bindings!.unpublishFile(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Services — mesh discovery and hosting config (§22.54)
+  // ---------------------------------------------------------------------------
+
+  /// Discover services hosted by peers on the local mesh.
+  List<Map<String, dynamic>> discoverMeshServices() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.meshServicesDiscover(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.cast<Map<String, dynamic>>();
+  }
+
+  /// Fetch this node's service hosting configuration.
+  Map<String, dynamic>? fetchHostingConfig() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.hostingConfig(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Enable or disable a named hosted service. Returns true on success.
+  bool setHostedService(String serviceId, {required bool enabled}) {
+    if (!isAvailable) return false;
+    final ptr = serviceId.toNativeUtf8();
+    final result = _bindings!.hostingSet(_context, ptr, enabled ? 1 : 0);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
@@ -1973,6 +2084,46 @@ class _BackendBindings {
       wgCompleteHandshake = _lib
           .lookupFunction<WgCompleteHandshakeNative, WgCompleteHandshakeDart>(
             'mi_wg_complete_handshake',
+          ),
+      gardenPosts = _lib
+          .lookupFunction<GardenPostsNative, GardenPostsDart>(
+            'mi_garden_posts',
+          ),
+      gardenDiscover = _lib
+          .lookupFunction<GardenDiscoverNative, GardenDiscoverDart>(
+            'mi_garden_discover',
+          ),
+      gardenPost = _lib
+          .lookupFunction<GardenPostNative, GardenPostDart>(
+            'mi_garden_post',
+          ),
+      storageStats = _lib
+          .lookupFunction<StorageStatsNative, StorageStatsDart>(
+            'mi_storage_stats',
+          ),
+      publishedFiles = _lib
+          .lookupFunction<PublishedFilesNative, PublishedFilesDart>(
+            'mi_published_files',
+          ),
+      publishFile = _lib
+          .lookupFunction<PublishFileNative, PublishFileDart>(
+            'mi_publish_file',
+          ),
+      unpublishFile = _lib
+          .lookupFunction<UnpublishFileNative, UnpublishFileDart>(
+            'mi_unpublish_file',
+          ),
+      meshServicesDiscover = _lib
+          .lookupFunction<MeshServicesDiscoverNative, MeshServicesDiscoverDart>(
+            'mi_mesh_services_discover',
+          ),
+      hostingConfig = _lib
+          .lookupFunction<HostingConfigNative, HostingConfigDart>(
+            'mi_hosting_config',
+          ),
+      hostingSet = _lib
+          .lookupFunction<HostingSetNative, HostingSetDart>(
+            'mi_hosting_set',
           );
 
   // Keep a reference to the library so it is not garbage-collected while
@@ -2077,6 +2228,19 @@ class _BackendBindings {
   final WgInitiateHandshakeDart wgInitiateHandshake;
   final WgRespondToHandshakeDart wgRespondToHandshake;
   final WgCompleteHandshakeDart wgCompleteHandshake;
+  // Garden
+  final GardenPostsDart gardenPosts;
+  final GardenDiscoverDart gardenDiscover;
+  final GardenPostDart gardenPost;
+  // Storage
+  final StorageStatsDart storageStats;
+  final PublishedFilesDart publishedFiles;
+  final PublishFileDart publishFile;
+  final UnpublishFileDart unpublishFile;
+  // Services hosting + discovery
+  final MeshServicesDiscoverDart meshServicesDiscover;
+  final HostingConfigDart hostingConfig;
+  final HostingSetDart hostingSet;
 }
 
 // =============================================================================
@@ -2628,3 +2792,43 @@ typedef WgCompleteHandshakeNative =
     Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 typedef WgCompleteHandshakeDart =
     Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_garden_posts(ctx, garden_id) -> *const c_char  (JSON array of posts)
+typedef GardenPostsNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef GardenPostsDart   = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_garden_discover(ctx) -> *const c_char  (JSON array of discoverable gardens)
+typedef GardenDiscoverNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GardenDiscoverDart   = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_garden_post(ctx, post_json) -> i32  (0 = success)
+typedef GardenPostNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef GardenPostDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_storage_stats(ctx) -> *const c_char  (JSON object)
+typedef StorageStatsNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef StorageStatsDart   = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_published_files(ctx) -> *const c_char  (JSON array of published file records)
+typedef PublishedFilesNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef PublishedFilesDart   = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_publish_file(ctx, path) -> i32  (0 = success)
+typedef PublishFileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef PublishFileDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_unpublish_file(ctx, file_id) -> i32  (0 = success)
+typedef UnpublishFileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef UnpublishFileDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_mesh_services_discover(ctx) -> *const c_char  (JSON array of mesh services)
+typedef MeshServicesDiscoverNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef MeshServicesDiscoverDart   = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_hosting_config(ctx) -> *const c_char  (JSON object of hosting flags)
+typedef HostingConfigNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef HostingConfigDart   = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_hosting_set(ctx, service_id, enabled) -> i32  (0 = success)
+typedef HostingSetNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef HostingSetDart   = int   Function(Pointer<Void>, Pointer<Utf8>, int);
