@@ -1,0 +1,72 @@
+# Podfile.ios.build
+#
+# Used exclusively during "flutter build ios-framework" (invoked by the
+# Makefile ios-xcode-* targets).  Flutter runs pod install internally as
+# part of framework generation so it can compile native plugin code
+# (mobile_scanner, file_picker, etc.) into xcframeworks.
+#
+# WHY A SEPARATE PODFILE FOR THIS PHASE?
+# ---------------------------------------
+# When "flutter build ios-framework" runs, it may regenerate
+# ios/Runner.xcodeproj with only the standard Flutter iOS targets:
+#   - Runner (iOS app target)
+#   - RunnerTests (test target)
+# Our shared platforms/apple/Runner.xcodeproj has a third target
+# (RunnerIOS) that is absent from Flutter's generated project, so
+# Podfile.ios (which references "RunnerIOS") would fail with:
+#   [!] Unable to find a target named 'RunnerIOS' in project 'Runner.xcodeproj'
+#
+# This Podfile uses "Runner" — the target Flutter always generates — so
+# pod install succeeds and Flutter can build plugin xcframeworks.
+#
+# AFTER flutter build:
+# The Makefile restores our custom xcodeproj (via symlink) and replaces
+# this file with Podfile.ios (which targets RunnerIOS) before running
+# the explicit pod install step.
+
+platform :ios, '13.0'
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+def flutter_root
+  # Flutter generates ios/Flutter/Generated.xcconfig before calling
+  # pod install, so this file exists by the time we need it.
+  generated_xcode_build_settings_path = File.expand_path(
+    File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__
+  )
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. " \
+          'Run "flutter build ios-framework" first to generate it.'
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}."
+end
+
+require File.expand_path(
+  File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root
+)
+
+flutter_ios_podfile_setup
+
+# "Runner" is the standard Flutter iOS app target name — present in any
+# xcodeproj that flutter build ios-framework generates.  Pods installed
+# here are used only to build plugin xcframeworks; they are deleted after
+# flutter build and replaced by a fresh pod install against RunnerIOS.
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+    end
+  end
+end
