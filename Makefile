@@ -19,8 +19,9 @@ APPLE_WORKSPACE := $(PLATFORMS_DIR)/apple/Runner.xcworkspace
 APP_NAME         := $(shell awk -F'"' '/^name/{print $$2; exit}' Cargo.toml | sed 's/[-[:space:]]//g')
 APP_VERSION      := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | cut -d+ -f1)
 APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/pubspec.yaml | awk -F+ '{print ($$2 == "" ? "1" : $$2)}')
-# Revision number = total commit count (deterministic, same locally and in CI).
-APP_REV          := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+# Revision number: CI passes CI_RUN_NUMBER from github.run_number; locally
+# falls back to total commit count.
+APP_REV          := $(if $(CI_RUN_NUMBER),$(CI_RUN_NUMBER),$(shell git rev-list --count HEAD 2>/dev/null || echo 0))
 APP_BUILD_LABEL  := $(APP_VERSION)-r$(APP_REV)
 
 .PHONY: clean \
