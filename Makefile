@@ -242,7 +242,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  "$$src_dir" \
 	  "$$fw_dir" \
 	  "$$rust_out" \
-	  "$(BUILD_DIR)/intermediates/ios/xcode" \
+	  "$(BUILD_DIR)/intermediates/ios/$$profile/xcode" \
 	  "$(BUILD_DIR)/intermediates/apple/flutter" \
 	  "$(BUILD_DIR)/output/ios/$$profile"; \
 	\
@@ -316,7 +316,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  -scheme RunnerIOS \
 	  -configuration "$$cfg" \
 	  -sdk iphoneos \
-	  -derivedDataPath "$(BUILD_DIR)/intermediates/ios/xcode" \
+	  -derivedDataPath "$(BUILD_DIR)/intermediates/ios/$$profile/xcode" \
 	  ARCHS=arm64 \
 	  ONLY_ACTIVE_ARCH=NO \
 	  CODE_SIGNING_ALLOWED=NO \
@@ -331,7 +331,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	rm -rf "$$ipa_payload"; \
 	mkdir -p "$$ipa_payload"; \
 	cp -R \
-	  "$(BUILD_DIR)/intermediates/ios/xcode/Build/Products/$$cfg-iphoneos/"*.app \
+	  "$(BUILD_DIR)/intermediates/ios/$$profile/xcode/Build/Products/$$cfg-iphoneos/"*.app \
 	  "$$ipa_payload/"; \
 	native_assets_dir="$$src_dir/build/native_assets/ios"; \
 	if [ -d "$$native_assets_dir" ]; then \
