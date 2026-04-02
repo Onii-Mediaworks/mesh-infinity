@@ -222,7 +222,7 @@ ios-rust-debug ios-rust-release: ios-rust-%:
 
 # ── iOS: Xcode only ───────────────────────────────────────────────────────────
 #
-# Runs the standard Flutter iOS host project + CocoaPods → unsigned IPA.
+# Runs Flutter framework build + Xcode archive → unsigned IPA.
 # Requires Rust staticlib to already exist at:
 #   build/intermediates/ios/rust/<profile>/libmesh_infinity.a
 #
@@ -234,13 +234,16 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	profile="$*"; \
 	cfg="Debug"; [[ "$$profile" == "release" ]] && cfg="Release"; \
 	src_dir="$(BUILD_DIR)/intermediates/ios/$$profile/src"; \
+	fw_dir="$(BUILD_DIR)/intermediates/ios/$$profile/frontend"; \
 	rust_out="$(BUILD_DIR)/intermediates/ios/$$profile/backend"; \
 	rust_src="$(BUILD_DIR)/intermediates/ios/rust/$$profile/libmesh_infinity.a"; \
 	\
 	mkdir -p \
 	  "$$src_dir" \
+	  "$$fw_dir" \
 	  "$$rust_out" \
 	  "$(BUILD_DIR)/intermediates/ios/xcode" \
+	  "$(BUILD_DIR)/intermediates/apple/flutter" \
 	  "$(BUILD_DIR)/output/ios/$$profile"; \
 	\
 	rsync -a --delete \
@@ -248,21 +251,69 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  --exclude=.dart_tool/ \
 	  --exclude=.flutter-plugins \
 	  --exclude=.flutter-plugins-dependencies \
+	  --exclude=ios/Podfile \
+	  --exclude=ios/Runner.xcodeproj/ \
 	  --exclude=ios/Runner.xcworkspace/ \
 	  --exclude=ios/Pods/ \
 	  "$(FRONTEND_DIR)/" "$$src_dir/"; \
 	rsync -a "$(ROOT_DIR)/assets/" "$(BUILD_DIR)/intermediates/ios/$$profile/assets/"; \
-	mkdir -p "$$src_dir/ios"; \
+	mkdir -p "$$src_dir/ios" "$$src_dir/Flutter"; \
 	\
 	cp "$$rust_src" "$$rust_out/libmesh_infinity.a"; \
 	\
 	flutter config --enable-ios; \
 	( cd "$$src_dir" && flutter pub get ); \
+	rm -rf "$$src_dir/ios/Runner.xcodeproj" "$$src_dir/ios/Runner.xcworkspace" "$$src_dir/ios/Pods"; \
+	ln -sfn "$(ROOT_DIR)/platforms/apple/Runner.xcodeproj" "$$src_dir/ios/Runner.xcodeproj"; \
+	cp "$(ROOT_DIR)/platforms/apple/Podfile.ios.build" "$$src_dir/ios/Podfile"; \
+	flutter_mode_flags="--$$profile"; \
+	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
+	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
+	[[ "$$profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
+	( cd "$$src_dir" && flutter build ios-framework $$flutter_mode_flags \
+	    --output "$$fw_dir" ); \
+	\
+	rm -rf \
+	  "$$src_dir/ios/Runner.xcodeproj" \
+	  "$$src_dir/ios/Runner.xcworkspace" \
+	  "$$src_dir/ios/Pods" \
+	  "$$src_dir/ios/Flutter" \
+	  "$$src_dir/ios/RunnerIOS" \
+	  "$$src_dir/ios/FlutterIOS" \
+	  "$$src_dir/ios/Runner/Configs" \
+	  "$$src_dir/apple" \
+	  "$(BUILD_DIR)/intermediates/ios/$$profile/build/intermediates/apple/flutter"; \
+	rsync -a "$(ROOT_DIR)/platforms/apple/Flutter/" "$$src_dir/ios/Flutter/"; \
+	rsync -a "$(ROOT_DIR)/platforms/apple/RunnerIOS/" "$$src_dir/ios/RunnerIOS/"; \
+	rsync -a "$(ROOT_DIR)/platforms/apple/FlutterIOS/" "$$src_dir/ios/FlutterIOS/"; \
+	mkdir -p "$$src_dir/ios/Runner"; \
+	rsync -a "$(ROOT_DIR)/platforms/apple/Runner/Configs/" "$$src_dir/ios/Runner/Configs/"; \
+	cp "$$src_dir/ios/Runner/GeneratedPluginRegistrant.h" "$$src_dir/ios/RunnerIOS/"; \
+	cp "$$src_dir/ios/Runner/GeneratedPluginRegistrant.m" "$$src_dir/ios/RunnerIOS/"; \
+	ln -sfn "$(ROOT_DIR)/platforms/apple" "$$src_dir/apple"; \
+	ln -sfn "$(ROOT_DIR)/platforms/apple/Runner.xcodeproj" "$$src_dir/ios/Runner.xcodeproj"; \
+	cp "$(ROOT_DIR)/platforms/apple/Podfile.ios" "$$src_dir/ios/Podfile"; \
+	\
+	flutter_root="$$(flutter --version --machine | jq -r .flutterRoot)"; \
+	printf "%s\n" \
+	  "FLUTTER_ROOT=$$flutter_root" \
+	  "FLUTTER_APPLICATION_PATH=$$src_dir" \
+	  "FLUTTER_FRAMEWORK_BASE=$(BUILD_DIR)/intermediates/ios" \
+	  "FLUTTER_TARGET=lib/main.dart" \
+	  "FLUTTER_BUILD_DIR=build" \
+	  "FLUTTER_BUILD_NAME=$(APP_VERSION)" \
+	  "FLUTTER_BUILD_NUMBER=$(APP_BUILD_NUMBER)" \
+	  > "$(BUILD_DIR)/intermediates/apple/flutter/Flutter-Generated.xcconfig"; \
+	mkdir -p "$(BUILD_DIR)/intermediates/ios/$$profile/build/intermediates/apple/flutter"; \
+	cp "$(BUILD_DIR)/intermediates/apple/flutter/Flutter-Generated.xcconfig" \
+	  "$(BUILD_DIR)/intermediates/ios/$$profile/build/intermediates/apple/flutter/Flutter-Generated.xcconfig"; \
+	export FLUTTER_ROOT="$$flutter_root"; \
+	export FLUTTER_APPLICATION_PATH="$$src_dir"; \
 	( cd "$$src_dir/ios" && pod install ); \
 	\
 	xcodebuild \
 	  -workspace "$$src_dir/ios/Runner.xcworkspace" \
-	  -scheme Runner \
+	  -scheme RunnerIOS \
 	  -configuration "$$cfg" \
 	  -sdk iphoneos \
 	  -derivedDataPath "$(BUILD_DIR)/intermediates/ios/xcode" \
@@ -271,6 +322,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  CODE_SIGNING_ALLOWED=NO \
 	  CODE_SIGNING_REQUIRED=NO \
 	  CODE_SIGN_IDENTITY="" \
+	  FLUTTER_FRAMEWORK_BASE="$(BUILD_DIR)/intermediates/ios" \
 	  LIBRARY_SEARCH_PATHS="$$rust_out" \
 	  OTHER_LDFLAGS="-lmesh_infinity -lresolv" \
 	  build; \
