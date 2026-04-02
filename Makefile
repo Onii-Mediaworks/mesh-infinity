@@ -87,7 +87,8 @@ macos-rust-debug macos-rust-release: macos-rust-%:
 macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	cfg="Debug"; [[ "$$profile" == "release" ]] && cfg="Release"; \
+	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
+	cfg="Profile"; [[ "$$profile" == "release" ]] && cfg="Release"; \
 	src_dir="$(BUILD_DIR)/intermediates/macos/$$profile/src"; \
 	fw_dir="$(BUILD_DIR)/intermediates/macos/$$profile/frontend"; \
 	rust_out="$(BUILD_DIR)/intermediates/macos/$$profile/backend"; \
@@ -114,10 +115,10 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	\
 	flutter config --enable-macos-desktop; \
 	( cd "$$src_dir" && flutter pub get ); \
-	flutter_mode_flags="--$$profile"; \
-	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
-	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
-	[[ "$$profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
+	flutter_mode_flags="--$$flutter_profile"; \
+	[[ "$$flutter_profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
+	[[ "$$flutter_profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
+	[[ "$$flutter_profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
 	( cd "$$src_dir" && flutter build macos-framework $$flutter_mode_flags \
 	    --output "$$fw_dir" ); \
 	\
@@ -233,7 +234,8 @@ ios-rust-debug ios-rust-release: ios-rust-%:
 ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	cfg="Debug"; [[ "$$profile" == "release" ]] && cfg="Release"; \
+	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
+	cfg="Profile"; [[ "$$profile" == "release" ]] && cfg="Release"; \
 	src_dir="$(BUILD_DIR)/intermediates/ios/$$profile/src"; \
 	fw_dir="$(BUILD_DIR)/intermediates/ios/$$profile/frontend"; \
 	rust_out="$(BUILD_DIR)/intermediates/ios/$$profile/backend"; \
@@ -267,10 +269,10 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	rm -rf "$$src_dir/ios/Runner.xcodeproj" "$$src_dir/ios/Runner.xcworkspace" "$$src_dir/ios/Pods"; \
 	ln -sfn "$(ROOT_DIR)/platforms/apple/Runner.xcodeproj" "$$src_dir/ios/Runner.xcodeproj"; \
 	cp "$(ROOT_DIR)/platforms/apple/Podfile.ios.build" "$$src_dir/ios/Podfile"; \
-	flutter_mode_flags="--$$profile"; \
-	[[ "$$profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
-	[[ "$$profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
-	[[ "$$profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
+	flutter_mode_flags="--$$flutter_profile"; \
+	[[ "$$flutter_profile" != "debug"   ]] && flutter_mode_flags="$$flutter_mode_flags --no-debug"; \
+	[[ "$$flutter_profile" != "profile" ]] && flutter_mode_flags="$$flutter_mode_flags --no-profile"; \
+	[[ "$$flutter_profile" != "release" ]] && flutter_mode_flags="$$flutter_mode_flags --no-release"; \
 	( cd "$$src_dir" && flutter build ios-framework $$flutter_mode_flags \
 	    --output "$$fw_dir" ); \
 	\
@@ -405,7 +407,8 @@ android-rust-debug android-rust-release: android-rust-%:
 android-gradle-debug android-gradle-release: android-gradle-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	gradle_task="assembleDebug"; [[ "$$profile" == "release" ]] && gradle_task="assembleRelease"; \
+	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
+	gradle_task="assembleProfile"; [[ "$$profile" == "release" ]] && gradle_task="assembleRelease"; \
 	jni_src="$(BUILD_DIR)/intermediates/android/jni/$$profile"; \
 	jni_out="$(PLATFORMS_DIR)/android/app/src/main/jniLibs"; \
 	\
@@ -419,7 +422,7 @@ android-gradle-debug android-gradle-release: android-gradle-%:
 	( cd "$(FRONTEND_DIR)" && flutter pub get ); \
 	cp -r "$$jni_src/." "$$jni_out/"; \
 	( cd "$(PLATFORMS_DIR)/android" && gradle $$gradle_task ); \
-	apk_src="$(BUILD_DIR)/app/outputs/apk/$$profile/app-$$profile.apk"; \
+	apk_src="$(BUILD_DIR)/app/outputs/apk/$$flutter_profile/app-$$flutter_profile.apk"; \
 	cp "$$apk_src" \
 	   "$(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.apk"; \
 	echo "Output: $(BUILD_DIR)/output/android/$$profile/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile.apk"
@@ -475,7 +478,7 @@ linux-rust-debug linux-rust-release: linux-rust-%:
 linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	flutter_profile="$$profile"; \
+	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
 	src_dir="$(BUILD_DIR)/intermediates/linux/$$profile/src"; \
 	rust_so="$(BUILD_DIR)/intermediates/linux/rust/$$profile/libmesh_infinity.so"; \
 	out_dir="$(BUILD_DIR)/output/linux/$$profile"; \
@@ -494,9 +497,9 @@ linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	\
 	flutter config --enable-linux-desktop; \
 	( cd "$$src_dir" && flutter pub get ); \
-	( cd "$$src_dir" && flutter build linux "--$$profile" ); \
+	( cd "$$src_dir" && flutter build linux "--$$flutter_profile" ); \
 	\
-	bundle_dir="$$src_dir/build/linux/x64/$$profile/bundle"; \
+	bundle_dir="$$src_dir/build/linux/x64/$$flutter_profile/bundle"; \
 	mkdir -p "$$bundle_dir/lib"; \
 	cp "$$rust_so" "$$bundle_dir/lib/libmesh_infinity.so"; \
 	\
@@ -521,7 +524,7 @@ linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	  "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-x86_64.AppImage"; \
 	\
 	tar -czf "$$out_dir/$(APP_NAME)-$(APP_BUILD_LABEL)-$$profile-linux-x86_64.tar.gz" \
-	  -C "$(BUILD_DIR)/intermediates/linux/$$profile/src/build/linux/x64/$$profile" bundle; \
+	  -C "$(BUILD_DIR)/intermediates/linux/$$profile/src/build/linux/x64/$$flutter_profile" bundle; \
 	\
 	fpm -s dir -t deb \
 	  --name mesh-infinity \
@@ -590,7 +593,8 @@ windows-rust-debug windows-rust-release: windows-rust-%:
 windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	cfg="Debug"; [[ "$$profile" == "release" ]] && cfg="Release"; \
+	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
+	cfg="Profile"; [[ "$$profile" == "release" ]] && cfg="Release"; \
 	src_dir="$(BUILD_DIR)/intermediates/windows/$$profile/src"; \
 	rust_dll="$(BUILD_DIR)/intermediates/windows/rust/$$profile/mesh_infinity.dll"; \
 	bundle_stage="$(BUILD_DIR)/intermediates/windows/bundle/$$profile"; \
@@ -610,7 +614,7 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	\
 	flutter config --enable-windows-desktop; \
 	( cd "$$src_dir" && flutter pub get ); \
-	( cd "$$src_dir" && flutter build windows "--$$profile" ); \
+	( cd "$$src_dir" && flutter build windows "--$$flutter_profile" ); \
 	\
 	bundle_dir="$$src_dir/build/windows/x64/runner/$$cfg"; \
 	cp "$$rust_dll" "$$bundle_dir/mesh_infinity.dll"; \
