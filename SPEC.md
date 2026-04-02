@@ -253,6 +253,7 @@
   - [22.9 Network Section](#229-network-section) — sub-pages: Status, Nodes, Transports
   - [22.10 Settings Section](#2210-settings-section)
   - [22.11 You Section](#2211-you-section)
+  - [22.12 Playful Tidbits](#2212-playful-tidbits)
 - [Part B — UX](#part-b-ux)
   - [22.21 Foundational Principle](#2221-foundational-principle)
   - [22.22 Plain Language Requirement](#2222-plain-language-requirement)
@@ -7564,8 +7565,6 @@ ProximityReceivePolicy {
 Default policy: `EveryoneWithCode` — the receiver shows a 4-digit code on screen; senders must enter it to send. This prevents ambient file-bombing in crowded spaces (conferences, public transit) while keeping the flow simple for legitimate nearby transfers.
 
 The BLE advertisement only broadcasts when Proximity Share is actively open in the app — it is not a background service. Closing the screen stops discovery immediately.
-
----
 
 ## 11. File Sharing
 
@@ -21889,6 +21888,192 @@ Loading state (identity == null): `Center(child: CircularProgressIndicator())`.
 **Backend:** `bridge.fetchIdentity()` via `SettingsState.loadAll()`. Pull-to-refresh calls `settings.loadAll()`.
 
 **Masks:** Not yet implemented in backend. `_MasksSection` renders empty state. When implemented, masks will be stored via `bridge.fetchMasks()` / `bridge.createMask(...)` / `bridge.setActiveMask(id)`.
+
+---
+
+### 22.12 Playful Tidbits
+
+Playful Tidbits is a UI-level category for small, hidden, optional amusements inside Mesh Infinity. It is not a primary product surface, not a top-level destination, and not a substitute for any serious system function. Its purpose is to add levity, curiosity, and reasons to explore the product more deeply.
+
+Playful Tidbits may include:
+
+- tiny local-only minigames
+- friend-to-friend minigames over existing Mesh Infinity relationships
+- lightweight Garden-friendly activities
+- playful utilities with a practical side (for example: latency games, co-presence checks, coordination toys, onboarding curiosities)
+- entirely non-practical hidden or discoverable amusements
+
+#### 22.12.0 Overview
+
+- **§22.12.1 Product Role** — playful but never intrusive; optional; hidden by default
+- **§22.12.2 Delivery Model** — local-only, friend-to-friend, and Garden-capable tidbits
+- **§22.12.3 Constraints** — no dark patterns; no monetization; no manipulative engagement loops
+- **§22.12.4 Practical and Non-Practical Tidbits** — both are allowed
+
+#### 22.12.1 Product Role
+
+Playful Tidbits exists to make Mesh Infinity feel alive, human, and worth exploring. It is explicitly allowed to contain things that do not justify themselves with utility.
+
+Mesh Infinity is often used in stressful, chaotic, or emotionally exhausting circumstances. For many users, a small amount of levity is not frivolous — it is part of remembering what we are fighting for in the first place. Playful Tidbits exists in part to create moments of delight, curiosity, warmth, and play that remind people of the point of being human, even while using a tool built for difficult conditions.
+
+The system may include:
+
+- hidden or lightly concealed curiosities users can discover by exploring
+- easter eggs triggered by specific interactions or interaction sequences
+- hidden menus or concealed entry points for playful content
+- friend-shared activities that work inside existing trust and relationship boundaries
+- solo activities that run entirely locally
+
+Playful Tidbits must remain optional. The app must never force a user through a minigame, joke, or novelty flow in order to perform a serious task.
+Playful Tidbits should generally not be presented as a loud, top-level destination. The default expectation is discovery through exploration, hidden gestures, concealed affordances, or intentionally obscure interaction paths.
+
+#### 22.12.2 Delivery Model
+
+Each Playful Tidbit falls into one or more of these delivery models:
+
+```rust
+PlayfulTidbitMode {
+    LocalOnly,        // runs entirely on one device; no network traffic required
+    FriendShared,     // playable with or against trusted or paired friends
+    GardenShared,     // usable within a Garden context if the specific tidbit supports it
+    PracticalUtility, // playful presentation with some operational or onboarding value
+}
+```
+
+The implementation does not need to support every mode for every tidbit. Each tidbit declares its supported modes explicitly.
+
+#### 22.12.3 Constraints
+
+Playful Tidbits must follow these rules:
+
+- no monetization hooks
+- no gambling mechanics
+- no manipulative retention loops
+- no deceptive timers, streak pressure, or dark-pattern notifications
+- no degradation of core communication, routing, or safety-critical flows
+- no privilege expansion beyond what the hosting context already permits
+
+If a tidbit uses network communication, it must remain subordinate to the existing trust, ACL, and transport model. A tidbit does not get to invent a parallel security or identity system.
+
+#### 22.12.4 Practical and Non-Practical Tidbits
+
+Both of the following are valid:
+
+- **Practical playful tidbits** — small experiences that help users understand latency, connectivity, proximity, synchronization, trust, or device behavior through playful interaction
+- **Purely playful tidbits** — things that exist only to amuse, surprise, reward exploration, or make the product feel less sterile
+
+The specification explicitly permits both. Mesh Infinity does not require every playful feature to justify itself with operational value.
+
+**UI expectation:** Playful Tidbits should feel discoverable to curious users without becoming overt, cluttered, or primary navigation. The default presentation style is as easter eggs: hidden behind certain interactions, concealed menus, repeated taps, unusual gestures, or contextual discoveries.
+
+**Social expectation:** Shared tidbits should prefer existing friend, contact, or Garden contexts rather than introducing new social graph concepts.
+
+**Spec intent:** Additional minigames and curiosities may be defined in future revisions under this section without needing to re-justify the existence of playfulness in the product.
+
+#### 22.12.5 Initial Catalogue of 100 Tidbits
+
+The following tidbits are explicitly approved for the initial Playful Tidbits backlog. They are intentionally simple to implement, low-risk, and suitable for hidden discovery patterns.
+
+1. **Signal Strength Bloom** — tapping a network badge grows a little animated flower based on link quality.
+2. **Latency Fireflies** — long-pressing the ping readout releases fireflies whose speed reflects latency.
+3. **Node Constellation** — five taps on the node count turns nodes into a star map for a few seconds.
+4. **Typing Ripple** — a hidden gesture on the composer shows satisfying ripple trails under keystrokes.
+5. **Tiny Pong** — tapping the app logo seven times opens a one-button local Pong variant.
+6. **Packet Rain** — pulling down on the network page too far makes colored packets fall down the screen.
+7. **Copy Confetti** — copying your peer ID triggers a tiny burst of tasteful confetti.
+8. **QR Wink** — holding on your QR code makes the eyes in the code art blink once.
+9. **Peer ID Haiku** — repeated taps on a peer ID generate a silly haiku from its characters.
+10. **Garden Breeze** — a hidden swipe on a Garden header makes leaves drift across the page.
+11. **Mask Mirror** — switching masks with a secret gesture animates the avatar through a mirror shimmer.
+12. **Offline Campfire** — when offline for a while, a tiny campfire scene can be summoned from the status bar.
+13. **Receipt Choir** — rapid read receipts played in debug-like hidden mode become soft chime notes.
+14. **Bubble Bounce** — dragging a chat bubble in a precise pattern makes it bounce before snapping back.
+15. **Emoji Orbit** — long-pressing a reaction cluster makes the emojis orbit briefly around the message.
+16. **Quiet Cricket** — late-night local-only idle state can reveal a tiny chirping cricket in the corner.
+17. **Compass Spin** — spinning the device on the network screen unlocks a tiny compass toy.
+18. **Packet Catcher** — tap falling packets before they hit the bottom in a five-second reflex game.
+19. **Waveform Scribble** — voice-note waveforms become drawable doodles with a hidden two-finger gesture.
+20. **Garden Gnome** — a rare gnome appears in empty Garden states and can be tapped for a quip.
+21. **Node Name Fortune** — tapping a node name four times reveals a nonsense “fortune cookie” reading.
+22. **Status Sticker Peel** — dragging the status badge peels it like a sticker and snaps it back.
+23. **Tiny Synth** — a hidden numeric keypad pattern opens a five-note local synthesizer.
+24. **Receipt Race** — delivery receipts become racers on a mini track for two seconds.
+25. **Ambient Snow** — certain winter dates enable a hidden snowfall effect behind the home shell.
+26. **Sunrise Mode** — opening the app at sunrise can reveal a one-time morning animation.
+27. **Moon Phase Dot** — the online dot subtly changes with the lunar phase when an easter egg is unlocked.
+28. **Spin to Shuffle** — rotating the device quickly reshuffles list avatars like a deck of cards.
+29. **Typing Meteor** — a very fast burst of typing can trigger a tiny shooting star.
+30. **Garden Door Knock** — tapping the Garden icon in a rhythm produces a hidden “knock” animation.
+31. **Ping Drum** — each network refresh pulse becomes a drum hit in a tiny rhythm toy.
+32. **Sticker Hide-and-Seek** — one built-in sticker occasionally hides in an unrelated screen corner.
+33. **Avatar Blink** — profile avatars blink if you stare on the screen long enough.
+34. **Buddy Marble Roll** — paired friends can roll a shared marble back and forth in a tiny physics toy.
+35. **Presence Lanterns** — opening a hidden panel shows contacts as floating lanterns by status.
+36. **Garden Wind Chime** — reordering channels with a hidden mode plays gentle chime sounds.
+37. **Node Pebble Stack** — every successful connection in a session adds one pebble to a tiny cairn.
+38. **Transfer Kite** — completed file transfers can briefly fly off-screen as little kites.
+39. **Friend Duel Dots** — two friends tap fastest on bouncing dots for ten seconds.
+40. **Trust Ladder Toy** — a hidden view turns trust progression into a tiny climbable ladder animation.
+41. **Secret Wallpaper Seeds** — certain sequences plant hidden background seeds that sprout over days.
+42. **Message Bottle** — archiving a chat with a hidden gesture turns it into a drifting bottle animation.
+43. **Micro Chess Puzzle** — one-tap daily mate-in-one puzzle hidden behind the clock.
+44. **Hopscotch Tabs** — tapping nav items in a secret order plays a hopscotch pattern.
+45. **Handshake Spark** — successful pairing can reveal a hidden spark animation if the users both tap confirm together.
+46. **Contact Parade** — an easter egg groups avatars into a marching parade across the screen.
+47. **Color Echo** — touching accent colors in sequence unlocks a short palette toy.
+48. **Orbiting Masks** — hidden mask management animation makes all masks orbit the current self.
+49. **Tiny Maze** — generated from your node ID; solved with tilt or swipe.
+50. **Packet Whistle** — connecting to a node after repeated failures plays a tiny celebratory whistle.
+51. **Garden Frog** — a frog sits on the Garden header and hops when tapped correctly.
+52. **Unread Fireworks** — reaching inbox zero with a hidden mode enabled triggers miniature fireworks.
+53. **Lantern Relay** — passing a shared glowing dot between friends across DMs.
+54. **Latency Limbo** — a bar rises and falls with live ping; tap to jump over it.
+55. **Doodle Reply** — certain reply gestures open a tiny one-stroke doodle canvas.
+56. **Sticker Shuffle Cup** — three cups hide a sticker; follow it with your eyes.
+57. **Garden Poll Coin Flip** — hidden coin flip animation for indecisive groups.
+58. **Node Echo Trail** — each visited node leaves a fading trail in a hidden map mode.
+59. **Composer Cat** — a cat paw bats at the typing cursor after a secret trigger.
+60. **Avatar Jigsaw** — your profile picture becomes a tiny sliding tile puzzle.
+61. **Meteor Inbox** — deleting a spammy request can launch it away as a meteor.
+62. **Puzzle Lock** — long-pressing the lock icon reveals a simple shape-matching toy.
+63. **Garden Choir Buttons** — a sequence of channel taps plays a chord.
+64. **Friend Pulse Match** — two friends try to tap in sync; closeness is shown as merged circles.
+65. **Packet Garden** — repeated successful sends grow tiny plants in a hidden plot.
+66. **Wobble QR** — shaking the phone makes the QR sheet wobble like jelly.
+67. **Call Bubble Pop** — hidden post-call screen lets users pop leftover bubbles.
+68. **Status Weather** — your status chip can briefly become sun, rain, wind, or fog based on mood selections.
+69. **Mini Memory Match** — contact avatars used as cards in a tiny memory game.
+70. **Node Dominoes** — a small chain reaction toy themed around discovered nodes.
+71. **Drift Message** — composing without sending for a while unlocks a drifting paper-plane toy.
+72. **Torch Bug Hunt** — in dark mode, a hidden flashlight effect reveals little bugs to tap.
+73. **Garden Secret Knock 2** — a second, harder rhythm reveals a rarer animation.
+74. **Compass Race** — friends race to orient a shared arrow first.
+75. **Latency Choir** — multiple ping samples harmonize into a tiny soundscape.
+76. **Morse Glow** — the network light can flash short hidden Morse jokes.
+77. **Butterfly Transfer** — image transfers occasionally become butterfly silhouettes.
+78. **Contact Snow Globe** — shaking a contact card triggers a snow globe effect.
+79. **Message Thread Vine** — long threads can secretly render as twisting vines for a moment.
+80. **Packet Skip Rope** — tap to jump a rope made of glowing packet lines.
+81. **Tiny Sudoku Seed** — a very small generated puzzle hidden under a build-info easter egg.
+82. **Color Choir Garden** — Garden theme colors can be tapped in harmony mode.
+83. **Bounce Test** — old-device mode hides a tiny sprite bounce benchmark that is also funny to watch.
+84. **Marble Inbox** — unread messages become marbles in a jar in a secret view.
+85. **Node Windmill** — rotating transport icons spins a little windmill.
+86. **Friend Trace** — two friends cooperatively draw one shape by alternating turns.
+87. **Garden Treasure Trail** — solving several easter eggs in one Garden reveals a hidden badge.
+88. **Ping Paper Airplane** — latency results fold into a paper airplane and glide away.
+89. **Profile Polaroid** — a hidden gesture snapshots your profile as a faux instant photo.
+90. **Emoji Rainmaker** — drag across reactions to make a controlled rain of selected emoji.
+91. **Signal Lantern Puzzle** — align three status lights to light a lantern.
+92. **Thread Nesting Birds** — nested replies briefly appear as birds on branches.
+93. **Micro Word Scramble** — local-only tiny word scramble using contact names or node names.
+94. **Friend Reflex Duel** — first person to tap when the screen flashes wins.
+95. **Garden Mood Cloud** — hidden group toy that turns recent emoji into a drifting cloud.
+96. **Transport Train** — enabled transports line up as a toy train when tapped in order.
+97. **QR Treasure Hunt** — scanning a secret dev-crafted QR can reveal one playful artifact.
+98. **Inbox Aquarium** — archived chats become fish in a hidden aquarium scene.
+99. **Node Bell** — a rare successful reconnect rings a tiny bell and lights a star.
+100. **One More Tap** — an intentionally elusive easter egg that only appears after a ridiculous but harmless interaction pattern, serving as a reminder that the product still has room for wonder.
 
 ---
 
