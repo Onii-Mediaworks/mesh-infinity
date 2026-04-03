@@ -81,11 +81,12 @@ import '../backend/backend_bridge.dart';
 /// Being private (leading underscore) means it cannot be used outside this file.
 ///
 /// The sequence is:
-///   choice         — "Create new" vs "Import backup"
-///   importBackup   — paste passphrase + backup JSON (only reached via Import)
-///   publicProfile  — set a public display name; toggle discoverability
-///   privateProfile — set a private name and bio visible only to yourself
-enum _Step { choice, importBackup, publicProfile, privateProfile }
+///   choice        — "Create new" vs "Import backup"
+///   importBackup  — paste passphrase + backup JSON (only reached via Import)
+///   identity      — set your private identity name; this is your primary mask
+///                   and the "self" shown to trusted contacts
+///   publicProfile — optional: set a public display name; toggle discoverability
+enum _Step { choice, importBackup, identity, publicProfile }
 
 // ---------------------------------------------------------------------------
 // OnboardingScreen — the top-level StatefulWidget
@@ -161,10 +162,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// because privacy-first is the safer default for an encrypted mesh app.
   bool _identityPublic = false;
 
-  /// Full name for the private profile (only stored on this device).
-  final _privName = TextEditingController();
+  /// Name for the primary private identity — shown to trusted contacts.
+  /// This is the user's "self" on Mesh Infinity (the primary mask from a
+  /// crypto perspective, but simply "your name" from a UX perspective).
+  final _nameController = TextEditingController();
 
-  /// Bio / personal notes for the private profile.
+  /// Bio / personal notes for the private identity (device-only).
   final _privBio = TextEditingController();
 
   /// Multi-line field for the import wizard: line 1 = passphrase, rest = JSON.
@@ -180,7 +183,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     // Calling dispose() releases them when this State object is removed from
     // the tree.  Forgetting this would cause a memory leak.
     _pubName.dispose();
-    _privName.dispose();
+    _nameController.dispose();
     _privBio.dispose();
     _phrase.dispose();
     super.dispose(); // Always call super.dispose() last.
@@ -264,7 +267,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       bridge.startClearnetListener();
       setState(() {
         _busy = false;
-        _step = _Step.publicProfile; // Advance the wizard.
+        _step = _Step.identity; // Advance to "Your Identity" step.
       });
     } else {
       setState(() {
@@ -331,7 +334,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       bridge.startClearnetListener();
       setState(() {
         _busy = false;
-        _step = _Step.publicProfile; // Advance to profile setup.
+        _step = _Step.identity; // Advance to "Your Identity" step.
       });
     } else {
       setState(() {
@@ -361,7 +364,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     // controller.text is the current string in the TextField controlled by
     // that TextEditingController.
     final pubName  = _pubName.text.trim();
-    final privName = _privName.text.trim();
+    final privName = _nameController.text.trim();
     final bio      = _privBio.text.trim();
 
     // Write the public profile.  Empty strings become null so the backend
@@ -506,6 +509,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           }),
         );
 
+      case _Step.identity:
+        return _IdentityStep(
+          key: const ValueKey(_Step.identity),
+          nameController: _nameController,
+          bioController: _privBio,
+          onNext: () => setState(() => _step = _Step.publicProfile),
+        );
+
       case _Step.publicProfile:
         return _PublicProfileStep(
           key: const ValueKey(_Step.publicProfile),
@@ -514,16 +525,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           // onPublicChanged toggles the _identityPublic flag; the setState
           // triggers a rebuild so the checkbox re-renders with the new value.
           onPublicChanged: (v) => setState(() => _identityPublic = v),
-          onNext: () => setState(() => _step = _Step.privateProfile),
-        );
-
-      case _Step.privateProfile:
-        return _PrivateProfileStep(
-          key: const ValueKey(_Step.privateProfile),
-          nameController: _privName,
-          bioController: _privBio,
-          onBack: () => setState(() => _step = _Step.publicProfile),
-          onDone: _finishProfiles, // Final step — save and leave onboarding.
+          onNext: _finishProfiles,  // "Get Started" — save and leave onboarding.
+          onSkip: _finishProfiles,  // "Skip" — save with public profile blank.
+          onBack: () => setState(() => _step = _Step.identity),
         );
     }
   }
@@ -791,15 +795,19 @@ class _ImportStep extends StatelessWidget {
 // Step 3: public profile
 // ---------------------------------------------------------------------------
 
-/// Lets the user set an optional display name visible to other peers and
-/// choose whether their peer ID is advertised publicly.
+/// Lets the user optionally set a public display name and choose whether
+/// their peer ID is advertised on the network.
+///
+/// This is the final onboarding step and is skippable — tapping "Skip"
+/// leaves the public profile blank (identity_is_public = false) and
+/// completes onboarding.  Tapping "Get Started" saves whatever the user
+/// entered and also completes onboarding.
 ///
 /// WHY have a public profile at all?
 /// ----------------------------------
 /// In a mesh network, other nodes can discover your device.  By default we
 /// keep the identity private (only share with contacts you add).  This step
-/// makes that choice explicit and lets technically-minded users opt into
-/// discoverability if they want strangers to be able to initiate contact.
+/// makes that choice explicit and lets users opt into discoverability.
 class _PublicProfileStep extends StatelessWidget {
   const _PublicProfileStep({
     super.key,
@@ -807,19 +815,27 @@ class _PublicProfileStep extends StatelessWidget {
     required this.isPublic,
     required this.onPublicChanged,
     required this.onNext,
+    required this.onSkip,
+    required this.onBack,
   });
 
-  /// Controller for the display name text field.
+  /// Controller for the public display name text field.
   final TextEditingController controller;
 
   /// Whether the user's identity is currently set to public.
   final bool isPublic;
 
-  /// Called when the user toggles the checkbox.
+  /// Called when the user toggles the "show publicly" checkbox.
   final ValueChanged<bool> onPublicChanged;
 
-  /// Called when the user taps "Next" to proceed to the private profile step.
+  /// Called when the user taps "Get Started" — saves and exits onboarding.
   final VoidCallback onNext;
+
+  /// Called when the user taps "Skip" — saves with blank public profile.
+  final VoidCallback onSkip;
+
+  /// Returns to the identity step.
+  final VoidCallback onBack;
 
   @override
   Widget build(BuildContext context) {
@@ -831,16 +847,15 @@ class _PublicProfileStep extends StatelessWidget {
         const _Header(
           title: 'Public Profile',
           subtitle:
-              'This information may be visible to peers who discover you.',
+              'Optional — let the network know you\'re here.\n'
+              'Leave blank to stay private.',
         ),
 
-        // Optional display name — shown to other peers if the user is
-        // discoverable.  Leaving it blank is fine; the app will show the
-        // peer ID instead.
+        // Optional public display name — shown to other peers if discoverable.
         TextField(
           controller: controller,
           decoration: const InputDecoration(
-            labelText: 'Display name (optional)',
+            labelText: 'Public display name (optional)',
             hintText: 'e.g. Alice',
             border: OutlineInputBorder(),
           ),
@@ -848,24 +863,19 @@ class _PublicProfileStep extends StatelessWidget {
 
         const SizedBox(height: 8),
 
-        // CheckboxListTile combines a label, subtitle, and checkbox into one
-        // ready-made row.  We wrap it in a Card for a subtle visual grouping.
         Card(
-          margin: EdgeInsets.zero, // No extra margin around the card.
+          margin: EdgeInsets.zero,
           child: CheckboxListTile(
-            // The checkbox tracks "don't show publicly", which is the
-            // INVERSE of isPublic, so we negate when reading and writing.
-            value: !isPublic,
-            onChanged: (v) => onPublicChanged(!(v ?? true)),
-            title: const Text("Don't show my identity publicly"),
+            // The checkbox tracks "show publicly" directly.
+            value: isPublic,
+            onChanged: (v) => onPublicChanged(v ?? false),
+            title: const Text('Show my identity publicly'),
             subtitle: Text(
-              'Your peer ID will only be shared with contacts you add.',
+              'Other nodes on the mesh can discover and contact you.',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: cs.onSurfaceVariant,
               ),
             ),
-            // controlAffinity.leading puts the checkbox on the left of the
-            // label (more natural for a "don't do X" option).
             controlAffinity: ListTileControlAffinity.leading,
             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           ),
@@ -873,10 +883,24 @@ class _PublicProfileStep extends StatelessWidget {
 
         const SizedBox(height: 24),
 
-        FilledButton(
+        FilledButton.icon(
           onPressed: onNext,
+          icon: const Icon(Icons.arrow_forward_rounded),
+          label: const Text('Get Started'),
           style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
-          child: const Text('Next'),
+        ),
+
+        const SizedBox(height: 12),
+
+        // "Skip" saves with an empty public profile and goes straight to the app.
+        TextButton(
+          onPressed: onSkip,
+          child: const Text('Skip'),
+        ),
+
+        TextButton(
+          onPressed: onBack,
+          child: const Text('Back'),
         ),
       ],
     );
@@ -884,38 +908,33 @@ class _PublicProfileStep extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: private profile (final step)
+// Step 3: identity — primary private identity ("Your Identity")
 // ---------------------------------------------------------------------------
 
-/// Lets the user record a personal name and bio that is stored ONLY on this
-/// device and never transmitted to any peer.
+/// Collects the user's private identity name and an optional bio.
 ///
-/// WHY have a private profile?
-/// ----------------------------
-/// The user may want to use a pseudonym publicly but remember their real name
-/// for themselves (e.g. "Alice" public, "Alice Smith – personal phone" private).
-/// The private profile is also a convenient place for personal notes that
-/// never leave the device.
-class _PrivateProfileStep extends StatelessWidget {
-  const _PrivateProfileStep({
+/// This is the user's primary mask — the "self" they present to trusted
+/// contacts.  From a UX perspective this IS the user; from a crypto
+/// perspective it is the primary mask derived from the root key pair.
+///
+/// The name and bio are stored device-only and shared only with contacts
+/// the user explicitly trusts.  They are never transmitted publicly.
+class _IdentityStep extends StatelessWidget {
+  const _IdentityStep({
     super.key,
     required this.nameController,
     required this.bioController,
-    required this.onBack,
-    required this.onDone,
+    required this.onNext,
   });
 
-  /// Controller for the private display name field.
+  /// Controller for the private identity name field.
   final TextEditingController nameController;
 
-  /// Controller for the "About me" notes field.
+  /// Controller for the optional bio / personal notes field.
   final TextEditingController bioController;
 
-  /// Returns to the public profile step.
-  final VoidCallback onBack;
-
-  /// Saves both profiles and exits onboarding via widget.onComplete().
-  final VoidCallback onDone;
+  /// Advances to the optional public profile step.
+  final VoidCallback onNext;
 
   @override
   Widget build(BuildContext context) {
@@ -925,23 +944,25 @@ class _PrivateProfileStep extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _Header(
-          title: 'Private Profile',
-          subtitle: 'Stored only on this device. Never shared with peers.',
+          title: 'Your identity',
+          subtitle:
+              'This is you on Mesh Infinity — the private identity\n'
+              'you share with people you trust.',
         ),
 
-        // Personal name — might differ from the public display name.
+        // The user's chosen name for trusted contacts.
         TextField(
           controller: nameController,
           decoration: const InputDecoration(
-            labelText: 'Your name (optional)',
-            hintText: 'e.g. Alice Smith',
+            labelText: 'Your name',
+            hintText: 'What trusted contacts will call you',
             border: OutlineInputBorder(),
           ),
         ),
 
         const SizedBox(height: 16),
 
-        // Multi-line bio field for personal notes.
+        // Optional bio — personal notes that never leave the device.
         TextField(
           controller: bioController,
           minLines: 3,
@@ -955,8 +976,6 @@ class _PrivateProfileStep extends StatelessWidget {
 
         const SizedBox(height: 8),
 
-        // Reminder that these fields can be changed later in Settings,
-        // reducing anxiety about having to "get it right" now.
         Text(
           'You can update this at any time in Settings.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -966,22 +985,10 @@ class _PrivateProfileStep extends StatelessWidget {
 
         const SizedBox(height: 24),
 
-        // "Get Started" — the final action in the entire onboarding flow.
-        // Tapping this calls _finishProfiles() which writes both profiles to
-        // the backend and then calls widget.onComplete() to dismiss onboarding.
-        FilledButton.icon(
-          onPressed: onDone,
-          icon: const Icon(Icons.arrow_forward_rounded),
-          label: const Text('Get Started'),
+        FilledButton(
+          onPressed: onNext,
           style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
-        ),
-
-        const SizedBox(height: 12),
-
-        // "Back" lets the user revisit the public profile step.
-        TextButton(
-          onPressed: onBack,
-          child: const Text('Back'),
+          child: const Text('Next'),
         ),
       ],
     );

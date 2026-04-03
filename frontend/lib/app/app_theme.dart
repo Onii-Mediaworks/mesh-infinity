@@ -94,6 +94,19 @@ class MeshTheme {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
       ),
+      chipTheme: ChipThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        side: BorderSide.none,
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        labelTextStyle: WidgetStateProperty.all(
+          const TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
+        ),
+      ),
+      navigationRailTheme: const NavigationRailThemeData(
+        labelType: NavigationRailLabelType.all,
+        groupAlignment: -1,
+      ),
     );
   }
 
@@ -154,6 +167,19 @@ class MeshTheme {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
+      ),
+      chipTheme: ChipThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        side: BorderSide.none,
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        labelTextStyle: WidgetStateProperty.all(
+          const TextStyle(fontSize: 11, fontWeight: FontWeight.w500),
+        ),
+      ),
+      navigationRailTheme: const NavigationRailThemeData(
+        labelType: NavigationRailLabelType.all,
+        groupAlignment: -1,
       ),
     );
   }
