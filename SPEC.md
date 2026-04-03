@@ -48,7 +48,7 @@
   - [5.4 I2P](#54-i2p)
   - [5.5 Clearnet](#55-clearnet)
   - [5.6 Bluetooth](#56-bluetooth)
-  - [5.7 RF / SDR Transport Stack](#57-rf--sdr-transport-stack)
+  - [5.7 RF / SDR Transport Stack](#57-rf-sdr-transport-stack)
   - [5.8 WiFi Direct](#58-wifi-direct)
   - [5.9 NFC](#59-nfc)
   - [5.10 Transport Selection — Constraint Solver](#510-transport-selection-constraint-solver)
@@ -63,14 +63,14 @@
   - [5.20 Blockchain-Dependent Networks (Experimental)](#520-blockchain-dependent-networks-experimental)
   - [5.21 GNUnet](#521-gnunet)
   - [5.22 ZeroTier](#522-zerotier)
-  - [5.23 Tailscale / Headscale](#523-tailscale--headscale)
+  - [5.23 Tailscale / Headscale](#523-tailscale-headscale)
   - [5.24 libp2p Integration](#524-libp2p-integration)
   - [5.25 Native Mixnet Tier](#525-native-mixnet-tier)
   - [5.26 Traffic Obfuscation](#526-traffic-obfuscation)
   - [5.27 Traffic Unidentifiability](#527-traffic-unidentifiability)
   - [5.28 Offline Transport](#528-offline-transport)
   - [5.29 Community Overlay Networks](#529-community-overlay-networks)
-  - [5.30 Overlay Transport Network Requirements](#530-overlay-transport-network-requirements)
+  - [5.30 Overlay Transport Client Architecture](#530-overlay-transport-client-architecture)
   - [5.31 KCP Reliability Sublayer](#531-kcp-reliability-sublayer)
   - [5.32 External Participation Model](#532-external-participation-model)
 - [6. Routing](#6-routing)
@@ -206,13 +206,15 @@
   - [17.11 Mesh DNS System](#1711-mesh-dns-system)
   - [17.12 Node Management Interface](#1712-node-management-interface)
   - [17.13 Module System](#1713-module-system)
+  - [17.14 Async Runtime Model](#1714-async-runtime-model)
+  - [17.15 Bootstrap Protocol](#1715-bootstrap-protocol)
 - [18. Plugin System](#18-plugin-system)
   - [18.0 Plugin API Versioning](#180-plugin-api-versioning)
   - [18.1 Three Tiers of Building on Mesh Infinity](#181-three-tiers-of-building-on-mesh-infinity)
   - [18.2 Plugin Permission Framework](#182-plugin-permission-framework)
   - [18.3 Permanently Off-Limits](#183-permanently-off-limits)
   - [18.4 Hybrid Clearnet/Mesh Exposure](#184-hybrid-clearnetmesh-exposure)
-  - [18.5 OIDC Authentication for Plugins and Services](#185-oidc-authentication-for-plugins-and-services)
+  - [18.5 OIDC Authentication for Hosted Services and Garden](#185-oidc-authentication-for-hosted-services-and-garden)
   - [18.6 Agentic Distribution Plugin — Qubes Air over Mesh](#186-agentic-distribution-plugin-qubes-air-over-mesh)
 - [19. Federation](#19-federation)
   - [19.0 Overview](#190-overview)
@@ -239,7 +241,6 @@
   - [21.4 Developer Mode and Debug Menu](#214-developer-mode-and-debug-menu)
   - [21.5 Built-in Network Simulator](#215-built-in-network-simulator)
   - [21.6 CI/CD Pipeline Requirements](#216-cicd-pipeline-requirements)
-- [22. UI/UX](#22-uiux)
   - [22.0 Overview](#220-overview)
 - [Part A — UI](#part-a-ui)
   - [22.1 Global Design System](#221-global-design-system)
@@ -247,10 +248,10 @@
   - [22.3 Navigation Shell](#223-navigation-shell)
   - [22.4 Global Widgets](#224-global-widgets)
   - [22.5 Chat Section](#225-chat-section)
-  - [22.6 Garden Section](#226-garden-section) — sub-pages: Channels, Feed, Explore
-  - [22.7 Files Section](#227-files-section) — sub-pages: Transfers, Shared
-  - [22.8 Contacts Section](#228-contacts-section) — sub-pages: All, Online, Requests
-  - [22.9 Network Section](#229-network-section) — sub-pages: Status, Nodes, Transports
+  - [22.6 Garden Section](#226-garden-section)
+  - [22.7 Files Section](#227-files-section)
+  - [22.8 Contacts Section](#228-contacts-section)
+  - [22.9 Network Section](#229-network-section)
   - [22.10 Settings Section](#2210-settings-section)
   - [22.11 You Section](#2211-you-section)
   - [22.12 Playful Tidbits](#2212-playful-tidbits)
@@ -284,8 +285,9 @@
   - [22.51 Error States Summary](#2251-error-states-summary)
   - [22.52 Remote Session UI](#2252-remote-session-ui)
   - [22.53 Tier Discovery Screen](#2253-tier-discovery-screen)
-  - [22.54 Services Section](#2254-services-section) — sub-pages: My Services, Browse, Hosting
+  - [22.54 Services Section](#2254-services-section)
   - [22.55 Settings Screen Updates](#2255-settings-screen-updates)
+  - [22.56 Debug & Testing Menu (Debug Builds Only)](#2256-debug-testing-menu-debug-builds-only)
 
 ---
 
@@ -1357,10 +1359,13 @@ Each entry in the network map:
 NetworkMapEntry {
     peer_id: [u8; 32],
     public_keys: Vec<PublicKeyRecord>,
-    last_seen: u64,             // Unix timestamp
+    sequence: u64,              // monotonically increasing; merge precedence (§4.5)
+    prev_hash: [u8; 32],       // SHA-256 of prior entry; self-ratchet chain (§4.5)
+    last_seen: u64,             // Unix timestamp; operational hint for staleness pruning
     transport_hints: Vec<TransportHint>,
     public_profile: Option<PublicProfileSummary>,
-    services: Vec<PublicServiceAdvertisement>,
+    services: Vec<ServicePublication>,  // public service advertisements (§12.4)
+    sig: [u8; 64],              // Ed25519 over all fields above; self-signed by peer_id
 }
 
 PublicKeyRecord {
@@ -1375,7 +1380,7 @@ TransportHint {
 }
 ```
 
-Map entries are versioned by `last_seen` timestamp. When merging two maps, the entry with the newer `last_seen` wins for each `peer_id`. Entries older than a configurable staleness threshold (default: 30 days) are pruned from the local map.
+Map entries are versioned by self-ratcheted sequence numbers (§4.5). When merging two maps, the entry with the higher `sequence` wins for each `peer_id`; signature and hash-chain continuity are verified before acceptance. The `last_seen` timestamp is an operational hint used for staleness pruning (default threshold: 30 days) — it does not determine merge precedence.
 
 **Gossip validation — entire NetworkMapEntry surface:**
 
@@ -1860,7 +1865,7 @@ When a node needs to find a peer or service, the autodiscovery pipeline runs:
 
 Pipeline stages are skipped based on ThreatContext — Critical skips stages 1-2 for untrusted paths, stage 3 (mDNS), stage 5 (directory nodes over clearnet), stage 6 (clearnet bootstrap).
 
-#### 4.8.4 Path Building
+#### 4.8.5 Path Building
 
 Discovery finds a peer. Path building determines how to route to them. These are distinct problems.
 
@@ -3279,13 +3284,13 @@ libp2p is a modular networking stack underlying IPFS, Ethereum, and many other d
 
 **What we use:**
 - **Transport backends** — TCP, WebSocket as pluggable backends feeding into the Mesh Infinity transport layer. Note: QUIC is explicitly not used — WireGuard already provides encrypted multiplexed transport with better properties for our use case. Adding QUIC under WireGuard would be redundant encryption; replacing WireGuard with QUIC would lose WireGuard's authentication and PSK properties.
-- **GossipSub** — battle-tested gossip pub/sub with configurable fanout and scoring; candidate for network map propagation
+- **GossipSub** — battle-tested gossip pub/sub with configurable fanout and scoring; used for network map propagation (§4.1) and reachability announcement dissemination (§6.2)
 - **Rendezvous protocol** — lightweight peer discovery at known rendezvous points, useful as a bootstrap mechanism
 - **NAT traversal** — AutoNAT provides NAT detection. Hole punching is explicitly not used — Mesh Infinity uses mesh relay nodes (DERP-style, §6.11) instead of STUN-coordinated hole punching. libp2p's Circuit Relay is also not used (our wrapper nodes handle this).
 
 **What we explicitly do not use:**
 - **Identify protocol** — automatically exchanges all listen addresses and supported protocols on connection. This is a metadata leak we do not want. Disabled entirely; replaced with our own capability exchange.
-- **Kademlia DHT** — DHT queries reveal peer interest patterns (§4.8). Not used for routing or discovery. Content routing via DHT is a §11 concern (IPFS integration), not a transport concern.
+- **Kademlia DHT** — DHT queries reveal peer interest patterns (§4.8). Not used for transport-layer routing or peer discovery — Mesh Infinity uses gossip propagation (§4.1) and directory nodes (§4.3) instead, which avoid the behavioral analysis risk of structured lookups. Content routing via DHT is a §11 concern (IPFS integration), not a transport concern.
 - **Circuit Relay** — libp2p's relay is for availability, not anonymity. Our wrapper node model (§4.4) handles this.
 
 **Privacy model:** libp2p is an implementation accelerator, not an architectural dependency. Our privacy model remains ours. All libp2p channels are treated as untrusted transport; our encryption and validation layers sit on top.
@@ -3765,7 +3770,7 @@ dn42 (Decentralized Network 42) is a large dynamic VPN network using internet te
 
 #### 5.29.3 cjdns / Hyperboria
 
-cjdns is a fully specced standalone transport in §5.19. As a community overlay network it uses the same BGP-style routing as Anonet and dn42. Refer to §5.19 for the complete specification. Solver entry: `TransportOverlay::Cjdns`.
+cjdns is a fully specced standalone transport in §5.19. As a community overlay network it uses DHT-based routing (distinct from Anonet and dn42's BGP-style routing). Refer to §5.19 for the complete specification. Solver entry: `TransportOverlay::Cjdns`.
 
 
 #### 5.29.4 ZeroTier
@@ -3790,7 +3795,7 @@ Community overlay transports score in the solver:
 |---------|--------------|-----------------|--------------|
 | Anonet | 0.2 | Low | Low (small community) |
 | dn42 | 0.1 | Low | Medium |
-| cjdns | 0.3 | Low | Medium |
+| cjdns | 0.6 | Low | Medium |
 | ZeroTier | 0.1 | Very low | High |
 
 These overlays are used when: the user is already connected to them, ThreatContext warrants avoiding clearnet, or the target service is only reachable via that overlay. They are never the default transport — clearnet WireGuard remains the default for connected peers.
@@ -3885,7 +3890,7 @@ Application / mesh protocol
 
 KCP is transparent to everything above it. From the perspective of routing, S&F, the tunnel protocol (§12.3), or any application, KCP simply provides a reliable ordered byte stream. Nothing above KCP needs to know it exists.
 
-#### 5.30.1 Why KCP Over TCP-in-WireGuard
+#### 5.31.1 Why KCP Over TCP-in-WireGuard
 
 WireGuard explicitly does not support TCP transport (known limitation: TCP-over-TCP meltdown). When inner TCP traffic is tunnelled over a TCP carrier, both layers retransmit independently — a single lost packet triggers retransmissions at both layers simultaneously, causing exponential congestion collapse. KCP avoids this by providing reliability at the ARQ layer without TCP's structural costs:
 
@@ -3895,7 +3900,7 @@ WireGuard explicitly does not support TCP transport (known limitation: TCP-over-
 - **Configurable ACK behaviour:** Immediate ACKs when needed, eliminating TCP's delayed-ACK RTT inflation
 - **10–20% bandwidth overhead** in exchange for 30–40% lower average latency and up to 3× lower maximum latency under loss
 
-#### 5.30.2 Anonymization Safety
+#### 5.31.2 Anonymization Safety
 
 KCP operates entirely inside the WireGuard encryption envelope. An observer outside the WireGuard session sees only encrypted UDP datagrams — KCP headers, ACK packets, and retransmit patterns are invisible. The obfuscation layer (§5.26) treats all WireGuard datagrams identically, further erasing any statistical signature.
 
@@ -3903,7 +3908,7 @@ Uniform deployment is the key safety property. KCP runs on every mesh session wi
 
 **Cover traffic calibration:** The traffic shaping system (§15.4) fills all WireGuard packets to path MTU using bundling and padding, with cover traffic maintaining constant rate during idle periods. KCP's ACK overhead is absorbed by the bundling layer — ACKs are bundled with other pending frames rather than generating separate packets. The jitter floor for sessions using KCP must be ≥ one KCP ACK interval (default: ≥ 20ms at the obfuscation layer) so that ACK timing does not survive jitter stripping.
 
-#### 5.30.3 Configuration Parameters
+#### 5.31.3 Configuration Parameters
 
 KCP is transport-agnostic — it does not handle sending or receiving packets directly. It is implemented as a pure algorithm (two source files: `ikcp.h`, `ikcp.c`) with a callback interface that the WireGuard session provides.
 
@@ -3929,13 +3934,13 @@ dead_link: 20     // declare session dead after 20 consecutive unacknowledged re
 
 **Why congestion control is disabled (`nc: 1`):** KCP's congestion control is designed for a single end-to-end path sharing bandwidth with unknown other flows. The mesh transport solver (§5.10, §6.3) already manages path selection, load balancing across multiple routes, and transport diversity. Running KCP's congestion control on top of the solver's routing decisions would produce conflicting signals — the solver might deliberately spread load across paths while KCP tries to throttle based on loss it sees on a single path. Disabling congestion control in KCP and deferring it entirely to the routing layer is the correct architectural split.
 
-#### 5.30.4 Session Lifecycle Integration
+#### 5.31.4 Session Lifecycle Integration
 
 KCP sessions are created and destroyed with their WireGuard sessions. A new WireGuard handshake produces a new KCP conversation ID (`conv`) — the `conv` is derived from the WireGuard session key's first 4 bytes so both sides compute it independently without a round trip.
 
 When `dead_link` is reached (20 consecutive unacknowledged retransmissions), the KCP session is declared dead. The WireGuard session is torn down and a new handshake initiated. From the application's perspective this looks like a brief connection interruption — the same reconnect handling that exists for network path changes.
 
-#### 5.30.5 Interaction with Specific Subsystems
+#### 5.31.5 Interaction with Specific Subsystems
 
 | Subsystem | KCP role |
 |-----------|---------|
@@ -4023,13 +4028,9 @@ This section specifies how packets find their way through the mesh — from the 
 - **§6.11 Mesh Relay (DERP-Style NAT Traversal)** — relay through trusted mesh nodes instead of STUN hole punching; no coordination server, no IP disclosure
 - **§6.12 Network Isolation Mode** — explicit darknet mode; disables all discovery and DHT; pre-configured peers only
 
-
-
-Mesh Infinity 
-
 ### 6.1 Hop-by-Hop Routing
 
-uses **discovery-driven, hop-by-hop routing** by default. This model has strong privacy properties: no single node knows the full path a message takes.
+Mesh Infinity uses **discovery-driven, hop-by-hop routing** by default. This model has strong privacy properties: no single node knows the full path a message takes.
 
 **Position-hiding privacy property:** In hop-by-hop routing, no intermediate node knows its position in the routing path. A node that receives from peer A and forwards to peer B knows only those two facts. An adversary who compromises any single intermediate node learns only: "A and B were adjacent in a routing path at this time." This is fundamentally stronger than circuit routing, where intermediate nodes know their position from the encoded path header.
 
@@ -4244,7 +4245,85 @@ Messages have a configurable sender-side TTL (default: 7 days). The signed expir
 - S&F node total storage cap: configurable (default 2 GB for client nodes, 20 GB for server-mode). When cap is reached: oldest expired messages purged first, then oldest messages for destinations with the largest queues
 - **Deposit rate limit per inbound tunnel:** Max **60 deposits per minute** per tunnel connection. The S&F node cannot identify senders but can rate-limit the tunnel delivering deposits — this bounds the flood rate from any single network path regardless of how many senders it represents
 
-**CancellationBased release condition:** Enables dead man's switch functionality. A sender pre-signs a message, distributes it to store-and-forward nodes, and periodically sends signed cancellation signals. If the cancellation stops arriving within the `cancellation_window_secs`, the message is released. Full cancellation protocol design is deferred (see Deferred Questions).
+**CancellationBased release condition:** Enables dead man's switch functionality. A sender pre-signs a message, distributes it to store-and-forward nodes, and periodically sends signed cancellation signals. If the cancellation stops arriving within the `cancellation_window_secs`, the message is released.
+
+**Cancellation protocol design:**
+
+The core challenge is that sealed sender (above) means the S&F node does not know who deposited the message — yet cancellation signals must be verifiable as originating from the same sender. The solution is an **ephemeral cancellation keypair** that is cryptographically unlinkable to the sender's mesh identity.
+
+**Deposit phase:**
+
+1. Sender generates a single-use Ed25519 keypair `(cancel_sk, cancel_pk)` for this deposit. The keypair is used only for this message and is not derived from, or linkable to, the sender's mesh identity or any mask key.
+2. `cancel_pk` is included in the `StoreAndForwardRequest` via the `cancel_pk` field (present only when `release_condition` is `CancellationBased`).
+3. The S&F node stores the message, associates `cancel_pk` with it, and assigns a random `deposit_nonce: [u8; 16]` returned to the sender as an acknowledgment.
+4. The sender retains `cancel_sk` and `deposit_nonce` for the lifetime of the dead man's switch.
+
+```rust
+// Additional field on StoreAndForwardRequest when release_condition is CancellationBased:
+cancel_pk: Option<[u8; 32]>,  // ephemeral Ed25519 public key; required for CancellationBased,
+                                // None for all other release conditions
+```
+
+**Cancellation heartbeat:**
+
+The sender periodically sends a `CancellationSignal` to each S&F node holding a copy of the message. The recommended interval is `cancellation_window_secs / 3` — frequent enough that transient network interruptions do not accidentally trigger the switch.
+
+```rust
+CancellationSignal {
+    deposit_nonce: [u8; 16],   // identifies which deposit this signal applies to
+    timestamp:     u64,        // monotonically increasing; must be strictly greater
+                                // than the last accepted timestamp for this deposit
+    sig:           [u8; 64],   // Ed25519 over (deposit_nonce || timestamp) by cancel_sk
+}
+```
+
+Processing rules:
+1. S&F node looks up the deposit by `deposit_nonce`. If not found, reject silently (prevents oracle for deposit enumeration).
+2. Verify `sig` against the stored `cancel_pk`. If invalid, reject silently.
+3. Verify `timestamp > last_cancellation`. If not, reject (replay protection).
+4. Update `last_cancellation = timestamp`.
+5. If `cancellation_window_secs` elapses with no valid `CancellationSignal`, the message is released for delivery to the destination.
+
+**Explicit release and revoke:**
+
+The sender can also trigger immediate release or destroy the message:
+
+```rust
+ReleaseSignal {
+    deposit_nonce: [u8; 16],
+    sig:           [u8; 64],   // Ed25519 over ("release" || deposit_nonce) by cancel_sk
+}
+
+RevokeSignal {
+    deposit_nonce: [u8; 16],
+    sig:           [u8; 64],   // Ed25519 over ("revoke" || deposit_nonce) by cancel_sk
+}
+```
+
+- `ReleaseSignal`: message is immediately released for delivery (sender intentionally triggers the switch).
+- `RevokeSignal`: message is permanently deleted without delivery (sender changed their mind). The S&F node responds with acknowledgment and purges the payload.
+
+**Hard bounds:**
+
+- `max_lifetime` (from the `CancellationBased` struct) is an absolute upper bound. When reached, the message is deleted regardless of cancellation state — the dead man's switch cannot hold a message indefinitely.
+- If the S&F node restarts, it must persist `cancel_pk`, `deposit_nonce`, and `last_cancellation` alongside the stored message. Loss of `cancel_pk` makes the deposit unverifiable — the S&F node must treat this as cancellation failure and release the message after `cancellation_window_secs`.
+
+**Redundancy:**
+
+Senders SHOULD deposit the same message to multiple S&F nodes (with separate ephemeral keypairs for each) to mitigate single-node failure. A dead S&F node cannot release the message; redundant deposits ensure at least one copy is released if the sender goes silent. The destination deduplicates by message hash.
+
+**Security properties:**
+
+- **Sealed sender preserved:** `cancel_pk` is ephemeral, single-use, and not derived from the sender's mesh identity. The S&F node cannot link it to any peer.
+- **Forgery resistance:** The S&F node cannot forge cancellation, release, or revoke signals without `cancel_sk`.
+- **Replay protection:** Monotonic timestamp requirement on `CancellationSignal` prevents replay of old signals.
+- **Intentional early release on cancellation failure:** If an attacker blocks cancellation signals (network disruption, targeted denial), the message releases — this is the designed behavior of a dead man's switch.
+
+**Metadata honestly documented:**
+
+- Cancellation signal traffic reveals that "someone is keeping a dead man's switch alive for a deposit on this node." Mitigation: cancellation signals should be piggybacked on regular gossip exchanges (same pattern as S&F queries, above) so they are indistinguishable from normal gossip traffic.
+- If an attacker acquires `cancel_sk`, they can suppress the switch indefinitely up to `max_lifetime`. Mitigation: `max_lifetime` provides an absolute bound; sender should store `cancel_sk` only in memory, never on disk.
+- The pattern of cancellation signal timing may fingerprint the sender's online schedule. Mitigation: jitter the heartbeat interval by ±30% of `cancellation_window_secs / 3`.
 
 The store-and-forward mechanism operates above the routing layer. The hop-by-hop router handles live delivery; store-and-forward is invoked only when live delivery fails and a capable server node is reachable.
 
@@ -6978,15 +7057,15 @@ Members with `ManageWebhooks` can create, view, and delete webhooks for their ch
 
 Public and Open Gardens can opt into the **Garden Discovery Index** — a distributed, mesh-hosted directory of discoverable Garden communities.
 
-**Index structure:** The discovery index is a DHT-backed distributed data structure maintained by participating mesh nodes. Entries are signed by the Garden's service identity.
+**Index structure:** The discovery index uses the existing gossip-propagated service advertisement system (§12.4) cached by directory nodes (§4.3) and optionally curated by service indexes (§12.5). A discoverable Garden publishes a `ServiceRecord` with a `ServicePublication` scoped to `Public` or `Index`, containing Garden-specific metadata in a typed `GardenDiscoveryEntry`:
 
 ```rust
 GardenDiscoveryEntry {
     garden_id:       [u8; 32],
     display_name:    String,
     description:     Option<String>,
-    member_count:    u32,            // approximate; updated periodically
-    tags:            Vec<String>,    // user-defined topic tags
+    member_count:    u32,            // approximate; updated periodically by the hosting cluster
+    tags:            Vec<String>,    // user-defined topic tags (max 10, max 32 bytes each)
     language:        Option<String>,
     network_type:    NetworkType,    // Public or Open only (Closed/Private cannot be listed)
     join_endpoint:   [u8; 32],      // mesh address of the Garden cluster entry point (§17.6)
@@ -6995,9 +7074,13 @@ GardenDiscoveryEntry {
 }
 ```
 
-Discovery is opt-in. A Garden is listed only when an admin explicitly enables discovery. Discovery can be disabled at any time; the entry is removed from the index within the next propagation cycle.
+The `GardenDiscoveryEntry` is carried as the `application_data` field of the `ServicePublication` (§12.4). The `application_id` field identifies it as a Garden discovery entry. The `ServiceRecord.sig` provides the outer authentication; `GardenDiscoveryEntry.signature` provides Garden-identity-level authentication.
 
-The discovery UI allows browsing by tag, language, member count, and activity level. Search is local after fetching the index — no query leaves the device.
+**Propagation model:** Garden discovery entries propagate via the same gossip mechanism as all other network map and service advertisement data (§4.1). Directory nodes (§4.3) cache them and serve them to bootstrapping clients. Service indexes (§12.5) can curate filtered views (e.g., "gaming Gardens," "local language Gardens"). No DHT queries are involved — discovery data arrives passively through gossip, eliminating the behavioral analysis risk of structured lookups.
+
+Discovery is opt-in. A Garden is listed only when an admin explicitly enables discovery in the Garden settings. Discovery can be disabled at any time; the service advertisement is withdrawn and propagates out of the index within the next gossip cycle.
+
+The discovery UI (§22.6.3, §22.6.5) allows browsing by tag, language, member count, and activity level. Search is performed locally over the cached index — no query leaves the device.
 
 #### 10.2.14 Member Onboarding
 
@@ -8791,6 +8874,8 @@ Mesh Infinity is a **superset** of Tailscale's feature set with a fundamentally 
 | Funnel | §13.16 | Bidirectional: expose Infinet services AND proxy external access |
 | Tailscale SSH | §13.14.7 | Opt-in, disabled by default, heavy caveats |
 | Network topology view | UI network screen | Trust-weighted visualization |
+| Coordination server | §4.3 Directory Nodes | No central coordinator, fully distributed |
+| DERP relays | §4.4 Wrapper Nodes + §6.8 Store-and-Forward | Trust-selected relays, anonymous forwarding |
 
 **Explicitly absent — by design:**
 
@@ -8799,8 +8884,6 @@ Mesh Infinity is a **superset** of Tailscale's feature set with a fundamentally 
 - **Network flow logs:** Tailscale Enterprise offers per-flow traffic logs. Not implemented. Flow logs are a surveillance tool. Their absence is a feature, not a gap.
 
 - **Tailscale coordination server speed:** Direct path establishment on Tailscale takes milliseconds via the coordination server. Mesh Infinity path establishment via the distributed gossip model takes longer — seconds to minutes for cold paths. This is an honest performance tradeoff for the privacy gain.
-| Coordination server | §4.3 Directory Nodes | No central coordinator, fully distributed |
-| DERP relays | §4.4 Wrapper Nodes + §6.8 Store-and-Forward | Trust-selected relays, anonymous forwarding |
 
 Mesh Infinity's key differentiators beyond Tailscale parity:
 - **No central coordination server** — fully distributed, no single point of failure or trust
@@ -9945,58 +10028,7 @@ The solver uses this profile to **automatically select the fastest viable path**
 
 #### 16.10.3 Selective Reliability — KCP Partial Mode
 
-The current spec (§5.30.5) offers only two KCP modes: full reliability or `no_reliability: true` (bypass entirely). Real-time streams need a middle ground — **selective reliability** that retransmits critical data (keyframes, reference frames, MNRDP
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
- state) while accepting loss on expendable data (delta frames, audio packets).
+The current spec (§5.31.5) offers only two KCP modes: full reliability or `no_reliability: true` (bypass entirely). Real-time streams need a middle ground — **selective reliability** that retransmits critical data (keyframes, reference frames, MNRDP state) while accepting loss on expendable data (delta frames, audio packets).
 
 ```rust
 KcpReliabilityMode {
@@ -10559,7 +10591,7 @@ mi_list_masks(ctx: *mut MeshContext) -> *const c_char  // JSON array of masks
 mi_create_mask(ctx: *mut MeshContext, name: *const c_char, avatar_color: u32) -> *const c_char  // JSON: { mask_id }
 mi_update_mask_profile(ctx: *mut MeshContext, mask_id: *const c_char, profile_json: *const c_char) -> i32
 mi_delete_mask(ctx: *mut MeshContext, mask_id: *const c_char) -> i32
-mi_set_active_mask(ctx: *mut MeshContext, mask_id: *const c_char) -> i32
+mi_set_active_mask(ctx: *mut MeshContext, room_id: *const c_char, mask_id: *const c_char) -> i32
 mi_rotate_preauth_key(ctx: *mut MeshContext, mask_id: *const c_char) -> i32
 
 // Calls
@@ -10747,7 +10779,7 @@ collection_key = HKDF-SHA256(
 )
 ```
 
-Where `<collection_name>` is one of: `rooms`, `messages`, `peers`, `network_map`, `signal_sessions`, `settings`, `trust_endorsements`, `prekeys`, `file_transfers`.
+Where `<collection_name>` is one of: `rooms`, `messages`, `peers`, `network_map`, `signal_sessions`, `settings`, `trust_endorsements`, `prekeys`, `file_transfers`, `module_config`.
 
 Compromise of one collection file does not expose others (different derived keys). Compromise of the master key exposes all collections -- but the master key is protected by the platform keystore (§3.6).
 
@@ -10818,7 +10850,7 @@ The `.meshinfinity` TLD is the root of all mesh-internal naming. It is a mesh-in
 
 **`*.public.meshinfinity`**
 
-Publicly advertised identities, Gardens, and services. Names here are registered in the mesh-wide discovery DHT (same infrastructure as Garden discovery, §10.2.13). Any mesh node can resolve them. Registration requires proof of ownership of the corresponding mesh address (signed advertisement).
+Publicly advertised identities, Gardens, and services. Names are registered via gossip-propagated service advertisements (§12.4, same infrastructure as Garden discovery §10.2.13) and cached by directory nodes (§4.3). Any mesh node can resolve them. Registration requires proof of ownership of the corresponding mesh address (signed advertisement).
 
 ```
 Examples:
@@ -10902,7 +10934,7 @@ The resolver listens on the loopback interface. The app uses it directly; other 
 For users and communities that want to be reachable from the clearnet without requiring the Mesh Infinity app, several paths exist. None of these are operated by Onii Mediaworks — the mesh does not become dependent on our infrastructure.
 
 **User-owned domains:**
-Anyone with a domain can point it at their Funnel relay or clearnet bridge (§13.16). DNS ownership verification (§10.2.13) is required before a domain can be associated with a mesh service. The association is stored in the Garden/service configuration and displayed publicly as the canonical clearnet address.
+Anyone with a domain can point it at their Funnel relay or clearnet bridge (§13.16). DNS ownership verification is required before a domain can be associated with a mesh service (the domain owner publishes a TXT record containing their mesh address; the mesh node verifies the record before accepting the association). The association is stored in the Garden/service configuration and displayed publicly as the canonical clearnet address.
 
 **Free subdomain services:**
 The Garden plugin and Funnel feature include first-class integration with free subdomain providers:
@@ -11419,7 +11451,7 @@ Uninstall:
 
 Plugins are distributed through three channels:
 
-1. **Mesh distribution** (preferred) — plugins published to a mesh-hosted plugin index (DHT-backed, similar to Garden Discovery §10.2.13). Index entries are signed by the plugin author. Users browse and install from within the app (Settings → Plugins → Browse).
+1. **Mesh distribution** (preferred) — plugins published to a mesh-hosted service index (§12.5, same gossip-propagated infrastructure as Garden discovery §10.2.13). Index entries are signed by the plugin author. Users browse and install from within the app (Settings → Plugins → Browse).
 
 2. **File import** — `.miplugin` file (ZIP containing manifest.toml + WASM binary + signature). Can be shared via mesh file transfer, USB, or any other channel. Treated as untrusted until signature verified.
 
@@ -16251,7 +16283,7 @@ Lists all group rooms the user has joined. Garden communities use the same `Room
 AppBar(
   title: Text('Garden'),
   actions: [
-    IconButton(icon: Icon(Icons.add_outlined), tooltip: 'Join or create', onPressed: _openJoinCreate),
+    IconButton(icon: Icon(Icons.add_outlined), tooltip: 'Join a garden', onPressed: _openJoinGarden),
     SizedBox(width: 4),
   ],
 )
@@ -16476,7 +16508,7 @@ ListTile(
 ```
 
 **_ChannelView (center):**
-Uses same message list + composer bar as ThreadScreen (§5.2). AppBar shows `#channel-name`. No peer avatar — community context.
+Uses same message list + composer bar as ThreadScreen (§22.5.2). AppBar shows `#channel-name`. No peer avatar — community context.
 
 **_MemberPanel (right, 200px):**
 ```
@@ -22248,7 +22280,7 @@ New users must complete a minimal security onboarding before first use:
 
 1. **Ambient state disclosures** (§22.23) -- presented simply, not as a wall of text.
 2. **PIN setup prompt** -- strongly encouraged, skippable with acknowledgment.
-3. **Threat context selection** -- Normal / Elevated / Critical with plain-language explanations.
+3. **Threat context defaults to Normal** -- no forced selection during onboarding. Users who need Elevated or Critical mode can change it in Settings → Network → Threat Context at any time. The Explainer step (§22.42.4) mentions that threat context exists and where to find it, without requiring a decision.
 4. **Contact import or first pairing** -- gets the user connected immediately.
 
 Onboarding must not:
@@ -22256,6 +22288,7 @@ Onboarding must not:
 - Require technical knowledge to complete.
 - Present security choices as gatekeepers to using the app.
 - Use fear-based language.
+- Force users to understand threat models before they can use the app.
 - Be skippable entirely (ambient disclosures are mandatory; the rest can be deferred).
 
 ---
@@ -22459,9 +22492,11 @@ class TierState extends ChangeNotifier {
 List<AppSection> get _visibleSections {
   return [
     AppSection.chat,
-    AppSection.communities,
+    AppSection.garden,
     AppSection.files,
     AppSection.contacts,
+    if (tier.tierUnlocked(MeshTier.services)) AppSection.services,
+    AppSection.you,
     if (tier.tierUnlocked(MeshTier.network)) AppSection.network,
     AppSection.settings,
   ];
@@ -22722,60 +22757,7 @@ Swipe gestures are powerful but invisible. First-time users must be taught them.
 
 ### 22.41 Security Status Bar
 
-**File**: `shell/security_status_bar.dart`
-
-Persistent banner displayed above all content when a security condition is active.
-Height: 0 when inactive. Animates in/out with 200ms `Curves.easeOut`.
-
-**States:**
-
-| State | Condition | Background | Text | Height | Dismissible |
-|-------|-----------|------------|------|--------|-------------|
-| Hidden | Normal mode, no events | — | — | 0 | N/A |
-| LoSec | Any active session in LoSec | `kSecAmber` | "LoSec mode active — fine for everyday use" | 32 | Yes, per session |
-| Direct | Any active direct connection | `kSecRed` | "⚠ DIRECT CONNECTION — no mesh routing" | 36 | No, while active |
-| Compromised | Message received from compromised peer | `kSecPurple` | "Message from compromised peer — [name]" | 32 | Yes, after tap |
-| KeyChange | Key change pending approval | `kBrand` | "[Name]'s key changed — tap to review" | 32 | No, until actioned |
-
-**Widget structure:**
-```
-AnimatedContainer(
-  height: _height,  // 0 or specified height
-  duration: 200ms,
-  curve: Curves.easeOut,
-  color: _color,
-  child: SafeArea(
-    bottom: false,
-    child: Row(
-      padding: EdgeInsets.symmetric(horizontal: 16),
-      children: [
-        Icon(_icon, size: 16, color: Colors.white),
-        SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            _message,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: Colors.white,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        if (_dismissible)
-          GestureDetector(
-            onTap: _onDismiss,
-            child: Icon(Icons.close, size: 16, color: Colors.white),
-          ),
-      ],
-    ),
-  ),
-)
-```
-
-**Priority order** when multiple conditions active: Direct > Compromised > KeyChange > LoSec.
-Only one bar shown at a time.
+See §22.4.1 for the full SecurityStatusBar widget specification. This section is a cross-reference only — the canonical definition lives in the shared widgets section to avoid duplication.
 
 ### 22.42 Onboarding Flow
 
@@ -24089,7 +24071,7 @@ AppShell
   │   │   └── [tap community]     → CommunityScreen (push mobile, detail pane desktop)
   │   └── CommunityScreen
   │       ├── [channel tap]       → ChannelScreen (if mobile)
-  │       ├── [settings icon]     → CommunitySettingsScreen (push, admin only)
+  │       ├── [settings icon]     → GardenSettingsScreen (push, admin only)
   │       │   └── [edit profile]  → GardenProfileEditScreen (push)
   │       └── [member tap]        → ProfilePreviewScreen (push)
   │           └── [View contact]  → ContactDetailScreen (push)

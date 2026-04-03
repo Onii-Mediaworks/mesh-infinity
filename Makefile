@@ -39,8 +39,7 @@ APP_BUILD_LABEL  := $(APP_VERSION)-r$(APP_REV)
         linux-debug linux-release \
         windows-rust-debug windows-rust-release \
         windows-bundle-debug windows-bundle-release \
-        windows-debug windows-release \
-        push
+        windows-debug windows-release
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
@@ -645,15 +644,3 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 windows-debug windows-release: windows-%:
 	$(MAKE) windows-rust-$*
 	$(MAKE) windows-bundle-$*
-
-# ── Push with prerelease tag ──────────────────────────────────────────────────
-# Creates a revision tag (v<version>-r<commit_count>) and pushes code + tag to
-# origin.  The tag lives on Gitea, so the push mirror preserves it on GitHub
-# and the prerelease workflow attaches assets to it.
-
-push:
-	@rev=$$(git rev-list --count HEAD); \
-	tag="v$(APP_VERSION)-r$$rev"; \
-	echo "Tagging $$tag ..."; \
-	git tag -f "$$tag" HEAD; \
-	git push origin main "$$tag"
