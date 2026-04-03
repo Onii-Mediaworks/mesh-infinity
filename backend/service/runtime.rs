@@ -337,6 +337,14 @@ pub struct MeshRuntime {
     /// a previously processed message.  Bounded per room (LRU, 10 000 entries)
     /// to prevent unbounded memory growth.  Persisted to vault across restarts.
     pub dedup_msg_cache: Mutex<crate::messaging::delivery::DeliveredMessageCache>,
+    /// Pending message requests from unpaired senders (§10.1.1).
+    ///
+    /// Messages arriving via `message_request` frames from peers who are NOT
+    /// in the contact store land here instead of the main inbox.  Persisted to
+    /// vault so the queue survives app restarts.  Rate-limited to 5 requests
+    /// per unique sender and 200 total entries; requests older than 30 days
+    /// are pruned on load.
+    pub pending_message_requests: Mutex<Vec<serde_json::Value>>,
 }
 
 // SAFETY: All mutable state is wrapped in `Mutex`, making MeshRuntime safe
@@ -412,6 +420,7 @@ impl MeshRuntime {
             tor_transport: Mutex::new(None),
             pending_wg_handshakes: Mutex::new(std::collections::HashMap::new()),
             dedup_msg_cache: Mutex::new(crate::messaging::delivery::DeliveredMessageCache::new()),
+            pending_message_requests: Mutex::new(Vec::new()),
         }
     }
 

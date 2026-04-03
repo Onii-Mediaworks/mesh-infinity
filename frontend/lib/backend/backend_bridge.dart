@@ -1126,42 +1126,52 @@ class BackendBridge {
   /// Backend symbol (once implemented): `mi_message_requests_json(ctx)`
   /// Expected JSON: `[{ "id": "...", "peerId": "...", ... }, ...]`
   List<MessageRequest> fetchMessageRequests() {
-    // isAvailable is false on platforms where the native library did not
-    // load (e.g. desktop dev without the .so present).  Return safe default.
     if (!isAvailable) return const [];
-    // TODO(backend): wire to mi_message_requests_json when the Rust service
-    // implements the message request queue (§22.5.4).
-    return const [];
+    final ptr = _bindings!.messageRequestsJson(_context);
+    if (ptr == nullptr) return const [];
+    try {
+      final json = jsonDecode(ptr.toDartString()) as List<dynamic>;
+      return json
+          .whereType<Map<String, dynamic>>()
+          .map(MessageRequest.fromJson)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// Accept a message request by ID.
   ///
   /// Instructs Rust to promote the pending request into a full room in the
-  /// main conversation list.  The sender is notified via a normal message
-  /// receipt — they do NOT receive an "accepted" event (the first response
-  /// message serves as implicit confirmation).
+  /// main conversation list.  The first reply from the user serves as implicit
+  /// confirmation — the sender receives no explicit accept signal.
   ///
   /// Returns true if the backend confirmed the acceptance.
-  /// Returns false if the backend is unavailable or the request was not found.
   bool acceptMessageRequest(String requestId) {
     if (!isAvailable) return false;
-    // TODO(backend): wire to mi_accept_message_request(ctx, requestId)
-    // when the Rust service implements the accept flow (§22.5.4).
-    return false;
+    final idPtr = requestId.toNativeUtf8();
+    try {
+      return _bindings!.acceptMessageRequestFn(_context, idPtr) == 0;
+    } finally {
+      calloc.free(idPtr);
+    }
   }
 
   /// Decline a message request by ID.
   ///
-  /// Instructs Rust to remove the request from the pending queue.
-  /// The sender receives NO notification — this is intentional to prevent
-  /// the sender from using decline responses to infer user activity.
+  /// Removes the request from the queue without notifying the sender.
+  /// This is intentional — the sender must not be able to infer user activity
+  /// from a decline signal.
   ///
   /// Returns true if the backend confirmed the removal.
   bool declineMessageRequest(String requestId) {
     if (!isAvailable) return false;
-    // TODO(backend): wire to mi_decline_message_request(ctx, requestId)
-    // when the Rust service implements the decline flow (§22.5.4).
-    return false;
+    final idPtr = requestId.toNativeUtf8();
+    try {
+      return _bindings!.declineMessageRequestFn(_context, idPtr) == 0;
+    } finally {
+      calloc.free(idPtr);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -2176,6 +2186,18 @@ class _BackendBindings {
       hostingSet = _lib
           .lookupFunction<HostingSetNative, HostingSetDart>(
             'mi_hosting_set',
+          ),
+      messageRequestsJson = _lib
+          .lookupFunction<MessageRequestsJsonNative, MessageRequestsJsonDart>(
+            'mi_message_requests_json',
+          ),
+      acceptMessageRequestFn = _lib
+          .lookupFunction<AcceptMessageRequestNative, AcceptMessageRequestDart>(
+            'mi_accept_message_request',
+          ),
+      declineMessageRequestFn = _lib
+          .lookupFunction<DeclineMessageRequestNative, DeclineMessageRequestDart>(
+            'mi_decline_message_request',
           );
 
   // Keep a reference to the library so it is not garbage-collected while
@@ -2293,6 +2315,10 @@ class _BackendBindings {
   final MeshServicesDiscoverDart meshServicesDiscover;
   final HostingConfigDart hostingConfig;
   final HostingSetDart hostingSet;
+  // Message requests (§10.1.1)
+  final MessageRequestsJsonDart messageRequestsJson;
+  final AcceptMessageRequestDart acceptMessageRequestFn;
+  final DeclineMessageRequestDart declineMessageRequestFn;
 }
 
 // =============================================================================
@@ -2884,3 +2910,15 @@ typedef HostingConfigDart   = Pointer<Utf8> Function(Pointer<Void>);
 // mi_hosting_set(ctx, service_id, enabled) -> i32  (0 = success)
 typedef HostingSetNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
 typedef HostingSetDart   = int   Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_message_requests_json(ctx) -> *const c_char  (JSON array of pending requests)
+typedef MessageRequestsJsonNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef MessageRequestsJsonDart   = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_accept_message_request(ctx, request_id) -> i32  (0 = success)
+typedef AcceptMessageRequestNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AcceptMessageRequestDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_decline_message_request(ctx, request_id) -> i32  (0 = success)
+typedef DeclineMessageRequestNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef DeclineMessageRequestDart   = int   Function(Pointer<Void>, Pointer<Utf8>);

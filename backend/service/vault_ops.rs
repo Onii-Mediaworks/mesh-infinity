@@ -80,8 +80,30 @@ impl MeshRuntime {
             }
         }
 
+        // ---- Message requests ----
+        // Restore pending message requests from unpaired senders.  Entries
+        // older than 30 days are automatically pruned here (§10.1.1).
+        if let Ok(coll) = vm.collection("message_requests") {
+            if let Ok(Some(reqs)) = coll.load::<Vec<serde_json::Value>>() {
+                let now_secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs()).unwrap_or(0);
+                const THIRTY_DAYS: u64 = 30 * 24 * 3600;
+                // Prune entries older than 30 days on load.
+                let fresh: Vec<serde_json::Value> = reqs.into_iter().filter(|r| {
+                    let ts = r.get("_ts").and_then(|v| v.as_u64()).unwrap_or(0);
+                    now_secs.saturating_sub(ts) <= THIRTY_DAYS
+                }).collect();
+                *self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
+            }
+        }
+
         // ---- Settings ----
         // Transport flags, node mode, threat context, notification config, modules.
+        // NOTE: this block must remain after the last vm.collection() call above.
+        // vm borrows self.vault; apply_settings_vault takes &mut self.  The
+        // borrow checker (NLL) is happy as long as vm's last use is the
+        // vm.collection("settings") call here, not something below.
         if let Ok(coll) = vm.collection("settings") {
             if let Ok(Some(s)) = coll.load::<SettingsVault>() {
                 self.apply_settings_vault(s);
@@ -252,6 +274,21 @@ impl MeshRuntime {
         let msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = coll.save(&*msgs) {
             eprintln!("[vault] ERROR: failed to persist messages: {e}");
+        }
+    }
+
+    /// Persist the pending message request queue to vault.
+    ///
+    /// Called after any request is added, accepted, or declined.  The full
+    /// internal records (including `_ed25519` / `_x25519` / `_text`) are
+    /// stored so `accept_message_request` can create a contact without the
+    /// sender needing to resend their key material.
+    pub fn save_message_requests(&self) {
+        let Some(vm) = self.vault.as_ref() else { return };
+        let Ok(coll) = vm.collection("message_requests") else { return };
+        let reqs = self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = coll.save(&*reqs) {
+            eprintln!("[vault] ERROR: failed to persist message_requests: {e}");
         }
     }
 

@@ -42,6 +42,14 @@ impl MeshRuntime {
             return self.process_pairing_hello(envelope);
         }
 
+        // Message request from an unpaired sender — dispatched before the
+        // "unknown sender" gate for the same reason as pairing_hello.
+        // The frame carries the sender's public keys so we can verify the
+        // signature without a pre-existing contact record (§10.1.1).
+        if envelope.get("type").and_then(|t| t.as_str()) == Some("message_request") {
+            return self.process_message_request_frame(envelope);
+        }
+
         let frame_type = envelope.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
         // LoSec negotiation — carry their own Ed25519 signatures.

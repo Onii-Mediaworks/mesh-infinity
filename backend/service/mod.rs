@@ -42,6 +42,8 @@ pub mod call_ops;
 pub mod transport_ops;
 /// LAN peer discovery: UDP broadcast announce and TCP handshake.
 pub mod discovery;
+/// Message request queue: first-contact messages from unpaired senders (§10.1.1).
+pub mod message_request_ops;
 
 // Re-export the primary type so callers can write `service::MeshRuntime`.
 pub use runtime::MeshRuntime;

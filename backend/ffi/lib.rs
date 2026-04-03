@@ -3863,6 +3863,88 @@ pub unsafe extern "C" fn mi_hosting_set(
 }
 
 // ---------------------------------------------------------------------------
+// Message requests (§10.1.1)
+// ---------------------------------------------------------------------------
+
+/// Return the pending message request queue as a JSON array.
+///
+/// Each entry contains: `id`, `peerId`, `senderName`, `trustLevel`,
+/// `messagePreview`, `timestamp` (ISO-8601 string).
+///
+/// Returns a JSON pointer on success, null on failure.
+///
+/// # Safety
+/// `ctx` must be non-null and previously obtained from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_message_requests_json(
+    ctx: *mut MeshContext,
+) -> *const c_char {
+    if ctx.is_null() { return ptr::null(); }
+    let ctx = unsafe { &*ctx };
+    let json = ctx.message_requests_json();
+    ctx.set_response(&json)
+}
+
+/// Accept a pending message request by ID.
+///
+/// Creates a `ContactRecord` for the sender at trust level `Acquaintance` (5),
+/// moves the first message into the main inbox, and emits `MessageAdded` and
+/// `RoomUpdated` events.  The sender receives no explicit accept signal —
+/// the first reply from the user serves as implicit confirmation.
+///
+/// Returns 0 on success, -1 if the request ID was not found.
+///
+/// # Safety
+/// `ctx` must be non-null. `request_id` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_accept_message_request(
+    ctx: *mut MeshContext,
+    request_id: *const c_char,
+) -> i32 {
+    if ctx.is_null() { return -1; }
+    let ctx = unsafe { &*ctx };
+    let id = if request_id.is_null() { "" } else {
+        match unsafe { std::ffi::CStr::from_ptr(request_id) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+    match ctx.accept_message_request(id) {
+        Ok(()) => 0,
+        Err(e) => { ctx.set_error(&e); -1 }
+    }
+}
+
+/// Decline a pending message request by ID.
+///
+/// Removes the request from the queue without notifying the sender.
+/// This is intentional — the sender must not be able to infer user activity
+/// from a decline signal.
+///
+/// Returns 0 on success, -1 if the request ID was not found.
+///
+/// # Safety
+/// `ctx` must be non-null. `request_id` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_decline_message_request(
+    ctx: *mut MeshContext,
+    request_id: *const c_char,
+) -> i32 {
+    if ctx.is_null() { return -1; }
+    let ctx = unsafe { &*ctx };
+    let id = if request_id.is_null() { "" } else {
+        match unsafe { std::ffi::CStr::from_ptr(request_id) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+    match ctx.decline_message_request(id) {
+        Ok(()) => 0,
+        Err(e) => { ctx.set_error(&e); -1 }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

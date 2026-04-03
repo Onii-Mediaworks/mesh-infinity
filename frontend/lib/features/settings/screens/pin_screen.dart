@@ -43,6 +43,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../app/app_theme.dart';
+import 'killswitch_screen.dart';
 
 // ---------------------------------------------------------------------------
 // PinScreenMode enum
@@ -572,11 +573,9 @@ class _PinScreenState extends State<PinScreen>
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
               Navigator.pop(context);
-              // TODO(backend/security): confirm dialog then emergency erase.
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Emergency erase not yet available.'),
-                ),
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const KillswitchScreen()),
               );
             },
           ),
