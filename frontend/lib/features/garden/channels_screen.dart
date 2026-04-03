@@ -5,7 +5,6 @@ import '../../backend/models/room_models.dart';
 import '../../shell/shell_state.dart';
 import '../messaging/messaging_state.dart';
 import '../messaging/screens/thread_screen.dart';
-import '../messaging/screens/create_room_screen.dart';
 
 // Garden channels are group rooms. The Garden section and Chat section share
 // the same backend room concept — Gardens are group-type rooms.
@@ -22,10 +21,8 @@ class ChannelsScreen extends StatelessWidget {
         onRefresh: messaging.loadRooms,
         child: gardens.isEmpty
             ? _EmptyGarden(
-                onCreate: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const CreateRoomScreen()),
-                ),
+                onExplore: () =>
+                    context.read<ShellState>().selectSubPage(2), // → Explore
               )
             : ListView.separated(
                 itemCount: gardens.length,
@@ -34,14 +31,6 @@ class ChannelsScreen extends StatelessWidget {
                 itemBuilder: (context, i) =>
                     _GardenTile(room: gardens[i]),
               ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const CreateRoomScreen()),
-        ),
-        tooltip: 'New garden',
-        child: const Icon(Icons.add),
       ),
     );
   }
@@ -111,8 +100,8 @@ class _GardenTile extends StatelessWidget {
 }
 
 class _EmptyGarden extends StatelessWidget {
-  const _EmptyGarden({required this.onCreate});
-  final VoidCallback onCreate;
+  const _EmptyGarden({required this.onExplore});
+  final VoidCallback onExplore;
 
   @override
   Widget build(BuildContext context) {
@@ -125,15 +114,15 @@ class _EmptyGarden extends StatelessWidget {
               color: Theme.of(context).colorScheme.outline),
           const SizedBox(height: 16),
           Text(
-            'No gardens yet',
+            'No gardens joined yet',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   color: Theme.of(context).colorScheme.outline,
                 ),
           ),
           const SizedBox(height: 8),
           FilledButton.tonal(
-            onPressed: onCreate,
-            child: const Text('Create a garden'),
+            onPressed: onExplore,
+            child: const Text('Find a garden'),
           ),
         ],
       ),

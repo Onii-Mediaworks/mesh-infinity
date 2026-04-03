@@ -542,9 +542,17 @@ See §17.2 for the full self/mask architecture.
 
 Masks are contextual presentations derived from the self. Each mask has its own keypair, address(es), profile, and group memberships. All identity-bearing mesh activity — messaging, trust operations, profile exchange — happens through masks.
 
-**Public mask:** One mask is designated the public mask. It handles operations that are public-facing or context-independent: trust endorsements, public profile exposure, and any action that isn't scoped to a specific relationship context. When a trust endorsement is gossiped to the network (§8.5), it is signed by the endorsing node's public mask key. This ensures that endorsements are attributable to a stable, network-visible identity without exposing the self root key.
+**Primary identity masks:** Three masks are created during onboarding and represent the user's global identity across the three profile tiers (§9). These are distinct from contextual masks (which the user creates intentionally for specific purposes) in that they are automatically created and carry the user's core presence on the mesh:
 
-**Mask selection for operations:** Operations that occur within a specific relationship context (messaging, file transfer, group participation) use whichever mask the contact was paired with. Operations that are network-wide (endorsements, Disavowed/Compromised announcements) use the public mask.
+- **Private mask** — the user's primary chat identity. Carries the global private profile (§9.3). Used for all trusted one-to-one communication (Level 6+). From the user's perspective, this IS their self — not a "mask" in the everyday sense. Crypto-layer: a derived keypair like any other mask; the self root key is never used directly.
+- **Paired mask** — carries the public paired profile (§9.2). Used for communication with direct contacts at Levels 1–5, before or without full trust being extended. Same keypair context as the private mask in the standard chat flow.
+- **Public mask** — optional, opt-in. Carries the global public profile (§9.1). Handles network-visible operations: trust endorsements, public profile gossip. When a trust endorsement is gossiped to the network (§8.5), it is signed by the public mask key, attributing it to a stable network-visible identity without exposing the self root key.
+
+These three are created in sequence during onboarding. All other masks the user creates (professional, operational, per-group, per-LAN) are contextual masks layered on top.
+
+**UX note:** From the user's perspective, the primary private mask is their identity — the app presents it as "you". The word "mask" in the UI refers exclusively to *additional* contextual identities the user explicitly creates. The primary identity masks are never called "masks" in user-facing surfaces.
+
+**Mask selection for operations:** Operations within a specific relationship context (messaging, file transfer, group participation) use whichever mask the contact was paired with. Network-wide operations (endorsements, Disavowed/Compromised announcements) use the public mask.
 
 **Anonymous masks** are treated with the same security priority as the self and other masks — they are equally sensitive, not less. They differ architecturally in that they are isolated from the self: their keypairs are generated independently (not derived from the root), they do not share the trust graph or network map, and the backend enforces no linkable relationship between an anonymous mask and the self or any other mask. Anonymous masks follow the same initialization and PIN-gating rules as regular masks (Layer 3), not the reduced-security Layer 1 rules. The user manages them through the same interface, but the app cannot prove any link between them.
 
@@ -10253,9 +10261,15 @@ The backend manages this transparently. The UI presents whichever mask is contex
 - Preauth key — each mask has its own preauth key.
 - Per-context trust expressions — how the self presents trust through this mask.
 
+**Primary identity masks vs. contextual masks:**
+
+Not all masks are the same from the user's perspective. The three primary identity masks (private, paired, public) are created at onboarding and represent the user's global presence — the private mask in particular IS the user's self from a UX standpoint; it is the identity they use for trusted chat and the one the app presents as "you". Contextual masks (professional, operational, per-group, per-LAN) are additional identities the user creates deliberately.
+
+In the UI, the word "Masks" refers only to contextual masks. The primary identity masks are surfaced through the "You" section and profile settings, not through the masks interface. This is a deliberate UX decision: users should not think of their primary identity as a "mask" they are wearing — it is simply who they are on this app.
+
 **Root keypair isolation:**
 
-The root keypair signs nothing on the mesh directly. All mesh-facing operations use mask keypairs. The root keypair's only function is to derive and authorise mask keypairs. Compromising any mask keypair reveals nothing about the root or other masks.
+The root keypair signs nothing on the mesh directly. All mesh-facing operations use mask keypairs — including operations performed through the primary identity masks. The root keypair's only function is to derive and authorise mask keypairs. Compromising any mask keypair reveals nothing about the root or other masks.
 
 **Mask keypair derivation:**
 
@@ -22876,25 +22890,25 @@ Column(mainAxisSize: MainAxisSize.min) {
 }
 ```
 
-#### 22.42.3 Screen: First Mask (`_Step.firstMask`)
+#### 22.42.3 Screen: Your Identity (`_Step.identity`)
 
 ```
 Column(mainAxisSize: MainAxisSize.min) {
 
   SizedBox(height: 24)
-  _Header(title: 'Your first mask',
-    subtitle: 'Mesh Infinity lets you present different faces\nin different contexts — just like in real life.')
+  _Header(title: 'Your identity',
+    subtitle: 'This is you on Mesh Infinity — the private identity\nyou share with people you trust.')
 
   SizedBox(height: 8)
 
-  // Mask name field
+  // Name field — this is what trusted contacts see
   TextField(
-    controller: _maskNameController,
+    controller: _nameController,
     autofocus: true,
     textCapitalization: TextCapitalization.words,
     decoration: InputDecoration(
-      labelText: 'Mask name',
-      hintText: 'e.g. Personal, Work, Alice',
+      labelText: 'Your name',
+      hintText: 'What trusted contacts will call you',
     ),
   )
 
@@ -22929,25 +22943,16 @@ Column(mainAxisSize: MainAxisSize.min) {
 
   SizedBox(height: 16)
 
-  // Optional display name
-  TextField(
-    controller: _displayNameController,
-    decoration: InputDecoration(
-      labelText: 'Display name (optional)',
-      hintText: 'Shown to contacts who discover you',
-    ),
-  )
-
   SizedBox(height: 8)
 
-  // Hint text
-  Text('You can create more masks in Settings anytime.',
+  // Hint text — clarify what this identity is
+  Text('Shared only with contacts you explicitly trust. This is your private identity.',
     style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant))
 
   SizedBox(height: 24)
 
   FilledButton(
-    onPressed: _maskNameController.text.trim().isEmpty ? null : _goToExplainer,
+    onPressed: _nameController.text.trim().isEmpty ? null : _goToPublicProfile,
     style: FilledButton.styleFrom(minimumSize: Size(double.infinity, 52)),
     child: Text('Next'),
   )
@@ -22956,7 +22961,58 @@ Column(mainAxisSize: MainAxisSize.min) {
 }
 ```
 
-**Validation**: Next button disabled when mask name field is empty. Enables on any non-whitespace input. No error banner — button state communicates requirement.
+**Validation**: Next button disabled when name field is empty. Enables on any non-whitespace input. No error banner — button state communicates requirement.
+
+**Note (§3.1.3):** This step creates the primary private mask — the user's core identity. From a crypto standpoint this is a mask keypair derived from the self root. From the user's standpoint this IS them. Do not use the word "mask" on this screen.
+
+#### 22.42.3b Screen: Public Profile (`_Step.publicProfile`)
+
+Optional step immediately following identity creation. Sets up the global public profile (§9.1) — what the wider network sees. Skippable; can be configured later in Settings → Profile.
+
+```
+Column(mainAxisSize: MainAxisSize.min) {
+
+  SizedBox(height: 24)
+  _Header(title: 'Public presence',
+    subtitle: 'Should people be able to find you by name?\nThis is optional — you can skip it entirely.')
+
+  SizedBox(height: 16)
+
+  // Public display name — shown in network map if set
+  TextField(
+    controller: _publicNameController,
+    textCapitalization: TextCapitalization.words,
+    decoration: InputDecoration(
+      labelText: 'Public name (optional)',
+      hintText: 'Visible to anyone on the mesh',
+    ),
+  )
+
+  SizedBox(height: 8)
+
+  Text('Leave blank to stay anonymous. You can change this anytime in Settings.',
+    style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant))
+
+  SizedBox(height: 24)
+
+  FilledButton(
+    onPressed: _goToExplainer,
+    style: FilledButton.styleFrom(minimumSize: Size(double.infinity, 52)),
+    child: Text('Next'),
+  )
+
+  SizedBox(height: 8)
+
+  TextButton(
+    onPressed: _goToExplainer,
+    child: Text('Skip'),
+  )
+
+  SizedBox(height: 16)
+}
+```
+
+**Note:** If `_publicNameController` is empty when Next/Skip is pressed, `identity_is_public` remains `false` (§9.1 default). No public profile is created.
 
 #### 22.42.4 Screen: Explainer (`_Step.explainer`)
 
