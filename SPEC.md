@@ -10688,6 +10688,24 @@ URLs with the `pair` protocol are the standard format for all pairing link-share
 - The UI layer's responsibility is rendering state and issuing intent commands -- never performing business logic, cryptography, or network operations.
 - The UI must support the self/mask model (§17.2): each mask has a user-chosen name and visual indicator; the current active mask context is always visible; switching is accessible but not prominent; a "view all masks" screen allows the user to see and manage their complete self.
 
+#### 17.8.1 Debug Logging
+
+Makefile `debug` targets build Flutter in `--profile` mode (AOT-compiled, standalone-launchable). In profile builds, the app writes a rolling log to internal storage so testers and developers can retrieve diagnostic output without a connected debugger.
+
+**Activation:** `kProfileMode == true` (i.e. Flutter `--profile` build). No log file is created in release builds.
+
+**Log path:** `<application-support-dir>/mesh_infinity_debug.log`
+
+**Behaviour:**
+- Initialised before `BackendBridge.open()` so backend init failures are captured.
+- `debugPrint` is overridden to write timestamped lines to the log file and to the platform console simultaneously.
+- File is capped at 5 MB. On cap, the current file is renamed to `mesh_infinity_debug.log.1` (overwriting any prior backup) and a fresh log is started. Only one backup is kept.
+- Log line format: `<ISO-8601 timestamp> <message>\n` (plain UTF-8 text).
+- **The log file is never encrypted and must never contain key material.** The backend FFI layer never returns key material to Flutter (§9.3), so this constraint is automatically satisfied by the architecture.
+- On each app launch in profile mode, a startup banner is written: `=== Mesh Infinity profile build started <timestamp> ===`.
+
+**File:** `frontend/lib/app/debug_logger.dart` — `DebugLogger` class with `DebugLogger.init(String appSupportPath)` static initialiser.
+
 ### 17.9 Encrypted Vault Storage
 
 All persistent data is stored as encrypted blobs. There is no database, no SQL, no queryable structure on disk. This is a deliberate design decision: on-disk data must be opaque to any tool except the running Mesh Infinity process with the correct identity key.
