@@ -1,13 +1,23 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 // §17.8.1 Debug Logging
 //
 // Active only in Flutter profile builds (kProfileMode == true), which
-// corresponds to Makefile "debug" targets.  Writes a rolling log to
-// internal storage so testers can retrieve diagnostics without a connected
-// debugger.  No-ops entirely in release builds.
+// corresponds to Makefile "debug" targets.  Writes a rolling log to a
+// platform-appropriate externally accessible location so testers can
+// retrieve diagnostics without a connected debugger.
+//
+// Platform log paths:
+//   Android  — getExternalStorageDirectory() (app-specific external storage,
+//              /storage/emulated/0/Android/data/<pkg>/files/); accessible via
+//              USB file transfer and ADB.  Falls back to appSupportPath if
+//              external storage is unavailable.
+//   iOS      — getApplicationDocumentsDirectory(); visible in the Files app
+//              and via Finder (UIFileSharingEnabled = YES in Info.plist).
+//   Desktop  — appSupportPath passed from main.dart (app support directory).
 //
 // Usage:
 //   await DebugLogger.init(appSupportPath);   // call once at startup
@@ -29,7 +39,9 @@ class DebugLogger {
   static Future<void> init(String appSupportPath) async {
     if (!kProfileMode) return;
 
-    _file = File('$appSupportPath/$_fileName');
+    final logDir = await _resolveLogDirectory(appSupportPath);
+    await Directory(logDir).create(recursive: true);
+    _file = File('$logDir/$_fileName');
     await _openSink();
 
     final banner =
@@ -50,6 +62,24 @@ class DebugLogger {
 
   // ── internals ────────────────────────────────────────────────────────────
 
+  /// Resolves the directory where the log file should be written.
+  static Future<String> _resolveLogDirectory(String appSupportPath) async {
+    if (Platform.isAndroid) {
+      // App-specific external storage — accessible via USB/ADB without
+      // requiring MANAGE_EXTERNAL_STORAGE on API 29+.
+      final ext = await getExternalStorageDirectory();
+      return ext?.path ?? appSupportPath;
+    }
+    if (Platform.isIOS) {
+      // Documents directory is exposed to the Files app and Finder via
+      // UIFileSharingEnabled = YES in Info.plist.
+      final docs = await getApplicationDocumentsDirectory();
+      return docs.path;
+    }
+    // macOS / Linux / Windows: keep in the app support directory.
+    return appSupportPath;
+  }
+
   static Future<void> _openSink() async {
     final file = _file;
     if (file == null) return;
@@ -67,7 +97,6 @@ class DebugLogger {
   static void _maybeRotate() {
     final file = _file;
     if (file == null) return;
-    // Check size without blocking — if the file doesn't exist yet, skip.
     int length;
     try {
       length = file.lengthSync();
@@ -76,16 +105,15 @@ class DebugLogger {
     }
     if (length < _maxBytes) return;
 
-    // Rotate: close current sink, rename file to backup, reopen.
+    // Rotate: close current sink, rename to backup, reopen fresh file.
     final backup = File('${file.parent.path}/$_backupName');
     _sink?.close();
     _sink = null;
     try {
       if (backup.existsSync()) backup.deleteSync();
       file.renameSync(backup.path);
-      _file = File(file.path); // renameSync moves the file; reset reference
+      _file = File(file.path);
     } catch (_) {
-      // If rotation fails, just keep writing to wherever we are.
       _file = file;
     }
     _sink = _file!.openWrite(mode: FileMode.append);
