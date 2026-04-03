@@ -87,8 +87,8 @@ macos-rust-debug macos-rust-release: macos-rust-%:
 macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
-	cfg="Profile"; [[ "$$profile" == "release" ]] && cfg="Release"; \
+	flutter_profile="debug"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
+	cfg="Debug"; [[ "$$profile" == "release" ]] && cfg="Release"; \
 	src_dir="$(BUILD_DIR)/intermediates/macos/$$profile/src"; \
 	fw_dir="$(BUILD_DIR)/intermediates/macos/$$profile/frontend"; \
 	rust_out="$(BUILD_DIR)/intermediates/macos/$$profile/backend"; \
@@ -478,7 +478,7 @@ linux-rust-debug linux-rust-release: linux-rust-%:
 linux-bundle-debug linux-bundle-release: linux-bundle-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
+	flutter_profile="debug"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
 	src_dir="$(BUILD_DIR)/intermediates/linux/$$profile/src"; \
 	rust_so="$(BUILD_DIR)/intermediates/linux/rust/$$profile/libmesh_infinity.so"; \
 	out_dir="$(BUILD_DIR)/output/linux/$$profile"; \
@@ -593,8 +593,8 @@ windows-rust-debug windows-rust-release: windows-rust-%:
 windows-bundle-debug windows-bundle-release: windows-bundle-%:
 	@set -euo pipefail; \
 	profile="$*"; \
-	flutter_profile="profile"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
-	cfg="Profile"; [[ "$$profile" == "release" ]] && cfg="Release"; \
+	flutter_profile="debug"; [[ "$$profile" == "release" ]] && flutter_profile="release"; \
+	cfg="Debug"; [[ "$$profile" == "release" ]] && cfg="Release"; \
 	src_dir="$(BUILD_DIR)/intermediates/windows/$$profile/src"; \
 	rust_dll="$(BUILD_DIR)/intermediates/windows/rust/$$profile/mesh_infinity.dll"; \
 	bundle_stage="$(BUILD_DIR)/intermediates/windows/bundle/$$profile"; \
