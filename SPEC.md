@@ -10694,7 +10694,13 @@ Makefile `debug` targets build Flutter in `--profile` mode (AOT-compiled, standa
 
 **Activation:** `kProfileMode == true` (i.e. Flutter `--profile` build). No log file is created in release builds.
 
-**Log path:** `<application-support-dir>/mesh_infinity_debug.log`
+**Log path (platform-specific):**
+
+| Platform | Path | How to retrieve |
+|----------|------|-----------------|
+| Android | `getExternalStorageDirectory()` → `/storage/emulated/0/Android/data/<pkg>/files/mesh_infinity_debug.log`; falls back to app-support dir if external storage unavailable | USB file transfer (MTP), `adb pull`, any file manager |
+| iOS | `getApplicationDocumentsDirectory()` → app Documents dir | Files app; Finder (requires `UIFileSharingEnabled = YES` in Info.plist, already set) |
+| macOS / Linux / Windows | `<application-support-dir>/mesh_infinity_debug.log` | Native filesystem |
 
 **Behaviour:**
 - Initialised before `BackendBridge.open()` so backend init failures are captured.
