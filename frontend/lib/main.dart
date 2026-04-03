@@ -3,6 +3,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app/app.dart';
 import 'app/app_theme.dart';
+import 'app/debug_logger.dart';
 import 'backend/backend_bridge.dart';
 
 void main() {
@@ -31,6 +32,10 @@ class _BootstrapAppState extends State<_BootstrapApp> {
   Future<void> _init() async {
     // Resolve the app-support directory (fast platform-channel call).
     final appDir = await getApplicationSupportDirectory();
+
+    // §17.8.1 — initialise file logging before the backend opens so that
+    // backend init failures are captured.  No-ops in release builds.
+    await DebugLogger.init(appDir.path);
 
     // Yield so Flutter renders the loading frame before the synchronous FFI
     // call below blocks the event loop.
