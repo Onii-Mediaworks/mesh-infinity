@@ -471,7 +471,7 @@ class EventBus {
   static DynamicLibrary _loadLibrary() {
     if (Platform.isAndroid) return DynamicLibrary.open('libmesh_infinity.so');
     if (Platform.isIOS) return DynamicLibrary.process();
-    if (Platform.isMacOS) return DynamicLibrary.open('libmesh_infinity.dylib');
+    if (Platform.isMacOS) return DynamicLibrary.process(); // statically linked
     if (Platform.isWindows) return DynamicLibrary.open('mesh_infinity.dll');
     return DynamicLibrary.open('libmesh_infinity.so'); // Linux fallback
   }

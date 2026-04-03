@@ -53,17 +53,18 @@ name = "mesh_infinity"
 #   "cdylib"    — C-compatible Dynamic Library
 #                 Produces: libmesh_infinity.so   (Android / Linux)
 #                           libmesh_infinity.dll  (Windows)
-#                           libmesh_infinity.dylib (macOS, dev only)
-#                 This is what Flutter/Dart loads at runtime on mobile and
-#                 desktop.  The "c" prefix means it exports symbols using the
-#                 C ABI, which Dart's FFI layer understands.
+#                 This is what Flutter/Dart loads at runtime via
+#                 DynamicLibrary.open().  The "c" prefix means it exports
+#                 symbols using the C ABI, which Dart's FFI layer understands.
 #
 #   "staticlib" — Static Library
 #                 Produces: libmesh_infinity.a    (iOS / macOS)
-#                 On Apple platforms, App Store policy discourages embedding
-#                 unsigned dynamic libraries.  A static library is linked
-#                 directly into the final .app bundle at compile time, so
-#                 there is no separate .dylib file to worry about.
+#                 Both Apple targets use static linking: the archive is baked
+#                 into the app binary at link time via -force_load.
+#                 DynamicLibrary.process() finds the symbols in the running
+#                 process, so no separate library file ships in the bundle.
+#                 This halves binary size vs dynamic linking (dead-code elim)
+#                 and avoids App Store policy issues with unsigned dylibs.
 #
 #   "rlib"      — Rust Library (Rust-internal format)
 #                 Produces: libmesh_infinity.rlib

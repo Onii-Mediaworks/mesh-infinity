@@ -48,8 +48,11 @@ clean:
 
 # ── macOS: Rust only ──────────────────────────────────────────────────────────
 #
-# Builds and lipo-merges libmesh_infinity.dylib for both darwin triples.
-# Output: build/intermediates/macos/rust/<profile>/libmesh_infinity.dylib
+# Builds and lipo-merges libmesh_infinity.a for both darwin triples.
+# Static linking: DynamicLibrary.process() finds symbols in the app binary at
+# runtime; -force_load ensures the linker keeps all Rust symbols even though
+# no Swift/ObjC code calls them directly.
+# Output: build/intermediates/macos/rust/<profile>/libmesh_infinity.a
 #
 # Used by CI to pre-build Rust in a dedicated job before running Xcode.
 # For local full builds use macos-debug / macos-release instead.
@@ -69,16 +72,16 @@ macos-rust-debug macos-rust-release: macos-rust-%:
 	CARGO_TARGET_DIR="$$rust_target" \
 	  cargo build -p mesh-infinity --target x86_64-apple-darwin $$cargo_flags; \
 	lipo -create \
-	  "$$rust_target/aarch64-apple-darwin/$$rust_subdir/libmesh_infinity.dylib" \
-	  "$$rust_target/x86_64-apple-darwin/$$rust_subdir/libmesh_infinity.dylib" \
-	  -output "$$rust_out/libmesh_infinity.dylib"; \
-	echo "Rust output: $$rust_out/libmesh_infinity.dylib"
+	  "$$rust_target/aarch64-apple-darwin/$$rust_subdir/libmesh_infinity.a" \
+	  "$$rust_target/x86_64-apple-darwin/$$rust_subdir/libmesh_infinity.a" \
+	  -output "$$rust_out/libmesh_infinity.a"; \
+	echo "Rust output: $$rust_out/libmesh_infinity.a"
 
 # ── macOS: Xcode only ─────────────────────────────────────────────────────────
 #
 # Runs Flutter framework build + Xcode + DMG packaging.
-# Requires Rust dylib to already exist at:
-#   build/intermediates/macos/rust/<profile>/libmesh_infinity.dylib
+# Requires Rust static lib to already exist at:
+#   build/intermediates/macos/rust/<profile>/libmesh_infinity.a
 #
 # Used by CI after downloading the pre-built Rust artifact.
 # For local full builds use macos-debug / macos-release instead.
@@ -91,7 +94,7 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	src_dir="$(BUILD_DIR)/intermediates/macos/$$profile/src"; \
 	fw_dir="$(BUILD_DIR)/intermediates/macos/$$profile/frontend"; \
 	rust_out="$(BUILD_DIR)/intermediates/macos/$$profile/backend"; \
-	rust_src="$(BUILD_DIR)/intermediates/macos/rust/$$profile/libmesh_infinity.dylib"; \
+	rust_src="$(BUILD_DIR)/intermediates/macos/rust/$$profile/libmesh_infinity.a"; \
 	\
 	mkdir -p \
 	  "$$src_dir" \
@@ -110,7 +113,7 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	rsync -a "$(ROOT_DIR)/assets/" "$(BUILD_DIR)/intermediates/macos/$$profile/assets/"; \
 	mkdir -p "$$src_dir/macos"; \
 	\
-	cp "$$rust_src" "$$rust_out/libmesh_infinity.dylib"; \
+	cp "$$rust_src" "$$rust_out/libmesh_infinity.a"; \
 	\
 	flutter config --enable-macos-desktop; \
 	( cd "$$src_dir" && flutter pub get ); \
@@ -154,7 +157,8 @@ macos-xcode-debug macos-xcode-release: macos-xcode-%:
 	  CODE_SIGNING_ALLOWED=NO \
 	  CODE_SIGNING_REQUIRED=NO \
 	  CODE_SIGN_IDENTITY="" \
-	  MESH_RUST_DYLIB_PATH="$$rust_src" \
+	  MESH_RUST_STATIC_LIB="$$rust_out/libmesh_infinity.a" \
+	  'OTHER_LDFLAGS=$$(inherited) -force_load '"$$rust_out"'/libmesh_infinity.a -lresolv' \
 	  build; \
 	\
 	app_src="$(BUILD_DIR)/intermediates/macos/xcode/Build/Products/$$cfg/$(APP_NAME).app"; \
