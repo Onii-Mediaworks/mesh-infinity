@@ -325,8 +325,7 @@ ios-xcode-debug ios-xcode-release: ios-xcode-%:
 	  CODE_SIGNING_REQUIRED=NO \
 	  CODE_SIGN_IDENTITY="" \
 	  FLUTTER_FRAMEWORK_BASE="$(BUILD_DIR)/intermediates/ios" \
-	  'LIBRARY_SEARCH_PATHS=$$(inherited)'"  $$rust_out" \
-	  'OTHER_LDFLAGS=$$(inherited) -lmesh_infinity -lresolv' \
+	  'OTHER_LDFLAGS=$$(inherited) -force_load '"$$rust_out"'/libmesh_infinity.a -lresolv' \
 	  build; \
 	\
 	ipa_payload="$(BUILD_DIR)/output/ios/$$profile/Payload"; \
