@@ -217,7 +217,11 @@ impl PhysicalTransferHeader {
         let dest_id_present = buf[pos] != 0;
         pos += 1;
         let dest_id_raw: [u8; 32] = buf[pos..pos + 32].try_into().unwrap();
-        let dest_id = if dest_id_present { Some(dest_id_raw) } else { None };
+        let dest_id = if dest_id_present {
+            Some(dest_id_raw)
+        } else {
+            None
+        };
         pos += 32;
 
         let bundle_id: [u8; 16] = buf[pos..pos + 16].try_into().unwrap();
@@ -312,7 +316,12 @@ pub fn bundle_filename(bundle_id: &[u8; 16]) -> String {
 /// External storage path for a bundle.
 /// Layout: `{prefix}/{dest_peer_id_hex}/{bundle_id_hex}.mib`
 pub fn storage_path(prefix: &str, dest_id: &[u8; 32], bundle_id: &[u8; 16]) -> String {
-    format!("{}/{}/{}.mib", prefix, hex::encode(dest_id), hex::encode(bundle_id))
+    format!(
+        "{}/{}/{}.mib",
+        prefix,
+        hex::encode(dest_id),
+        hex::encode(bundle_id)
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -358,8 +367,7 @@ pub fn parse_bundle(data: &[u8]) -> Result<ParsedBundle, OfflineError> {
         if pos + 4 > data.len() {
             return Err(OfflineError::TruncatedPacket);
         }
-        let pkt_len =
-            u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        let pkt_len = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
         if pos + pkt_len > data.len() {
             return Err(OfflineError::TruncatedPacket);
@@ -466,12 +474,18 @@ impl BundleDeduplicator {
 
     /// Returns `true` if this bundle ID has already been processed.
     pub fn is_duplicate(&self, bundle_id: &[u8; 16]) -> bool {
-        self.seen.lock().unwrap_or_else(|e| e.into_inner()).contains(bundle_id)
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(bundle_id)
     }
 
     /// Mark a bundle ID as processed.
     pub fn mark_seen(&self, bundle_id: [u8; 16]) {
-        self.seen.lock().unwrap_or_else(|e| e.into_inner()).insert(bundle_id);
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(bundle_id);
     }
 }
 
@@ -493,8 +507,7 @@ pub const QR_MAX_BYTES: usize = 2048;
 /// in 11 bits — roughly 45% more efficient than binary-mode QR for the
 /// same error correction level.  This makes it possible to fit a small
 /// mesh bundle (≤2 KB) into a single scannable QR code.
-const BASE45_ALPHABET: &[u8; 45] =
-    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+const BASE45_ALPHABET: &[u8; 45] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
 
 /// Encode `data` as a Base45 string suitable for QR codes (RFC 9285).
 ///
@@ -906,14 +919,8 @@ mod tests {
     #[test]
     fn bundle_checksum_tamper_detected() {
         let packets = sample_packets();
-        let mut bundle = build_bundle(
-            &packets,
-            RoutingMode::Broadcast,
-            [0u8; 32],
-            None,
-            [0u8; 16],
-        )
-        .unwrap();
+        let mut bundle =
+            build_bundle(&packets, RoutingMode::Broadcast, [0u8; 32], None, [0u8; 16]).unwrap();
 
         // Flip a bit in the packet data (after header).
         let flip_pos = HEADER_SIZE + 10;
@@ -1098,7 +1105,10 @@ mod tests {
         // Base45 expands ~1.33×, so ~1600 raw bytes → ~2133 encoded > 2048.
         let data = vec![0xA5u8; 1600];
         let segs = segment_for_qr(&data);
-        assert!(segs.len() > 1, "must produce multiple segments for large data");
+        assert!(
+            segs.len() > 1,
+            "must produce multiple segments for large data"
+        );
         // All segments have seq/total prefix.
         for seg in &segs {
             assert!(seg.contains('/') && seg.contains(':'));
@@ -1141,19 +1151,13 @@ mod tests {
         .expect("relay export must succeed");
 
         // The exported file lives in {base}/outbox/{dest_id_hex}/.
-        let outbox_dir = base_dir
-            .path()
-            .join("outbox")
-            .join(hex::encode(dest_id));
+        let outbox_dir = base_dir.path().join("outbox").join(hex::encode(dest_id));
         let found = scan_dir_for_bundles(&outbox_dir);
         assert_eq!(found.len(), 1);
 
         // Simulate dest node ingesting from its inbox.
         // Copy the outbox file to the inbox location for the test.
-        let inbox_dir = base_dir
-            .path()
-            .join("inbox")
-            .join(hex::encode(dest_id));
+        let inbox_dir = base_dir.path().join("inbox").join(hex::encode(dest_id));
         std::fs::create_dir_all(&inbox_dir).unwrap();
         let src_path = &found[0];
         let dst_path = inbox_dir.join(src_path.file_name().unwrap());

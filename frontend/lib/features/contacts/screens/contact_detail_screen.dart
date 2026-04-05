@@ -31,6 +31,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 // Provider — context.watch / context.read to subscribe to and read state.
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 // PeerModel — the typed Dart representation of a contact/peer.
 // Fields we use: id, name, status, isOnline, trustLevel.
@@ -271,19 +272,14 @@ class _HeaderCard extends StatelessWidget {
             const SizedBox(height: 6),
 
             // Full trust badge: icon + label pill (§22.4.2).
-            TrustBadge(
-              level: peer.trustLevel,
-              showLabel: true,
-            ),
+            TrustBadge(level: peer.trustLevel, showLabel: true),
             const SizedBox(height: 4),
 
             // Online/offline status text below the trust badge.
             Text(
               peer.isOnline ? 'Online' : peer.status,
               style: textTheme.bodySmall?.copyWith(
-                color: peer.isOnline
-                    ? MeshTheme.secGreen
-                    : cs.onSurfaceVariant,
+                color: peer.isOnline ? MeshTheme.secGreen : cs.onSurfaceVariant,
               ),
             ),
           ],
@@ -410,11 +406,17 @@ class _InfoCard extends StatelessWidget {
                     onTriggered: () {
                       // Register the haiku on demand so it's available for show().
                       registerHaikuForPeer(TidbitRegistry.instance, peer.id);
-                      TidbitRegistry.instance.show('peer_id_haiku_${peer.id}', context);
+                      TidbitRegistry.instance.show(
+                        'peer_id_haiku_${peer.id}',
+                        context,
+                      );
                     },
                     child: SelectableText(
                       peer.id,
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ),
@@ -640,20 +642,44 @@ class _MoreMenuSheet extends StatelessWidget {
               title: const Text('View QR code'),
               onTap: () {
                 Navigator.of(context).pop();
-                // TODO: show this contact's QR for re-sharing (§22.8.2).
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('QR code: coming soon')),
-                );
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.block_outlined),
-              title: const Text('Block contact'),
-              onTap: () {
-                Navigator.of(context).pop();
-                // TODO: block confirmation dialog (§22.8.2).
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Block: coming soon')),
+                showDialog<void>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Contact QR code'),
+                    content: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        QrImageView(
+                          data: peer.id,
+                          size: 220,
+                          backgroundColor: Colors.white,
+                        ),
+                        const SizedBox(height: 12),
+                        SelectableText(
+                          peer.id,
+                          style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ],
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: peer.id));
+                          Navigator.of(ctx).pop();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Peer ID copied')),
+                          );
+                        },
+                        child: const Text('Copy peer ID'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: const Text('Close'),
+                      ),
+                    ],
+                  ),
                 );
               },
             ),

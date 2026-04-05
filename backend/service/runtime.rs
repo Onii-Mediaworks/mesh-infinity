@@ -16,18 +16,25 @@ use std::ffi::CString;
 use std::sync::Mutex;
 
 use crate::crypto::double_ratchet::DoubleRatchetSession;
+use crate::identity::mesh_identity::MeshIdentity;
 use crate::identity::peer_id::PeerId;
+use crate::identity::self_identity::SelfIdentity;
+use crate::mesh::MeshCoordinator;
 use crate::messaging::room::Room;
+use crate::network::security_policy::{
+    cover_traffic_for_state, CoverTrafficParams, DeviceActivityState,
+};
 use crate::network::threat_context::ThreatContext;
 use crate::pairing::contact::ContactStore;
 use crate::routing::announcement::AnnouncementProcessor;
 use crate::routing::loop_prevention::DeduplicationCache;
 use crate::routing::store_forward::StoreForwardServer;
 use crate::routing::table::{DeviceAddress, RoutingTable};
-use crate::identity::self_identity::SelfIdentity;
-use crate::mesh::MeshCoordinator;
-use crate::vpn::routing_mode::VpnManager;
+use crate::services::registry::ServiceStore;
 use crate::storage::VaultManager;
+use crate::transport::manager::TransportManager;
+use crate::vpn::app_connector::AppConnectorConfig;
+use crate::vpn::routing_mode::VpnManager;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -93,6 +100,150 @@ pub struct SettingsVault {
     /// Module enable/disable configuration (§17.13).
     #[serde(default)]
     pub module_config: Option<serde_json::Value>,
+    /// App Connector configuration stored in backend-owned form.
+    #[serde(default)]
+    pub app_connector_config: Option<AppConnectorConfig>,
+    /// Whether the pre-committed distress message feature is enabled.
+    #[serde(default)]
+    pub distress_message_enabled: bool,
+    /// Whether periodic liveness signals are enabled.
+    #[serde(default)]
+    pub liveness_signal_enabled: bool,
+    /// Whether to erase after repeated wrong PIN attempts.
+    #[serde(default)]
+    pub wrong_pin_wipe_enabled: bool,
+    /// Wrong-PIN wipe threshold.
+    #[serde(default = "default_wrong_pin_wipe_threshold")]
+    pub wrong_pin_wipe_threshold: u8,
+    /// Whether remote erase is allowed for authorised peers.
+    #[serde(default)]
+    pub remote_wipe_enabled: bool,
+    /// Highest unlocked feature tier (0 = social .. 4 = power).
+    #[serde(default)]
+    pub active_tier: u8,
+    /// Mesh participation profile (0 = minimal, 1 = standard, 2 = generous).
+    #[serde(default = "default_bandwidth_profile")]
+    pub bandwidth_profile: u8,
+}
+
+/// Backend-owned directory entry for a discoverable Garden.
+#[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct GardenDirectoryEntry {
+    /// Stable Garden identifier.
+    pub id: String,
+    /// Human-facing Garden name.
+    pub name: String,
+    /// Short description for discovery surfaces.
+    pub description: String,
+    /// Visibility/network type label: public/open/closed/private.
+    pub network_type: String,
+    /// Last known member count, if available.
+    pub member_count: u32,
+}
+
+/// Backend-owned snapshot of Android proximity capability and peer state.
+#[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidProximityState {
+    /// Whether the current runtime is Android-backed.
+    pub is_android: bool,
+    /// Whether NFC hardware exists.
+    pub nfc_available: bool,
+    /// Whether NFC is currently enabled.
+    pub nfc_enabled: bool,
+    /// Whether Wi-Fi Direct hardware exists.
+    pub wifi_direct_available: bool,
+    /// Whether Wi-Fi Direct is enabled.
+    pub wifi_direct_enabled: bool,
+    /// Whether the required Wi-Fi Direct runtime permission is granted.
+    pub wifi_direct_permission_granted: bool,
+    /// Whether peer discovery is active.
+    pub wifi_direct_discovery_active: bool,
+    /// Whether a Wi-Fi Direct link is connected.
+    pub wifi_direct_connected: bool,
+    /// Current connection role.
+    pub wifi_direct_connection_role: Option<String>,
+    /// Current group owner address.
+    pub wifi_direct_group_owner_address: Option<String>,
+    /// Current connected device address.
+    pub wifi_direct_connected_device_address: Option<String>,
+    /// Current discovered peers.
+    #[serde(default)]
+    pub peers: Vec<AndroidWifiDirectPeer>,
+}
+
+/// Backend-owned snapshot of Android startup and unlock milestones.
+#[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(default)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidStartupState {
+    /// Whether the current runtime is Android-backed.
+    pub is_android: bool,
+    /// Whether the device has reported locked-boot completion.
+    pub locked_boot_completed: bool,
+    /// Whether the device has reported full boot completion.
+    pub boot_completed: bool,
+    /// Whether the user profile has been unlocked.
+    pub user_unlocked: bool,
+    /// Whether the native startup path believes background startup is allowed.
+    pub direct_boot_aware: bool,
+    /// Last observed startup event, if any.
+    pub last_event: Option<String>,
+    /// Last observed startup event timestamp (milliseconds since epoch).
+    pub last_event_at_ms: Option<u64>,
+    /// Whether the direct-boot-aware Android startup service has been started.
+    pub startup_service_started: bool,
+    /// Whether the startup service currently believes it is foreground-active.
+    pub startup_service_foreground: bool,
+    /// Last startup-service start timestamp (milliseconds since epoch).
+    pub startup_service_last_start_at_ms: Option<u64>,
+    /// Last startup-service stop timestamp (milliseconds since epoch).
+    pub startup_service_last_stop_at_ms: Option<u64>,
+}
+
+/// One Wi-Fi Direct peer as surfaced by the Android platform layer.
+#[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AndroidWifiDirectPeer {
+    /// Human-facing device name.
+    pub device_name: String,
+    /// Stable device MAC/address.
+    pub device_address: String,
+    /// Platform status string.
+    pub status: String,
+    /// Primary device type, if known.
+    pub primary_device_type: Option<String>,
+    /// Secondary device type, if known.
+    pub secondary_device_type: Option<String>,
+    /// Whether the peer is group owner.
+    pub is_group_owner: bool,
+}
+
+/// Persisted metadata for one registered device in a shared identity.
+#[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct RegisteredDevice {
+    /// Stable 16-byte device identifier rendered as hex.
+    pub id: String,
+    /// Human-facing device name.
+    pub name: String,
+    /// Platform label used by the UI.
+    pub platform: String,
+    /// Administrative primary-device flag.
+    pub is_primary: bool,
+    /// When the device was registered.
+    pub added_at_ms: u64,
+    /// Last time the device was seen active by this registry.
+    pub last_seen_ms: u64,
+    /// Device that authorized this registration, if known.
+    pub authorized_by_device_id: Option<String>,
+}
+
+const fn default_wrong_pin_wipe_threshold() -> u8 {
+    5
+}
+
+const fn default_bandwidth_profile() -> u8 {
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -228,10 +379,40 @@ pub struct MeshRuntime {
     pub contacts: Mutex<ContactStore>,
     /// VPN routing manager (client / relay / exit-node mode).
     pub vpn: Mutex<VpnManager>,
+    /// App Connector configuration (§13.15).
+    pub app_connector_config: Mutex<AppConnectorConfig>,
+    /// Whether the pre-committed distress message is enabled.
+    pub distress_message_enabled: Mutex<bool>,
+    /// Whether periodic liveness signals are enabled.
+    pub liveness_signal_enabled: Mutex<bool>,
+    /// Whether automatic wipe on repeated wrong PIN attempts is enabled.
+    pub wrong_pin_wipe_enabled: Mutex<bool>,
+    /// Wrong-PIN wipe threshold.
+    pub wrong_pin_wipe_threshold: Mutex<u8>,
+    /// Whether remote erase is enabled.
+    pub remote_wipe_enabled: Mutex<bool>,
+    /// Highest unlocked feature tier (0 = social .. 4 = power).
+    pub active_tier: Mutex<u8>,
+    /// Mesh participation profile (0 = minimal, 1 = standard, 2 = generous).
+    pub bandwidth_profile: Mutex<u8>,
+    /// Persisted mask metadata for the identity & masks UI.
+    pub masks: Mutex<Vec<crate::identity::mask::MaskMetadata>>,
+    /// Backend-owned directory of discoverable Gardens.
+    pub discoverable_gardens: Mutex<Vec<GardenDirectoryEntry>>,
+    /// Backend-owned snapshot of Android proximity transport state.
+    pub android_proximity_state: Mutex<AndroidProximityState>,
+    /// Backend-owned Android startup/unlock snapshot.
+    pub android_startup_state: Mutex<AndroidStartupState>,
+    /// Backend-owned cache of gossiped service records.
+    pub service_registry: Mutex<ServiceStore>,
+    /// Registered devices participating in this shared identity.
+    pub registered_devices: Mutex<Vec<RegisteredDevice>>,
     /// Per-room message cache.  Key = room_id hex, value = JSON message list.
     pub messages: Mutex<std::collections::HashMap<String, Vec<serde_json::Value>>>,
     /// Loaded self-identity (Layer 2 keys).  `Some` after unlock.
     pub identity: Mutex<Option<SelfIdentity>>,
+    /// Loaded mesh identity (transport-facing WireGuard keypair).
+    pub mesh_identity: Mutex<Option<MeshIdentity>>,
     /// Pending backend events drained by `mi_poll_events()`.
     ///
     /// Each entry is `{"type": "EventName", "data": {...}}`.
@@ -263,8 +444,18 @@ pub struct MeshRuntime {
     pub file_transfers: Mutex<Vec<serde_json::Value>>,
     /// Per-transfer file I/O state, keyed by transfer_id.
     pub active_file_io: Mutex<std::collections::HashMap<String, FileIoState>>,
+    /// Locally published file metadata for the distributed-files UI.
+    pub published_files: Mutex<Vec<crate::files::hosted::HostedFileEntry>>,
     /// Overlay network clients (Tailscale, ZeroTier).
     pub overlay: Mutex<crate::transport::overlay_client::OverlayManager>,
+    /// Backend-owned transport availability and diversity state.
+    pub transport_manager: Mutex<TransportManager>,
+    /// Current Layer 1 activity state for cover-traffic policy.
+    pub layer1_activity_state: Mutex<DeviceActivityState>,
+    /// Current Layer 1 cover-traffic parameters.
+    pub layer1_cover_traffic: Mutex<CoverTrafficParams>,
+    /// Whether backend startup has activated Layer 1 participation.
+    pub layer1_participation_started: Mutex<bool>,
     /// Gossip engine: network map propagation (§4.1, §4.5).
     pub gossip: Mutex<crate::network::gossip::GossipEngine>,
     /// Notification dispatcher: jitter, coalescing, threat suppression (§14).
@@ -320,6 +511,8 @@ pub struct MeshRuntime {
     pub wireguard_sessions: Mutex<crate::transport::wireguard::WireGuardSessionStore>,
     /// Store-and-forward server (§6.8): buffers messages for offline peers.
     pub sf_server: Mutex<StoreForwardServer>,
+    /// Tunnel-coordination gossip state keyed by mesh WireGuard public keys.
+    pub tunnel_gossip: Mutex<crate::routing::tunnel_gossip::TunnelGossipProcessor>,
     /// Per-peer last-received timestamp for keepalive tracking.
     pub clearnet_last_rx: Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// Per-peer last-keepalive-sent timestamp, throttled to once per interval.
@@ -329,8 +522,9 @@ pub struct MeshRuntime {
     /// Pending WireGuard initiator handshakes awaiting the responder's reply.
     ///
     /// Keyed by responder `PeerId`; consumed by `wg_complete_handshake`.
-    pub pending_wg_handshakes:
-        Mutex<std::collections::HashMap<PeerId, crate::transport::wireguard::PendingInitiatorHandshake>>,
+    pub pending_wg_handshakes: Mutex<
+        std::collections::HashMap<PeerId, crate::transport::wireguard::PendingInitiatorHandshake>,
+    >,
     /// Deduplication cache for inbound message IDs (HIGH-4).
     ///
     /// Prevents replay attacks where an attacker or network glitch re-delivers
@@ -370,8 +564,23 @@ impl MeshRuntime {
             active_conversation: Mutex::new(None),
             contacts: Mutex::new(ContactStore::new()),
             vpn: Mutex::new(VpnManager::new()),
+            app_connector_config: Mutex::new(AppConnectorConfig::default()),
+            distress_message_enabled: Mutex::new(false),
+            liveness_signal_enabled: Mutex::new(false),
+            wrong_pin_wipe_enabled: Mutex::new(false),
+            wrong_pin_wipe_threshold: Mutex::new(default_wrong_pin_wipe_threshold()),
+            remote_wipe_enabled: Mutex::new(false),
+            active_tier: Mutex::new(0),
+            bandwidth_profile: Mutex::new(default_bandwidth_profile()),
+            masks: Mutex::new(Vec::new()),
+            discoverable_gardens: Mutex::new(Vec::new()),
+            android_proximity_state: Mutex::new(AndroidProximityState::default()),
+            android_startup_state: Mutex::new(AndroidStartupState::default()),
+            service_registry: Mutex::new(ServiceStore::new()),
+            registered_devices: Mutex::new(Vec::new()),
             messages: Mutex::new(std::collections::HashMap::new()),
             identity: Mutex::new(None),
+            mesh_identity: Mutex::new(None),
             event_queue: Mutex::new(std::collections::VecDeque::new()),
             transport_flags: Mutex::new(TransportFlags::default()),
             node_mode: Mutex::new(0),
@@ -384,7 +593,14 @@ impl MeshRuntime {
             lan_discovery_pending: Mutex::new(Vec::new()),
             file_transfers: Mutex::new(Vec::new()),
             active_file_io: Mutex::new(std::collections::HashMap::new()),
+            published_files: Mutex::new(Vec::new()),
             overlay: Mutex::new(crate::transport::overlay_client::OverlayManager::new()),
+            transport_manager: Mutex::new(TransportManager::new()),
+            layer1_activity_state: Mutex::new(DeviceActivityState::Backgrounded),
+            layer1_cover_traffic: Mutex::new(cover_traffic_for_state(
+                DeviceActivityState::Backgrounded,
+            )),
+            layer1_participation_started: Mutex::new(false),
             gossip: Mutex::new(crate::network::gossip::GossipEngine::new()),
             notifications: Mutex::new(crate::notifications::NotificationDispatcher::new(
                 crate::notifications::NotificationConfig::default(),
@@ -415,6 +631,9 @@ impl MeshRuntime {
             )),
             dedup_cache: Mutex::new(DeduplicationCache::new()),
             sf_server: Mutex::new(StoreForwardServer::new_client()),
+            tunnel_gossip: Mutex::new(crate::routing::tunnel_gossip::TunnelGossipProcessor::new(
+                [0u8; 32],
+            )),
             clearnet_last_rx: Mutex::new(std::collections::HashMap::new()),
             clearnet_last_keepalive_tx: Mutex::new(std::collections::HashMap::new()),
             tor_transport: Mutex::new(None),
@@ -494,8 +713,7 @@ impl MeshRuntime {
     pub fn set_error(&self, msg: &str) -> *const std::os::raw::c_char {
         // Push an Error event so Flutter can display it in the UI.
         self.push_event("Error", serde_json::json!({ "message": msg }));
-        let cstr = CString::new(msg)
-            .unwrap_or_else(|_| CString::new("encoding error").unwrap());
+        let cstr = CString::new(msg).unwrap_or_else(|_| CString::new("encoding error").unwrap());
         let ptr = cstr.as_ptr();
         *self.last_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(cstr);
         ptr
@@ -511,10 +729,7 @@ impl MeshRuntime {
 /// Frame format: `[4-byte big-endian length][payload]`.
 /// Rejects payloads larger than 4 MiB to prevent allocating attacker-controlled
 /// buffers on the receiving end.
-pub fn write_tcp_frame(
-    stream: &mut std::net::TcpStream,
-    payload: &[u8],
-) -> std::io::Result<()> {
+pub fn write_tcp_frame(stream: &mut std::net::TcpStream, payload: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     // Hard cap at 4 MiB — any larger frame is either a bug or an attack.
     if payload.len() > 4 * 1024 * 1024 {
@@ -616,6 +831,9 @@ pub fn build_settings_json(
     peer_id: &str,
     ed25519_pub: &str,
     clearnet_port: u16,
+    active_tier: u8,
+    bandwidth_profile: u8,
+    layer1_status: serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "nodeMode":          node_mode,
@@ -631,6 +849,9 @@ pub fn build_settings_json(
         "localPeerId":       peer_id,
         "publicKey":         ed25519_pub,
         "clearnetPort":      clearnet_port,
+        "activeTier":        active_tier.min(4),
+        "bandwidthProfile":  bandwidth_profile.min(2),
+        "layer1Status":      layer1_status,
     })
 }
 
@@ -657,7 +878,14 @@ pub type PqxdhWireExt = (Vec<u8>, [u8; 32]);
 pub fn bootstrap_ratchet_session(
     our_id: &SelfIdentity,
     contact: &crate::pairing::contact::ContactRecord,
-) -> Result<(DoubleRatchetSession, Option<X3dhWireHeader>, Option<PqxdhWireExt>), String> {
+) -> Result<
+    (
+        DoubleRatchetSession,
+        Option<X3dhWireHeader>,
+        Option<PqxdhWireExt>,
+    ),
+    String,
+> {
     // Try X3DH/PQXDH first when the contact advertises a preauth key.
     if let Some(preauth_bytes) = contact.preauth_key {
         if let Ok((session, header, pq_ext)) =
@@ -688,11 +916,11 @@ fn x3dh_bootstrap_session(
     // signature that binds the post-quantum key to Bob's identity.
     let bob_bundle = PreauthBundle {
         identity_ed25519_pub: contact.ed25519_public,
-        identity_x25519_pub:  X25519Public::from(contact.x25519_public),
-        preauth_x25519_pub:   X25519Public::from(*bob_preauth_bytes),
-        preauth_kem_pub:      contact.kem_encapsulation_key.clone(),
-        preauth_sig:          contact.preauth_key_sig.clone(),
-        kem_sig:              contact.kem_sig.clone(),
+        identity_x25519_pub: X25519Public::from(contact.x25519_public),
+        preauth_x25519_pub: X25519Public::from(*bob_preauth_bytes),
+        preauth_kem_pub: contact.kem_encapsulation_key.clone(),
+        preauth_sig: contact.preauth_key_sig.clone(),
+        kem_sig: contact.kem_sig.clone(),
     };
 
     let ik_pub_bytes = *our_id.x25519_pub.as_bytes();
@@ -736,7 +964,7 @@ fn static_dh_bootstrap_session(
     let shared = our_id.x25519_secret.diffie_hellman(&their_pub);
 
     // Salt = XOR of both peer IDs: commutative so both sides derive the same value.
-    let our_id_bytes   = our_id.peer_id().0;
+    let our_id_bytes = our_id.peer_id().0;
     let their_id_bytes = contact.peer_id.0;
     let mut salt = [0u8; 32];
     for i in 0..32 {
@@ -755,8 +983,8 @@ fn static_dh_bootstrap_session(
             .map_err(|e| format!("init_sender failed: {e}"))?
     } else {
         let our_secret_bytes = our_id.x25519_secret.to_bytes();
-        let our_secret_copy  = X25519Secret::from(our_secret_bytes);
-        let our_pub_bytes    = *our_id.x25519_pub.as_bytes();
+        let our_secret_copy = X25519Secret::from(our_secret_bytes);
+        let our_pub_bytes = *our_id.x25519_pub.as_bytes();
         DoubleRatchetSession::init_receiver(&master, our_secret_copy, &our_pub_bytes)
     };
 

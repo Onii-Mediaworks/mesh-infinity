@@ -170,7 +170,7 @@ impl NetworkIsolationConfig {
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
-            allow_lan: false,   // Forced off in Critical.
+            allow_lan: false, // Forced off in Critical.
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.

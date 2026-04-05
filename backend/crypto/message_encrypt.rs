@@ -30,9 +30,10 @@ use chacha20poly1305::{
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    ChaCha20Poly1305, Nonce,
+    ChaCha20Poly1305,
+    Nonce,
 };
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey, Signature};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -224,10 +225,10 @@ pub fn step1_authenticate(
     // Execute this protocol step.
     // Execute this protocol step.
     msg_key: &[u8; 32],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Initialize the MAC for authentication tag computation.
     // Compute mac for this protocol step.
@@ -279,7 +280,10 @@ pub fn step1_authenticate(
 // Errors are propagated to the caller via Result.
 // Perform the 'step1 verify' operation.
 // Errors are propagated to the caller via Result.
-pub fn step1_verify(authenticated: &[u8], msg_key: &[u8; 32]) -> Result<Vec<u8>, MessageCryptoError> {
+pub fn step1_verify(
+    authenticated: &[u8],
+    msg_key: &[u8; 32],
+) -> Result<Vec<u8>, MessageCryptoError> {
     // Validate the input length to prevent out-of-bounds access.
     // Guard: validate the condition before proceeding.
     // Guard: validate the condition before proceeding.
@@ -362,10 +366,10 @@ pub fn step2_encrypt(
     // Execute this protocol step.
     // Execute this protocol step.
     nonce: &[u8; 12],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Initialize the AEAD cipher with the derived key material.
     // Compute cipher for this protocol step.
@@ -418,10 +422,10 @@ pub fn step2_decrypt(
     // Execute this protocol step.
     // Execute this protocol step.
     nonce: &[u8; 12],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Initialize the AEAD cipher with the derived key material.
     // Compute cipher for this protocol step.
@@ -504,10 +508,10 @@ pub fn step3_verify(
     // Execute this protocol step.
     // Execute this protocol step.
     verifying_key: &VerifyingKey,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Validate the input length to prevent out-of-bounds access.
     // Guard: validate the condition before proceeding.
@@ -587,10 +591,10 @@ pub fn step4_encrypt(
     // Execute this protocol step.
     // Execute this protocol step.
     context: MessageContext,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Generate fresh ephemeral keypair
     // Compute eph secret for this protocol step.
@@ -683,9 +687,9 @@ pub fn step4_decrypt(
     // Execute this protocol step.
     // Execute this protocol step.
     context: MessageContext,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Validate the input length to prevent out-of-bounds access.
     // Guard: validate the condition before proceeding.
@@ -763,9 +767,9 @@ fn derive_step4_keys(
     // Execute this protocol step.
     // Execute this protocol step.
     context: MessageContext,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<([u8; 32], [u8; 12]), MessageCryptoError> {
     // Set up the HKDF context for domain-separated key derivation.
     // Compute hk for this protocol step.
@@ -857,9 +861,9 @@ pub fn encrypt_message(
     // Execute this protocol step.
     // Execute this protocol step.
     context: MessageContext,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Step 1: Inner authentication (deniable HMAC)
     // Compute authenticated for this protocol step.
@@ -916,9 +920,9 @@ pub fn decrypt_message(
     // Execute this protocol step.
     // Execute this protocol step.
     context: MessageContext,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Vec<u8>, MessageCryptoError> {
     // Step 4: Recipient decryption
     // Compute double signed for this protocol step.
@@ -1095,8 +1099,26 @@ mod tests {
         let sk = [0x99u8; 32];
         let sn = [0x01u8; 12];
 
-        let ct1 = encrypt_message(msg, &rk, &sk, &sn, &sender_sign, &recip_public, MessageContext::Direct).unwrap();
-        let ct2 = encrypt_message(msg, &rk, &sk, &sn, &sender_sign, &recip_public, MessageContext::Group).unwrap();
+        let ct1 = encrypt_message(
+            msg,
+            &rk,
+            &sk,
+            &sn,
+            &sender_sign,
+            &recip_public,
+            MessageContext::Direct,
+        )
+        .unwrap();
+        let ct2 = encrypt_message(
+            msg,
+            &rk,
+            &sk,
+            &sn,
+            &sender_sign,
+            &recip_public,
+            MessageContext::Group,
+        )
+        .unwrap();
 
         // Different contexts → different ephemeral keys → different ciphertext
         assert_ne!(ct1, ct2);

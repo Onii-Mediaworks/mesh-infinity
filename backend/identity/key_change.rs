@@ -203,9 +203,8 @@ pub fn create_key_change_request(
     // If we have the old secret key, sign the new keys to prove continuity.
     // This is the strongest form of proof — the holder of the old key
     // explicitly authorized the transition to the new keys.
-    let old_key_signature = old_secret.map(|secret| {
-        signing::sign(secret, DOMAIN_KEY_CHANGE, &sign_message)
-    });
+    let old_key_signature =
+        old_secret.map(|secret| signing::sign(secret, DOMAIN_KEY_CHANGE, &sign_message));
 
     // Derive the old Ed25519 public key from the secret, if available.
     // If the old key is lost, we use a zero placeholder — the contact
@@ -310,12 +309,7 @@ pub fn validate_key_change(
 
         // Verify the signature against the known old public key.
         // Use the domain separator to prevent cross-protocol replay.
-        let valid = signing::verify(
-            known_old_pub,
-            DOMAIN_KEY_CHANGE,
-            &sign_message,
-            sig_bytes,
-        );
+        let valid = signing::verify(known_old_pub, DOMAIN_KEY_CHANGE, &sign_message, sig_bytes);
 
         // A present-but-invalid signature is a security event.
         // An attacker may have forged the request or the key is compromised.
@@ -415,15 +409,17 @@ pub fn check_key_change_expiry(request: &mut KeyChangeRequest, now_unix: u64) {
 ///
 /// Returns `MeshError::Internal` if the Argon2id computation fails
 /// (should never happen with valid parameters, but we avoid unwrap).
-pub fn hash_key_change_passphrase(
-    passphrase: &str,
-    salt: &[u8; 16],
-) -> Result<Vec<u8>, MeshError> {
+pub fn hash_key_change_passphrase(passphrase: &str, salt: &[u8; 16]) -> Result<Vec<u8>, MeshError> {
     // Build the Argon2id instance with spec-mandated parameters.
     // Algorithm::Argon2id is the recommended variant — resistant to both
     // GPU attacks (from Argon2d) and side-channel attacks (from Argon2i).
-    let params = Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(ARGON2_OUTPUT_LEN))
-        .map_err(|e| MeshError::Internal(format!("argon2 params error: {e}")))?;
+    let params = Params::new(
+        ARGON2_M_COST,
+        ARGON2_T_COST,
+        ARGON2_P_COST,
+        Some(ARGON2_OUTPUT_LEN),
+    )
+    .map_err(|e| MeshError::Internal(format!("argon2 params error: {e}")))?;
 
     // Construct the Argon2id hasher with the configured parameters.
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
@@ -536,9 +532,8 @@ mod tests {
         sign_message.extend_from_slice(&timestamp.to_le_bytes());
 
         // Sign with the old key if available.
-        let old_key_signature = old_secret.map(|secret| {
-            signing::sign(secret, DOMAIN_KEY_CHANGE, &sign_message)
-        });
+        let old_key_signature =
+            old_secret.map(|secret| signing::sign(secret, DOMAIN_KEY_CHANGE, &sign_message));
 
         // Hash the passphrase if provided.
         let (passphrase_hash, passphrase_salt) = match passphrase {
@@ -632,7 +627,10 @@ mod tests {
 
         // Validate: should return PassphraseProof.
         let result = validate_key_change(&request, &old_pub);
-        assert!(result.is_ok(), "validation should succeed for passphrase proof");
+        assert!(
+            result.is_ok(),
+            "validation should succeed for passphrase proof"
+        );
         assert_eq!(
             result.expect("checked above"),
             KeyChangeValidation::PassphraseProof,
@@ -666,7 +664,10 @@ mod tests {
 
         // Validate: should return NoProof — contact must decide manually.
         let result = validate_key_change(&request, &old_pub);
-        assert!(result.is_ok(), "validation should succeed (no proof is valid state)");
+        assert!(
+            result.is_ok(),
+            "validation should succeed (no proof is valid state)"
+        );
         assert_eq!(
             result.expect("checked above"),
             KeyChangeValidation::NoProof,
@@ -686,9 +687,8 @@ mod tests {
         let timestamp = 1_700_000_000u64;
         let expires_at = timestamp + GRACE_PERIOD_SECS;
 
-        let mut request = make_test_request(
-            None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None,
-        );
+        let mut request =
+            make_test_request(None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None);
 
         // Before expiry — should remain Pending.
         check_key_change_expiry(&mut request, expires_at - 1);
@@ -713,9 +713,8 @@ mod tests {
         let (_, new_ed_pub) = test_keypair(0x22);
         let timestamp = 1_700_000_000u64;
 
-        let mut request = make_test_request(
-            None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None,
-        );
+        let mut request =
+            make_test_request(None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None);
 
         // Accept the request manually before expiry.
         accept_key_change(&mut request);
@@ -737,9 +736,8 @@ mod tests {
         let (_, new_ed_pub) = test_keypair(0x22);
         let timestamp = 1_700_000_000u64;
 
-        let mut request = make_test_request(
-            None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None,
-        );
+        let mut request =
+            make_test_request(None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None);
 
         // Reject the request before expiry.
         reject_key_change(&mut request);
@@ -768,7 +766,12 @@ mod tests {
 
         // Create request with a forged (garbage) signature.
         let mut request = make_test_request(
-            None, &old_pub, &new_ed_pub, &new_x25519_pub, timestamp, None,
+            None,
+            &old_pub,
+            &new_ed_pub,
+            &new_x25519_pub,
+            timestamp,
+            None,
         );
         // Inject a forged signature — 64 random bytes that won't verify.
         request.old_ed_pub = old_pub;
@@ -823,8 +826,8 @@ mod tests {
         let salt = [0xBB; 16];
 
         // Hash the correct passphrase.
-        let correct_hash = hash_key_change_passphrase("correct-phrase", &salt)
-            .expect("hashing should succeed");
+        let correct_hash =
+            hash_key_change_passphrase("correct-phrase", &salt).expect("hashing should succeed");
 
         // Verify with the wrong passphrase — should not match.
         let wrong_match = verify_passphrase_hash("wrong-phrase", &salt, &correct_hash)
@@ -853,9 +856,8 @@ mod tests {
         let (_, new_ed_pub) = test_keypair(0x22);
         let timestamp = 1_700_000_000u64;
 
-        let mut request = make_test_request(
-            None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None,
-        );
+        let mut request =
+            make_test_request(None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None);
 
         // Initially Pending.
         assert!(matches!(request.status, KeyChangeStatus::Pending { .. }));
@@ -875,9 +877,8 @@ mod tests {
         let (_, new_ed_pub) = test_keypair(0x22);
         let timestamp = 1_700_000_000u64;
 
-        let mut request = make_test_request(
-            None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None,
-        );
+        let mut request =
+            make_test_request(None, &old_pub, &new_ed_pub, &[0x33; 32], timestamp, None);
 
         // Initially Pending.
         assert!(matches!(request.status, KeyChangeStatus::Pending { .. }));
@@ -916,10 +917,10 @@ mod tests {
         // Same passphrase with different salts must produce different hashes.
         let salt_a = [0xAA; 16];
         let salt_b = [0xBB; 16];
-        let hash_a = hash_key_change_passphrase("same-passphrase", &salt_a)
-            .expect("hash A should succeed");
-        let hash_b = hash_key_change_passphrase("same-passphrase", &salt_b)
-            .expect("hash B should succeed");
+        let hash_a =
+            hash_key_change_passphrase("same-passphrase", &salt_a).expect("hash A should succeed");
+        let hash_b =
+            hash_key_change_passphrase("same-passphrase", &salt_b).expect("hash B should succeed");
 
         assert_ne!(
             hash_a, hash_b,
@@ -967,12 +968,11 @@ mod tests {
         );
 
         // Serialize to JSON.
-        let json = serde_json::to_string(&request)
-            .expect("serialization should succeed");
+        let json = serde_json::to_string(&request).expect("serialization should succeed");
 
         // Deserialize back.
-        let recovered: KeyChangeRequest = serde_json::from_str(&json)
-            .expect("deserialization should succeed");
+        let recovered: KeyChangeRequest =
+            serde_json::from_str(&json).expect("deserialization should succeed");
 
         // Verify key fields survived the round-trip.
         assert_eq!(recovered.peer_id, request.peer_id);

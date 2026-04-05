@@ -184,8 +184,7 @@ impl CoverTrafficGenerator {
     pub fn record_real_packet(&mut self) {
         // Saturating add prevents overflow if somehow billions of packets
         // are sent in a single interval (shouldn't happen, but defensive).
-        self.real_packets_this_interval =
-            self.real_packets_this_interval.saturating_add(1);
+        self.real_packets_this_interval = self.real_packets_this_interval.saturating_add(1);
     }
 
     /// Check whether a cover packet should be sent right now.
@@ -225,8 +224,7 @@ impl CoverTrafficGenerator {
         // Calculate how far through the current interval we are (0.0 to 1.0).
         // This determines how many packets should have been sent by now.
         let elapsed = now.duration_since(self.interval_start);
-        let progress = elapsed.as_secs_f64()
-            / self.interval_duration.as_secs_f64();
+        let progress = elapsed.as_secs_f64() / self.interval_duration.as_secs_f64();
 
         // Target packets so far = total interval budget × progress fraction.
         // The budget for one interval is target_rate_pps × interval_duration_secs.
@@ -236,10 +234,15 @@ impl CoverTrafficGenerator {
         let interval_secs = self.interval_duration.as_secs_f64();
         let total_budget = self.config.target_rate_pps * interval_secs;
         let computed = (total_budget * progress).ceil() as u32;
-        let target_so_far = if total_budget >= 1.0 { computed.max(1) } else { computed };
+        let target_so_far = if total_budget >= 1.0 {
+            computed.max(1)
+        } else {
+            computed
+        };
 
         // How many packets (real + cover) have actually been sent so far.
-        let sent_so_far = self.real_packets_this_interval
+        let sent_so_far = self
+            .real_packets_this_interval
             .saturating_add(self.cover_packets_this_interval);
 
         // If we've already met the target, no cover packet needed.
@@ -249,8 +252,7 @@ impl CoverTrafficGenerator {
 
         // Generate a cover packet: random bytes at the configured size.
         // Track it so we don't overshoot the target on subsequent polls.
-        self.cover_packets_this_interval =
-            self.cover_packets_this_interval.saturating_add(1);
+        self.cover_packets_this_interval = self.cover_packets_this_interval.saturating_add(1);
         Some(generate_random_payload(self.config.packet_size))
     }
 
@@ -307,8 +309,7 @@ impl CoverTrafficGenerator {
         self.cover_packets_this_interval = 0;
         self.interval_start = now;
         // Recompute interval with fresh jitter for this new period.
-        self.interval_duration =
-            compute_jittered_interval(self.config.target_rate_pps);
+        self.interval_duration = compute_jittered_interval(self.config.target_rate_pps);
     }
 }
 
@@ -339,8 +340,7 @@ fn compute_jittered_interval(rate: f64) -> Duration {
     // Generate jitter: uniform random in [-JITTER_FRACTION, +JITTER_FRACTION].
     // Using thread_rng() which is a CSPRNG on all supported platforms.
     let mut rng = rand::rng();
-    let jitter_factor: f64 =
-        rng.random_range((1.0 - JITTER_FRACTION)..=(1.0 + JITTER_FRACTION));
+    let jitter_factor: f64 = rng.random_range((1.0 - JITTER_FRACTION)..=(1.0 + JITTER_FRACTION));
 
     // Apply jitter to the base interval.
     let jittered_secs = base_secs * jitter_factor;
@@ -549,7 +549,10 @@ mod tests {
                 break;
             }
         }
-        assert!(got_packet, "Expected cover packet at high rate before rate change");
+        assert!(
+            got_packet,
+            "Expected cover packet at high rate before rate change"
+        );
 
         // Change to zero rate — should stop generating.
         gen.set_rate(0.0);

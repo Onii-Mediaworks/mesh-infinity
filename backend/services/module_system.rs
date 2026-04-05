@@ -22,8 +22,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// Top-level module configuration.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // ModuleConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -51,7 +50,6 @@ pub struct ModuleConfig {
     // Execute this protocol step.
     pub plugins: PluginModuleConfig,
 }
-
 
 /// Social subsystem modules.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,8 +111,7 @@ impl Default for SocialModuleConfig {
 }
 
 /// Network subsystem modules.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // NetworkModuleConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -143,10 +140,8 @@ pub struct NetworkModuleConfig {
     pub funnel: bool,
 }
 
-
 /// Protocol subsystem modules.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // ProtocolModuleConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -183,10 +178,8 @@ pub struct ProtocolModuleConfig {
     pub print_service: bool,
 }
 
-
 /// Agentic subsystem modules.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // AgenticModuleConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -199,10 +192,8 @@ pub struct AgenticModuleConfig {
     pub mislp: bool,
 }
 
-
 /// Plugin subsystem configuration.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // PluginModuleConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -218,7 +209,6 @@ pub struct PluginModuleConfig {
     // Execute this protocol step.
     pub installed_plugins: HashMap<String, bool>,
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests

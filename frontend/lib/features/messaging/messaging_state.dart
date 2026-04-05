@@ -122,6 +122,7 @@ class MessagingState extends ChangeNotifier {
     // lists and rebuilds when loadRooms() calls notifyListeners() after the
     // data arrives.
     loadRooms();
+    loadRequests();
   }
 
   // -------------------------------------------------------------------------
@@ -195,6 +196,7 @@ class MessagingState extends ChangeNotifier {
 
   /// Pending message requests from low-trust peers (§22.5.4).
   List<MessageRequest> get requests => _requests;
+  int get requestCount => _requests.length;
 
   // -------------------------------------------------------------------------
   // Load / refresh operations
@@ -270,13 +272,17 @@ class MessagingState extends ChangeNotifier {
   /// but it is correct behaviour and important for future async implementations.
   Future<void> loadMessages(String roomId) async {
     _loadingMessages = true;
-    if (!_disposed) notifyListeners(); // Rebuild now so the spinner appears immediately.
+    if (!_disposed) {
+      notifyListeners(); // Rebuild now so the spinner appears immediately.
+    }
 
     final msgs = _bridge.fetchMessages(roomId);
     _messages = msgs;
 
     _loadingMessages = false;
-    if (!_disposed) notifyListeners(); // Rebuild again to replace the spinner with actual messages.
+    if (!_disposed) {
+      notifyListeners(); // Rebuild again to replace the spinner with actual messages.
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -293,7 +299,9 @@ class MessagingState extends ChangeNotifier {
     _bridge.selectRoom(roomId); // Tell Rust "this is the focused room".
     _activeRoomId = roomId;
     _typingPeers.clear(); // Typing state is per-room; reset on switch.
-    if (!_disposed) notifyListeners(); // Update ConversationListScreen's highlighted row.
+    if (!_disposed) {
+      notifyListeners(); // Update ConversationListScreen's highlighted row.
+    }
     await loadMessages(roomId); // Load and display messages.
   }
 
@@ -363,10 +371,7 @@ class MessagingState extends ChangeNotifier {
     if (ok && roomId == _activeRoomId) {
       _messages = [
         for (final m in _messages)
-          if (m.id == messageId)
-            m.copyWith(text: newText, edited: true)
-          else
-            m,
+          if (m.id == messageId) m.copyWith(text: newText, edited: true) else m,
       ];
       if (!_disposed) notifyListeners();
     }
@@ -418,8 +423,6 @@ class MessagingState extends ChangeNotifier {
   /// Called from MessageRequestsScreen.initState() (initial load) and from
   /// the Undo action in the decline SnackBar.
   Future<void> loadRequests() async {
-    // fetchMessageRequests() returns an empty list until the Rust backend
-    // implements the request queue; at that point this will populate.
     _requests = _bridge.fetchMessageRequests();
     // Guard against calling notifyListeners after dispose (same pattern as
     // loadRooms / loadMessages above).
@@ -628,14 +631,20 @@ class MessagingState extends ChangeNotifier {
         // Load the messages for the newly active room.
         // `if (roomId != null)` is necessary because roomId is nullable —
         // a null value means "no active room", in which case we don't load.
-        if (roomId != null) loadMessages(roomId); // Load the new room's messages.
+        if (roomId != null) {
+          loadMessages(roomId); // Load the new room's messages.
+        }
         if (!_disposed) notifyListeners();
 
       // A delivery receipt arrived — update the message's deliveryStatus (§7.3).
       // When the recipient's app decrypts our message it sends back a receipt,
       // and Rust emits this event.  We find the message in _messages (if the
       // room is currently open) and swap in a copy with the updated status.
-      case MessageStatusUpdatedEvent(:final msgId, :final roomId, :final deliveryStatus):
+      case MessageStatusUpdatedEvent(
+        :final msgId,
+        :final roomId,
+        :final deliveryStatus,
+      ):
         if (roomId == _activeRoomId) {
           _messages = [
             for (final m in _messages)
@@ -662,7 +671,12 @@ class MessagingState extends ChangeNotifier {
 
       // A peer reacted to a message in the currently open room (§10.1.2).
       // Find the target message and append the new reaction to its reactions list.
-      case ReactionAddedEvent(:final roomId, :final msgId, :final peerId, :final emoji)
+      case ReactionAddedEvent(
+            :final roomId,
+            :final msgId,
+            :final peerId,
+            :final emoji,
+          )
           when roomId == _activeRoomId:
         final senderHex = peerId ?? 'local';
         final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
@@ -725,6 +739,7 @@ class MessagingState extends ChangeNotifier {
     _sub?.cancel();
     // The `?.` (null-safe call) means: only call cancel() if _sub is not null.
 
-    super.dispose(); // Always call super.dispose() so ChangeNotifier can clean up.
+    super
+        .dispose(); // Always call super.dispose() so ChangeNotifier can clean up.
   }
 }

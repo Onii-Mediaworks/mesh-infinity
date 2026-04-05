@@ -698,7 +698,10 @@ mod tests {
     // ── Real cryptographic signature tests ────────────────────────────────────
 
     /// Build a properly signed intent using a real Ed25519 key.
-    fn make_signed_intent(signing_key: &ed25519_dalek::SigningKey, now: u64) -> TrustPromotionIntent {
+    fn make_signed_intent(
+        signing_key: &ed25519_dalek::SigningKey,
+        now: u64,
+    ) -> TrustPromotionIntent {
         let mut intent = TrustPromotionIntent {
             commitment: [0x11; 32],
             recipient: PeerId([0x22; 32]),

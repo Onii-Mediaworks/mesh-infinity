@@ -5,295 +5,163 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How the configured app list should be interpreted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppConnectorMode {
+    #[default]
+    Allowlist,
+    Denylist,
+}
+
+/// One configured application entry exposed to the UI.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppConnectorApp {
+    /// Stable app identifier such as Android package name or bundle ID.
+    pub app_id: String,
+    /// Human-friendly label shown in the UI.
+    pub name: String,
+}
+
+/// Persisted App Connector configuration owned by the backend.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppConnectorConfig {
+    /// Whether the listed apps are opt-in or opt-out.
+    pub mode: AppConnectorMode,
+    /// Ordered list of configured applications.
+    #[serde(default)]
+    pub apps: Vec<AppConnectorApp>,
+    /// Explicit selector-based rules.
+    #[serde(default)]
+    pub rules: Vec<AppConnectorRule>,
+}
+
 /// A per-app routing rule.
 ///
 /// Lower priority number = higher priority.
 /// App connector rules override global ThreatContext scoring.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// AppConnectorRule — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// AppConnectorRule — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// AppConnectorRule — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// AppConnectorRule — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConnectorRule {
     /// Which app/traffic this rule matches.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub app_selector: AppSelector,
     /// Where to route matching traffic.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub routing_target: RoutingTarget,
     /// Priority (lower = higher priority).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub priority: u8,
     /// Whether this rule is active.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub enabled: bool,
     /// Minimum threat context for this rule to apply.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub threat_context_min: Option<u8>,
 }
 
 /// Selector for matching app traffic.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// AppSelector — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// AppSelector — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// AppSelector — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// AppSelector — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppSelector {
     /// Application ID (platform-specific).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub app_id: Option<String>,
     /// Domain pattern (e.g., "*.example.com").
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub domain_pattern: Option<String>,
     /// IP range (CIDR notation).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub ip_range: Option<String>,
     /// Port number.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub port: Option<u16>,
 }
 
-// Begin the block scope.
-// AppSelector implementation — core protocol logic.
-// AppSelector implementation — core protocol logic.
-// AppSelector implementation — core protocol logic.
-// AppSelector implementation — core protocol logic.
 impl AppSelector {
     /// Specificity score for conflict resolution.
     /// More specific selectors win ties.
-    // Perform the 'specificity' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'specificity' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'specificity' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'specificity' operation.
-    // Errors are propagated to the caller via Result.
     pub fn specificity(&self) -> u8 {
-        // Bind the computed value for subsequent use.
-        // Compute score for this protocol step.
-        // Compute score for this protocol step.
-        // Compute score for this protocol step.
-        // Compute score for this protocol step.
         let mut score = 0;
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.app_id.is_some() {
-            // Execute this step in the protocol sequence.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             score += 4;
         }
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.domain_pattern.is_some() {
-            // Execute this step in the protocol sequence.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             score += 3;
         }
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.ip_range.is_some() {
-            // Execute this step in the protocol sequence.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             score += 2;
         }
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.port.is_some() {
-            // Execute this step in the protocol sequence.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             score += 1;
         }
         score
     }
+
+    /// Whether the selector has no match criteria at all.
+    pub fn is_empty(&self) -> bool {
+        self.app_id.is_none()
+            && self.domain_pattern.is_none()
+            && self.ip_range.is_none()
+            && self.port.is_none()
+    }
 }
 
 /// Where to route matched traffic.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// RoutingTarget — variant enumeration.
-// Match exhaustively to handle every protocol state.
-// RoutingTarget — variant enumeration.
-// Match exhaustively to handle every protocol state.
-// RoutingTarget — variant enumeration.
-// Match exhaustively to handle every protocol state.
-// RoutingTarget — variant enumeration.
-// Match exhaustively to handle every protocol state.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RoutingTarget {
     /// Route through a specific exit node.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     ExitNode {
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        peer_id: [u8; 32],
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        profile: Option<[u8; 16]>,
+        peer_id: String,
+        profile: Option<String>,
     },
     /// Route through the mixnet tier.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     MixnetTier,
     /// Route through Tor.
     Tor,
     /// Route through I2P.
     I2P,
     /// Route through direct mesh (no exit node).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     DirectMesh,
     /// Direct connection (bypass mesh).
     Direct,
     /// Route through an Infinet.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    Infinet { infinet_id: [u8; 32] },
+    Infinet { infinet_id: String },
 }
 
 /// Resolve conflicting rules: highest priority (lowest number) wins.
 /// Equal priority: most specific selector wins.
-// Perform the 'resolve rules' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'resolve rules' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'resolve rules' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'resolve rules' operation.
-// Errors are propagated to the caller via Result.
 pub fn resolve_rules(rules: &[AppConnectorRule]) -> Option<&AppConnectorRule> {
-    rules
-        // Create an iterator over the collection elements.
-        // Create an iterator over the elements.
-        // Create an iterator over the elements.
-        // Create an iterator over the elements.
-        // Create an iterator over the elements.
-        .iter()
-        // Select only elements matching the predicate.
-        // Filter by the predicate.
-        // Filter by the predicate.
-        // Filter by the predicate.
-        // Filter by the predicate.
-        .filter(|r| r.enabled)
-        // Apply the closure to each element.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        .min_by(|a, b| {
-            // Chain the operation on the intermediate result.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            a.priority
-                // Process the current step in the protocol.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                .cmp(&b.priority)
-                // Apply the closure to each element.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                .then_with(|| {
-                    // Chain the operation on the intermediate result.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    b.app_selector
-                        // Chain the operation on the intermediate result.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
-                        .specificity()
-                        // Process the current step in the protocol.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
-                        .cmp(&a.app_selector.specificity())
-                })
+    rules.iter().filter(|r| r.enabled).min_by(|a, b| {
+        a.priority.cmp(&b.priority).then_with(|| {
+            b.app_selector
+                .specificity()
+                .cmp(&a.app_selector.specificity())
         })
+    })
+}
+
+impl AppConnectorConfig {
+    /// Convert the UI-facing config into solver-facing routing rules.
+    pub fn to_rules(&self) -> Vec<AppConnectorRule> {
+        let mut rules = self.rules.clone();
+        rules.extend(self.apps.iter().enumerate().map(|(index, app)| {
+            let routing_target = match self.mode {
+                AppConnectorMode::Allowlist => RoutingTarget::DirectMesh,
+                AppConnectorMode::Denylist => RoutingTarget::Direct,
+            };
+            AppConnectorRule {
+                app_selector: AppSelector {
+                    app_id: Some(app.app_id.clone()),
+                    domain_pattern: None,
+                    ip_range: None,
+                    port: None,
+                },
+                routing_target,
+                priority: index.min(u8::MAX as usize) as u8,
+                enabled: true,
+                threat_context_min: None,
+            }
+        }));
+        rules.sort_by(|a, b| {
+            a.priority.cmp(&b.priority).then_with(|| {
+                b.app_selector
+                    .specificity()
+                    .cmp(&a.app_selector.specificity())
+            })
+        });
+        rules
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -326,8 +194,10 @@ mod tests {
         let rules = vec![
             AppConnectorRule {
                 app_selector: AppSelector {
-                    app_id: None, domain_pattern: None,
-                    ip_range: None, port: Some(443),
+                    app_id: None,
+                    domain_pattern: None,
+                    ip_range: None,
+                    port: Some(443),
                 },
                 routing_target: RoutingTarget::Tor,
                 priority: 10,
@@ -336,8 +206,10 @@ mod tests {
             },
             AppConnectorRule {
                 app_selector: AppSelector {
-                    app_id: Some("browser".into()), domain_pattern: None,
-                    ip_range: None, port: None,
+                    app_id: Some("browser".into()),
+                    domain_pattern: None,
+                    ip_range: None,
+                    port: None,
                 },
                 routing_target: RoutingTarget::MixnetTier,
                 priority: 5, // Higher priority (lower number).
@@ -352,18 +224,18 @@ mod tests {
 
     #[test]
     fn test_disabled_rules_excluded() {
-        let rules = vec![
-            AppConnectorRule {
-                app_selector: AppSelector {
-                    app_id: None, domain_pattern: None,
-                    ip_range: None, port: None,
-                },
-                routing_target: RoutingTarget::Direct,
-                priority: 1,
-                enabled: false, // Disabled!
-                threat_context_min: None,
+        let rules = vec![AppConnectorRule {
+            app_selector: AppSelector {
+                app_id: None,
+                domain_pattern: None,
+                ip_range: None,
+                port: None,
             },
-        ];
+            routing_target: RoutingTarget::Direct,
+            priority: 1,
+            enabled: false, // Disabled!
+            threat_context_min: None,
+        }];
 
         assert!(resolve_rules(&rules).is_none());
     }

@@ -34,7 +34,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       return const EmptyState(
         icon: Icons.search,
         title: 'No services found',
-        body: 'Services hosted by reachable peers will appear here.',
+        body: 'Services from this device and any discovered peers will appear here.',
       );
     }
     return RefreshIndicator(
@@ -60,6 +60,7 @@ class _ServiceTile extends StatelessWidget {
     final type      = service['type']      as String? ?? '';
     final hostName  = service['hostName']  as String? ?? '';
     final trustReq  = (service['trustRequired'] as num?)?.toInt() ?? 0;
+    final isLocal = service['hostPeerId'] == '' || hostName == 'This device';
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -78,9 +79,15 @@ class _ServiceTile extends StatelessWidget {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(hostName.isNotEmpty ? 'Hosted by $hostName' : type,
+            Text(
+              isLocal
+                  ? 'Hosted on this device'
+                  : hostName.isNotEmpty
+                      ? 'Hosted by $hostName'
+                      : type,
               style: theme.textTheme.bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant)),
+                  ?.copyWith(color: cs.onSurfaceVariant),
+            ),
             if (trustReq > 0)
               Text('Requires trust level $trustReq',
                 style: theme.textTheme.bodySmall
@@ -88,9 +95,9 @@ class _ServiceTile extends StatelessWidget {
           ],
         ),
         isThreeLine: trustReq > 0,
-        trailing: TextButton(
-          onPressed: () {}, // TODO: connect to mesh service
-          child: const Text('Connect'),
+        trailing: Icon(
+          isLocal ? Icons.smartphone_outlined : Icons.route_outlined,
+          color: cs.onSurfaceVariant,
         ),
       ),
     );

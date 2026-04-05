@@ -70,8 +70,9 @@
 //! Default 180 days from last seen. Expiry releases address,
 //! removes DNS records and services. Does NOT expire mesh trust.
 
-use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 // ---------------------------------------------------------------------------
 // Constants — addressing (Tailscale-compatible)
@@ -395,7 +396,10 @@ pub enum InfinetTarget {
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Service { device_id: [u8; 32], service: String },
+    Service {
+        device_id: [u8; 32],
+        service: String,
+    },
     /// A subnet (CIDR notation).
     // Execute this protocol step.
     // Execute this protocol step.
@@ -833,7 +837,8 @@ impl IpAllocator {
         // Compute blocked for this protocol step.
         // Compute blocked for this protocol step.
         // Compute blocked for this protocol step.
-        let blocked: HashSet<u16> = tailscale_addrs.iter()
+        let blocked: HashSet<u16> = tailscale_addrs
+            .iter()
             // Apply the closure to each element.
             // Execute this protocol step.
             // Execute this protocol step.
@@ -960,10 +965,10 @@ impl IpAllocator {
         // Execute this protocol step.
         // Execute this protocol step.
         existing_addrs: &[String],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Option<String> {
         // Parse the second octet from the subnet.
         // Compute parts for this protocol step.
@@ -1242,7 +1247,8 @@ pub fn infinet_v6_collides_with_tailscale(infinet_slot: u16, tailscale_addrs: &[
     // Create an iterator over the elements.
     // Create an iterator over the elements.
     // Create an iterator over the elements.
-    tailscale_addrs.iter()
+    tailscale_addrs
+        .iter()
         // Apply the closure to each element.
         // Execute this protocol step.
         // Execute this protocol step.
@@ -1335,10 +1341,10 @@ pub fn cycle_v6_for_member(
     // Execute this protocol step.
     // Execute this protocol step.
     now: u64,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Option<AddressConflictEvent> {
     // Identify the peer for this operation.
     // Compute current subnet for this protocol step.
@@ -1367,7 +1373,8 @@ pub fn cycle_v6_for_member(
     // Compute conflicting for this protocol step.
     // Compute conflicting for this protocol step.
     // Compute conflicting for this protocol step.
-    let conflicting = tailscale_addrs.iter()
+    let conflicting = tailscale_addrs
+        .iter()
         // Apply the closure to each element.
         // Execute this protocol step.
         // Execute this protocol step.
@@ -1531,6 +1538,7 @@ pub fn evaluate_acl(
     // Execute this protocol step.
     // Execute this protocol step.
     requester_role: InfinetRole,
+    target_owner_peer_id: &[u8; 32],
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
@@ -1541,14 +1549,16 @@ pub fn evaluate_acl(
     // Execute this protocol step.
     // Execute this protocol step.
     target_service: Option<&str>,
+    target_ipv4: Option<&str>,
+    target_ipv6: Option<&str>,
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
     now: u64,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> InfinetPermission {
     // Iterate over each element in the collection.
     // Iterate over each element.
@@ -1622,10 +1632,10 @@ pub fn evaluate_acl(
                 // Execute this protocol step.
                 device_id,
                 service,
-            // Begin the block scope.
-            // Handle }.
-            // Handle }.
-            // Handle }.
+                // Begin the block scope.
+                // Handle }.
+                // Handle }.
+                // Handle }.
             } => {
                 // Update the local state.
                 // Execute this protocol step.
@@ -1643,9 +1653,7 @@ pub fn evaluate_acl(
             // Handle InfinetTarget::Subnet { .. }.
             // Handle InfinetTarget::Subnet { .. }.
             InfinetTarget::Subnet { .. } => {
-                // Subnet matching would require IP parsing.
-                // For now, this matches only if no specific device is targeted.
-                true
+                subnet_target_matches(&acl.target, target_ipv4, target_ipv6)
             }
             // Handle this match arm.
             InfinetTarget::Everything => true,
@@ -1664,11 +1672,78 @@ pub fn evaluate_acl(
         }
     }
 
-    // Default: Deny (Tailscale default-deny model).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    InfinetPermission::Deny
+    // Default policy from the spec:
+    // - a member may always reach their own devices
+    // - access to other members' devices is denied unless an ACL allows it
+    if requester_peer_id == target_owner_peer_id {
+        InfinetPermission::Allow
+    } else {
+        InfinetPermission::Deny
+    }
+}
+
+fn subnet_target_matches(
+    target: &InfinetTarget,
+    target_ipv4: Option<&str>,
+    target_ipv6: Option<&str>,
+) -> bool {
+    let InfinetTarget::Subnet { network } = target else {
+        return false;
+    };
+
+    if let Some((base, prefix)) = parse_ipv4_cidr(network) {
+        return target_ipv4
+            .and_then(|addr| addr.parse::<Ipv4Addr>().ok())
+            .is_some_and(|addr| ipv4_in_cidr(addr, base, prefix));
+    }
+
+    if let Some((base, prefix)) = parse_ipv6_cidr(network) {
+        return target_ipv6
+            .and_then(|addr| addr.parse::<Ipv6Addr>().ok())
+            .is_some_and(|addr| ipv6_in_cidr(addr, base, prefix));
+    }
+
+    false
+}
+
+fn parse_ipv4_cidr(network: &str) -> Option<(Ipv4Addr, u8)> {
+    let (addr, prefix) = network.split_once('/')?;
+    let prefix = prefix.parse::<u8>().ok()?;
+    if prefix > 32 {
+        return None;
+    }
+    Some((addr.parse::<Ipv4Addr>().ok()?, prefix))
+}
+
+fn parse_ipv6_cidr(network: &str) -> Option<(Ipv6Addr, u8)> {
+    let (addr, prefix) = network.split_once('/')?;
+    let prefix = prefix.parse::<u8>().ok()?;
+    if prefix > 128 {
+        return None;
+    }
+    Some((addr.parse::<Ipv6Addr>().ok()?, prefix))
+}
+
+fn ipv4_in_cidr(addr: Ipv4Addr, base: Ipv4Addr, prefix: u8) -> bool {
+    let addr = u32::from(addr);
+    let base = u32::from(base);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    (addr & mask) == (base & mask)
+}
+
+fn ipv6_in_cidr(addr: Ipv6Addr, base: Ipv6Addr, prefix: u8) -> bool {
+    let addr = u128::from(addr);
+    let base = u128::from(base);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    };
+    (addr & mask) == (base & mask)
 }
 
 // ---------------------------------------------------------------------------
@@ -1745,10 +1820,10 @@ pub fn generate_dns_entries(
     // Execute this protocol step.
     // Execute this protocol step.
     members: &[InfinetMember],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Vec<InfinetDNSRecord> {
     // Pre-allocate the buffer to avoid repeated reallocations.
     // Compute records for this protocol step.
@@ -1785,7 +1860,9 @@ pub fn generate_dns_entries(
                     // Execute this protocol step.
                     // Execute this protocol step.
                     // Execute this protocol step.
-                    device.shortname, member.shortname, infinet_name
+                    device.shortname,
+                    member.shortname,
+                    infinet_name
                 );
                 // Begin the block scope.
                 // Append to the collection.
@@ -1839,7 +1916,9 @@ pub fn generate_dns_entries(
                     // Execute this protocol step.
                     // Execute this protocol step.
                     // Execute this protocol step.
-                    device.shortname, member.shortname, infinet_name
+                    device.shortname,
+                    member.shortname,
+                    infinet_name
                 );
                 // Begin the block scope.
                 // Append to the collection.
@@ -1893,7 +1972,10 @@ pub fn generate_dns_entries(
                     // Execute this protocol step.
                     // Execute this protocol step.
                     // Execute this protocol step.
-                    service.name, device.shortname, member.shortname, infinet_name
+                    service.name,
+                    device.shortname,
+                    member.shortname,
+                    infinet_name
                 );
                 // Service names resolve to the device's IP.
                 // Guard: validate the condition before proceeding.
@@ -1991,17 +2073,11 @@ mod tests {
 
     #[test]
     fn test_device_address_allocation() {
-        let addr = IpAllocator::allocate_device_v4(
-            "100.65.0.0/16",
-            &[],
-        );
+        let addr = IpAllocator::allocate_device_v4("100.65.0.0/16", &[]);
         assert_eq!(addr, Some("100.65.0.2".to_string()));
 
         // With existing addresses.
-        let addr2 = IpAllocator::allocate_device_v4(
-            "100.65.0.0/16",
-            &["100.65.0.2".to_string()],
-        );
+        let addr2 = IpAllocator::allocate_device_v4("100.65.0.0/16", &["100.65.0.2".to_string()]);
         assert_eq!(addr2, Some("100.65.0.3".to_string()));
     }
 
@@ -2020,6 +2096,9 @@ mod tests {
             &[0x01; 32],
             InfinetRole::Member,
             &[0x02; 32],
+            &[0x02; 32],
+            None,
+            None,
             None,
             1000,
         );
@@ -2027,13 +2106,16 @@ mod tests {
     }
 
     #[test]
-    fn test_acl_evaluation_default_deny() {
-        // Empty ACL list → default deny.
+    fn test_acl_evaluation_default_deny_for_other_members() {
+        // Empty ACL list → deny access to other members' devices.
         let result = evaluate_acl(
             &[],
             &[0x01; 32],
             InfinetRole::Member,
             &[0x02; 32],
+            &[0x02; 32],
+            None,
+            None,
             None,
             1000,
         );
@@ -2043,25 +2125,45 @@ mod tests {
     #[test]
     fn test_acl_member_specific() {
         let allowed_peer = [0xAA; 32];
-        let acls = vec![
-            InfinetACL {
-                rule_id: [0x01; 16],
-                subject: InfinetSubject::Member { peer_id: allowed_peer },
-                target: InfinetTarget::Everything,
-                permission: InfinetPermission::Allow,
-                expires_at: None,
+        let acls = vec![InfinetACL {
+            rule_id: [0x01; 16],
+            subject: InfinetSubject::Member {
+                peer_id: allowed_peer,
             },
-        ];
+            target: InfinetTarget::Everything,
+            permission: InfinetPermission::Allow,
+            expires_at: None,
+        }];
 
         // Allowed peer: Allow.
         assert_eq!(
-            evaluate_acl(&acls, &allowed_peer, InfinetRole::Member, &[0x02; 32], None, 1000),
+            evaluate_acl(
+                &acls,
+                &allowed_peer,
+                InfinetRole::Member,
+                &[0x02; 32],
+                &[0x02; 32],
+                None,
+                None,
+                None,
+                1000
+            ),
             InfinetPermission::Allow
         );
 
         // Other peer: Deny (no matching rule → default).
         assert_eq!(
-            evaluate_acl(&acls, &[0xBB; 32], InfinetRole::Member, &[0x02; 32], None, 1000),
+            evaluate_acl(
+                &acls,
+                &[0xBB; 32],
+                InfinetRole::Member,
+                &[0x02; 32],
+                &[0x02; 32],
+                None,
+                None,
+                None,
+                1000
+            ),
             InfinetPermission::Deny
         );
     }
@@ -2078,7 +2180,17 @@ mod tests {
 
         // Rule expired → default deny.
         assert_eq!(
-            evaluate_acl(&acls, &[0x01; 32], InfinetRole::Member, &[0x02; 32], None, 1000),
+            evaluate_acl(
+                &acls,
+                &[0x01; 32],
+                InfinetRole::Member,
+                &[0x02; 32],
+                &[0x02; 32],
+                None,
+                None,
+                None,
+                1000
+            ),
             InfinetPermission::Deny
         );
     }
@@ -2099,13 +2211,138 @@ mod tests {
 
         // Matching service: Allow.
         assert_eq!(
-            evaluate_acl(&acls, &[0x01; 32], InfinetRole::Member, &device, Some("http"), 1000),
+            evaluate_acl(
+                &acls,
+                &[0x01; 32],
+                InfinetRole::Member,
+                &device,
+                &device,
+                Some("http"),
+                None,
+                None,
+                1000
+            ),
             InfinetPermission::Allow
         );
 
         // Different service: Deny.
         assert_eq!(
-            evaluate_acl(&acls, &[0x01; 32], InfinetRole::Member, &device, Some("ssh"), 1000),
+            evaluate_acl(
+                &acls,
+                &[0x01; 32],
+                InfinetRole::Member,
+                &device,
+                &device,
+                Some("ssh"),
+                None,
+                None,
+                1000
+            ),
+            InfinetPermission::Deny
+        );
+    }
+
+    #[test]
+    fn test_acl_default_allows_own_devices() {
+        let peer = [0x11; 32];
+        assert_eq!(
+            evaluate_acl(
+                &[],
+                &peer,
+                InfinetRole::Member,
+                &peer,
+                &[0x22; 32],
+                None,
+                None,
+                None,
+                1000
+            ),
+            InfinetPermission::Allow
+        );
+    }
+
+    #[test]
+    fn test_acl_subnet_target_ipv4() {
+        let acls = vec![InfinetACL {
+            rule_id: [0x01; 16],
+            subject: InfinetSubject::Everyone,
+            target: InfinetTarget::Subnet {
+                network: "100.65.0.0/16".to_string(),
+            },
+            permission: InfinetPermission::Allow,
+            expires_at: None,
+        }];
+
+        assert_eq!(
+            evaluate_acl(
+                &acls,
+                &[0x01; 32],
+                InfinetRole::Member,
+                &[0x02; 32],
+                &[0x03; 32],
+                None,
+                Some("100.65.9.10"),
+                None,
+                1000
+            ),
+            InfinetPermission::Allow
+        );
+
+        assert_eq!(
+            evaluate_acl(
+                &acls,
+                &[0x01; 32],
+                InfinetRole::Member,
+                &[0x02; 32],
+                &[0x03; 32],
+                None,
+                Some("100.66.9.10"),
+                None,
+                1000
+            ),
+            InfinetPermission::Deny
+        );
+    }
+
+    #[test]
+    fn test_acl_subnet_target_ipv6() {
+        let acls = vec![InfinetACL {
+            rule_id: [0x01; 16],
+            subject: InfinetSubject::Everyone,
+            target: InfinetTarget::Subnet {
+                network: "fd7a:115c:a1e0:0002::/64".to_string(),
+            },
+            permission: InfinetPermission::Allow,
+            expires_at: None,
+        }];
+
+        assert_eq!(
+            evaluate_acl(
+                &acls,
+                &[0x01; 32],
+                InfinetRole::Member,
+                &[0x02; 32],
+                &[0x03; 32],
+                None,
+                None,
+                Some("fd7a:115c:a1e0:0002::42"),
+                1000
+            ),
+            InfinetPermission::Allow
+        );
+
+        assert_eq!(
+            evaluate_acl(
+                &acls,
+                &[0x01; 32],
+                InfinetRole::Member,
+                &[0x02; 32],
+                &[0x03; 32],
+                None,
+                None,
+                Some("fd7a:115c:a1e0:0003::42"),
+                1000
+            ),
             InfinetPermission::Deny
         );
     }
@@ -2181,7 +2418,10 @@ mod tests {
         assert_eq!(records[0].value, "100.64.0.2");
 
         // Service record.
-        assert_eq!(records[1].name, "http.laptop.alice.mynet.infinet.meshinfinity");
+        assert_eq!(
+            records[1].name,
+            "http.laptop.alice.mynet.infinet.meshinfinity"
+        );
     }
 
     // ---- Collision detection tests ----
@@ -2217,10 +2457,7 @@ mod tests {
         ));
 
         // Address outside our prefix — never collides.
-        assert!(!infinet_v6_collides_with_tailscale(
-            1,
-            &["2001:db8::1"],
-        ));
+        assert!(!infinet_v6_collides_with_tailscale(1, &["2001:db8::1"],));
 
         // Empty Tailscale list — no collision.
         assert!(!infinet_v6_collides_with_tailscale(1, &[]));
@@ -2238,10 +2475,7 @@ mod tests {
 
         // Next allocation with Tailscale at slots 1 and 3 — should get slot 4.
         let subnet2 = alloc
-            .allocate_v6_avoiding(&[
-                "fd7a:115c:a1e0:0001::abc",
-                "fd7a:115c:a1e0:0003::def",
-            ])
+            .allocate_v6_avoiding(&["fd7a:115c:a1e0:0001::abc", "fd7a:115c:a1e0:0003::def"])
             .unwrap();
         assert_eq!(subnet2, "fd7a:115c:a1e0:0004::/64");
     }
@@ -2289,7 +2523,11 @@ mod tests {
         // Device address should be updated to new subnet.
         let dev = &member.devices[0];
         assert!(dev.addr_v6.as_ref().unwrap().starts_with("fd7a:115c:a1e0:"));
-        assert!(!dev.addr_v6.as_ref().unwrap().starts_with("fd7a:115c:a1e0:0001:"));
+        assert!(!dev
+            .addr_v6
+            .as_ref()
+            .unwrap()
+            .starts_with("fd7a:115c:a1e0:0001:"));
     }
 
     #[test]
@@ -2309,14 +2547,14 @@ mod tests {
         };
 
         // Tailscale is at slot 2 — no collision with slot 1.
-        let event = cycle_v6_for_member(
-            &mut member, &mut alloc,
-            &["fd7a:115c:a1e0:0002::1"], 9999,
-        );
+        let event = cycle_v6_for_member(&mut member, &mut alloc, &["fd7a:115c:a1e0:0002::1"], 9999);
 
         assert!(event.is_none());
         // Member subnet unchanged.
-        assert_eq!(member.subnet_v6, Some("fd7a:115c:a1e0:0001::/64".to_string()));
+        assert_eq!(
+            member.subnet_v6,
+            Some("fd7a:115c:a1e0:0001::/64".to_string())
+        );
     }
 
     #[test]

@@ -59,9 +59,10 @@ use chacha20poly1305::{
     // AEAD cipher for authenticated encryption.
     // Execute this protocol step.
     // Execute this protocol step.
-    ChaCha20Poly1305, Nonce,
+    ChaCha20Poly1305,
+    Nonce,
 };
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey, Signature};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use sha2::Sha256;
 // Shared KDF chain-step primitive and constants (avoids duplication with
@@ -262,9 +263,9 @@ impl SenderKey {
         // Execute this protocol step.
         // Execute this protocol step.
         signing_key_raw: &[u8; 64],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<Self, SenderKeyError> {
         // ed25519_dalek expects the first 32 bytes as the secret scalar.
         // Compute signing key for this protocol step.
@@ -273,7 +274,8 @@ impl SenderKey {
             // Extract the fixed-size prefix.
             // Execute this protocol step.
             // Execute this protocol step.
-            signing_key_raw[..32].try_into()
+            signing_key_raw[..32]
+                .try_into()
                 // Transform the result, mapping errors to the local error type.
                 // Map the error to the local error type.
                 // Map the error to the local error type.
@@ -304,7 +306,6 @@ impl SenderKey {
     // Perform the 'signing key bytes' operation.
     // Errors are propagated to the caller via Result.
     pub fn signing_key_bytes(&self) -> [u8; 64] {
-        
         // Mutate the internal state.
         // Execute this protocol step.
         // Execute this protocol step.
@@ -546,7 +547,11 @@ impl SenderKeyReceiver {
     // Errors are propagated to the caller via Result.
     // Perform the 'from state' operation.
     // Errors are propagated to the caller via Result.
-    pub fn from_state(chain_key: [u8; 32], next_iteration: u32, verifying_key: VerifyingKey) -> Self {
+    pub fn from_state(
+        chain_key: [u8; 32],
+        next_iteration: u32,
+        verifying_key: VerifyingKey,
+    ) -> Self {
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
         // Construct the instance from computed fields.
@@ -635,9 +640,9 @@ impl SenderKeyReceiver {
             // Zeroize sensitive key material.
             // Zeroize sensitive key material.
             cached_key.zeroize(); // Forward secrecy: delete after use
-            // Return the result to the caller.
-            // Return to the caller.
-            // Return to the caller.
+                                  // Return the result to the caller.
+                                  // Return to the caller.
+                                  // Return to the caller.
             return result;
         }
 
@@ -810,10 +815,7 @@ mod tests {
     fn setup() -> (SenderKey, SenderKeyReceiver) {
         let sender = SenderKey::generate();
         // Simulate distribution: receiver gets a copy of chain_key + verifying_key
-        let receiver = SenderKeyReceiver::new(
-            *sender.chain_key_bytes(),
-            sender.verifying_key(),
-        );
+        let receiver = SenderKeyReceiver::new(*sender.chain_key_bytes(), sender.verifying_key());
         (sender, receiver)
     }
 
@@ -862,10 +864,7 @@ mod tests {
 
         // Create a receiver with a DIFFERENT verifying key (wrong sender)
         let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
-        let mut wrong_receiver = SenderKeyReceiver::new(
-            *sender.chain_key_bytes(),
-            wrong_key,
-        );
+        let mut wrong_receiver = SenderKeyReceiver::new(*sender.chain_key_bytes(), wrong_key);
 
         let msg = sender.encrypt(b"test").unwrap();
 

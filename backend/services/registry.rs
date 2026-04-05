@@ -146,6 +146,19 @@ pub struct ServicePublication {
     // Execute this protocol step.
     // Execute this protocol step.
     pub transport_hint: ServiceTransportHint,
+    /// Optional mesh-side access-control policy.
+    ///
+    /// The full ACL type is not yet normalized in one backend module, so the
+    /// publication stores canonical JSON here and higher layers decode it as
+    /// needed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub acl: Option<serde_json::Value>,
+    /// Owning application or plugin identifier.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub application_id: Option<[u8; 16]>,
+    /// Typed application payload carried by this publication.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub application_data: Option<serde_json::Value>,
     /// LoSec configuration.
     // Execute this protocol step.
     // Execute this protocol step.
@@ -310,12 +323,14 @@ pub struct ServiceIndexEntry {
 // Invariants are enforced at construction time.
 // ServiceStore — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServiceStore {
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
+    #[serde(default, with = "serde_service_records")]
     records: std::collections::HashMap<[u8; 16], ServiceRecord>,
 }
 
@@ -464,7 +479,7 @@ impl ServiceStore {
                 // Execute this protocol step.
                 // Execute this protocol step.
                 &record.sig,
-            // Begin the block scope.
+                // Begin the block scope.
             ) {
                 // Condition not met — return negative result.
                 // Return to the caller.
@@ -526,6 +541,11 @@ impl ServiceStore {
         // Execute this protocol step.
         self.records.len()
     }
+
+    /// Return all known service records as a flat vector.
+    pub fn all(&self) -> Vec<ServiceRecord> {
+        self.records.values().cloned().collect()
+    }
 }
 
 // Trait implementation for protocol conformance.
@@ -564,7 +584,11 @@ mod tests {
         make_record_with_pubs(id, version, vec![])
     }
 
-    fn make_record_with_pubs(id: u8, version: u64, publications: Vec<ServicePublication>) -> ServiceRecord {
+    fn make_record_with_pubs(
+        id: u8,
+        version: u64,
+        publications: Vec<ServicePublication>,
+    ) -> ServiceRecord {
         use crate::crypto::signing;
 
         let secret = [0x01u8; 32];
@@ -620,7 +644,10 @@ mod tests {
         let mut record = make_record(0x02, 1);
         // Corrupt the signature.
         record.sig[0] ^= 0xFF;
-        assert!(!store.upsert(record), "record with corrupted signature must be rejected");
+        assert!(
+            !store.upsert(record),
+            "record with corrupted signature must be rejected"
+        );
         assert_eq!(store.count(), 0);
     }
 
@@ -630,7 +657,10 @@ mod tests {
         let mut record = make_record(0x03, 1);
         // Truncate to 32 bytes — not a valid Ed25519 signature length.
         record.sig.truncate(32);
-        assert!(!store.upsert(record), "record with truncated signature must be rejected");
+        assert!(
+            !store.upsert(record),
+            "record with truncated signature must be rejected"
+        );
     }
 
     #[test]
@@ -662,7 +692,10 @@ mod tests {
             publications: vec![],
             sig,
         };
-        assert!(!store.upsert(hijacked), "ownership hijack must be rejected even with valid signature");
+        assert!(
+            !store.upsert(hijacked),
+            "ownership hijack must be rejected even with valid signature"
+        );
     }
 
     #[test]
@@ -679,9 +712,63 @@ mod tests {
             name: Some("injected".into()),
             description: None,
             transport_hint: ServiceTransportHint::Any,
+            acl: None,
+            application_id: None,
+            application_data: None,
             losec_config: crate::routing::losec::ServiceLoSecConfig::default(),
         });
         // The signature was over empty publications; tampered record must fail.
-        assert!(!store.upsert(record), "record with tampered publications must be rejected");
+        assert!(
+            !store.upsert(record),
+            "record with tampered publications must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_service_store_json_round_trip_with_binary_keys() {
+        let mut store = ServiceStore::new();
+        assert!(store.upsert(make_record(0x21, 1)));
+        let encoded = serde_json::to_string(&store).expect("service store should encode");
+        let decoded: ServiceStore =
+            serde_json::from_str(&encoded).expect("service store should decode");
+        assert_eq!(decoded.count(), 1);
+        assert_eq!(decoded.get(&[0x21; 16]).unwrap().version, 1);
+    }
+}
+mod serde_service_records {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(
+        records: &HashMap<[u8; 16], super::ServiceRecord>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mapped: HashMap<String, &super::ServiceRecord> = records
+            .iter()
+            .map(|(service_id, record)| (hex::encode(service_id), record))
+            .collect();
+        mapped.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<[u8; 16], super::ServiceRecord>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mapped = HashMap::<String, super::ServiceRecord>::deserialize(deserializer)?;
+        let mut records = HashMap::with_capacity(mapped.len());
+        for (service_id_hex, record) in mapped {
+            let service_id_bytes =
+                hex::decode(&service_id_hex).map_err(serde::de::Error::custom)?;
+            let service_id: [u8; 16] = service_id_bytes
+                .try_into()
+                .map_err(|_| serde::de::Error::custom("invalid service_id length"))?;
+            records.insert(service_id, record);
+        }
+        Ok(records)
     }
 }

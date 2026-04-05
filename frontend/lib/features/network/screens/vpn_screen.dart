@@ -35,7 +35,7 @@ class VpnScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('VPN Settings'),
+        title: const Text('Mesh VPN'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -75,15 +75,64 @@ class VpnScreen extends StatelessWidget {
 
             const Divider(height: 1),
 
+            _Section(
+              title: 'Security Impact',
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _securityHeadline(currentMode),
+                          style: theme.textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _securityBodyFromState(net),
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                        if (net.vpnExitNodeSeesDestinations) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            'When traffic leaves through an exit node, the '
+                            'operator can see its destinations after it leaves '
+                            'the mesh. The kill switch helps prevent fallback '
+                            'leaks if that route drops.',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            const Divider(height: 1),
+
             // ---- Exit Node Section ----
             if (currentMode == VpnMode.exitNode) ...[
               _Section(
                 title: 'Exit Node',
                 child: _ExitNodePicker(
                   peers: peers.peers,
+                  tailscaleExitNodes: (net.tailscaleOverlay['exitNodes'] as List?)
+                          ?.whereType<Map>()
+                          .map((entry) => Map<String, dynamic>.from(entry))
+                          .toList() ??
+                      const <Map<String, dynamic>>[],
                   selectedId: net.selectedExitNodeId,
-                  onSelected: (peerId) {
+                  selectedTailscaleExitNode: net.selectedTailscaleExitNode,
+                  onSelectedMesh: (peerId) {
                     net.setVpnMode(VpnMode.exitNode.value, exitNodePeerId: peerId);
+                  },
+                  onSelectedTailscale: (peerName) {
+                    net.setVpnMode(VpnMode.exitNode.value, tailscaleExitNode: peerName);
                   },
                 ),
               ),
@@ -136,6 +185,22 @@ class VpnScreen extends StatelessWidget {
                                 peers.peers,
                                 net.selectedExitNodeId!,
                               ),
+                            ),
+                          if (currentMode == VpnMode.exitNode &&
+                              net.selectedTailscaleExitNode != null)
+                            _StatusRow(
+                              label: 'Tailscale Exit',
+                              value: net.selectedTailscaleExitNode!,
+                            ),
+                          if (net.selectedExitProfileId != null)
+                            _StatusRow(
+                              label: 'Exit Profile',
+                              value: _shortId(net.selectedExitProfileId!),
+                            ),
+                          if (net.vpnExitRouteKind != 'none')
+                            _StatusRow(
+                              label: 'Exit Path',
+                              value: _exitRouteLabel(net.vpnExitRouteKind),
                             ),
                           _StatusRow(
                             label: 'Connection',
@@ -197,24 +262,60 @@ class VpnScreen extends StatelessWidget {
   /// Fires when the user taps a VPN mode radio button.
   void _onModeChanged(BuildContext context, NetworkState net, VpnMode mode) {
     if (mode == VpnMode.exitNode) {
-      // When switching to exit node mode without a previously selected node,
-      // just set the mode -- the user picks a node from the list below.
-      net.setVpnMode(mode.value, exitNodePeerId: net.selectedExitNodeId);
+      net.setVpnMode(
+        mode.value,
+        exitNodePeerId: net.selectedExitNodeId,
+        tailscaleExitNode: net.selectedTailscaleExitNode,
+      );
     } else {
       net.setVpnMode(mode.value);
     }
   }
 
   String _modeDescription(VpnMode mode) => switch (mode) {
-        VpnMode.off => 'No VPN active -- traffic uses standard routing',
-        VpnMode.meshOnly => 'Only mesh traffic is routed through the tunnel',
-        VpnMode.exitNode => 'All traffic routed through a selected exit node',
-        VpnMode.policyBased => 'Custom per-app or per-destination rules',
+        VpnMode.off => 'Keep using your normal network path',
+        VpnMode.meshOnly => 'Keep selected traffic inside the mesh without changing your public IP',
+        VpnMode.exitNode => 'Send internet traffic out through a trusted exit node',
+        VpnMode.policyBased => 'Let saved rules decide which traffic uses the mesh',
+      };
+
+  String _securityHeadline(VpnMode mode) => switch (mode) {
+        VpnMode.off => 'Normal internet path',
+        VpnMode.meshOnly => 'Mesh traffic is protected, internet traffic is unchanged',
+        VpnMode.exitNode => 'Your IP changes, and the exit path matters',
+        VpnMode.policyBased => 'Security depends on the rules you create',
+      };
+
+  String _securityBodyFromState(NetworkState net) => switch (net.vpnSecurityPosture) {
+        'mesh_only' =>
+          'Only mesh destinations use the mesh. Regular internet traffic still '
+          'uses your normal connection.',
+        'exit_node_profile' =>
+          'Traffic leaves through an exit node and then through that node\'s '
+          'selected network profile. Websites see the profile\'s egress IP, '
+          'while the exit operator still controls the handoff into that route.',
+        'exit_node' =>
+          'Websites see the exit node\'s IP instead of yours. Your mesh '
+          'identity stays hidden from the operator, but the operator can still '
+          'see where your traffic goes after it leaves the mesh.',
+        'policy_based_profile' =>
+          'Different traffic can take different paths. Some rules may use an '
+          'exit profile, which changes the public IP and adds another trust '
+          'boundary to that traffic.',
+        'policy_based' =>
+          'Different traffic can take different paths. Some rules may stay in '
+          'the mesh, some may use an exit node, and some may go directly to '
+          'the internet.',
+        _ =>
+          'Mesh VPN is not affecting your internet traffic. Websites and '
+          'networks see your normal connection as usual.',
       };
 
   String _connectionStatusLabel(String status) => switch (status) {
         'connected' => 'Connected',
-        'connecting' => 'Connecting...',
+        'connecting' => 'Connecting',
+        'blocked' => 'Blocked by kill switch',
+        'disconnecting' => 'Disconnecting',
         _ => 'Disconnected',
       };
 
@@ -225,6 +326,10 @@ class VpnScreen extends StatelessWidget {
         color = Colors.green;
       case 'connecting':
         color = Colors.orange;
+      case 'blocked':
+        color = theme.colorScheme.error;
+      case 'disconnecting':
+        color = theme.colorScheme.outline;
       default:
         color = theme.colorScheme.outline;
     }
@@ -243,6 +348,18 @@ class VpnScreen extends StatelessWidget {
     return match.first.name.isNotEmpty ? match.first.name : peerId;
   }
 
+  String _shortId(String value) =>
+      value.length > 16 ? '${value.substring(0, 16)}...' : value;
+
+  String _exitRouteLabel(String routeKind) => switch (routeKind) {
+        'peer_exit' => 'Trusted peer exit',
+        'tailscale_exit' => 'Tailscale exit',
+        'tailscale_profile_exit' => 'Tailscale exit with profile',
+        'profile_exit' => 'Exit profile',
+        'profile_only' => 'Profile-defined exit',
+        _ => 'None',
+      };
+
   String _formatUptime(int seconds) {
     if (seconds < 60) return '${seconds}s';
     if (seconds < 3600) return '${seconds ~/ 60}m ${seconds % 60}s';
@@ -259,20 +376,26 @@ class VpnScreen extends StatelessWidget {
 class _ExitNodePicker extends StatelessWidget {
   const _ExitNodePicker({
     required this.peers,
+    required this.tailscaleExitNodes,
     required this.selectedId,
-    required this.onSelected,
+    required this.selectedTailscaleExitNode,
+    required this.onSelectedMesh,
+    required this.onSelectedTailscale,
   });
 
   final List<PeerModel> peers;
+  final List<Map<String, dynamic>> tailscaleExitNodes;
   final String? selectedId;
-  final ValueChanged<String> onSelected;
+  final String? selectedTailscaleExitNode;
+  final ValueChanged<String> onSelectedMesh;
+  final ValueChanged<String> onSelectedTailscale;
 
   @override
   Widget build(BuildContext context) {
     final exitNodes = peers.where((p) => p.canBeExitNode).toList();
     final theme = Theme.of(context);
 
-    if (exitNodes.isEmpty) {
+    if (exitNodes.isEmpty && tailscaleExitNodes.isEmpty) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child: Card(
@@ -292,10 +415,9 @@ class _ExitNodePicker extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Exit nodes are peers that have opted in to relay your '
-                  'traffic to the wider internet. None of your connected '
-                  'peers currently advertise this capability. Ask a trusted '
-                  'peer to enable exit node mode, or check back later.',
+                  'No mesh exits or Tailscale exits are available right now. '
+                  'A trusted peer can offer a mesh exit, or a connected '
+                  'tailnet can offer a Tailscale exit node.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.outline,
@@ -348,7 +470,57 @@ class _ExitNodePicker extends StatelessWidget {
                 trailing: node.id == selectedId
                     ? Icon(Icons.check_circle, color: theme.colorScheme.primary)
                     : const Icon(Icons.circle_outlined),
-                onTap: () => onSelected(node.id),
+                onTap: () => onSelectedMesh(node.id),
+              ),
+            ),
+          for (final node in tailscaleExitNodes)
+            Card(
+              clipBehavior: Clip.antiAlias,
+              child: ListTile(
+                leading: Icon(
+                  Icons.route_outlined,
+                  color: (node['name'] as String?) == selectedTailscaleExitNode
+                      ? Colors.orange.shade700
+                      : Colors.orange.shade400,
+                ),
+                title: Text(
+                  node['name'] as String? ?? 'Tailscale exit',
+                  style: (node['name'] as String?) == selectedTailscaleExitNode
+                      ? TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.orange.shade700,
+                        )
+                      : null,
+                ),
+                subtitle: Builder(
+                  builder: (context) {
+                    final ip = node['ip'] as String?;
+                    return Row(
+                      children: [
+                        Icon(
+                          node['online'] == true ? Icons.circle : Icons.circle_outlined,
+                          size: 10,
+                          color: node['online'] == true
+                              ? Colors.orange.shade700
+                              : theme.colorScheme.outline,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(node['online'] == true ? 'Online' : 'Offline'),
+                        if (ip != null && ip.isNotEmpty) ...[
+                          const SizedBox(width: 12),
+                          Icon(Icons.language_outlined, size: 14,
+                              color: theme.colorScheme.outline),
+                          const SizedBox(width: 2),
+                          Text(ip),
+                        ],
+                      ],
+                    );
+                  },
+                ),
+                trailing: (node['name'] as String?) == selectedTailscaleExitNode
+                    ? Icon(Icons.check_circle, color: Colors.orange.shade700)
+                    : const Icon(Icons.circle_outlined),
+                onTap: () => onSelectedTailscale(node['name'] as String? ?? ''),
               ),
             ),
         ],

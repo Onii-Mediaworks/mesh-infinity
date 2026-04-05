@@ -2,13 +2,7 @@
 //
 // SettingsState — ChangeNotifier for all user-facing settings.
 //
-// Also owns two stub enumerations that will be backed by real backend calls
-// when the tier and bandwidth systems are implemented (§22.28.3, §22.53):
-//   BandwidthProfile — how much mesh participation the user opts into.
-//   MeshTier         — which feature set the user has unlocked.
-//
-// Both are fully self-contained here so the Settings and TierDiscovery screens
-// can compile and render without any additional backend wiring.
+// Owns the frontend enum wrappers for backend-owned tier and bandwidth state.
 
 import 'dart:async';
 
@@ -79,6 +73,13 @@ class SettingsState extends ChangeNotifier {
   LocalIdentitySummary? _identity;
   List<ServiceModel> _services = const [];
   ThemeMode _themeMode = ThemeMode.system;
+  bool _pinEnabled = false;
+  bool _duressPinConfigured = false;
+  bool _distressMessageEnabled = false;
+  bool _livenessSignalEnabled = false;
+  bool _wrongPinWipeEnabled = false;
+  int _wrongPinWipeThreshold = 5;
+  bool _remoteWipeEnabled = false;
 
   SettingsModel? get settings => _settings;
   LocalIdentitySummary? get identity => _identity;
@@ -86,75 +87,71 @@ class SettingsState extends ChangeNotifier {
   ThemeMode get themeMode => _themeMode;
 
   // ---------------------------------------------------------------------------
-  // Security feature stubs
-  //
-  // These fields will be backed by real backend calls once the security
-  // settings FFI is implemented (§3.10, §3.9).  For now they return safe
-  // defaults so the Settings screens compile and display correctly.
-  // TODO(backend/security): wire to mi_get_security_config when implemented.
+  // Backend-owned security state
   // ---------------------------------------------------------------------------
 
   // Whether a regular app PIN has been configured (§3.10).
-  bool get pinEnabled => false;
+  bool get pinEnabled => _pinEnabled;
 
   // Whether a duress PIN has been configured (§3.10 duress unlock).
   // The duress PIN triggers emergency erase on normal-looking unlock.
-  bool get duressPinConfigured => false;
+  bool get duressPinConfigured => _duressPinConfigured;
 
   // Whether to auto-wipe after N consecutive wrong PINs.
-  bool get wrongPinWipeEnabled => false;
+  bool get wrongPinWipeEnabled => _wrongPinWipeEnabled;
 
   // Number of wrong PIN attempts before auto-wipe (3, 5, or 10).
-  int get wrongPinWipeThreshold => 5;
+  int get wrongPinWipeThreshold => _wrongPinWipeThreshold;
 
   // Whether a Level-8 (InnerCircle) contact can trigger remote erase.
-  bool get remoteWipeEnabled => false;
+  bool get remoteWipeEnabled => _remoteWipeEnabled;
 
   // Whether emergency erase has any trigger configured (duress PIN or auto-wipe).
-  bool get emergencyEraseConfigured => duressPinConfigured || wrongPinWipeEnabled;
+  bool get emergencyEraseConfigured =>
+      duressPinConfigured || wrongPinWipeEnabled;
 
   // Whether the dead-man's-switch / pre-committed distress message is on (§22.10.4).
-  bool get distressMessageEnabled => false;
+  bool get distressMessageEnabled => _distressMessageEnabled;
 
   // Whether periodic liveness signals are sent to trusted peers (§22.10.4).
-  bool get livenessSignalEnabled => false;
+  bool get livenessSignalEnabled => _livenessSignalEnabled;
 
   // Number of devices registered to this identity (§22.10.7).
   int get deviceCount => 1; // always at least 1 (this device)
 
-  // ---------------------------------------------------------------------------
-  // Tier + bandwidth stubs (§22.28.3, §22.53)
-  //
-  // Real implementation: mi_get_tier_state / mi_set_tier / mi_set_bandwidth.
-  // Until then: Social tier is always active; bandwidth defaults to Standard.
-  // TODO(backend/tiers): wire to real backend when tier unlock is implemented.
-  // ---------------------------------------------------------------------------
-
   /// The highest tier the user has unlocked.  Starts at Social (tier 0).
-  MeshTier get activeTier => MeshTier.social;
+  MeshTier get activeTier {
+    final rawTier = _settings?.activeTier ?? 0;
+    final safeIndex = rawTier.clamp(0, MeshTier.values.length - 1);
+    return MeshTier.values[safeIndex];
+  }
 
   /// Returns true if [tier] is unlocked (i.e. at or below [activeTier]).
   bool tierUnlocked(MeshTier tier) => tier.index <= activeTier.index;
 
   /// The user's chosen bandwidth participation profile (§22.28.3).
-  BandwidthProfile _bandwidthProfile = BandwidthProfile.standard;
-  BandwidthProfile get bandwidthProfile => _bandwidthProfile;
-
-  /// Update the bandwidth profile and notify listeners.
-  ///
-  /// TODO(backend/tiers): persist via bridge.setBandwidthProfile(profile.name).
-  void setBandwidthProfile(BandwidthProfile profile) {
-    if (_bandwidthProfile == profile) return;
-    _bandwidthProfile = profile;
-    notifyListeners();
+  BandwidthProfile get bandwidthProfile {
+    final rawProfile = _settings?.bandwidthProfile ?? 1;
+    final safeIndex = rawProfile.clamp(0, BandwidthProfile.values.length - 1);
+    return BandwidthProfile.values[safeIndex];
   }
 
-  /// Unlock a new tier.  No-op if the tier is already unlocked.
-  ///
-  /// TODO(backend/tiers): call bridge.enableTier(tier.index) and await result.
-  void enableTier(MeshTier tier) {
-    // Stub — tier unlock will require backend confirmation.
-    notifyListeners();
+  /// Update the bandwidth profile and refresh from backend state.
+  Future<bool> setBandwidthProfile(BandwidthProfile profile) async {
+    final ok = _bridge.setBandwidthProfile(profile.index);
+    if (ok) {
+      await loadAll();
+    }
+    return ok;
+  }
+
+  /// Unlock a new tier.  Returns false when the backend rejects the request.
+  Future<bool> enableTier(MeshTier tier) async {
+    final ok = _bridge.setActiveTier(tier.index);
+    if (ok) {
+      await loadAll();
+    }
+    return ok;
   }
 
   void setThemeMode(ThemeMode mode) {
@@ -167,10 +164,24 @@ class SettingsState extends ChangeNotifier {
     _settings = _bridge.fetchSettings();
     _identity = _bridge.fetchLocalIdentity();
     _services = _bridge.fetchServices();
+    final security = _bridge.fetchSecurityConfig();
+    if (security != null) {
+      _pinEnabled = security['pinEnabled'] == true;
+      _duressPinConfigured = security['duressPinConfigured'] == true;
+      _distressMessageEnabled = security['distressMessageEnabled'] == true;
+      _livenessSignalEnabled = security['livenessSignalEnabled'] == true;
+      _wrongPinWipeEnabled = security['wrongPinWipeEnabled'] == true;
+      _wrongPinWipeThreshold =
+          (security['wrongPinWipeThreshold'] as num?)?.toInt() ?? 5;
+      _remoteWipeEnabled = security['remoteWipeEnabled'] == true;
+    }
     if (!_disposed) notifyListeners();
   }
 
-  Future<bool> configureService(String serviceId, Map<String, dynamic> config) async {
+  Future<bool> configureService(
+    String serviceId,
+    Map<String, dynamic> config,
+  ) async {
     final ok = _bridge.configureService(serviceId, config);
     if (ok) await loadAll();
     return ok;
@@ -182,6 +193,14 @@ class SettingsState extends ChangeNotifier {
 
   Future<bool> setClearnetRoute(Map<String, dynamic> routeConfig) async {
     return _bridge.setClearnetRoute(routeConfig);
+  }
+
+  Future<bool> updateSecurityConfig(Map<String, dynamic> config) async {
+    final ok = _bridge.setSecurityConfig(config);
+    if (ok) {
+      await loadAll();
+    }
+    return ok;
   }
 
   void _onEvent(BackendEvent event) {

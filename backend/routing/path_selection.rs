@@ -170,12 +170,12 @@ pub fn score_path(entry: &RoutingEntry, now: u64) -> f32 {
         // Execute this protocol step.
         // Execute this protocol step.
         entry.latency_ms
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     } as f32;
 
     // Trust weight from the 8-level model (§6.3).
@@ -254,13 +254,13 @@ pub fn select_best_path(
     // Execute this protocol step.
     // Execute this protocol step.
     now: u64,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Option<&RoutingEntry> {
     // Validate the input length to prevent out-of-bounds access.
     // Guard: validate the condition before proceeding.
@@ -383,13 +383,13 @@ pub fn rank_paths(
     // Execute this protocol step.
     // Execute this protocol step.
     now: u64,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Vec<(f32, &RoutingEntry)> {
     // Bind the computed value for subsequent use.
     // Compute scored for this protocol step.
@@ -461,12 +461,7 @@ mod tests {
     }
 
     /// Helper: create a routing entry with specific parameters.
-    fn make_entry(
-        hops: u8,
-        latency: u32,
-        trust: TrustLevel,
-        ts: u64,
-    ) -> RoutingEntry {
+    fn make_entry(hops: u8, latency: u32, trust: TrustLevel, ts: u64) -> RoutingEntry {
         RoutingEntry {
             destination: addr(0xAA),
             next_hop: addr(0xBB),
@@ -648,8 +643,8 @@ mod tests {
         let now = 1000;
 
         // Same hop count and trust — only latency differs.
-        let unmeasured = make_entry(2, 0, TrustLevel::Trusted, now);      // latency_ms = 0
-        let measured_fast = make_entry(2, 50, TrustLevel::Trusted, now);  // 50ms — realistic LAN
+        let unmeasured = make_entry(2, 0, TrustLevel::Trusted, now); // latency_ms = 0
+        let measured_fast = make_entry(2, 50, TrustLevel::Trusted, now); // 50ms — realistic LAN
         let measured_slow = make_entry(2, 900, TrustLevel::Trusted, now); // 900ms — slow but known
 
         let s_unmeasured = score_path(&unmeasured, now);

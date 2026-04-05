@@ -30,7 +30,8 @@ use chacha20poly1305::{
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    XChaCha20Poly1305, XNonce,
+    XChaCha20Poly1305,
+    XNonce,
 };
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
@@ -207,11 +208,11 @@ impl VaultCollection {
         // Execute this protocol step.
         // Execute this protocol step.
         master_key: &[u8; 32],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<Self, VaultError> {
         // Resolve the filesystem path for the target resource.
         // Compute path for this protocol step.

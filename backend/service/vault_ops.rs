@@ -80,6 +80,65 @@ impl MeshRuntime {
             }
         }
 
+        // ---- Published files ----
+        if let Ok(coll) = vm.collection("published_files") {
+            if let Ok(Some(files)) = coll.load::<Vec<crate::files::hosted::HostedFileEntry>>() {
+                *self
+                    .published_files
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = files;
+            }
+        }
+
+        // ---- Masks ----
+        if let Ok(coll) = vm.collection("masks") {
+            if let Ok(Some(masks)) = coll.load::<Vec<crate::identity::mask::MaskMetadata>>() {
+                *self.masks.lock().unwrap_or_else(|e| e.into_inner()) = masks;
+            }
+        }
+
+        // ---- Garden directory ----
+        if let Ok(coll) = vm.collection("garden_directory") {
+            if let Ok(Some(entries)) =
+                coll.load::<Vec<crate::service::runtime::GardenDirectoryEntry>>()
+            {
+                *self
+                    .discoverable_gardens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = entries;
+            }
+        }
+
+        // ---- Service registry ----
+        if let Ok(coll) = vm.collection("service_registry") {
+            if let Ok(Some(registry)) = coll.load::<crate::services::registry::ServiceStore>() {
+                *self
+                    .service_registry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = registry;
+            }
+        }
+
+        // ---- Registered devices ----
+        if let Ok(coll) = vm.collection("devices") {
+            if let Ok(Some(devices)) = coll.load::<Vec<crate::service::runtime::RegisteredDevice>>()
+            {
+                *self
+                    .registered_devices
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = devices;
+            }
+        }
+
+        // ---- Overlay clients ----
+        if let Ok(coll) = vm.collection("overlay") {
+            if let Ok(Some(overlay)) =
+                coll.load::<crate::transport::overlay_client::OverlayManager>()
+            {
+                *self.overlay.lock().unwrap_or_else(|e| e.into_inner()) = overlay;
+            }
+        }
+
         // ---- Message requests ----
         // Restore pending message requests from unpaired senders.  Entries
         // older than 30 days are automatically pruned here (§10.1.1).
@@ -87,14 +146,21 @@ impl MeshRuntime {
             if let Ok(Some(reqs)) = coll.load::<Vec<serde_json::Value>>() {
                 let now_secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs()).unwrap_or(0);
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
                 const THIRTY_DAYS: u64 = 30 * 24 * 3600;
                 // Prune entries older than 30 days on load.
-                let fresh: Vec<serde_json::Value> = reqs.into_iter().filter(|r| {
-                    let ts = r.get("_ts").and_then(|v| v.as_u64()).unwrap_or(0);
-                    now_secs.saturating_sub(ts) <= THIRTY_DAYS
-                }).collect();
-                *self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
+                let fresh: Vec<serde_json::Value> = reqs
+                    .into_iter()
+                    .filter(|r| {
+                        let ts = r.get("_ts").and_then(|v| v.as_u64()).unwrap_or(0);
+                        now_secs.saturating_sub(ts) <= THIRTY_DAYS
+                    })
+                    .collect();
+                *self
+                    .pending_message_requests
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = fresh;
             }
         }
 
@@ -159,19 +225,26 @@ impl MeshRuntime {
         }
 
         // Transport flags.
-        let mut flags = self.transport_flags.lock().unwrap_or_else(|e| e.into_inner());
-        flags.tor              = s.tor;
-        flags.clearnet         = s.clearnet;
+        let mut flags = self
+            .transport_flags
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        flags.tor = s.tor;
+        flags.clearnet = s.clearnet;
         flags.clearnet_fallback = s.clearnet_fallback;
-        flags.i2p              = s.i2p;
-        flags.bluetooth        = s.bluetooth;
-        flags.rf               = s.rf;
-        flags.mesh_discovery   = s.mesh_discovery;
-        flags.allow_relays     = s.allow_relays;
+        flags.i2p = s.i2p;
+        flags.bluetooth = s.bluetooth;
+        flags.rf = s.rf;
+        flags.mesh_discovery = s.mesh_discovery;
+        flags.allow_relays = s.allow_relays;
         drop(flags);
 
         // Clearnet port: 0 in vault means "use default 7234".
-        let port = if s.clearnet_port == 0 { 7_234 } else { s.clearnet_port };
+        let port = if s.clearnet_port == 0 {
+            7_234
+        } else {
+            s.clearnet_port
+        };
         *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner()) = port;
 
         // Notification config.
@@ -204,13 +277,47 @@ impl MeshRuntime {
 
         // Module config.
         if let Some(mc_val) = s.module_config {
-            if let Ok(mc) = serde_json::from_value::<
-                crate::services::module_system::ModuleConfig,
-            >(mc_val)
+            if let Ok(mc) =
+                serde_json::from_value::<crate::services::module_system::ModuleConfig>(mc_val)
             {
                 *self.module_config.lock().unwrap_or_else(|e| e.into_inner()) = mc;
             }
         }
+
+        if let Some(cfg) = s.app_connector_config {
+            *self
+                .app_connector_config
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = cfg;
+        }
+        *self
+            .distress_message_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = s.distress_message_enabled;
+        *self
+            .liveness_signal_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = s.liveness_signal_enabled;
+        *self
+            .wrong_pin_wipe_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = s.wrong_pin_wipe_enabled;
+        *self
+            .wrong_pin_wipe_threshold
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = match s.wrong_pin_wipe_threshold {
+            3 | 5 | 10 => s.wrong_pin_wipe_threshold,
+            _ => 5,
+        };
+        *self
+            .remote_wipe_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = s.remote_wipe_enabled;
+        *self.active_tier.lock().unwrap_or_else(|e| e.into_inner()) = s.active_tier.min(4);
+        *self
+            .bandwidth_profile
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = s.bandwidth_profile.min(2);
     }
 
     /// Rebuild the routing table with direct entries for all known contacts.
@@ -230,12 +337,12 @@ impl MeshRuntime {
             // Each paired peer is a direct neighbour — destination = next hop.
             let dest = DeviceAddress(contact.peer_id.0);
             let entry = RoutingEntry {
-                destination:     dest,
-                next_hop:        dest,
-                hop_count:       1,
-                latency_ms:      10,
-                next_hop_trust:  contact.trust_level,
-                last_updated:    now,
+                destination: dest,
+                next_hop: dest,
+                hop_count: 1,
+                latency_ms: 10,
+                next_hop_trust: contact.trust_level,
+                last_updated: now,
                 announcement_id: [0u8; 32], // direct entry — no gossip announcement
             };
             table.update_local(entry);
@@ -248,8 +355,12 @@ impl MeshRuntime {
 
     /// Persist rooms to vault.  Called after any room mutation.
     pub fn save_rooms(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("rooms") else { return };
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("rooms") else {
+            return;
+        };
         let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = coll.save(&*rooms) {
             eprintln!("[vault] ERROR: failed to persist rooms: {e}");
@@ -258,8 +369,12 @@ impl MeshRuntime {
 
     /// Persist contacts to vault.  Called after any contact mutation.
     pub fn save_contacts(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("peers") else { return };
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("peers") else {
+            return;
+        };
         let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
         let all: Vec<ContactRecord> = contacts.all().into_iter().cloned().collect();
         if let Err(e) = coll.save(&all) {
@@ -269,8 +384,12 @@ impl MeshRuntime {
 
     /// Persist messages to vault.  Called after any message mutation.
     pub fn save_messages(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("messages") else { return };
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("messages") else {
+            return;
+        };
         let msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = coll.save(&*msgs) {
             eprintln!("[vault] ERROR: failed to persist messages: {e}");
@@ -284,9 +403,16 @@ impl MeshRuntime {
     /// stored so `accept_message_request` can create a contact without the
     /// sender needing to resend their key material.
     pub fn save_message_requests(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("message_requests") else { return };
-        let reqs = self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("message_requests") else {
+            return;
+        };
+        let reqs = self
+            .pending_message_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Err(e) = coll.save(&*reqs) {
             eprintln!("[vault] ERROR: failed to persist message_requests: {e}");
         }
@@ -294,53 +420,198 @@ impl MeshRuntime {
 
     /// Persist groups to vault.  Called after any group mutation.
     pub fn save_groups(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("groups") else { return };
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("groups") else {
+            return;
+        };
         let groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = coll.save(&*groups) {
             eprintln!("[vault] ERROR: failed to persist groups: {e}");
         }
     }
 
+    /// Persist overlay client configuration and last-known state to vault.
+    pub fn save_overlay_state(&self) {
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("overlay") else {
+            return;
+        };
+        let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = coll.save(&*overlay) {
+            eprintln!("[vault] ERROR: failed to persist overlay state: {e}");
+        }
+    }
+
+    /// Persist locally published file metadata to vault.
+    pub fn save_published_files(&self) {
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("published_files") else {
+            return;
+        };
+        let files = self
+            .published_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = coll.save(&*files) {
+            eprintln!("[vault] ERROR: failed to persist published files: {e}");
+        }
+    }
+
+    /// Persist mask metadata to vault.
+    pub fn save_masks(&self) {
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("masks") else {
+            return;
+        };
+        let masks = self.masks.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = coll.save(&*masks) {
+            eprintln!("[vault] ERROR: failed to persist masks: {e}");
+        }
+    }
+
+    /// Persist the discoverable Garden directory.
+    pub fn save_garden_directory(&self) {
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("garden_directory") else {
+            return;
+        };
+        let entries = self
+            .discoverable_gardens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Err(err) = coll.save(&entries) {
+            eprintln!("[vault] ERROR: failed to persist garden directory: {err}");
+        }
+    }
+
+    /// Persist cached service records used for distributed service discovery.
+    pub fn save_service_registry(&self) {
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("service_registry") else {
+            return;
+        };
+        let registry = self
+            .service_registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Err(err) = coll.save(&registry) {
+            eprintln!("[vault] ERROR: failed to persist service registry: {err}");
+        }
+    }
+
+    /// Persist the registered-device registry.
+    pub fn save_registered_devices(&self) {
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("devices") else {
+            return;
+        };
+        let devices = self
+            .registered_devices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Err(err) = coll.save(&devices) {
+            eprintln!("[vault] ERROR: failed to persist devices: {err}");
+        }
+    }
+
     /// Persist settings to vault.  Called after any transport flag, node mode,
     /// threat context, notification config, or module config change.
     pub fn save_settings(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("settings") else { return };
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("settings") else {
+            return;
+        };
 
         // Build the vault record from current in-memory state.
-        let flags = self.transport_flags.lock().unwrap_or_else(|e| e.into_inner());
+        let flags = self
+            .transport_flags
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let notif = self.notifications.lock().unwrap_or_else(|e| e.into_inner());
-        let ncfg  = &notif.config;
+        let ncfg = &notif.config;
 
         // Resolve push URL from the relay config variant.
-        let push_url = ncfg.push_relay.as_ref().map(|r| match &r.relay_address {
-            crate::notifications::RelayAddress::ClearnetUrl  { url }     => url.clone(),
-            crate::notifications::RelayAddress::UnifiedPush { endpoint } => endpoint.clone(),
-            crate::notifications::RelayAddress::MeshService { .. }       => String::new(),
-        }).unwrap_or_default();
+        let push_url = ncfg
+            .push_relay
+            .as_ref()
+            .map(|r| match &r.relay_address {
+                crate::notifications::RelayAddress::ClearnetUrl { url } => url.clone(),
+                crate::notifications::RelayAddress::UnifiedPush { endpoint } => endpoint.clone(),
+                crate::notifications::RelayAddress::MeshService { .. } => String::new(),
+            })
+            .unwrap_or_default();
 
-        let mc_val = serde_json::to_value(
-            &*self.module_config.lock().unwrap_or_else(|e| e.into_inner()),
-        ).ok();
+        let mc_val =
+            serde_json::to_value(&*self.module_config.lock().unwrap_or_else(|e| e.into_inner()))
+                .ok();
 
         let s = SettingsVault {
-            node_mode:                  *self.node_mode.lock().unwrap_or_else(|e| e.into_inner()),
-            threat_context:             self.threat_context as u8,
-            tor:                        flags.tor,
-            clearnet:                   flags.clearnet,
-            clearnet_fallback:          flags.clearnet_fallback,
-            i2p:                        flags.i2p,
-            bluetooth:                  flags.bluetooth,
-            rf:                         flags.rf,
-            mesh_discovery:             flags.mesh_discovery,
-            allow_relays:               flags.allow_relays,
-            clearnet_port:              *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner()),
-            notification_tier:          ncfg.tier as u8,
-            notification_enabled:       ncfg.enabled,
-            notification_push_url:      push_url,
+            node_mode: *self.node_mode.lock().unwrap_or_else(|e| e.into_inner()),
+            threat_context: self.threat_context as u8,
+            tor: flags.tor,
+            clearnet: flags.clearnet,
+            clearnet_fallback: flags.clearnet_fallback,
+            i2p: flags.i2p,
+            bluetooth: flags.bluetooth,
+            rf: flags.rf,
+            mesh_discovery: flags.mesh_discovery,
+            allow_relays: flags.allow_relays,
+            clearnet_port: *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner()),
+            notification_tier: ncfg.tier as u8,
+            notification_enabled: ncfg.enabled,
+            notification_push_url: push_url,
             notification_show_previews: ncfg.rich_content_level as u8 >= 1,
-            module_config:              mc_val,
+            module_config: mc_val,
+            app_connector_config: Some(
+                self.app_connector_config
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            ),
+            distress_message_enabled: *self
+                .distress_message_enabled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            liveness_signal_enabled: *self
+                .liveness_signal_enabled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            wrong_pin_wipe_enabled: *self
+                .wrong_pin_wipe_enabled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            wrong_pin_wipe_threshold: *self
+                .wrong_pin_wipe_threshold
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            remote_wipe_enabled: *self
+                .remote_wipe_enabled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            active_tier: *self.active_tier.lock().unwrap_or_else(|e| e.into_inner()),
+            bandwidth_profile: *self
+                .bandwidth_profile
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
         };
 
         if let Err(e) = coll.save(&s) {
@@ -359,9 +630,16 @@ impl MeshRuntime {
     /// from the identity master key).  An attacker who obtains a vault dump
     /// but not the master key cannot recover past or future message keys.
     pub fn save_ratchet_sessions(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("ratchet_sessions") else { return };
-        let sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("ratchet_sessions") else {
+            return;
+        };
+        let sessions = self
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let snapshots: Vec<(String, crate::crypto::double_ratchet::SessionSnapshot)> = sessions
             .iter()
@@ -378,17 +656,26 @@ impl MeshRuntime {
     /// Missing collection or individual corrupt entries are silently skipped;
     /// a missing session will be bootstrapped on demand from static DH keys.
     pub fn load_ratchet_sessions(&self) {
-        let Some(vm) = self.vault.as_ref() else { return };
-        let Ok(coll) = vm.collection("ratchet_sessions") else { return };
-        let Ok(Some(snapshots)) = coll
-            .load::<Vec<(String, crate::crypto::double_ratchet::SessionSnapshot)>>()
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection("ratchet_sessions") else {
+            return;
+        };
+        let Ok(Some(snapshots)) =
+            coll.load::<Vec<(String, crate::crypto::double_ratchet::SessionSnapshot)>>()
         else {
             return;
         };
 
-        let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sessions = self
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (peer_hex, snap) in snapshots {
-            let Ok(peer_bytes) = hex::decode(&peer_hex) else { continue };
+            let Ok(peer_bytes) = hex::decode(&peer_hex) else {
+                continue;
+            };
             if peer_bytes.len() != 32 {
                 continue;
             }
@@ -396,8 +683,7 @@ impl MeshRuntime {
             arr.copy_from_slice(&peer_bytes);
             let peer_id = crate::identity::peer_id::PeerId(arr);
             // Restore the snapshot; `from_snapshot` is infallible.
-            let session =
-                crate::crypto::double_ratchet::DoubleRatchetSession::from_snapshot(snap);
+            let session = crate::crypto::double_ratchet::DoubleRatchetSession::from_snapshot(snap);
             sessions.insert(peer_id, session);
         }
     }
@@ -409,11 +695,18 @@ impl MeshRuntime {
     /// `dedup_msg_cache`; format is `Vec<(room_id, Vec<msg_id>)>`.
     pub fn save_dedup_cache(&self) {
         // Guard: vault must be available (identity unlocked).
-        let Some(vm) = self.vault.as_ref() else { return };
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
         // Obtain the vault collection for the dedup cache.
-        let Ok(coll) = vm.collection("dedup_msg_cache") else { return };
+        let Ok(coll) = vm.collection("dedup_msg_cache") else {
+            return;
+        };
         // Serialise the in-memory cache to a snapshot.
-        let cache = self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = self
+            .dedup_msg_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let snapshot = cache.to_snapshot();
         // Write the snapshot to the vault; log errors but do not propagate.
         if let Err(e) = coll.save(&snapshot) {
@@ -428,15 +721,22 @@ impl MeshRuntime {
     /// rebuilds organically as new messages arrive.
     pub fn load_dedup_cache(&self) {
         // Guard: vault must be available (identity unlocked).
-        let Some(vm) = self.vault.as_ref() else { return };
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
         // Obtain the vault collection for the dedup cache.
-        let Ok(coll) = vm.collection("dedup_msg_cache") else { return };
+        let Ok(coll) = vm.collection("dedup_msg_cache") else {
+            return;
+        };
         // Attempt to load the snapshot; silently ignore errors.
         let Ok(Some(snapshot)) = coll.load::<Vec<(String, Vec<String>)>>() else {
             return;
         };
         // Rebuild the in-memory cache from the snapshot.
         let restored = crate::messaging::delivery::DeliveredMessageCache::from_snapshot(&snapshot);
-        *self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner()) = restored;
+        *self
+            .dedup_msg_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = restored;
     }
 }

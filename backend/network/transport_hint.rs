@@ -347,10 +347,10 @@ impl TransportType {
             // Execute this protocol step.
             // Execute this protocol step.
             2 // Tailscale/ZeroTier: overlay auth is a strong signal.
-        // Begin the block scope.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
+              // Begin the block scope.
+              // Fallback when the guard was not satisfied.
+              // Fallback when the guard was not satisfied.
+              // Fallback when the guard was not satisfied.
         } else {
             // Process the current step in the protocol.
             // Execute this protocol step.
@@ -747,9 +747,16 @@ mod tests {
 
     #[test]
     fn test_anonymization_scores_ordered() {
-        assert!(TransportType::Mixnet.anonymization_score() > TransportType::Tor.anonymization_score());
-        assert!(TransportType::Tor.anonymization_score() > TransportType::I2P.anonymization_score());
-        assert!(TransportType::I2P.anonymization_score() > TransportType::Clearnet.anonymization_score());
+        assert!(
+            TransportType::Mixnet.anonymization_score() > TransportType::Tor.anonymization_score()
+        );
+        assert!(
+            TransportType::Tor.anonymization_score() > TransportType::I2P.anonymization_score()
+        );
+        assert!(
+            TransportType::I2P.anonymization_score()
+                > TransportType::Clearnet.anonymization_score()
+        );
     }
 
     #[test]

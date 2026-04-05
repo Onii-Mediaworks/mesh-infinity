@@ -57,7 +57,7 @@
 //! - Linux kernel NFC subsystem: `include/uapi/linux/nfc.h`
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -221,7 +221,8 @@ pub fn encode_ndef_message(payload: &[u8]) -> Vec<u8> {
     // Flags+TNF byte: MB=1 ME=1 CF=0 SR=? IL=0 TNF=0x04
     let flags: u8 = NDEF_MB | NDEF_ME | (if use_sr { NDEF_SR } else { 0 }) | TNF_EXTERNAL;
 
-    let mut buf = Vec::with_capacity(2 + (if use_sr { 1 } else { 4 }) + record_type.len() + payload_len);
+    let mut buf =
+        Vec::with_capacity(2 + (if use_sr { 1 } else { 4 }) + record_type.len() + payload_len);
 
     buf.push(flags);
     buf.push(type_len);
@@ -332,9 +333,102 @@ pub struct NfcTransport {
     /// Platform device path, e.g. `"/dev/nfc0"` on Linux.
     pub device_path: String,
     /// Inbound frames received from the NFC peer or tag.
+    #[cfg(target_os = "linux")]
     inbound: Mutex<VecDeque<Vec<u8>>>,
     /// Outbound frames waiting to be transmitted over NFC-DEP.
+    #[cfg(target_os = "linux")]
     outbound: Mutex<VecDeque<Vec<u8>>>,
+}
+
+// ---------------------------------------------------------------------------
+// Android adapter state
+// ---------------------------------------------------------------------------
+
+/// Backend-owned Android NFC adapter snapshot and frame queues.
+///
+/// Android platform I/O still happens natively, but Rust owns the transport
+/// availability decision and the frame queues that higher backend layers use.
+#[derive(Default)]
+struct AndroidNfcAdapterState {
+    /// Whether Android reports NFC hardware is present.
+    available: bool,
+    /// Whether Android reports NFC is currently enabled.
+    enabled: bool,
+    /// Frames received from the Android platform layer.
+    inbound: VecDeque<Vec<u8>>,
+    /// Frames queued by Rust for Android-native transmission.
+    outbound: VecDeque<Vec<u8>>,
+}
+
+/// Return the global Android NFC adapter state.
+fn android_nfc_adapter_state() -> &'static Mutex<AndroidNfcAdapterState> {
+    static STATE: OnceLock<Mutex<AndroidNfcAdapterState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(AndroidNfcAdapterState::default()))
+}
+
+/// Update Android NFC availability as reported by the platform layer.
+pub fn update_android_adapter_state(available: bool, enabled: bool) {
+    let mut state = android_nfc_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.available = available;
+    state.enabled = enabled;
+    if !available || !enabled {
+        state.inbound.clear();
+        state.outbound.clear();
+    }
+}
+
+/// Queue one inbound NFC frame received by the Android platform layer.
+pub fn enqueue_android_inbound_frame(frame: Vec<u8>) {
+    let mut state = android_nfc_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if state.available && state.enabled {
+        state.inbound.push_back(frame);
+    }
+}
+
+/// Queue one inbound Android pairing payload as an NDEF record.
+pub fn enqueue_android_pairing_payload(payload_json: &str) {
+    enqueue_android_inbound_frame(encode_ndef_message(payload_json.as_bytes()));
+}
+
+/// Remove the next outbound NFC frame queued for Android-native transmission.
+pub fn dequeue_android_outbound_frame() -> Option<Vec<u8>> {
+    let mut state = android_nfc_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.outbound.pop_front()
+}
+
+#[cfg(not(target_os = "linux"))]
+/// Returns true when Android NFC is present and enabled.
+fn android_nfc_ready() -> bool {
+    let state = android_nfc_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.available && state.enabled
+}
+
+#[cfg(not(target_os = "linux"))]
+/// Queue one frame for Android-native NFC transmission.
+fn queue_android_outbound_frame(frame: Vec<u8>) {
+    let mut state = android_nfc_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if state.available && state.enabled {
+        state.outbound.push_back(frame);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+/// Pop the next inbound frame supplied by Android-native NFC I/O.
+fn pop_android_inbound_frame() -> Option<Vec<u8>> {
+    let mut state = android_nfc_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.inbound.pop_front()
 }
 
 // ---------------------------------------------------------------------------
@@ -359,13 +453,7 @@ mod linux_impl {
         // SAFETY: socket(2) is a standard POSIX syscall that creates a new
         // kernel-owned file descriptor; no memory safety invariants are
         // required beyond the constant arguments being valid protocol values.
-        let fd = unsafe {
-            libc::socket(
-                AF_NFC,
-                libc::SOCK_SEQPACKET,
-                NFC_SOCKPROTO_RAW,
-            )
-        };
+        let fd = unsafe { libc::socket(AF_NFC, libc::SOCK_SEQPACKET, NFC_SOCKPROTO_RAW) };
         if fd < 0 {
             return Err(super::NfcError::DeviceNotFound);
         }
@@ -378,16 +466,10 @@ mod linux_impl {
     /// socket read fails or the device closes.
     pub(super) fn read_nfc_frame(fd: RawFd) -> Result<Vec<u8>, super::NfcError> {
         let mut buf = vec![0u8; super::NFC_MAX_FRAME_BYTES + 4]; // +4 for NCI header
-        // SAFETY: `fd` is a valid open NFC socket file descriptor returned by
-        // `open_nfc_socket`; `buf` is a valid Vec allocation and its pointer
-        // and length are consistent, satisfying read(2)'s buffer requirements.
-        let n = unsafe {
-            libc::read(
-                fd,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-            )
-        };
+                                                                 // SAFETY: `fd` is a valid open NFC socket file descriptor returned by
+                                                                 // `open_nfc_socket`; `buf` is a valid Vec allocation and its pointer
+                                                                 // and length are consistent, satisfying read(2)'s buffer requirements.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if n < 0 {
             let err = std::io::Error::last_os_error();
             return Err(super::NfcError::TransmitError(err.to_string()));
@@ -404,13 +486,7 @@ mod linux_impl {
         // SAFETY: `fd` is a valid open NFC socket; `data` is a valid slice
         // and its pointer and length are consistent, satisfying write(2)'s
         // requirements.  The cast to *const c_void is the standard idiom.
-        let n = unsafe {
-            libc::write(
-                fd,
-                data.as_ptr() as *const libc::c_void,
-                data.len(),
-            )
-        };
+        let n = unsafe { libc::write(fd, data.as_ptr() as *const libc::c_void, data.len()) };
         if n < 0 {
             let err = std::io::Error::last_os_error();
             return Err(super::NfcError::TransmitError(err.to_string()));
@@ -674,45 +750,91 @@ impl NfcTransport {
 impl NfcTransport {
     /// Create a new NFC transport.
     ///
-    /// Always returns `Err(NfcError::NotAvailable)` on non-Linux platforms.
-    /// On Android and iOS, NFC I/O is handled by the native platform layer;
-    /// this Rust module provides the protocol logic (NDEF encode/decode) that
-    /// the Flutter/native layer invokes directly.
-    pub fn new(_device_path: &str) -> Result<Self, NfcError> {
+    /// On Android, construction succeeds when the backend-owned adapter state
+    /// says NFC is present and enabled. Other non-Linux targets still report
+    /// `NfcError::NotAvailable`.
+    pub fn new(device_path: &str) -> Result<Self, NfcError> {
+        if android_nfc_ready() {
+            return Ok(NfcTransport {
+                device_path: device_path.to_owned(),
+            });
+        }
         Err(NfcError::NotAvailable)
     }
 
     /// Detect available NFC devices.
     ///
-    /// Always returns an empty `Vec` on non-Linux platforms.
+    /// On Android, this exposes a virtual device path so the backend can
+    /// represent NFC as available without requiring a Linux `/dev/nfc*` node.
     pub fn detect_devices() -> Vec<String> {
+        if android_nfc_ready() {
+            return vec!["android:nfc".to_string()];
+        }
         Vec::new()
     }
 
-    /// Write an NDEF tag — not available on this platform.
-    pub fn write_ndef_tag(&self, _record: &NdefRecord) -> Result<(), NfcError> {
-        Err(NfcError::NotAvailable)
+    /// Queue an NDEF record for Android-native NFC transmission.
+    pub fn write_ndef_tag(&self, record: &NdefRecord) -> Result<(), NfcError> {
+        if !android_nfc_ready() {
+            return Err(NfcError::NotAvailable);
+        }
+        let ndef_bytes = encode_ndef_message(&record.payload);
+        if ndef_bytes.len() > NFC_MAX_FRAME_BYTES {
+            return Err(NfcError::PayloadTooLarge);
+        }
+        queue_android_outbound_frame(ndef_bytes);
+        Ok(())
     }
 
-    /// Read NDEF tags — not available on this platform.
+    /// Read the next Android-supplied NDEF record.
     pub fn read_ndef_tag(&self) -> Result<Vec<NdefRecord>, NfcError> {
-        Err(NfcError::NotAvailable)
+        if !android_nfc_ready() {
+            return Err(NfcError::NotAvailable);
+        }
+        let Some(frame) = pop_android_inbound_frame() else {
+            return Err(NfcError::TagNotPresent);
+        };
+        if let Some(payload) = decode_ndef_message(&frame) {
+            return Ok(vec![NdefRecord {
+                tnf: TNF_EXTERNAL,
+                record_type: MESH_NDEF_TYPE.to_vec(),
+                payload,
+                id: Vec::new(),
+            }]);
+        }
+        Ok(vec![NdefRecord {
+            tnf: TNF_WELL_KNOWN,
+            record_type: Vec::new(),
+            payload: frame,
+            id: Vec::new(),
+        }])
     }
 
-    /// Send data via NFC-DEP — not available on this platform.
-    pub fn send(&self, _data: &[u8]) -> Result<(), NfcError> {
-        Err(NfcError::NotAvailable)
+    /// Queue a raw NFC-DEP payload for Android-native transmission.
+    pub fn send(&self, data: &[u8]) -> Result<(), NfcError> {
+        if !android_nfc_ready() {
+            return Err(NfcError::NotAvailable);
+        }
+        if data.len() > NFC_MAX_FRAME_BYTES {
+            return Err(NfcError::PayloadTooLarge);
+        }
+        queue_android_outbound_frame(data.to_vec());
+        Ok(())
     }
 
     /// Receive the next inbound NFC frame.
     ///
-    /// Always returns `None` on non-Linux platforms.
     pub fn recv(&self) -> Option<Vec<u8>> {
-        None
+        pop_android_inbound_frame()
     }
 
-    /// Queue data for NFC transmission — no-op on non-Linux platforms.
-    pub fn queue_outbound(&self, _data: &[u8]) {}
+    /// Queue data for Android-native NFC transmission.
+    pub fn queue_outbound(&self, data: &[u8]) {
+        if !android_nfc_ready() || data.len() > NFC_MAX_FRAME_BYTES {
+            return;
+        }
+        queue_android_outbound_frame(data.to_vec());
+    }
 
     /// Start the NFC poll loop — immediately exits on non-Linux platforms.
     pub fn start_poll_loop(self: Arc<Self>) -> std::thread::JoinHandle<()> {
@@ -776,7 +898,11 @@ mod tests {
         let payload = vec![0xABu8; 256];
         let encoded = encode_ndef_message(&payload);
         // SR flag must NOT be set for 256-byte payloads.
-        assert_eq!(encoded[0] & NDEF_SR, 0, "SR flag should be clear for 256-byte payload");
+        assert_eq!(
+            encoded[0] & NDEF_SR,
+            0,
+            "SR flag should be clear for 256-byte payload"
+        );
         let decoded = decode_ndef_message(&encoded).expect("decode 256-byte payload");
         assert_eq!(decoded, payload);
     }
@@ -786,7 +912,11 @@ mod tests {
         // 255 bytes: fits in short record.
         let payload = vec![0x77u8; 255];
         let encoded = encode_ndef_message(&payload);
-        assert_ne!(encoded[0] & NDEF_SR, 0, "SR flag should be set for 255-byte payload");
+        assert_ne!(
+            encoded[0] & NDEF_SR,
+            0,
+            "SR flag should be set for 255-byte payload"
+        );
         let decoded = decode_ndef_message(&encoded).expect("decode 255-byte payload");
         assert_eq!(decoded, payload);
     }
@@ -957,10 +1087,20 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "linux"))]
     fn recv_returns_none_when_queue_empty_non_linux() {
-        // On non-Linux, new() returns Err, so we test the stub behaviour
-        // indirectly via the error and the fact that detect_devices is empty.
-        assert!(NfcTransport::detect_devices().is_empty());
-        assert!(NfcTransport::new("/dev/nfc0").is_err());
+        update_android_adapter_state(true, true);
+        enqueue_android_inbound_frame(b"frame_one".to_vec());
+        let transport = NfcTransport::new("android:nfc").expect("android adapter should construct");
+        assert_eq!(
+            NfcTransport::detect_devices(),
+            vec!["android:nfc".to_string()]
+        );
+        assert_eq!(transport.recv(), Some(b"frame_one".to_vec()));
+        transport.queue_outbound(b"frame_two");
+        assert_eq!(
+            dequeue_android_outbound_frame(),
+            Some(b"frame_two".to_vec())
+        );
+        update_android_adapter_state(false, false);
     }
 
     #[test]
@@ -999,7 +1139,10 @@ mod tests {
 
         transport.queue_outbound(b"send_me");
         let guard = transport.outbound.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(guard.front().map(|v| v.as_slice()), Some(b"send_me" as &[u8]));
+        assert_eq!(
+            guard.front().map(|v| v.as_slice()),
+            Some(b"send_me" as &[u8])
+        );
     }
 
     // -----------------------------------------------------------------------

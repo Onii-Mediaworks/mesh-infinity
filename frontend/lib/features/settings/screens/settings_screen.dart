@@ -6,7 +6,7 @@
 //   Notifications     — push delivery + ambient badge indicators
 //   Identity          — masks, cryptographic keys, multi-device (§22.10.2, §22.10.7)
 //   Security          — threat level, PIN, emergency erase, advanced (§22.10.x–§22.10.11)
-//   Privacy           — metadata minimisation (stub)
+//   Privacy           — discovery, exposure, and notification disclosure
 //   Appearance        — dark / light / system theme
 //   Data              — backup and restore
 //   Node              — node mode, clearnet port
@@ -43,6 +43,7 @@ import 'identity_masks_screen.dart';
 import 'multi_device_screen.dart';
 import 'tier_discovery_screen.dart';
 import 'debug_screen.dart';
+import 'privacy_screen.dart';
 
 // ---------------------------------------------------------------------------
 // SettingsScreen
@@ -116,12 +117,11 @@ class SettingsScreen extends StatelessWidget {
 
         // ── Privacy ───────────────────────────────────────────────────
         const _SectionHeader('Privacy'),
-        const _Tile(
+        _Tile(
           icon: Icons.visibility_off_outlined,
           title: 'Privacy controls',
-          subtitle: 'Metadata minimisation and disclosure rules',
-          onTap: null, // TODO: backend privacy controls not yet implemented
-          trailing: _ComingSoon(),
+          subtitle: 'Discovery, identity exposure, and notification disclosure',
+          onTap: () => _push(context, const PrivacyScreen()),
         ),
         const Divider(height: 1),
 
@@ -179,7 +179,8 @@ class SettingsScreen extends StatelessWidget {
         _Tile(
           icon: Icons.explore_outlined,
           title: 'Explore features',
-          subtitle: 'Tier ${settings.activeTier.index + 1}: '
+          subtitle:
+              'Tier ${settings.activeTier.index + 1}: '
               '${_tierName(settings.activeTier)}',
           onTap: () => _push(context, const TierDiscoveryScreen()),
         ),
@@ -208,21 +209,6 @@ class SettingsScreen extends StatelessWidget {
           ),
           const Divider(height: 1),
         ],
-
-        // ── "Explore features" footer button (§22.55.2) ───────────────
-        // Persistent footer so new users always have a discoverable path
-        // to higher tiers even if they skip the Features section above.
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: OutlinedButton.icon(
-            onPressed: () => _push(context, const TierDiscoveryScreen()),
-            icon: const Icon(Icons.explore_outlined, size: 18),
-            label: const Text('Explore features'),
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size(double.infinity, 44),
-            ),
-          ),
-        ),
 
         const SizedBox(height: 16),
       ],
@@ -260,9 +246,10 @@ class SettingsScreen extends StatelessWidget {
           ),
           RadioGroup<BandwidthProfile>(
             groupValue: settings.bandwidthProfile,
-            onChanged: (v) {
+            onChanged: (v) async {
               if (v != null) {
-                settings.setBandwidthProfile(v);
+                await settings.setBandwidthProfile(v);
+                if (!ctx.mounted) return;
                 Navigator.pop(ctx);
               }
             },
@@ -295,13 +282,13 @@ class SettingsScreen extends StatelessWidget {
   };
 
   static String _bandwidthLabel(BandwidthProfile p) => switch (p) {
-    BandwidthProfile.minimal  => 'Minimal',
+    BandwidthProfile.minimal => 'Minimal',
     BandwidthProfile.standard => 'Standard',
     BandwidthProfile.generous => 'Generous',
   };
 
   static String _bandwidthDesc(BandwidthProfile p) => switch (p) {
-    BandwidthProfile.minimal  =>
+    BandwidthProfile.minimal =>
       'Metered or battery-constrained. Only essential mesh functions.',
     BandwidthProfile.standard =>
       'Balanced. Helps route traffic for others. Recommended.',
@@ -309,9 +296,8 @@ class SettingsScreen extends StatelessWidget {
       'Always-on device with good connectivity. Maximum mesh contribution.',
   };
 
-  static String _tierName(MeshTier t) => const [
-    'Social', 'Network', 'Infinet', 'Services', 'Power',
-  ][t.index];
+  static String _tierName(MeshTier t) =>
+      const ['Social', 'Network', 'Infinet', 'Services', 'Power'][t.index];
 }
 
 // ---------------------------------------------------------------------------
@@ -329,10 +315,10 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.8,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+        ),
       ),
     );
   }
@@ -344,14 +330,12 @@ class _Tile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
-    this.trailing,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
   final VoidCallback? onTap;
-  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -361,32 +345,11 @@ class _Tile extends StatelessWidget {
       subtitle: Text(
         subtitle,
         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
-      trailing: trailing ?? (onTap != null ? const Icon(Icons.chevron_right) : null),
+      trailing: onTap != null ? const Icon(Icons.chevron_right) : null,
       onTap: onTap,
-    );
-  }
-}
-
-class _ComingSoon extends StatelessWidget {
-  const _ComingSoon();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        'Coming soon',
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-      ),
     );
   }
 }

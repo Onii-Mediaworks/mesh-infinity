@@ -549,9 +549,9 @@ pub fn compute_stickiness(
     // Execute this protocol step.
     // Execute this protocol step.
     observed_fetches: u64,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> u8 {
     // Dispatch based on the variant to apply type-specific logic.
     // Compute score for this protocol step.
@@ -693,9 +693,9 @@ mod tests {
             &StorageMethod::Distributed,
             true, // anonymous
             &StorageScope::Global,
-            100,  // many nodes
-            30,   // 30 days old
-            200,  // many fetches
+            100, // many nodes
+            30,  // 30 days old
+            200, // many fetches
         );
         assert_eq!(score, 5); // Maximum stickiness.
     }

@@ -25,7 +25,10 @@
 //! to JSON for inclusion in the diagnostic ZIP archive.  See
 //! `DiagnosticReport` for the top-level structure.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+
+use crate::routing::path_selection::score_path;
+use crate::service::MeshRuntime;
 
 // ---------------------------------------------------------------------------
 // Privacy redaction
@@ -37,8 +40,16 @@ use serde::{Serialize, Deserialize};
 ///
 /// This list comes directly from SS 21.3.2.
 const REDACTED_FIELDS: &[&str] = &[
-    "text", "content", "body", "display_name", "name",
-    "email", "phone", "address", "ip", "host",
+    "text",
+    "content",
+    "body",
+    "display_name",
+    "name",
+    "email",
+    "phone",
+    "address",
+    "ip",
+    "host",
 ];
 
 /// Maximum allowed length for any string value in the diagnostic report.
@@ -204,6 +215,283 @@ pub struct MemoryDiagnostic {
 }
 
 // ---------------------------------------------------------------------------
+// Runtime-backed helpers
+// ---------------------------------------------------------------------------
+
+/// Build a diagnostic report from the live backend runtime.
+///
+/// This is the real report path used by the service layer and FFI export.
+/// It collects only privacy-safe aggregate state that already exists in the
+/// runtime and never exposes message content, private keys, names, or IPs.
+pub fn generate_report_for_runtime(runtime: &MeshRuntime) -> DiagnosticReport {
+    let mut report = generate_report();
+    report.transport_status = collect_transport_status(runtime);
+    report.routing_stats = collect_routing_stats(runtime);
+    report.identity_status = collect_identity_status(runtime);
+    report.memory_usage = collect_memory_usage();
+    report
+}
+
+/// Collect enabled transport diagnostics from the runtime.
+fn collect_transport_status(runtime: &MeshRuntime) -> Vec<TransportDiagnostic> {
+    let flags = runtime
+        .transport_flags
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mdns_running = *runtime
+        .mdns_running
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let clearnet_connections = runtime
+        .clearnet_connections
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len();
+    let mdns_discovered = runtime
+        .mdns_discovered
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len();
+    let nearby_direct_peers = runtime
+        .android_proximity_state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .peers
+        .len();
+    let sdr_sessions = runtime
+        .sdr
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sessions
+        .len();
+    let wireguard_sessions = runtime
+        .wireguard_sessions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .len();
+
+    let mut transports = Vec::new();
+
+    if flags.clearnet {
+        transports.push(TransportDiagnostic {
+            transport_name: "clearnet".to_string(),
+            enabled: true,
+            connected_peers: clearnet_connections,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors_last_hour: 0,
+        });
+    }
+
+    if flags.tor {
+        let connected = runtime
+            .tor_transport
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|_| clearnet_connections)
+            .unwrap_or(0);
+        transports.push(TransportDiagnostic {
+            transport_name: "tor".to_string(),
+            enabled: true,
+            connected_peers: connected,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors_last_hour: 0,
+        });
+    }
+
+    if flags.i2p {
+        transports.push(TransportDiagnostic {
+            transport_name: "i2p".to_string(),
+            enabled: true,
+            connected_peers: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors_last_hour: 0,
+        });
+    }
+
+    if flags.bluetooth {
+        transports.push(TransportDiagnostic {
+            transport_name: "bluetooth".to_string(),
+            enabled: true,
+            connected_peers: nearby_direct_peers,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors_last_hour: 0,
+        });
+    }
+
+    if flags.rf {
+        transports.push(TransportDiagnostic {
+            transport_name: "rf".to_string(),
+            enabled: true,
+            connected_peers: sdr_sessions,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors_last_hour: 0,
+        });
+    }
+
+    if flags.mesh_discovery || mdns_running {
+        transports.push(TransportDiagnostic {
+            transport_name: "mdns".to_string(),
+            enabled: mdns_running,
+            connected_peers: mdns_discovered,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors_last_hour: 0,
+        });
+    }
+
+    if wireguard_sessions > 0 {
+        transports.push(TransportDiagnostic {
+            transport_name: "wireguard".to_string(),
+            enabled: true,
+            connected_peers: wireguard_sessions,
+            bytes_sent: 0,
+            bytes_received: 0,
+            errors_last_hour: 0,
+        });
+    }
+
+    transports
+}
+
+/// Collect aggregate routing-table diagnostics from the runtime.
+fn collect_routing_stats(runtime: &MeshRuntime) -> RoutingDiagnostic {
+    let table = runtime
+        .routing_table
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let public_routes = table.public.len();
+    let group_routes = table
+        .groups
+        .values()
+        .map(|group| group.len())
+        .sum::<usize>();
+    let local_routes = table.local.len();
+    let relay_routes = public_routes + group_routes;
+
+    let stale_public = table
+        .public
+        .values()
+        .filter(|entry| entry.is_stale(now))
+        .count();
+    let stale_groups = table
+        .groups
+        .values()
+        .flat_map(|group| group.values())
+        .filter(|entry| entry.is_stale(now))
+        .count();
+    let stale_local = table
+        .local
+        .values()
+        .filter(|entry| entry.is_stale(now))
+        .count();
+    let stale_routes = stale_public + stale_groups + stale_local;
+
+    let mut score_total = 0.0f64;
+    let mut score_count = 0usize;
+    for entry in table
+        .public
+        .values()
+        .chain(table.local.values())
+        .chain(table.groups.values().flat_map(|group| group.values()))
+    {
+        score_total += f64::from(score_path(entry, now));
+        score_count += 1;
+    }
+
+    RoutingDiagnostic {
+        total_routes: table.total_route_count(),
+        direct_peers: local_routes,
+        relay_routes,
+        stale_routes,
+        avg_path_score: if score_count == 0 {
+            0.0
+        } else {
+            score_total / score_count as f64
+        },
+    }
+}
+
+/// Collect identity summary diagnostics from the runtime.
+fn collect_identity_status(runtime: &MeshRuntime) -> IdentityDiagnostic {
+    let peer_id = runtime
+        .identity
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|identity| identity.peer_id().to_hex())
+        .or_else(|| {
+            runtime
+                .mesh_identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|identity| hex::encode(identity.public_bytes()))
+        })
+        .unwrap_or_default();
+
+    IdentityDiagnostic {
+        peer_id,
+        vault_unlocked: runtime.identity_unlocked,
+        onboarding_complete: runtime.vault.is_some(),
+    }
+}
+
+/// Collect process memory usage from `/proc/self/status` where available.
+fn collect_memory_usage() -> MemoryDiagnostic {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let rss_bytes = parse_proc_status_kib(&status, "VmRSS").unwrap_or(0) * 1024;
+        let vms_bytes = parse_proc_status_kib(&status, "VmSize").unwrap_or(0) * 1024;
+        return MemoryDiagnostic {
+            rss_bytes,
+            vms_bytes,
+            allocation_count: 0,
+        };
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        MemoryDiagnostic {
+            rss_bytes: 0,
+            vms_bytes: 0,
+            allocation_count: 0,
+        }
+    }
+}
+
+/// Parse a `kB` field from `/proc/self/status`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn parse_proc_status_kib(status: &str, field_name: &str) -> Option<u64> {
+    for line in status.lines() {
+        let prefix = format!("{field_name}:");
+        if !line.starts_with(&prefix) {
+            continue;
+        }
+        let value = line[prefix.len()..]
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<u64>().ok());
+        if value.is_some() {
+            return value;
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Report generation
 // ---------------------------------------------------------------------------
 
@@ -268,9 +556,8 @@ pub fn report_to_json(report: &DiagnosticReport) -> String {
     // Use serde_json's pretty printer for human-readable output.
     // The `unwrap_or_else` fallback produces a valid JSON error object
     // so the caller always gets valid JSON, even on serialization failure.
-    serde_json::to_string_pretty(report).unwrap_or_else(|e| {
-        format!("{{\"error\": \"serialization failed: {}\"}}", e)
-    })
+    serde_json::to_string_pretty(report)
+        .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {}\"}}", e))
 }
 
 /// Sanitize an entire diagnostic report in place.
@@ -287,10 +574,7 @@ pub fn sanitize_report(report: &mut DiagnosticReport) {
 
     // Sanitize the identity peer ID.
     // "peer_id" is not in the redaction list, so it passes through.
-    report.identity_status.peer_id = sanitize_string(
-        "peer_id",
-        &report.identity_status.peer_id,
-    );
+    report.identity_status.peer_id = sanitize_string("peer_id", &report.identity_status.peer_id);
 
     // Sanitize the version string (defense-in-depth).
     report.version = sanitize_string("version", &report.version);
@@ -351,7 +635,10 @@ mod tests {
             "truncated string length {} exceeds limit",
             result.len()
         );
-        assert!(result.ends_with("..."), "truncated string must end with '...'");
+        assert!(
+            result.ends_with("..."),
+            "truncated string must end with '...'"
+        );
     }
 
     /// Strings at exactly MAX_STRING_LENGTH pass through unchanged.
@@ -405,7 +692,11 @@ mod tests {
 
         // The JSON must be valid and parseable.
         let parsed: Result<DiagnosticReport, _> = serde_json::from_str(&json);
-        assert!(parsed.is_ok(), "report JSON must be valid: {:?}", parsed.err());
+        assert!(
+            parsed.is_ok(),
+            "report JSON must be valid: {:?}",
+            parsed.err()
+        );
 
         // The parsed report must match the original.
         let roundtrip = parsed.expect("already checked");
@@ -418,8 +709,14 @@ mod tests {
     fn report_to_json_is_pretty_printed() {
         let report = generate_report();
         let json = report_to_json(&report);
-        assert!(json.contains('\n'), "pretty-printed JSON must contain newlines");
-        assert!(json.contains("  "), "pretty-printed JSON must contain indentation");
+        assert!(
+            json.contains('\n'),
+            "pretty-printed JSON must contain newlines"
+        );
+        assert!(
+            json.contains("  "),
+            "pretty-printed JSON must contain indentation"
+        );
     }
 
     /// report_to_json() includes all top-level fields.
@@ -430,10 +727,22 @@ mod tests {
         // Verify all top-level field names are present in the output.
         assert!(json.contains("\"timestamp\""), "missing timestamp field");
         assert!(json.contains("\"version\""), "missing version field");
-        assert!(json.contains("\"transport_status\""), "missing transport_status field");
-        assert!(json.contains("\"routing_stats\""), "missing routing_stats field");
-        assert!(json.contains("\"identity_status\""), "missing identity_status field");
-        assert!(json.contains("\"memory_usage\""), "missing memory_usage field");
+        assert!(
+            json.contains("\"transport_status\""),
+            "missing transport_status field"
+        );
+        assert!(
+            json.contains("\"routing_stats\""),
+            "missing routing_stats field"
+        );
+        assert!(
+            json.contains("\"identity_status\""),
+            "missing identity_status field"
+        );
+        assert!(
+            json.contains("\"memory_usage\""),
+            "missing memory_usage field"
+        );
     }
 
     // --- Sanitize report tests ----------------------------------------------
@@ -495,8 +804,8 @@ mod tests {
             bytes_received: 20_000,
             errors_last_hour: 2,
         };
-        let json = serde_json::to_string(&diag)
-            .expect("TransportDiagnostic serialization must not fail");
+        let json =
+            serde_json::to_string(&diag).expect("TransportDiagnostic serialization must not fail");
         assert!(json.contains("\"transport_name\""));
         assert!(json.contains("\"enabled\""));
         assert!(json.contains("\"connected_peers\""));
@@ -525,5 +834,26 @@ mod tests {
         assert_eq!(report.memory_usage.rss_bytes, 0);
         assert_eq!(report.memory_usage.vms_bytes, 0);
         assert_eq!(report.memory_usage.allocation_count, 0);
+    }
+
+    /// Runtime-backed diagnostics should reflect live runtime state.
+    #[test]
+    fn generate_report_for_runtime_uses_live_runtime_state() {
+        let runtime = MeshRuntime::new("target/test-diagnostics-runtime".to_string());
+        let report = generate_report_for_runtime(&runtime);
+
+        assert!(
+            report
+                .transport_status
+                .iter()
+                .any(|transport| transport.transport_name == "clearnet"),
+            "runtime-backed report should include the enabled clearnet transport",
+        );
+        assert_eq!(
+            report.identity_status.vault_unlocked,
+            runtime.identity_unlocked
+        );
+        assert!(report.timestamp > 0);
+        assert!(!report.version.is_empty());
     }
 }

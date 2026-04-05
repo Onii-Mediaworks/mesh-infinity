@@ -24,6 +24,13 @@ APP_BUILD_NUMBER := $(shell awk -F': ' '/^version:/{print $$2}' $(FRONTEND_DIR)/
 APP_REV          := $(if $(CI_RUN_NUMBER),$(CI_RUN_NUMBER),$(shell git rev-list --count HEAD 2>/dev/null || echo 0))
 APP_BUILD_LABEL  := $(APP_VERSION)-r$(APP_REV)
 
+# Release builds must include the backend capabilities that power the canonical
+# routing and proximity stack. Keeping this centralized prevents platform
+# targets from silently shipping reduced binaries via Cargo's empty default
+# feature set.
+BACKEND_REQUIRED_FEATURES := vpn-routing,transport-bluetooth-native,transport-rf-meshtastic
+BACKEND_FEATURE_FLAGS     := --features $(BACKEND_REQUIRED_FEATURES)
+
 .PHONY: clean \
         macos-rust-debug macos-rust-release \
         macos-xcode-debug macos-xcode-release \
@@ -68,9 +75,9 @@ macos-rust-debug macos-rust-release: macos-rust-%:
 	mkdir -p "$$rust_target" "$$rust_out"; \
 	\
 	CARGO_TARGET_DIR="$$rust_target" \
-	  cargo build -p mesh-infinity --target aarch64-apple-darwin $$cargo_flags; \
+	  cargo build -p mesh-infinity --target aarch64-apple-darwin $(BACKEND_FEATURE_FLAGS) $$cargo_flags; \
 	CARGO_TARGET_DIR="$$rust_target" \
-	  cargo build -p mesh-infinity --target x86_64-apple-darwin $$cargo_flags; \
+	  cargo build -p mesh-infinity --target x86_64-apple-darwin $(BACKEND_FEATURE_FLAGS) $$cargo_flags; \
 	lipo -create \
 	  "$$rust_target/aarch64-apple-darwin/$$rust_subdir/libmesh_infinity.a" \
 	  "$$rust_target/x86_64-apple-darwin/$$rust_subdir/libmesh_infinity.a" \
@@ -220,7 +227,7 @@ ios-rust-debug ios-rust-release: ios-rust-%:
 	\
 	CARGO_TARGET_DIR="$$rust_target" \
 	  IPHONEOS_DEPLOYMENT_TARGET=13.0 \
-	  cargo build -p mesh-infinity --target aarch64-apple-ios $$cargo_flags; \
+	  cargo build -p mesh-infinity --target aarch64-apple-ios $(BACKEND_FEATURE_FLAGS) $$cargo_flags; \
 	cp "$$rust_target/aarch64-apple-ios/$$rust_subdir/libmesh_infinity.a" \
 	   "$$rust_out/libmesh_infinity.a"; \
 	echo "Rust output: $$rust_out/libmesh_infinity.a"
@@ -394,7 +401,7 @@ android-rust-debug android-rust-release: android-rust-%:
 	    -t armeabi-v7a \
 	    -t x86_64 \
 	    -o "$$jni_out" \
-	    -- build -p mesh-infinity $$cargo_flags; \
+	    -- build -p mesh-infinity $(BACKEND_FEATURE_FLAGS) $$cargo_flags; \
 	echo "Rust output: $$jni_out"
 
 # ── Android: Gradle only ──────────────────────────────────────────────────────
@@ -456,7 +463,7 @@ linux-rust-debug linux-rust-release: linux-rust-%:
 	mkdir -p "$$rust_target" "$$rust_out"; \
 	\
 	CARGO_TARGET_DIR="$$rust_target" \
-	  cargo build -p mesh-infinity --target x86_64-unknown-linux-gnu $$cargo_flags; \
+	  cargo build -p mesh-infinity --target x86_64-unknown-linux-gnu $(BACKEND_FEATURE_FLAGS) $$cargo_flags; \
 	cp "$$rust_target/x86_64-unknown-linux-gnu/$$rust_subdir/libmesh_infinity.so" \
 	   "$$rust_out/libmesh_infinity.so"; \
 	echo "Rust output: $$rust_out/libmesh_infinity.so"
@@ -576,7 +583,7 @@ windows-rust-debug windows-rust-release: windows-rust-%:
 	\
 	unset MAKEFLAGS; \
 	CARGO_TARGET_DIR="$$rust_target" \
-	  cargo build -p mesh-infinity --target x86_64-pc-windows-msvc $$cargo_flags; \
+	  cargo build -p mesh-infinity --target x86_64-pc-windows-msvc $(BACKEND_FEATURE_FLAGS) $$cargo_flags; \
 	cp "$$rust_target/x86_64-pc-windows-msvc/$$rust_subdir/mesh_infinity.dll" \
 	   "$$rust_out/mesh_infinity.dll"; \
 	echo "Rust output: $$rust_out/mesh_infinity.dll"

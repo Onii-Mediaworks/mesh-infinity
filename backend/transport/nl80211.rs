@@ -208,7 +208,7 @@ impl NlMsg {
         buf.extend_from_slice(&(flags | NLM_F_REQUEST).to_ne_bytes()); // nlmsg_flags
         buf.extend_from_slice(&seq.to_ne_bytes()); // nlmsg_seq
         buf.extend_from_slice(&0u32.to_ne_bytes()); // nlmsg_pid (kernel fills)
-        // genlmsghdr — 4 bytes.
+                                                    // genlmsghdr — 4 bytes.
         buf.push(cmd);
         buf.push(1); // version
         buf.extend_from_slice(&0u16.to_ne_bytes()); // reserved
@@ -430,14 +430,7 @@ impl NlSocket {
         // SAFETY: `self.fd` is a valid open netlink socket; `buf` is a
         // heap-allocated Vec whose pointer and length are valid for the full
         // 65536-byte write that recv(2) may perform.
-        let n = unsafe {
-            libc::recv(
-                self.fd,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-                0,
-            )
-        };
+        let n = unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
         if n < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -452,9 +445,9 @@ impl NlSocket {
         let mut responses = Vec::new();
         loop {
             let msgs = self.recv_msgs()?;
-            let done = msgs.iter().any(|m| {
-                matches!(m, NlResponse::Done | NlResponse::Error { .. })
-            });
+            let done = msgs
+                .iter()
+                .any(|m| matches!(m, NlResponse::Done | NlResponse::Error { .. }));
             responses.extend(msgs);
             if done {
                 break;
@@ -696,8 +689,7 @@ impl Nl80211 {
     /// Trigger a scan on `ifindex`.  The scan is asynchronous; poll
     /// `get_scan_results` after a delay (typically 3–10 seconds).
     pub fn trigger_scan(&self, ifindex: u32) -> Result<(), Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_TRIGGER_SCAN, NLM_F_ACK);
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_TRIGGER_SCAN, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         let responses = self.sock.request(msg.finish())?;
         for r in &responses {
@@ -712,8 +704,7 @@ impl Nl80211 {
 
     /// Read scan results from the kernel cache for `ifindex`.
     pub fn get_scan_results(&self, ifindex: u32) -> Result<Vec<BssEntry>, Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_GET_SCAN, NLM_F_DUMP);
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_GET_SCAN, NLM_F_DUMP);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         let responses = self.sock.request(msg.finish())?;
         let mut entries = Vec::new();
@@ -736,10 +727,9 @@ impl Nl80211 {
                             .map(|v| v as i32)
                             .unwrap_or(0);
                         // SSID is in Information Elements (tag 0 = SSID).
-                        let ssid =
-                            find_attr(&bss_attrs, NL80211_BSS_INFORMATION_ELEMENTS)
-                                .map(|a| extract_ie_ssid(&a.data))
-                                .unwrap_or_default();
+                        let ssid = find_attr(&bss_attrs, NL80211_BSS_INFORMATION_ELEMENTS)
+                            .map(|a| extract_ie_ssid(&a.data))
+                            .unwrap_or_default();
                         entries.push(BssEntry {
                             bssid,
                             freq_mhz,
@@ -757,14 +747,8 @@ impl Nl80211 {
     /// `NL80211_IFTYPE_AP` or `NL80211_IFTYPE_P2P_DEVICE`).
     ///
     /// Returns the new interface's index.
-    pub fn new_interface(
-        &self,
-        wiphy: u32,
-        name: &str,
-        iftype: u32,
-    ) -> Result<u32, Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_NEW_INTERFACE, NLM_F_ACK);
+    pub fn new_interface(&self, wiphy: u32, name: &str, iftype: u32) -> Result<u32, Nl80211Error> {
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_NEW_INTERFACE, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_WIPHY, wiphy);
         msg.put_str(NL80211_ATTR_IFNAME, name);
         msg.put_u32(NL80211_ATTR_IFTYPE, iftype);
@@ -787,8 +771,7 @@ impl Nl80211 {
 
     /// Delete a virtual WiFi interface by index.
     pub fn del_interface(&self, ifindex: u32) -> Result<(), Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_DEL_INTERFACE, NLM_F_ACK);
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_DEL_INTERFACE, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         let responses = self.sock.request(msg.finish())?;
         for r in &responses {
@@ -808,14 +791,8 @@ impl Nl80211 {
     ///
     /// `ssid` — mesh cell identifier (up to 32 bytes).
     /// `freq_mhz` — channel frequency, e.g. 2412 (ch 1), 2437 (ch 6), 5180 (ch 36).
-    pub fn join_ibss(
-        &self,
-        ifindex: u32,
-        ssid: &[u8],
-        freq_mhz: u32,
-    ) -> Result<(), Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_JOIN_IBSS, NLM_F_ACK);
+    pub fn join_ibss(&self, ifindex: u32, ssid: &[u8], freq_mhz: u32) -> Result<(), Nl80211Error> {
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_JOIN_IBSS, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         msg.put_bytes(NL80211_ATTR_SSID, ssid);
         msg.put_u32(NL80211_ATTR_WIPHY_FREQ, freq_mhz);
@@ -840,8 +817,7 @@ impl Nl80211 {
         mesh_id: &[u8],
         freq_mhz: u32,
     ) -> Result<(), Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_JOIN_MESH, NLM_F_ACK);
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_JOIN_MESH, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         msg.put_bytes(NL80211_ATTR_MESH_ID, mesh_id);
         msg.put_u32(NL80211_ATTR_WIPHY_FREQ, freq_mhz);
@@ -878,10 +854,7 @@ impl Nl80211 {
         msg.put_u32(NL80211_ATTR_AUTH_TYPE, NL80211_AUTHTYPE_OPEN_SYSTEM);
         msg.put_bytes(NL80211_ATTR_PMK, pmk);
         // AKM suite: PSK.
-        msg.put_bytes(
-            NL80211_ATTR_AKM_SUITES,
-            &WLAN_AKM_SUITE_PSK.to_ne_bytes(),
-        );
+        msg.put_bytes(NL80211_ATTR_AKM_SUITES, &WLAN_AKM_SUITE_PSK.to_ne_bytes());
         // Pairwise + group cipher: CCMP.
         msg.put_bytes(
             NL80211_ATTR_CIPHER_SUITES_PAIRWISE,
@@ -904,8 +877,7 @@ impl Nl80211 {
 
     /// Disconnect from the current network.
     pub fn disconnect(&self, ifindex: u32, reason: u16) -> Result<(), Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_DISCONNECT, NLM_F_ACK);
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_DISCONNECT, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         msg.put_bytes(NL80211_ATTR_REASON_CODE, &reason.to_ne_bytes());
         let responses = self.sock.request(msg.finish())?;
@@ -930,21 +902,15 @@ impl Nl80211 {
 
     /// Stop the P2P device and remove its virtual interface.
     pub fn stop_p2p_device(&self, ifindex: u32) -> Result<(), Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_STOP_P2P_DEVICE, NLM_F_ACK);
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_STOP_P2P_DEVICE, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         let _ = self.sock.request(msg.finish());
         self.del_interface(ifindex)
     }
 
     /// Set the interface type of an existing interface.
-    pub fn set_interface_type(
-        &self,
-        ifindex: u32,
-        iftype: u32,
-    ) -> Result<(), Nl80211Error> {
-        let mut msg =
-            NlMsg::new_genl(self.family_id, NL80211_CMD_NEW_INTERFACE, NLM_F_ACK);
+    pub fn set_interface_type(&self, ifindex: u32, iftype: u32) -> Result<(), Nl80211Error> {
+        let mut msg = NlMsg::new_genl(self.family_id, NL80211_CMD_NEW_INTERFACE, NLM_F_ACK);
         msg.put_u32(NL80211_ATTR_IFINDEX, ifindex);
         msg.put_u32(NL80211_ATTR_IFTYPE, iftype);
         let responses = self.sock.request(msg.finish())?;

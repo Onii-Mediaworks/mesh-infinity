@@ -101,7 +101,8 @@ impl CjdnsFrame {
             return None;
         }
         // Infallible: buf[..4] is exactly 4 bytes, matching [u8; 4].
-        let len = u32::from_be_bytes(buf[..4].try_into().expect("4-byte slice fits [u8; 4]")) as usize;
+        let len =
+            u32::from_be_bytes(buf[..4].try_into().expect("4-byte slice fits [u8; 4]")) as usize;
         if buf.len() < 4 + len {
             return None;
         }
@@ -180,7 +181,11 @@ impl CjdnsTransport {
                         while let Some((pkt, consumed)) = CjdnsFrame::decode(&reassembly) {
                             reassembly.drain(..consumed);
                             // Mutex recovery: data is still valid after a poisoned lock.
-                            transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(pkt);
+                            transport
+                                .inbound
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(pkt);
                         }
                     }
                 })

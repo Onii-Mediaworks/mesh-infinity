@@ -17,12 +17,16 @@
 //! operate directly on the `ContactStore`.
 
 use crate::identity::peer_id::PeerId;
+use crate::mesh::{MeshPacket, PacketKind};
 use crate::pairing::contact::ContactRecord;
 use crate::routing::announcement::ReachabilityAnnouncement;
+use crate::routing::store_forward::{
+    DepositResult, Priority, ReleaseCondition, StoreAndForwardRequest,
+};
 use crate::routing::table::{DeviceAddress, RoutingEntry};
-use crate::service::runtime::{MeshRuntime, bootstrap_ratchet_session, write_tcp_frame, local_clearnet_ip, DEFAULT_HS_PORT};
-use crate::routing::store_forward::{StoreAndForwardRequest, ReleaseCondition, Priority, DepositResult};
-use crate::mesh::{MeshPacket, PacketKind};
+use crate::service::runtime::{
+    bootstrap_ratchet_session, local_clearnet_ip, write_tcp_frame, MeshRuntime, DEFAULT_HS_PORT,
+};
 use crate::trust::levels::TrustLevel;
 
 impl MeshRuntime {
@@ -49,26 +53,53 @@ impl MeshRuntime {
 
         // Extract required Ed25519 public key — this is Alice's long-term
         // identity key from which her PeerId is derived.
-        let ed_hex = payload.get("ed25519_public").and_then(|v| v.as_str())
+        let ed_hex = payload
+            .get("ed25519_public")
+            .and_then(|v| v.as_str())
             .ok_or("Missing ed25519_public")?;
         let ed_bytes: [u8; 32] = hex::decode(ed_hex)
-            .ok().filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+            .ok()
+            .filter(|b| b.len() == 32)
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            })
             .ok_or("Invalid ed25519_public")?;
 
         // Extract required X25519 public key.
-        let x_hex = payload.get("x25519_public").and_then(|v| v.as_str())
+        let x_hex = payload
+            .get("x25519_public")
+            .and_then(|v| v.as_str())
             .ok_or("Missing x25519_public")?;
         let x_bytes: [u8; 32] = hex::decode(x_hex)
-            .ok().filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+            .ok()
+            .filter(|b| b.len() == 32)
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            })
             .ok_or("Invalid x25519_public")?;
+        let mesh_x_bytes = payload
+            .get("mesh_x25519_public")
+            .and_then(|v| v.as_str())
+            .and_then(|h| hex::decode(h).ok())
+            .filter(|b| b.len() == 32)
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            });
 
         // Derive the canonical peer ID by hashing the Ed25519 public key.
         // This gives a stable identifier that does not change if the peer
         // rotates their X25519 preauth key (which happens weekly).
         let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
-        let name    = payload.get("display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let name = payload
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Extract optional preauth X25519 public key (their SPK for X3DH).
         let preauth_pub_bytes: Option<[u8; 32]> = payload
@@ -76,21 +107,35 @@ impl MeshRuntime {
             .and_then(|v| v.as_str())
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            });
 
         // Extract transport hints.
-        let hints = payload.get("transport_hints")
-            .and_then(|h| h.as_array()).cloned().unwrap_or_default();
-        let clearnet_endpoint = hints.iter().find(|h| {
-            h.get("transport").and_then(|t| t.as_str()) == Some("clearnet")
-        }).and_then(|h| h.get("endpoint")).and_then(|e| e.as_str()).map(|s| s.to_string());
-        let tor_endpoint = hints.iter().find(|h| {
-            h.get("transport").and_then(|t| t.as_str()) == Some("tor")
-        }).and_then(|h| h.get("endpoint")).and_then(|e| e.as_str()).map(|s| s.to_string());
+        let hints = payload
+            .get("transport_hints")
+            .and_then(|h| h.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let clearnet_endpoint = hints
+            .iter()
+            .find(|h| h.get("transport").and_then(|t| t.as_str()) == Some("clearnet"))
+            .and_then(|h| h.get("endpoint"))
+            .and_then(|e| e.as_str())
+            .map(|s| s.to_string());
+        let tor_endpoint = hints
+            .iter()
+            .find(|h| h.get("transport").and_then(|t| t.as_str()) == Some("tor"))
+            .and_then(|h| h.get("endpoint"))
+            .and_then(|e| e.as_str())
+            .map(|s| s.to_string());
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let mut contact = ContactRecord::new(
             peer_id,
@@ -99,9 +144,10 @@ impl MeshRuntime {
             crate::pairing::methods::PairingMethod::LinkShare,
             now,
         );
-        contact.display_name      = name.clone();
+        contact.mesh_x25519_public = mesh_x_bytes;
+        contact.display_name = name.clone();
         contact.clearnet_endpoint = clearnet_endpoint;
-        contact.tor_endpoint      = tor_endpoint;
+        contact.tor_endpoint = tor_endpoint;
 
         // Store ML-KEM-768 encapsulation key if advertised (PQXDH §3.4.1).
         // This enables post-quantum key exchange with this peer; if absent,
@@ -134,15 +180,21 @@ impl MeshRuntime {
                     bootstrap_ratchet_session(our_id, &contact)
                 {
                     if let Some(header) = x3dh_header {
-                        self.x3dh_pending.lock().unwrap_or_else(|e| e.into_inner())
+                        self.x3dh_pending
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
                             .insert(peer_id, header);
                     }
                     if let Some(pq) = pq_ext {
-                        self.pqxdh_pending.lock().unwrap_or_else(|e| e.into_inner())
+                        self.pqxdh_pending
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
                             .insert(peer_id, pq);
                     }
                     drop(guard);
-                    self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+                    self.ratchet_sessions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
                         .insert(peer_id, session);
                 }
             }
@@ -155,7 +207,11 @@ impl MeshRuntime {
         // Persist the contact.  upsert() is used instead of insert() because
         // the same peer could be paired multiple times (e.g. after a reinstall
         // where only one side lost state).
-        self.contacts.lock().unwrap_or_else(|e| e.into_inner()).upsert(contact);
+        let pairing_method_label = format!("{:?}", contact.pairing_method);
+        self.contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upsert(contact);
         self.save_contacts();
 
         // Two-way pairing hello (§8.3): send our own keys back to Alice so
@@ -173,17 +229,21 @@ impl MeshRuntime {
         self.broadcast_self_route_announcement();
 
         // Emit PeerAdded event for the UI.
-        self.push_event("PeerAdded", serde_json::json!({
-            "id":               hex::encode(peer_id.0),
-            "name":             name.as_deref().unwrap_or(""),
-            "trustLevel":       0,
-            "status":           "offline",
-            "canBeExitNode":    false,
-            "canBeWrapperNode": false,
-            "canBeStoreForward": false,
-            "canEndorsePeers":  false,
-            "latencyMs":        serde_json::Value::Null,
-        }));
+        self.push_event(
+            "PeerAdded",
+            serde_json::json!({
+                "id":               hex::encode(peer_id.0),
+                "name":             name.as_deref().unwrap_or(""),
+                "trustLevel":       0,
+                "pairingMethod":    pairing_method_label,
+                "status":           "offline",
+                "canBeExitNode":    false,
+                "canBeWrapperNode": false,
+                "canBeStoreForward": false,
+                "canEndorsePeers":  false,
+                "latencyMs":        serde_json::Value::Null,
+            }),
+        );
 
         Ok(())
     }
@@ -211,7 +271,11 @@ impl MeshRuntime {
             None => return false,
         };
         let ed_bytes: [u8; 32] = match hex::decode(ed_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
 
@@ -220,9 +284,23 @@ impl MeshRuntime {
             None => return false,
         };
         let x_bytes: [u8; 32] = match hex::decode(x_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
+        let mesh_x_bytes = envelope
+            .get("mesh_x25519_public")
+            .and_then(|v| v.as_str())
+            .and_then(|h| hex::decode(h).ok())
+            .filter(|b| b.len() == 32)
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            });
 
         let sig_hex = match envelope.get("sig").and_then(|v| v.as_str()) {
             Some(s) => s,
@@ -242,7 +320,12 @@ impl MeshRuntime {
         let mut signed_msg = Vec::with_capacity(64);
         signed_msg.extend_from_slice(&ed_bytes);
         signed_msg.extend_from_slice(&x_bytes);
-        if !signing::verify(&ed_bytes, signing::DOMAIN_PAIRING_HELLO, &signed_msg, &sig_bytes) {
+        if !signing::verify(
+            &ed_bytes,
+            signing::DOMAIN_PAIRING_HELLO,
+            &signed_msg,
+            &sig_bytes,
+        ) {
             // Signature invalid — possibly corrupted or forged frame.
             // Silently discard (§7.2 error-silence rule).
             return false;
@@ -254,24 +337,38 @@ impl MeshRuntime {
         // Idempotent: if we already have this peer in our contact store,
         // re-emit PeerAdded to synchronise the Flutter UI (the UI may have
         // been restarted or missed the original event).
-        if self.contacts.lock().unwrap_or_else(|e| e.into_inner()).get(&peer_id).is_some() {
-            let name = envelope.get("display_name").and_then(|v| v.as_str()).unwrap_or("");
-            self.push_event("PeerAdded", serde_json::json!({
-                "id":               hex::encode(peer_id.0),
-                "name":             name,
-                "trustLevel":       0,
-                "status":           "online",
-                "canBeExitNode":    false,
-                "canBeWrapperNode": false,
-                "canBeStoreForward": false,
-                "canEndorsePeers":  false,
-                "latencyMs":        serde_json::Value::Null,
-            }));
+        if self
+            .contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&peer_id)
+            .is_some()
+        {
+            let name = envelope
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            self.push_event(
+                "PeerAdded",
+                serde_json::json!({
+                    "id":               hex::encode(peer_id.0),
+                    "name":             name,
+                    "trustLevel":       0,
+                    "status":           "online",
+                    "canBeExitNode":    false,
+                    "canBeWrapperNode": false,
+                    "canBeStoreForward": false,
+                    "canEndorsePeers":  false,
+                    "latencyMs":        serde_json::Value::Null,
+                }),
+            );
             return true;
         }
 
-        let display_name = envelope.get("display_name")
-            .and_then(|v| v.as_str()).map(|s| s.to_string());
+        let display_name = envelope
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Extract optional preauth and KEM keys.
         let preauth_pub_bytes: Option<[u8; 32]> = envelope
@@ -279,25 +376,39 @@ impl MeshRuntime {
             .and_then(|v| v.as_str())
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            });
         let preauth_sig_opt: Option<Vec<u8>> = envelope
             .get("preauth_sig")
             .and_then(|v| v.as_str())
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == 64);
 
-        let hints_arr = envelope.get("transport_hints")
-            .and_then(|h| h.as_array()).cloned().unwrap_or_default();
-        let clearnet_endpoint = hints_arr.iter().find(|h| {
-            h.get("transport").and_then(|t| t.as_str()) == Some("clearnet")
-        }).and_then(|h| h.get("endpoint")).and_then(|e| e.as_str()).map(|s| s.to_string());
-        let tor_endpoint = hints_arr.iter().find(|h| {
-            h.get("transport").and_then(|t| t.as_str()) == Some("tor")
-        }).and_then(|h| h.get("endpoint")).and_then(|e| e.as_str()).map(|s| s.to_string());
+        let hints_arr = envelope
+            .get("transport_hints")
+            .and_then(|h| h.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let clearnet_endpoint = hints_arr
+            .iter()
+            .find(|h| h.get("transport").and_then(|t| t.as_str()) == Some("clearnet"))
+            .and_then(|h| h.get("endpoint"))
+            .and_then(|e| e.as_str())
+            .map(|s| s.to_string());
+        let tor_endpoint = hints_arr
+            .iter()
+            .find(|h| h.get("transport").and_then(|t| t.as_str()) == Some("tor"))
+            .and_then(|h| h.get("endpoint"))
+            .and_then(|e| e.as_str())
+            .map(|s| s.to_string());
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let mut contact = ContactRecord::new(
             peer_id,
@@ -306,9 +417,10 @@ impl MeshRuntime {
             crate::pairing::methods::PairingMethod::LinkShare,
             now,
         );
-        contact.display_name      = display_name.clone();
+        contact.mesh_x25519_public = mesh_x_bytes;
+        contact.display_name = display_name.clone();
         contact.clearnet_endpoint = clearnet_endpoint;
-        contact.tor_endpoint      = tor_endpoint;
+        contact.tor_endpoint = tor_endpoint;
         contact.kem_encapsulation_key = envelope
             .get("kem_pub")
             .and_then(|v| v.as_str())
@@ -330,53 +442,70 @@ impl MeshRuntime {
                     bootstrap_ratchet_session(our_id, &contact)
                 {
                     if let Some(header) = x3dh_header {
-                        self.x3dh_pending.lock().unwrap_or_else(|e| e.into_inner())
+                        self.x3dh_pending
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
                             .insert(peer_id, header);
                     }
                     if let Some(pq) = pq_ext {
-                        self.pqxdh_pending.lock().unwrap_or_else(|e| e.into_inner())
+                        self.pqxdh_pending
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
                             .insert(peer_id, pq);
                     }
                     drop(guard);
-                    self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+                    self.ratchet_sessions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
                         .insert(peer_id, session);
                 }
             }
         }
 
-        self.contacts.lock().unwrap_or_else(|e| e.into_inner()).upsert(contact);
+        let pairing_method_label = format!("{:?}", contact.pairing_method);
+        self.contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upsert(contact);
         self.save_contacts();
 
         // Add a local-plane routing entry for the new peer.
         {
-            let dest  = DeviceAddress(peer_id.0);
+            let dest = DeviceAddress(peer_id.0);
             let entry = RoutingEntry {
-                destination:     dest,
-                next_hop:        dest,
-                hop_count:       1,
-                latency_ms:      10,
-                next_hop_trust:  TrustLevel::Unknown,
-                last_updated:    now,
+                destination: dest,
+                next_hop: dest,
+                hop_count: 1,
+                latency_ms: 10,
+                next_hop_trust: TrustLevel::Unknown,
+                last_updated: now,
                 announcement_id: [0u8; 32],
             };
-            self.routing_table.lock().unwrap_or_else(|e| e.into_inner()).update_local(entry);
+            self.routing_table
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .update_local(entry);
         }
 
         // Reply with our own network map entry so the new peer has our preauth key.
         let peer_id_hex = hex::encode(peer_id.0);
         self.send_gossip_self_entry(&peer_id_hex);
 
-        self.push_event("PeerAdded", serde_json::json!({
-            "id":               hex::encode(peer_id.0),
-            "name":             display_name.as_deref().unwrap_or(""),
-            "trustLevel":       0,
-            "status":           "online",
-            "canBeExitNode":    false,
-            "canBeWrapperNode": false,
-            "canBeStoreForward": false,
-            "canEndorsePeers":  false,
-            "latencyMs":        serde_json::Value::Null,
-        }));
+        self.push_event(
+            "PeerAdded",
+            serde_json::json!({
+                "id":               hex::encode(peer_id.0),
+                "name":             display_name.as_deref().unwrap_or(""),
+                "trustLevel":       0,
+                "pairingMethod":    pairing_method_label,
+                "status":           "online",
+                "canBeExitNode":    false,
+                "canBeWrapperNode": false,
+                "canBeStoreForward": false,
+                "canEndorsePeers":  false,
+                "latencyMs":        serde_json::Value::Null,
+            }),
+        );
 
         true
     }
@@ -388,21 +517,26 @@ impl MeshRuntime {
     /// Return a JSON array of all known peers from the contact store.
     pub fn get_peer_list(&self) -> String {
         let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
-        let peers: Vec<serde_json::Value> = contacts.all().iter().map(|c| {
-            serde_json::json!({
-                "id":               hex::encode(c.peer_id.0),
-                "name":             c.display_name.as_deref()
-                    .or(c.local_nickname.as_deref())
-                    .unwrap_or(&c.peer_id.short_hex()),
-                "trustLevel":       c.trust_level.value(),
-                "status":           if c.last_seen.is_some() { "online" } else { "offline" },
-                "canBeExitNode":    c.can_be_exit_node,
-                "canBeWrapperNode": c.can_be_wrapper_node,
-                "canBeStoreForward": c.can_be_store_forward,
-                "canEndorsePeers":  c.can_endorse_peers,
-                "latencyMs":        c.latency_ms,
+        let peers: Vec<serde_json::Value> = contacts
+            .all()
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "id":               hex::encode(c.peer_id.0),
+                    "name":             c.display_name.as_deref()
+                        .or(c.local_nickname.as_deref())
+                        .unwrap_or(&c.peer_id.short_hex()),
+                    "trustLevel":       c.trust_level.value(),
+                    "pairingMethod":    format!("{:?}", c.pairing_method),
+                    "status":           if c.last_seen.is_some() { "online" } else { "offline" },
+                    "canBeExitNode":    c.can_be_exit_node,
+                    "canBeWrapperNode": c.can_be_wrapper_node,
+                    "canBeStoreForward": c.can_be_store_forward,
+                    "canEndorsePeers":  c.can_endorse_peers,
+                    "latencyMs":        c.latency_ms,
+                })
             })
-        }).collect();
+            .collect();
         serde_json::to_string(&peers).unwrap_or_else(|_| "[]".to_string())
     }
 
@@ -415,36 +549,50 @@ impl MeshRuntime {
     /// Returns `Ok(())` on success, `Err(reason)` if the peer is not found or
     /// the level is invalid.
     pub fn set_trust_level(&self, peer_id_hex: &str, level: u8) -> Result<(), String> {
-        let trust = TrustLevel::from_value(level)
-            .ok_or_else(|| "Invalid trust level".to_string())?;
+        let trust =
+            TrustLevel::from_value(level).ok_or_else(|| "Invalid trust level".to_string())?;
         let pid_bytes: [u8; 32] = hex::decode(peer_id_hex)
-            .ok().filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+            .ok()
+            .filter(|b| b.len() == 32)
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            })
             .ok_or_else(|| "Invalid peer id".to_string())?;
         let pid = PeerId(pid_bytes);
         {
             let mut contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
-            let contact = contacts.get_mut(&pid)
+            let contact = contacts
+                .get_mut(&pid)
                 .ok_or_else(|| "Peer not found".to_string())?;
             contact.set_trust_level(trust);
         }
-        self.push_event("TrustUpdated", serde_json::json!({
-            "peerId":     peer_id_hex,
-            "trustLevel": level,
-        }));
+        self.push_event(
+            "TrustUpdated",
+            serde_json::json!({
+                "peerId":     peer_id_hex,
+                "trustLevel": level,
+            }),
+        );
         self.save_contacts();
         Ok(())
     }
 
     /// Return a JSON object with the trust and verification status of a peer.
     pub fn trust_verify(&self, peer_id_hex: &str) -> String {
-        let pid_bytes: [u8; 32] = match hex::decode(peer_id_hex)
-            .ok().filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
-        {
-            Some(b) => b,
-            None => return r#"{"verified": false, "error": "invalid peer id"}"#.to_string(),
-        };
+        let pid_bytes: [u8; 32] =
+            match hex::decode(peer_id_hex)
+                .ok()
+                .filter(|b| b.len() == 32)
+                .map(|b| {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    a
+                }) {
+                Some(b) => b,
+                None => return r#"{"verified": false, "error": "invalid peer id"}"#.to_string(),
+            };
         let pid = PeerId(pid_bytes);
         let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
         match contacts.get(&pid) {
@@ -453,7 +601,8 @@ impl MeshRuntime {
                 "trustLevel":     contact.trust_level.value(),
                 "safetyNumber":   contact.safety_number,
                 "pairingMethod":  format!("{:?}", contact.pairing_method),
-            }).to_string(),
+            })
+            .to_string(),
             None => r#"{"verified": false, "error": "peer not found"}"#.to_string(),
         }
     }
@@ -481,7 +630,8 @@ impl MeshRuntime {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let entry_peer_id = entry.peer_id;
 
@@ -491,11 +641,14 @@ impl MeshRuntime {
         // duplicate, or had an invalid signature.
         let accepted = {
             let mut gossip = self.gossip.lock().unwrap_or_else(|e| e.into_inner());
-            gossip.receive_entry(entry.clone(), &entry_peer_id, TrustLevel::Unknown, now)
+            gossip
+                .receive_entry(entry.clone(), &entry_peer_id, TrustLevel::Unknown, now)
                 .unwrap_or(false)
         };
 
-        if !accepted { return false; }
+        if !accepted {
+            return false;
+        }
 
         // If we know this peer (they are in our contact store), update their
         // preauth key and transport hints from the gossip entry.  This is how
@@ -539,6 +692,22 @@ impl MeshRuntime {
         true
     }
 
+    /// Process an inbound `service_record` frame carrying a signed service
+    /// advertisement.
+    pub fn process_service_record_frame(&self, envelope: &serde_json::Value) -> bool {
+        let sender = envelope.get("sender").and_then(|value| value.as_str());
+        let record_val = match envelope.get("record") {
+            Some(value) => value.clone(),
+            None => return false,
+        };
+        let record: crate::services::registry::ServiceRecord =
+            match serde_json::from_value(record_val) {
+                Ok(record) => record,
+                Err(_) => return false,
+            };
+        self.receive_service_record(record, sender)
+    }
+
     // -----------------------------------------------------------------------
     // Route announcement handler (§6.2)
     // -----------------------------------------------------------------------
@@ -563,7 +732,11 @@ impl MeshRuntime {
             None => return false,
         };
         let from_bytes: [u8; 32] = match hex::decode(&from_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let from_addr = DeviceAddress(from_bytes);
@@ -571,17 +744,22 @@ impl MeshRuntime {
         let neighbour_trust = {
             let from_peer_id = PeerId(from_bytes);
             let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
-            contacts.get(&from_peer_id)
+            contacts
+                .get(&from_peer_id)
                 .map(|c| c.trust_level)
                 .unwrap_or(TrustLevel::Unknown)
         };
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let result = {
-            let mut proc = self.announcement_processor.lock().unwrap_or_else(|e| e.into_inner());
+            let mut proc = self
+                .announcement_processor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             proc.process(&announcement, from_addr, neighbour_trust, now, None)
         };
 
@@ -596,20 +774,29 @@ impl MeshRuntime {
                 // Forward to all identified clearnet peers if scope allows.
                 if r.should_forward {
                     if let Some(fwd_ann) = r.forward_announcement {
-                        let our_hex = self.identity.lock()
+                        let our_hex = self
+                            .identity
+                            .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .as_ref().map(|id| hex::encode(id.peer_id().0))
+                            .as_ref()
+                            .map(|id| hex::encode(id.peer_id().0))
                             .unwrap_or_default();
                         let fwd_frame = serde_json::json!({
                             "type": "route_announcement",
                             "from": our_hex,
                             "announcement": fwd_ann,
                         });
-                        let peers: Vec<String> = self.clearnet_connections
-                            .lock().unwrap_or_else(|e| e.into_inner())
-                            .keys().cloned().collect();
+                        let peers: Vec<String> = self
+                            .clearnet_connections
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .keys()
+                            .cloned()
+                            .collect();
                         for peer_hex in peers {
-                            if peer_hex == from_hex { continue; }
+                            if peer_hex == from_hex {
+                                continue;
+                            }
                             self.send_raw_frame(&peer_hex, &fwd_frame);
                         }
                     }
@@ -630,7 +817,7 @@ impl MeshRuntime {
     /// Runs the packet through the `ForwardEngine` (dedup, TTL, routing lookup)
     /// then either delivers it locally or forwards to the next hop.
     pub fn process_mesh_packet_frame(&self, envelope: &serde_json::Value) -> bool {
-        use crate::mesh::forwarder::{ForwardEngine, ForwardDecision};
+        use crate::mesh::forwarder::{ForwardDecision, ForwardEngine};
 
         let pkt_val = match envelope.get("packet") {
             Some(v) => v.clone(),
@@ -651,7 +838,8 @@ impl MeshRuntime {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let dest = pkt.dest_address();
 
@@ -664,10 +852,10 @@ impl MeshRuntime {
             let mut dedup = self.dedup_cache.lock().unwrap_or_else(|e| e.into_inner());
             ForwardEngine::decide(
                 &crate::mesh::forwarder::PacketHeader {
-                    packet_id:   pkt.packet_id,
+                    packet_id: pkt.packet_id,
                     destination: dest,
-                    ttl:         pkt.ttl,
-                    timestamp:   pkt.timestamp,
+                    ttl: pkt.ttl,
+                    timestamp: pkt.timestamp,
                 },
                 &our_addr,
                 now,
@@ -682,25 +870,34 @@ impl MeshRuntime {
                 if pkt.kind == PacketKind::Message {
                     if let Some(payload) = pkt.payload_bytes() {
                         // Deserialise from JSON bytes before re-injecting.
-                        if let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                        if let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&payload)
+                        {
                             return self.process_inbound_frame(&envelope);
                         }
                     }
                 }
-                self.push_event("MeshPacketDelivered", serde_json::json!({
-                    "source": hex::encode(pkt.source),
-                    "kind":   format!("{:?}", pkt.kind),
-                    "size":   pkt.payload_hex.len() / 2,
-                }));
+                self.push_event(
+                    "MeshPacketDelivered",
+                    serde_json::json!({
+                        "source": hex::encode(pkt.source),
+                        "kind":   format!("{:?}", pkt.kind),
+                        "size":   pkt.payload_hex.len() / 2,
+                    }),
+                );
                 true
             }
             ForwardDecision::Forward { next_hop } => {
-                if !pkt.decrement_ttl() { return false; }
+                if !pkt.decrement_ttl() {
+                    return false;
+                }
                 let next_hop_hex = hex::encode(next_hop.0);
-                self.send_raw_frame(&next_hop_hex, &serde_json::json!({
-                    "type":   "mesh_packet",
-                    "packet": pkt,
-                }));
+                self.send_raw_frame(
+                    &next_hop_hex,
+                    &serde_json::json!({
+                        "type":   "mesh_packet",
+                        "packet": pkt,
+                    }),
+                );
                 true
             }
             ForwardDecision::Drop(_) => false,
@@ -717,8 +914,7 @@ impl MeshRuntime {
     /// `losec_response` frame, and emits a `LoSecRequested` event.
     pub fn process_losec_request_frame(&self, envelope: &serde_json::Value) -> bool {
         use crate::routing::losec::{
-            handle_losec_request, AmbientTrafficMonitor,
-            ServiceLoSecConfig, SignedLoSecRequest,
+            handle_losec_request, AmbientTrafficMonitor, ServiceLoSecConfig, SignedLoSecRequest,
         };
         use ed25519_dalek::SigningKey;
 
@@ -744,17 +940,31 @@ impl MeshRuntime {
         };
 
         let mut monitor = AmbientTrafficMonitor::new();
-        let active_tunnels = self.sdr.lock().unwrap_or_else(|e| e.into_inner()).sessions.len();
+        let active_tunnels = self
+            .sdr
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sessions
+            .len();
         monitor.update(active_tunnels, active_tunnels as u64 * 1024);
 
-        let service_config = ServiceLoSecConfig { allow_losec: true, allow_direct: true };
+        let service_config = ServiceLoSecConfig {
+            allow_losec: true,
+            allow_direct: true,
+        };
         let signed_resp = handle_losec_request(
-            &signed_req, &service_config, monitor.losec_available(), &signing_key,
+            &signed_req,
+            &service_config,
+            monitor.losec_available(),
+            &signing_key,
         );
 
         let our_peer_id_hex = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-            guard.as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_default()
+            guard
+                .as_ref()
+                .map(|id| id.peer_id().to_hex())
+                .unwrap_or_default()
         };
         let session_id_hex = hex::encode(signed_req.request.session_id);
 
@@ -766,11 +976,15 @@ impl MeshRuntime {
                 "payload":    resp_json,
             });
             if let Ok(frame_bytes) = serde_json::to_vec(&frame) {
-                let mut conns = self.clearnet_connections.lock().unwrap_or_else(|e| e.into_inner());
+                let mut conns = self
+                    .clearnet_connections
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if let Some(stream) = conns.get_mut(&sender_hex) {
                     use std::io::Write;
                     let len = (frame_bytes.len() as u32).to_be_bytes();
-                    if let Err(e) = stream.write_all(&len)
+                    if let Err(e) = stream
+                        .write_all(&len)
                         .and_then(|_| stream.write_all(&frame_bytes))
                     {
                         eprintln!("[transport] WARNING: failed to send losec_response to {sender_hex}: {e}");
@@ -779,12 +993,15 @@ impl MeshRuntime {
             }
         }
 
-        self.push_event("LoSecRequested", serde_json::json!({
-            "peerId":           sender_hex,
-            "sessionId":        session_id_hex,
-            "accepted":         signed_resp.response.accepted,
-            "rejectionReason":  signed_resp.response.rejection_reason,
-        }));
+        self.push_event(
+            "LoSecRequested",
+            serde_json::json!({
+                "peerId":           sender_hex,
+                "sessionId":        session_id_hex,
+                "accepted":         signed_resp.response.accepted,
+                "rejectionReason":  signed_resp.response.rejection_reason,
+            }),
+        );
         true
     }
 
@@ -799,8 +1016,11 @@ impl MeshRuntime {
             Some(s) => s.to_string(),
             None => return false,
         };
-        let session_id_hex = envelope.get("session_id")
-            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let session_id_hex = envelope
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let payload_str = match envelope.get("payload").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return false,
@@ -810,12 +1030,15 @@ impl MeshRuntime {
             Err(_) => return false,
         };
 
-        self.push_event("LoSecResponse", serde_json::json!({
-            "peerId":           sender_hex,
-            "sessionId":        session_id_hex,
-            "accepted":         signed_resp.response.accepted,
-            "rejectionReason":  signed_resp.response.rejection_reason,
-        }));
+        self.push_event(
+            "LoSecResponse",
+            serde_json::json!({
+                "peerId":           sender_hex,
+                "sessionId":        session_id_hex,
+                "accepted":         signed_resp.response.accepted,
+                "rejectionReason":  signed_resp.response.rejection_reason,
+            }),
+        );
         true
     }
 
@@ -845,7 +1068,11 @@ impl MeshRuntime {
             None => return false,
         };
         let dest_bytes: [u8; 32] = match hex::decode(dest_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
 
@@ -858,12 +1085,20 @@ impl MeshRuntime {
             Err(_) => return false,
         };
 
-        let expiry     = envelope.get("expiry").and_then(|v| v.as_u64()).unwrap_or(0);
+        let expiry = envelope.get("expiry").and_then(|v| v.as_u64()).unwrap_or(0);
         let expiry_sig = hex::decode(
-            envelope.get("expiry_sig").and_then(|v| v.as_str()).unwrap_or("")
-        ).unwrap_or_default();
+            envelope
+                .get("expiry_sig")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+        )
+        .unwrap_or_default();
 
-        let priority = match envelope.get("priority").and_then(|v| v.as_u64()).unwrap_or(1) {
+        let priority = match envelope
+            .get("priority")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+        {
             0 => Priority::Low,
             2 => Priority::High,
             3 => Priority::Critical,
@@ -871,29 +1106,36 @@ impl MeshRuntime {
         };
 
         let request = StoreAndForwardRequest {
-            destination:         DeviceAddress(dest_bytes),
+            destination: DeviceAddress(dest_bytes),
             payload,
             expiry,
             expiry_sig,
             priority,
-            release_condition:   ReleaseCondition::Immediate,
-            application_id:      None,
+            release_condition: ReleaseCondition::Immediate,
+            application_id: None,
             cancellation_pubkey: None,
         };
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         // Derive a stable tunnel_id from the sender hex for per-sender rate
         // limiting.  A simple multiplicative hash is sufficient here — it only
         // needs to distinguish different senders, not be cryptographically secure.
-        let sender_hex = envelope.get("sender").and_then(|v| v.as_str()).unwrap_or("0");
-        let tunnel_id  = sender_hex.bytes().fold(
-            0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64),
-        );
+        let sender_hex = envelope
+            .get("sender")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0");
+        let tunnel_id = sender_hex
+            .bytes()
+            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
 
-        let result = self.sf_server.lock().unwrap_or_else(|e| e.into_inner())
+        let result = self
+            .sf_server
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .deposit(request, tunnel_id, now);
 
         matches!(result, DepositResult::Accepted)
@@ -934,17 +1176,23 @@ impl MeshRuntime {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         // Build transport hints from active services.
         let mut transport_hints: Vec<crate::network::transport_hint::TransportHint> = Vec::new();
         {
             let port = *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner());
-            if self.clearnet_listener.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            if self
+                .clearnet_listener
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
+            {
                 if let Some(ip) = local_clearnet_ip() {
                     transport_hints.push(crate::network::transport_hint::TransportHint {
                         transport: crate::network::transport_hint::TransportType::Clearnet,
-                        endpoint:  Some(format!("{}:{}", ip, port)),
+                        endpoint: Some(format!("{}:{}", ip, port)),
                     });
                 }
             }
@@ -952,7 +1200,7 @@ impl MeshRuntime {
             if let Some(ref tor) = *tor_guard {
                 transport_hints.push(crate::network::transport_hint::TransportHint {
                     transport: crate::network::transport_hint::TransportType::Tor,
-                    endpoint:  Some(format!("{}:{}", tor.onion_address, DEFAULT_HS_PORT)),
+                    endpoint: Some(format!("{}:{}", tor.onion_address, DEFAULT_HS_PORT)),
                 });
             }
         }
@@ -962,12 +1210,15 @@ impl MeshRuntime {
             match guard.as_ref() {
                 None => return,
                 Some(id) => {
-                    let kem_ek = if id.kem_encapsulation_key.is_empty() { None }
-                        else { Some(id.kem_encapsulation_key.clone()) };
+                    let kem_ek = if id.kem_encapsulation_key.is_empty() {
+                        None
+                    } else {
+                        Some(id.kem_encapsulation_key.clone())
+                    };
 
                     let preauth_sig = {
                         use crate::crypto::x3dh::PreauthBundle;
-                        let msg    = PreauthBundle::signed_message(&id.preauth_x25519_pub);
+                        let msg = PreauthBundle::signed_message(&id.preauth_x25519_pub);
                         let secret = id.ed25519_signing.to_bytes();
                         Some(crate::crypto::signing::sign(
                             &secret,
@@ -977,21 +1228,21 @@ impl MeshRuntime {
                     };
 
                     let mut entry = NetworkMapEntry {
-                        peer_id:         id.peer_id(),
-                        public_keys:     vec![crate::network::map::PublicKeyRecord {
-                            ed25519_public:        id.ed25519_pub,
-                            x25519_public:         *id.x25519_pub.as_bytes(),
+                        peer_id: id.peer_id(),
+                        public_keys: vec![crate::network::map::PublicKeyRecord {
+                            ed25519_public: id.ed25519_pub,
+                            x25519_public: *id.x25519_pub.as_bytes(),
                             preauth_x25519_public: Some(*id.preauth_x25519_pub.as_bytes()),
                             kem_encapsulation_key: kem_ek,
                             preauth_sig,
                         }],
-                        last_seen:        now,
+                        last_seen: now,
                         transport_hints,
-                        public_profile:   None,
-                        services:         vec![],
-                        sequence:         now,
-                        signature:        vec![],
-                        local_trust:      TrustLevel::InnerCircle,
+                        public_profile: None,
+                        services: vec![],
+                        sequence: now,
+                        signature: vec![],
+                        local_trust: TrustLevel::InnerCircle,
                     };
                     entry.sign(&id.ed25519_signing);
                     entry
@@ -999,10 +1250,36 @@ impl MeshRuntime {
             }
         };
 
-        self.send_raw_frame(peer_id_hex, &serde_json::json!({
-            "type":  "gossip_map_entry",
-            "entry": self_entry,
-        }));
+        self.send_raw_frame(
+            peer_id_hex,
+            &serde_json::json!({
+                "type":  "gossip_map_entry",
+                "entry": self_entry,
+            }),
+        );
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Ok(records) = self.local_garden_service_records(now) {
+            for record in records {
+                self.send_raw_frame(
+                    peer_id_hex,
+                    &serde_json::json!({
+                        "type": "service_record",
+                        "sender": self
+                            .identity
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_ref()
+                            .map(|identity| identity.peer_id().to_hex())
+                            .unwrap_or_default(),
+                        "record": record,
+                    }),
+                );
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1018,8 +1295,16 @@ impl MeshRuntime {
         use crate::crypto::signing;
         use std::net::TcpStream;
 
-        let (ed_bytes, x_bytes, display_name, peer_id_hex, signing_key_bytes,
-             preauth_x25519_hex, kem_pub_hex) = {
+        let (
+            ed_bytes,
+            x_bytes,
+            mesh_x_bytes,
+            display_name,
+            peer_id_hex,
+            signing_key_bytes,
+            preauth_x25519_hex,
+            kem_pub_hex,
+        ) = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             let id = match guard.as_ref() {
                 Some(id) => id,
@@ -1028,6 +1313,12 @@ impl MeshRuntime {
             (
                 id.ed25519_pub,
                 *id.x25519_pub.as_bytes(),
+                self.mesh_identity
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|identity| identity.public_bytes())
+                    .unwrap_or([0u8; 32]),
                 id.display_name.clone(),
                 id.peer_id().to_hex(),
                 id.ed25519_signing.to_bytes(),
@@ -1040,12 +1331,21 @@ impl MeshRuntime {
         let mut signed_msg = Vec::with_capacity(64);
         signed_msg.extend_from_slice(&ed_bytes);
         signed_msg.extend_from_slice(&x_bytes);
-        let sig = signing::sign(&signing_key_bytes, signing::DOMAIN_PAIRING_HELLO, &signed_msg);
+        let sig = signing::sign(
+            &signing_key_bytes,
+            signing::DOMAIN_PAIRING_HELLO,
+            &signed_msg,
+        );
 
         // Build transport hints.
         let port = *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner());
         let mut hints: Vec<serde_json::Value> = Vec::new();
-        if self.clearnet_listener.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if self
+            .clearnet_listener
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             let ip = local_clearnet_ip()
                 .map(|ip| ip.to_string())
                 .unwrap_or_else(|| "0.0.0.0".to_string());
@@ -1069,6 +1369,7 @@ impl MeshRuntime {
             "sender":              peer_id_hex,
             "ed25519_public":      hex::encode(ed_bytes),
             "x25519_public":       hex::encode(x_bytes),
+            "mesh_x25519_public":  hex::encode(mesh_x_bytes),
             "preauth_x25519_public": preauth_x25519_hex,
             "kem_pub":             kem_pub_hex,
             "display_name":        display_name,
@@ -1086,7 +1387,8 @@ impl MeshRuntime {
             Err(_) => return,
         };
 
-        let mut stream = match TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)) {
+        let mut stream = match TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5))
+        {
             Ok(s) => s,
             Err(_) => return, // Peer offline — pairing completes on next connect.
         };
@@ -1099,7 +1401,9 @@ impl MeshRuntime {
         // Register the connection for reuse.
         let peer_id_hex_clone = peer_id_hex.clone();
         if let Ok(_) = stream.set_nonblocking(true) {
-            self.clearnet_connections.lock().unwrap_or_else(|e| e.into_inner())
+            self.clearnet_connections
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(peer_id_hex_clone, stream);
         }
     }

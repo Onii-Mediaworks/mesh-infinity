@@ -185,6 +185,12 @@ class NetworkState extends ChangeNotifier {
   /// The peer ID of the selected exit node, or null if none selected.
   String? _selectedExitNodeId;
 
+  /// The selected Tailscale exit node name, or null if none selected.
+  String? _selectedTailscaleExitNode;
+
+  /// The selected exit profile ID, or null if none selected.
+  String? _selectedExitProfileId;
+
   /// VPN connection status: "disconnected", "connecting", "connected".
   String _vpnConnectionStatus = 'disconnected';
 
@@ -194,6 +200,27 @@ class NetworkState extends ChangeNotifier {
   /// VPN uptime in seconds since connection was established.
   int _vpnUptimeSeconds = 0;
 
+  /// Backend-owned summary of the current routing security posture.
+  String _vpnSecurityPosture = 'normal_network';
+
+  /// Whether the current route changes the IP websites see.
+  bool _vpnChangesInternetIp = false;
+
+  /// Whether the current route can expose destinations to an exit node.
+  bool _vpnExitNodeSeesDestinations = false;
+
+  /// Backend-owned classification of the active exit route.
+  String _vpnExitRouteKind = 'none';
+
+  /// App Connector selection mode.
+  String _appConnectorMode = 'allowlist';
+
+  /// App Connector entries owned by the backend.
+  List<Map<String, dynamic>> _appConnectorApps = const [];
+
+  /// Explicit selector-based App Connector rules owned by the backend.
+  List<Map<String, dynamic>> _appConnectorRules = const [];
+
   // ---- Overlay client state (§5.22, §5.23) ----
 
   /// Tailscale client connection status.
@@ -201,6 +228,12 @@ class NetworkState extends ChangeNotifier {
 
   /// ZeroTier client connection status.
   OverlayClientStatus _zerotierClientStatus = OverlayClientStatus.notConfigured;
+
+  /// Full backend-owned Tailscale status payload.
+  Map<String, dynamic> _tailscaleOverlay = const {};
+
+  /// Full backend-owned ZeroTier status payload.
+  Map<String, dynamic> _zerotierOverlay = const {};
 
   // ---- Trusted context state (§4.8.3) ----
 
@@ -259,6 +292,12 @@ class NetworkState extends ChangeNotifier {
   /// The peer ID of the selected exit node, or null.
   String? get selectedExitNodeId => _selectedExitNodeId;
 
+  /// The selected Tailscale exit node name, or null.
+  String? get selectedTailscaleExitNode => _selectedTailscaleExitNode;
+
+  /// The selected exit profile ID, or null.
+  String? get selectedExitProfileId => _selectedExitProfileId;
+
   /// VPN connection status: "disconnected", "connecting", "connected".
   String get vpnConnectionStatus => _vpnConnectionStatus;
 
@@ -267,6 +306,27 @@ class NetworkState extends ChangeNotifier {
 
   /// VPN uptime in seconds.
   int get vpnUptimeSeconds => _vpnUptimeSeconds;
+
+  /// Backend-owned routing security posture code.
+  String get vpnSecurityPosture => _vpnSecurityPosture;
+
+  /// Whether the current route changes the visible internet IP.
+  bool get vpnChangesInternetIp => _vpnChangesInternetIp;
+
+  /// Whether an exit node can see traffic destinations after they leave the mesh.
+  bool get vpnExitNodeSeesDestinations => _vpnExitNodeSeesDestinations;
+
+  /// Backend-owned classification of the active exit route.
+  String get vpnExitRouteKind => _vpnExitRouteKind;
+
+  /// Current App Connector selection mode.
+  String get appConnectorMode => _appConnectorMode;
+
+  /// Current App Connector app entries.
+  List<Map<String, dynamic>> get appConnectorApps => _appConnectorApps;
+
+  /// Current App Connector explicit rules.
+  List<Map<String, dynamic>> get appConnectorRules => _appConnectorRules;
 
   /// Whether the VPN is in any active mode (not "off").
   bool get isVpnActive => _vpnMode != 'off';
@@ -278,6 +338,12 @@ class NetworkState extends ChangeNotifier {
 
   /// ZeroTier client connection status.
   OverlayClientStatus get zerotierClientStatus => _zerotierClientStatus;
+
+  /// Full backend-owned Tailscale overlay status.
+  Map<String, dynamic> get tailscaleOverlay => _tailscaleOverlay;
+
+  /// Full backend-owned ZeroTier overlay status.
+  Map<String, dynamic> get zerotierOverlay => _zerotierOverlay;
 
   // ---- Trusted context getters (§4.8.3) ----
 
@@ -370,9 +436,49 @@ class NetworkState extends ChangeNotifier {
     if (vpnStatus != null) {
       _vpnMode = vpnStatus['mode'] as String? ?? 'off';
       _selectedExitNodeId = vpnStatus['exitNodePeerId'] as String?;
+      _selectedTailscaleExitNode = vpnStatus['tailscaleExitNode'] as String?;
+      _selectedExitProfileId = vpnStatus['exitProfileId'] as String?;
       _vpnConnectionStatus = vpnStatus['connectionStatus'] as String? ?? 'disconnected';
       _vpnKillSwitch = vpnStatus['killSwitch'] as bool? ?? false;
       _vpnUptimeSeconds = vpnStatus['uptimeSeconds'] as int? ?? 0;
+      _vpnSecurityPosture = vpnStatus['securityPosture'] as String? ?? 'normal_network';
+      _vpnChangesInternetIp = vpnStatus['changesInternetIp'] as bool? ?? false;
+      _vpnExitNodeSeesDestinations =
+          vpnStatus['exitNodeSeesDestinations'] as bool? ?? false;
+      _vpnExitRouteKind = vpnStatus['exitRouteKind'] as String? ?? 'none';
+    }
+
+    final connectorConfig = _bridge.getAppConnectorConfig();
+    if (connectorConfig != null) {
+      _appConnectorMode = connectorConfig['mode'] as String? ?? 'allowlist';
+      _appConnectorApps = _readAppConnectorEntries(connectorConfig['apps']);
+      _appConnectorRules = _readAppConnectorEntries(connectorConfig['rules']);
+    }
+
+    final overlayStatus = _bridge.getOverlayStatus();
+    if (overlayStatus != null) {
+      final tailscale =
+          overlayStatus['tailscale'] is Map<String, dynamic>
+              ? overlayStatus['tailscale'] as Map<String, dynamic>
+              : overlayStatus['tailscale'] is Map
+                  ? Map<String, dynamic>.from(overlayStatus['tailscale'] as Map)
+                  : const <String, dynamic>{};
+      final zerotier =
+          overlayStatus['zerotier'] is Map<String, dynamic>
+              ? overlayStatus['zerotier'] as Map<String, dynamic>
+              : overlayStatus['zerotier'] is Map
+                  ? Map<String, dynamic>.from(overlayStatus['zerotier'] as Map)
+                  : const <String, dynamic>{};
+      _tailscaleClientStatus = _parseOverlayClientStatus(
+        tailscale['status'] as String?,
+        connectedFallback: tailscale['connected'] == true,
+      );
+      _zerotierClientStatus = _parseOverlayClientStatus(
+        zerotier['status'] as String?,
+        connectedFallback: zerotier['connected'] == true,
+      );
+      _tailscaleOverlay = Map<String, dynamic>.from(tailscale);
+      _zerotierOverlay = Map<String, dynamic>.from(zerotier);
     }
 
     // Fetch routing table summary (§6).
@@ -484,11 +590,23 @@ class NetworkState extends ChangeNotifier {
   /// [exitNodePeerId] is required when mode is "exit_node".
   ///
   /// Returns true if the backend accepted the change.
-  Future<bool> setVpnMode(String mode, {String? exitNodePeerId}) async {
-    final ok = _bridge.setVpnMode(mode, exitNodePeerId: exitNodePeerId);
+  Future<bool> setVpnMode(
+    String mode, {
+    String? exitNodePeerId,
+    String? tailscaleExitNode,
+    String? exitProfileId,
+  }) async {
+    final ok = _bridge.setVpnMode(
+      mode,
+      exitNodePeerId: exitNodePeerId,
+      tailscaleExitNode: tailscaleExitNode,
+      exitProfileId: exitProfileId,
+    );
     if (ok) {
       _vpnMode = mode;
       _selectedExitNodeId = exitNodePeerId;
+      _selectedTailscaleExitNode = tailscaleExitNode;
+      _selectedExitProfileId = exitProfileId;
       _vpnConnectionStatus = mode == 'off' ? 'disconnected' : 'connecting';
       _vpnUptimeSeconds = 0;
     }
@@ -497,9 +615,18 @@ class NetworkState extends ChangeNotifier {
     if (vpnStatus != null) {
       _vpnMode = vpnStatus['mode'] as String? ?? _vpnMode;
       _selectedExitNodeId = vpnStatus['exitNodePeerId'] as String? ?? _selectedExitNodeId;
+      _selectedTailscaleExitNode =
+          vpnStatus['tailscaleExitNode'] as String? ?? _selectedTailscaleExitNode;
+      _selectedExitProfileId =
+          vpnStatus['exitProfileId'] as String? ?? _selectedExitProfileId;
       _vpnConnectionStatus = vpnStatus['connectionStatus'] as String? ?? _vpnConnectionStatus;
       _vpnKillSwitch = vpnStatus['killSwitch'] as bool? ?? _vpnKillSwitch;
       _vpnUptimeSeconds = vpnStatus['uptimeSeconds'] as int? ?? _vpnUptimeSeconds;
+      _vpnSecurityPosture = vpnStatus['securityPosture'] as String? ?? _vpnSecurityPosture;
+      _vpnChangesInternetIp = vpnStatus['changesInternetIp'] as bool? ?? _vpnChangesInternetIp;
+      _vpnExitNodeSeesDestinations =
+          vpnStatus['exitNodeSeesDestinations'] as bool? ?? _vpnExitNodeSeesDestinations;
+      _vpnExitRouteKind = vpnStatus['exitRouteKind'] as String? ?? _vpnExitRouteKind;
     }
     if (!_disposed) notifyListeners();
     return ok;
@@ -510,6 +637,37 @@ class NetworkState extends ChangeNotifier {
     final ok = _bridge.setVpnKillSwitch(enabled);
     if (ok) {
       _vpnKillSwitch = enabled;
+    }
+    if (!_disposed) notifyListeners();
+    return ok;
+  }
+
+  /// Replace the App Connector configuration in the backend.
+  Future<bool> setAppConnectorConfig({
+    required String mode,
+    required List<Map<String, dynamic>> apps,
+    List<Map<String, dynamic>>? rules,
+  }) async {
+    final ok = _bridge.setAppConnectorConfig({
+      'mode': mode,
+      'apps': apps,
+      'rules': rules ?? _appConnectorRules,
+    });
+    if (ok) {
+      _appConnectorMode = mode;
+      _appConnectorApps = apps
+          .map((entry) => Map<String, dynamic>.from(entry))
+          .toList();
+      _appConnectorRules = (rules ?? _appConnectorRules)
+          .map((entry) => Map<String, dynamic>.from(entry))
+          .toList();
+    } else {
+      final config = _bridge.getAppConnectorConfig();
+      if (config != null) {
+        _appConnectorMode = config['mode'] as String? ?? _appConnectorMode;
+        _appConnectorApps = _readAppConnectorEntries(config['apps']);
+        _appConnectorRules = _readAppConnectorEntries(config['rules']);
+      }
     }
     if (!_disposed) notifyListeners();
     return ok;
@@ -615,6 +773,29 @@ class NetworkState extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
+  OverlayClientStatus _parseOverlayClientStatus(
+    String? raw, {
+    required bool connectedFallback,
+  }) {
+    switch (raw) {
+      case 'connected':
+        return OverlayClientStatus.connected;
+      case 'connecting':
+        return OverlayClientStatus.connecting;
+      case 'disconnected':
+        return OverlayClientStatus.disconnected;
+      case 'error':
+        return OverlayClientStatus.error;
+      case 'notconfigured':
+      case 'not_configured':
+        return OverlayClientStatus.notConfigured;
+      default:
+        return connectedFallback
+            ? OverlayClientStatus.connected
+            : OverlayClientStatus.notConfigured;
+    }
+  }
+
   // Trusted Context control (§4.8.3)
   // -------------------------------------------------------------------------
   //
@@ -656,7 +837,7 @@ class NetworkState extends ChangeNotifier {
       final level = peer['trustLevel'] as int? ?? 0;
       _trustCounts[level] = (_trustCounts[level] ?? 0) + 1;
 
-      final method = peer['pairingMethod'] as String? ?? 'unknown';
+      final method = peer['pairingMethod'] as String? ?? 'Unspecified';
       _pairingCounts[method] = (_pairingCounts[method] ?? 0) + 1;
     }
   }
@@ -679,14 +860,25 @@ class NetworkState extends ChangeNotifier {
   /// is now truly active".  Listening here ensures the UI eventually shows the
   /// correct state even if the initial re-fetch was too early.
   void _onEvent(BackendEvent event) {
-    // We only handle one event type here; all others are irrelevant to
-    // network state and are ignored.
-    if (event is! SettingsUpdatedEvent) return;
-
-    // Replace our local copy of settings with the authoritative version from
-    // the backend event payload.
-    _settings = event.settings;
-    if (!_disposed) notifyListeners(); // Rebuild NetworkScreen with the confirmed settings.
+    switch (event) {
+      case SettingsUpdatedEvent(:final settings):
+        // Replace our local copy of settings with the authoritative version
+        // from the backend event payload.
+        _settings = settings;
+        if (!_disposed) notifyListeners();
+        return;
+      case AppConnectorConfigChangedEvent(:final config):
+        _appConnectorMode = config['mode'] as String? ?? _appConnectorMode;
+        _appConnectorApps = _readAppConnectorEntries(config['apps']);
+        _appConnectorRules = _readAppConnectorEntries(config['rules']);
+        if (!_disposed) notifyListeners();
+        return;
+      case OverlayStatusChangedEvent():
+        unawaited(loadAll());
+        return;
+      default:
+        return;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -703,5 +895,12 @@ class NetworkState extends ChangeNotifier {
     // `?.cancel()` — the null-safe call: only cancel if _sub was assigned.
 
     super.dispose(); // Let ChangeNotifier do its own cleanup.
+  }
+
+  List<Map<String, dynamic>> _readAppConnectorEntries(Object? raw) {
+    if (raw is! List) {
+      return const [];
+    }
+    return raw.map((entry) => Map<String, dynamic>.from(entry as Map)).toList();
   }
 }

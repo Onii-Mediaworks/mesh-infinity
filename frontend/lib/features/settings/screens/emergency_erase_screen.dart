@@ -14,12 +14,10 @@
 // know not to trust further messages from this device (§3.9.2).
 //
 // TRIGGERS (configured on this screen):
-//   1. Duress PIN — a second PIN that looks like a normal unlock but silently
-//      erases everything.  The UI looks exactly the same as a normal unlock.
-//   2. Auto-wipe on wrong PIN — erase after N consecutive failures.
-//   3. Remote trigger — a Level-8 (InnerCircle) contact can trigger erase
+//   1. Auto-wipe on wrong PIN — erase after N consecutive failures.
+//   2. Remote trigger — a Level-8 (InnerCircle) contact can trigger erase
 //      remotely if you're unreachable.
-//   4. Manual activation — the "Erase now" button at the bottom with
+//   3. Manual activation — the "Erase now" button at the bottom with
 //      a two-step confirmation dialog.
 //
 // DESIGN PHILOSOPHY:
@@ -34,9 +32,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../backend/backend_bridge.dart';
 import '../settings_state.dart';
-import 'pin_screen.dart'; // PinScreen + PinScreenMode
-
 // ---------------------------------------------------------------------------
 // EmergencyEraseScreen
 // ---------------------------------------------------------------------------
@@ -69,11 +66,7 @@ class EmergencyEraseScreen extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      Icon(
-                        Icons.emergency_outlined,
-                        size: 20,
-                        color: cs.error,
-                      ),
+                      Icon(Icons.emergency_outlined, size: 20, color: cs.error),
                       const SizedBox(width: 8),
                       Text('What this does', style: tt.titleSmall),
                     ],
@@ -86,9 +79,7 @@ class EmergencyEraseScreen extends StatelessWidget {
                     'to trust further messages from this device.\n\n'
                     'Configure a trigger now — you want this ready before you '
                     'need it.',
-                    style: tt.bodySmall?.copyWith(
-                      color: cs.onSurfaceVariant,
-                    ),
+                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
                   ),
                 ],
               ),
@@ -98,55 +89,61 @@ class EmergencyEraseScreen extends StatelessWidget {
           const SizedBox(height: 16),
 
           // ---------------------------------------------------------------------------
-          // Duress PIN section
+          // Duress PIN status
           // ---------------------------------------------------------------------------
-          // A second PIN that looks identical to the normal unlock PIN.
-          // The backend detects it and triggers erase without any visible change
-          // in the UI (§3.10 duress unlock invariant).
-          _SectionHeader('Duress PIN'),
+          const _SectionHeader('Duress PIN'),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
-              'A second PIN that looks like a normal unlock but silently erases '
-              'everything. An observer cannot tell the difference.',
+              'A duress PIN looks like a normal unlock, but it immediately '
+              'wipes your current local identity and opens a fresh account. '
+              'Use a PIN you can remember under pressure.',
               style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
             ),
           ),
           ListTile(
-            leading: const Icon(Icons.pin_outlined),
+            leading: Icon(
+              settings.duressPinConfigured
+                  ? Icons.lock_reset_outlined
+                  : Icons.password_outlined,
+            ),
             title: Text(
               settings.duressPinConfigured
-                  ? 'Duress PIN configured'
-                  : 'Set duress PIN',
+                  ? 'Duress PIN is configured'
+                  : 'No duress PIN configured',
             ),
-            subtitle: Text(
-              settings.duressPinConfigured ? 'Tap to change' : 'Tap to configure',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const PinScreen(mode: PinScreenMode.setupDuress),
-              ),
+            subtitle: const Text(
+              'Entering it at unlock destroys the current account on this device.',
             ),
           ),
-          // Test button — lets the user verify the duress PIN works without
-          // actually triggering any erase.  Only shown when duress PIN is set.
-          if (settings.duressPinConfigured)
-            ListTile(
-              leading: const Icon(Icons.science_outlined),
-              title: const Text('Test duress PIN'),
-              subtitle: const Text(
-                'Verify your duress PIN works without erasing anything.',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const PinScreen(mode: PinScreenMode.testDuress),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.tonal(
+                  onPressed: () => _showDuressPinDialog(
+                    context,
+                    mode: settings.duressPinConfigured
+                        ? _DuressPinDialogMode.change
+                        : _DuressPinDialogMode.set,
+                  ),
+                  child: Text(
+                    settings.duressPinConfigured ? 'Change duress PIN' : 'Set duress PIN',
+                  ),
                 ),
-              ),
+                if (settings.duressPinConfigured)
+                  OutlinedButton(
+                    onPressed: () => _showDuressPinDialog(
+                      context,
+                      mode: _DuressPinDialogMode.remove,
+                    ),
+                    child: const Text('Remove duress PIN'),
+                  ),
+              ],
             ),
+          ),
 
           const Divider(height: 1),
           const SizedBox(height: 8),
@@ -154,7 +151,7 @@ class EmergencyEraseScreen extends StatelessWidget {
           // ---------------------------------------------------------------------------
           // Auto-wipe on wrong PIN
           // ---------------------------------------------------------------------------
-          _SectionHeader('Auto-wipe on wrong PIN'),
+          const _SectionHeader('Auto-wipe on wrong PIN'),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
@@ -166,8 +163,8 @@ class EmergencyEraseScreen extends StatelessWidget {
           SwitchListTile(
             title: const Text('Enable wrong-PIN wipe'),
             value: settings.wrongPinWipeEnabled,
-            // Stub — backend wiring pending.
-            onChanged: (_) => _stubNotImplemented(context),
+            onChanged: (value) =>
+                _updateSecurityConfig(context, {'wrongPinWipeEnabled': value}),
           ),
           // Threshold dropdown — only shown when wrong-PIN wipe is enabled.
           if (settings.wrongPinWipeEnabled)
@@ -183,7 +180,12 @@ class EmergencyEraseScreen extends StatelessWidget {
                       ),
                     )
                     .toList(),
-                onChanged: (_) => _stubNotImplemented(context),
+                onChanged: (value) {
+                  if (value == null) return;
+                  _updateSecurityConfig(context, {
+                    'wrongPinWipeThreshold': value,
+                  });
+                },
               ),
             ),
 
@@ -195,7 +197,7 @@ class EmergencyEraseScreen extends StatelessWidget {
           // ---------------------------------------------------------------------------
           // A Level-8 trusted contact can trigger erase if they believe you're
           // unreachable.  Only works if both parties have configured it.
-          _SectionHeader('Remote trigger'),
+          const _SectionHeader('Remote trigger'),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
@@ -206,13 +208,12 @@ class EmergencyEraseScreen extends StatelessWidget {
           ),
           SwitchListTile(
             title: const Text('Allow remote erase'),
-            subtitle: Text(
-              settings.remoteWipeEnabled
-                  ? 'No Inner Circle contacts authorised yet'
-                  : 'Off',
+            subtitle: const Text(
+              'Only trusted peers you explicitly authorize should be able to trigger this.',
             ),
             value: settings.remoteWipeEnabled,
-            onChanged: (_) => _stubNotImplemented(context),
+            onChanged: (value) =>
+                _updateSecurityConfig(context, {'remoteWipeEnabled': value}),
           ),
 
           const SizedBox(height: 32),
@@ -292,11 +293,14 @@ class EmergencyEraseScreen extends StatelessWidget {
             style: FilledButton.styleFrom(backgroundColor: cs.error),
             onPressed: () {
               Navigator.pop(context);
-              // TODO(backend/security): call bridge.emergencyErase() here.
+              final bridge = context.read<BackendBridge>();
+              final ok = bridge.emergencyErase();
+              if (ok) {
+                Navigator.of(context).popUntil((route) => route.isFirst);
+                return;
+              }
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Emergency erase not yet available.'),
-                ),
+                const SnackBar(content: Text('Emergency erase failed.')),
               );
             },
             child: const Text('Erase'),
@@ -306,15 +310,143 @@ class EmergencyEraseScreen extends StatelessWidget {
     );
   }
 
-  void _stubNotImplemented(BuildContext context) {
+  Future<void> _updateSecurityConfig(
+    BuildContext context,
+    Map<String, dynamic> config,
+  ) async {
+    final ok = await context.read<SettingsState>().updateSecurityConfig(config);
+    if (!context.mounted || ok) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Feature pending backend implementation.'),
-        duration: Duration(seconds: 2),
-      ),
+      const SnackBar(content: Text('Failed to update security setting.')),
     );
   }
+
+  Future<void> _showDuressPinDialog(
+    BuildContext context, {
+    required _DuressPinDialogMode mode,
+  }) async {
+    final bridge = context.read<BackendBridge>();
+    final settings = context.read<SettingsState>();
+    final currentController = TextEditingController();
+    final newController = TextEditingController();
+    final confirmController = TextEditingController();
+    final removeController = TextEditingController();
+    final title = switch (mode) {
+      _DuressPinDialogMode.set => 'Set duress PIN',
+      _DuressPinDialogMode.change => 'Change duress PIN',
+      _DuressPinDialogMode.remove => 'Remove duress PIN',
+    };
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (mode == _DuressPinDialogMode.change)
+              TextField(
+                controller: currentController,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Current duress PIN'),
+              ),
+            if (mode != _DuressPinDialogMode.remove) ...[
+              TextField(
+                controller: newController,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: mode == _DuressPinDialogMode.set ? 'New duress PIN' : 'Replacement duress PIN',
+                ),
+              ),
+              TextField(
+                controller: confirmController,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Confirm duress PIN'),
+              ),
+            ],
+            if (mode == _DuressPinDialogMode.remove)
+              TextField(
+                controller: removeController,
+                obscureText: true,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Current duress PIN'),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(
+              switch (mode) {
+                _DuressPinDialogMode.set => 'Save',
+                _DuressPinDialogMode.change => 'Change',
+                _DuressPinDialogMode.remove => 'Remove',
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+    if (!context.mounted) {
+      return;
+    }
+
+    bool ok = false;
+    if (mode == _DuressPinDialogMode.remove) {
+      ok = bridge.removeDuressPin(removeController.text.trim());
+    } else {
+      final newPin = newController.text.trim();
+      final confirmPin = confirmController.text.trim();
+      if (newPin != confirmPin) {
+        _showMessage(context, 'Duress PINs do not match.');
+        return;
+      }
+      ok = mode == _DuressPinDialogMode.set
+          ? bridge.setDuressPin(newPin)
+          : bridge.changeDuressPin(currentController.text.trim(), newPin);
+    }
+
+    if (!ok) {
+      _showMessage(
+        context,
+        bridge.getLastError() ?? 'Unable to update duress PIN.',
+      );
+      return;
+    }
+
+    await settings.loadAll();
+    if (!context.mounted) {
+      return;
+    }
+    _showMessage(
+      context,
+      switch (mode) {
+        _DuressPinDialogMode.set => 'Duress PIN saved.',
+        _DuressPinDialogMode.change => 'Duress PIN changed.',
+        _DuressPinDialogMode.remove => 'Duress PIN removed.',
+      },
+    );
+  }
+
+  void _showMessage(BuildContext context, String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
 }
+
+enum _DuressPinDialogMode { set, change, remove }
 
 // ---------------------------------------------------------------------------
 // _SectionHeader — muted section label above groups of ListTiles
@@ -333,9 +465,9 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.w600,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

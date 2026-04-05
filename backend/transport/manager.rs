@@ -20,9 +20,9 @@
 
 use std::collections::HashMap;
 
+use super::health::{HealthState, TransportStatus};
 use crate::identity::peer_id::PeerId;
 use crate::network::transport_hint::TransportType;
-use super::health::{HealthState, TransportStatus};
 
 // ---------------------------------------------------------------------------
 // Transport Manager
@@ -192,10 +192,7 @@ impl TransportManager {
 
     /// Get the transports a specific peer is connected on.
     pub fn peer_transports(&self, peer: &PeerId) -> Vec<TransportType> {
-        self.peer_connections
-            .get(peer)
-            .cloned()
-            .unwrap_or_default()
+        self.peer_connections.get(peer).cloned().unwrap_or_default()
     }
 
     /// Get the number of active peer connections.

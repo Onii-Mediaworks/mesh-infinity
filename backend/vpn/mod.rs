@@ -9,8 +9,8 @@
 //! - **infinet** — virtual private network namespaces
 //! - **app_connector** — per-app routing rules
 
-pub mod exit_node;
-pub mod routing_mode;
-pub mod infinet;
 pub mod app_connector;
+pub mod exit_node;
 pub mod funnel;
+pub mod infinet;
+pub mod routing_mode;

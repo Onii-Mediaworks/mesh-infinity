@@ -8,6 +8,7 @@ import '../features/files/files_state.dart';
 import '../features/network/network_state.dart';
 import '../features/services/services_state.dart';
 import '../features/settings/settings_state.dart';
+import 'help_screen.dart';
 import 'badge_state.dart';
 import 'shell_state.dart';
 
@@ -94,8 +95,10 @@ class NavDrawer extends StatelessWidget {
                     label: 'Contacts',
                     active: shell.activeSection == AppSection.contacts,
                     onTap: () => _select(context, AppSection.contacts),
-                    criticalBadge: null, // TODO: pending requests count
-                    ambientActive: badges.ambientVisibleFor(AppSection.contacts),
+                    criticalBadge: _contactsCritical(context),
+                    ambientActive: badges.ambientVisibleFor(
+                      AppSection.contacts,
+                    ),
                   ),
                   _DrawerItem(
                     section: AppSection.services,
@@ -106,7 +109,9 @@ class NavDrawer extends StatelessWidget {
                     onTap: () => _select(context, AppSection.services),
                     criticalBadge: null,
                     criticalDot: _servicesDegradedDot(context),
-                    ambientActive: badges.ambientVisibleFor(AppSection.services),
+                    ambientActive: badges.ambientVisibleFor(
+                      AppSection.services,
+                    ),
                   ),
                   _DrawerItem(
                     section: AppSection.you,
@@ -144,7 +149,9 @@ class NavDrawer extends StatelessWidget {
                     active: shell.activeSection == AppSection.settings,
                     onTap: () => _select(context, AppSection.settings),
                     criticalBadge: null,
-                    ambientActive: badges.ambientVisibleFor(AppSection.settings),
+                    ambientActive: badges.ambientVisibleFor(
+                      AppSection.settings,
+                    ),
                   ),
                   _DrawerItem(
                     section: null,
@@ -154,7 +161,10 @@ class NavDrawer extends StatelessWidget {
                     active: false,
                     onTap: () {
                       Navigator.pop(context);
-                      // TODO: open help
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const HelpScreen()),
+                      );
                     },
                     criticalBadge: null,
                     ambientActive: false,
@@ -199,23 +209,31 @@ class NavDrawer extends StatelessWidget {
   int? _filesCritical(BuildContext context) {
     final files = context.read<FilesState>();
     final active = files.transfers
-        .where((t) =>
-            t.status == TransferStatus.active ||
-            t.status == TransferStatus.pending)
+        .where(
+          (t) =>
+              t.status == TransferStatus.active ||
+              t.status == TransferStatus.pending,
+        )
         .length;
     return active > 0 ? active : null;
   }
 
+  int? _contactsCritical(BuildContext context) {
+    final msg = context.read<MessagingState>();
+    return msg.requestCount > 0 ? msg.requestCount : null;
+  }
+
   _NetworkDotColor? _servicesDegradedDot(BuildContext context) {
     final svc = context.read<ServicesState>();
-    final anyDegraded = svc.services.any((s) => s.enabled && !s.isHealthy);
+    final anyDegraded = svc.anyDegraded;
     return anyDegraded ? _NetworkDotColor.red : null;
   }
 
   _NetworkDotColor _networkDot(BuildContext context) {
     final net = context.read<NetworkState>();
     final s = net.settings;
-    final anyTransport = s != null &&
+    final anyTransport =
+        s != null &&
         (s.enableClearnet || s.enableTor || s.enableI2p || s.enableBluetooth);
     if (net.totalPeers > 0) return _NetworkDotColor.green;
     if (anyTransport) return _NetworkDotColor.amber;
@@ -253,9 +271,7 @@ class _DrawerHeader extends StatelessWidget {
               radius: 24,
               backgroundColor: MeshTheme.brand.withValues(alpha: 0.2),
               child: Text(
-                displayName.isNotEmpty
-                    ? displayName[0].toUpperCase()
-                    : '?',
+                displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
                 style: const TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.w600,
@@ -331,9 +347,9 @@ class _DrawerItem extends StatelessWidget {
   final String label;
   final bool active;
   final VoidCallback onTap;
-  final int? criticalBadge;        // Tier 1 count badge (null = none)
+  final int? criticalBadge; // Tier 1 count badge (null = none)
   final _NetworkDotColor? criticalDot; // Tier 1 dot (overrides count)
-  final bool ambientActive;        // Tier 2 square dot
+  final bool ambientActive; // Tier 2 square dot
 
   @override
   Widget build(BuildContext context) {
@@ -388,10 +404,7 @@ class _DrawerItem extends StatelessWidget {
             ),
             const SizedBox(width: 6),
             // Tier-1 critical column (28px reserved)
-            SizedBox(
-              width: 28,
-              child: _tier1Widget(context),
-            ),
+            SizedBox(width: 28, child: _tier1Widget(context)),
           ],
         ),
       ),

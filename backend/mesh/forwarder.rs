@@ -18,8 +18,8 @@
 //!
 //! 4. **Forward** — send the (TTL-decremented) packet to `next_hop`.
 
-use crate::routing::table::{DeviceAddress, RoutingEntry};
 use crate::routing::loop_prevention::{DeduplicationCache, PacketId};
+use crate::routing::table::{DeviceAddress, RoutingEntry};
 
 /// Packet header fields passed to [`ForwardEngine::decide`].
 ///
@@ -260,12 +260,12 @@ impl ForwardEngine {
         // Execute this protocol step.
         // Execute this protocol step.
         route: Option<&RoutingEntry>,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> ForwardDecision {
         // Unique identifier for lookup and deduplication.
         // Compute pid for this protocol step.
@@ -380,7 +380,7 @@ impl ForwardEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::routing::table::{RoutingEntry, DeviceAddress};
+    use crate::routing::table::{DeviceAddress, RoutingEntry};
     use crate::trust::levels::TrustLevel;
 
     fn addr(byte: u8) -> DeviceAddress {
@@ -408,8 +408,16 @@ mod tests {
         let id = [0xABu8; 32];
         let entry = make_entry(our, our);
         let result = ForwardEngine::decide(
-            &PacketHeader { packet_id: id, destination: our, ttl: 10, timestamp: 1000 },
-            &our, 1000, &mut dedup, Some(&entry),
+            &PacketHeader {
+                packet_id: id,
+                destination: our,
+                ttl: 10,
+                timestamp: 1000,
+            },
+            &our,
+            1000,
+            &mut dedup,
+            Some(&entry),
         );
         assert_eq!(result, ForwardDecision::Deliver);
     }
@@ -423,8 +431,16 @@ mod tests {
         let id = [0xCDu8; 32];
         let entry = make_entry(dest, next);
         let result = ForwardEngine::decide(
-            &PacketHeader { packet_id: id, destination: dest, ttl: 5, timestamp: 1000 },
-            &our, 1000, &mut dedup, Some(&entry),
+            &PacketHeader {
+                packet_id: id,
+                destination: dest,
+                ttl: 5,
+                timestamp: 1000,
+            },
+            &our,
+            1000,
+            &mut dedup,
+            Some(&entry),
         );
         assert_eq!(result, ForwardDecision::Forward { next_hop: next });
     }
@@ -438,7 +454,12 @@ mod tests {
         let id = [0xEFu8; 32];
         let entry = make_entry(dest, next);
 
-        let hdr = PacketHeader { packet_id: id, destination: dest, ttl: 5, timestamp: 1000 };
+        let hdr = PacketHeader {
+            packet_id: id,
+            destination: dest,
+            ttl: 5,
+            timestamp: 1000,
+        };
         // First: accepted.
         ForwardEngine::decide(&hdr, &our, 1000, &mut dedup, Some(&entry));
         // Second: duplicate.
@@ -453,8 +474,16 @@ mod tests {
         let dest = addr(0x02);
         let id = [0x11u8; 32];
         let result = ForwardEngine::decide(
-            &PacketHeader { packet_id: id, destination: dest, ttl: 0, timestamp: 1000 },
-            &our, 1000, &mut dedup, None,
+            &PacketHeader {
+                packet_id: id,
+                destination: dest,
+                ttl: 0,
+                timestamp: 1000,
+            },
+            &our,
+            1000,
+            &mut dedup,
+            None,
         );
         assert_eq!(result, ForwardDecision::Drop(DropReason::TtlExpired));
     }
@@ -466,8 +495,16 @@ mod tests {
         let dest = addr(0x02);
         let id = [0x22u8; 32];
         let result = ForwardEngine::decide(
-            &PacketHeader { packet_id: id, destination: dest, ttl: 5, timestamp: 1000 },
-            &our, 1000, &mut dedup, None,
+            &PacketHeader {
+                packet_id: id,
+                destination: dest,
+                ttl: 5,
+                timestamp: 1000,
+            },
+            &our,
+            1000,
+            &mut dedup,
+            None,
         );
         assert_eq!(result, ForwardDecision::Drop(DropReason::NoRoute));
     }
@@ -480,8 +517,16 @@ mod tests {
         let id = [0x33u8; 32];
         // now=2000, timestamp=500 → age = 1500 > 60
         let result = ForwardEngine::decide(
-            &PacketHeader { packet_id: id, destination: dest, ttl: 5, timestamp: 500 },
-            &our, 2000, &mut dedup, None,
+            &PacketHeader {
+                packet_id: id,
+                destination: dest,
+                ttl: 5,
+                timestamp: 500,
+            },
+            &our,
+            2000,
+            &mut dedup,
+            None,
         );
         assert_eq!(result, ForwardDecision::Drop(DropReason::TooOld));
     }

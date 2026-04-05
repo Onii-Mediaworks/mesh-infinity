@@ -1,96 +1,30 @@
-// debug_screen.dart
-//
-// DebugScreen — developer tools, log viewer, and protocol exerciser (§22.56).
-//
-// AVAILABILITY:
-// -------------
-// This screen is ONLY visible in debug builds.  In release builds kDebugMode
-// is false and no code path leads here — the tile in SettingsScreen is
-// wrapped in `if (kDebugMode)` so it doesn't appear in production at all.
-// The Dart compiler tree-shakes dead code in release mode, so this entire
-// file is eliminated from production binaries.
-//
-// WHY a debug menu?
-// -----------------
-// Many protocol failure modes are extremely hard to reproduce naturally
-// (e.g. S&F round-trip, relay deposit with HMAC gate, forced rekey).  The
-// Protocol Exerciser (§22.56.4) lets developers and testers trigger these
-// flows on demand without attaching a debugger.
-//
-// The Log Viewer (§22.56.1) shows the last 5,000 log entries from Rust's
-// ring buffer, filterable by level and module.  This lets us file precise
-// bug reports without requiring users to capture adb logcat or syslog.
-//
-// SECTIONS:
-//   §22.56.1 Log Viewer          — ring-buffer log display (stub, polling not wired)
-//   §22.56.2 State Inspector     — read-only internal state dump
-//   §22.56.3 Simulation Controls — inject failures, latency, threat contexts
-//   §22.56.4 Protocol Exerciser  — run X3DH, Double Ratchet, 4-layer, S&F tests
-//   §22.56.5 FFI Call Tracer     — timing + call count per bridge method
-//   §22.56.6 Build Info          — version, platform, build flags
-//
-// Reached from: Settings → Developer Options (debug builds only).
-
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../backend/backend_bridge.dart';
+import '../../../platform/android_keystore_bridge.dart';
+import '../../../platform/android_proximity_bridge.dart';
+import '../../../platform/android_proximity_sync.dart';
 
-// ---------------------------------------------------------------------------
-// DebugScreen
-// ---------------------------------------------------------------------------
-
-/// Developer-only screen providing logs, state inspection, and test tools.
-///
-/// Guarded at the SettingsScreen call site by `if (kDebugMode)` — this
-/// widget itself does not assert kDebugMode so it can be tested in debug
-/// builds without workarounds.
-class DebugScreen extends StatefulWidget {
+class DebugScreen extends StatelessWidget {
   const DebugScreen({super.key});
 
   @override
-  State<DebugScreen> createState() => _DebugScreenState();
-}
-
-class _DebugScreenState extends State<DebugScreen> {
-  // ── Simulation state ─────────────────────────────────────────────────────
-  // These fields drive the simulation controls section.  They're local to
-  // this State because they only exist while the debug screen is open.
-
-  /// Whether all outbound packets are being dropped (simulated partition).
-  bool _networkPartition = false;
-
-  /// Extra latency injected into every outbound send, in milliseconds.
-  int _injectedLatencyMs = 0;
-
-  // ── FFI tracing state ─────────────────────────────────────────────────────
-  /// Whether FFI call timing is being recorded.
-  bool _ffiTracingEnabled = false;
-
-  // ── Protocol test results ─────────────────────────────────────────────────
-  // Each entry: testId → ('pass'|'fail'|'running'|null).
-  final Map<String, String?> _testResults = {};
-
-  @override
   Widget build(BuildContext context) {
-    final tt = Theme.of(context).textTheme;
-    final cs = Theme.of(context).colorScheme;
     final bridge = context.read<BackendBridge>();
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Developer Options'),
-        // Bright indicator so devs always know they're in the debug screen.
         backgroundColor: kDebugMode ? cs.errorContainer : null,
         foregroundColor: kDebugMode ? cs.onErrorContainer : null,
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ── Warning banner ─────────────────────────────────────────────
-          // Explicitly labels this as a debug build so screenshots in bug
-          // reports are clearly identified as non-production.
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -103,40 +37,23 @@ class _DebugScreenState extends State<DebugScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Debug build — this menu is not visible in production.',
-                    style: tt.bodySmall?.copyWith(color: cs.onErrorContainer),
+                    'Debug build only. This screen is removed from production builds.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: cs.onErrorContainer,
+                    ),
                   ),
                 ),
               ],
             ),
           ),
-
           const SizedBox(height: 16),
-
-          // ── §22.56.1 Log Viewer (entry point) ─────────────────────────
-          // Full log viewer is in its own screen to avoid overloading this
-          // list view.  The ring buffer is polled only when that screen is
-          // open — no background polling cost while just browsing debug menu.
-          const _SectionHeader('Logs'),
-          ListTile(
-            leading: const Icon(Icons.article_outlined),
-            title: const Text('Log viewer'),
-            subtitle: const Text('Last 5,000 entries from Rust ring buffer'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const _LogViewerScreen()),
-            ),
-          ),
-
-          const Divider(height: 1),
-
-          // ── §22.56.2 State Inspector (entry point) ─────────────────────
-          const _SectionHeader('State Inspector'),
+          const _SectionHeader('Inspect'),
           ListTile(
             leading: const Icon(Icons.manage_search_outlined),
             title: const Text('Internal state'),
-            subtitle: const Text('Identity, routing, sessions, storage'),
+            subtitle: const Text(
+              'Identity, routing, settings, and network stats',
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
@@ -145,292 +62,103 @@ class _DebugScreenState extends State<DebugScreen> {
               ),
             ),
           ),
-
+          if (defaultTargetPlatform == TargetPlatform.android)
+            _AndroidPlatformDiagnostics(bridge: bridge),
           const Divider(height: 1),
-
-          // ── §22.56.3 Simulation Controls ──────────────────────────────
-          const _SectionHeader('Simulate'),
-
-          // Network partition — drops all outbound packets.
-          // Useful for testing store-and-forward and peer reconnection.
-          SwitchListTile(
-            secondary: const Icon(Icons.wifi_off_outlined),
-            title: const Text('Network partition'),
-            subtitle: const Text('Drop all outbound packets'),
-            value: _networkPartition,
-            onChanged: (v) {
-              setState(() => _networkPartition = v);
-              // TODO(debug): bridge.setSimNetworkPartition(v)
-              _snack(
-                context,
-                v ? 'Network partition active' : 'Network partition removed',
-              );
-            },
+          const _SectionHeader('Runtime'),
+          const _KV('Build mode', kDebugMode ? 'debug' : 'release'),
+          _KV('Platform', defaultTargetPlatform.name),
+          _KV('Backend available', bridge.isAvailable ? 'yes' : 'no'),
+          _KV(
+            'Context address',
+            '0x${bridge.contextAddress.toRadixString(16)}',
           ),
-
-          // Latency injection — adds artificial delay to every send.
-          // Useful for testing timeout and retry logic.
-          ListTile(
-            leading: const Icon(Icons.timer_outlined),
-            title: const Text('Inject latency'),
-            subtitle: Text('${_injectedLatencyMs}ms added to all sends'),
-            trailing: SizedBox(
-              width: 160,
-              child: Slider(
-                value: _injectedLatencyMs.toDouble(),
-                min: 0,
-                max: 2000,
-                divisions: 40,
-                label: '${_injectedLatencyMs}ms',
-                onChanged: (v) {
-                  setState(() => _injectedLatencyMs = v.toInt());
-                  // TODO(debug): bridge.setSimLatencyMs(v.toInt())
-                },
-              ),
-            ),
-          ),
-
-          // Force rekey on all active sessions.
-          ListTile(
-            leading: const Icon(Icons.lock_reset_outlined),
-            title: const Text('Force session rekey'),
-            subtitle: const Text('Triggers immediate rekey on all sessions'),
-            trailing: FilledButton.tonal(
-              onPressed: () {
-                // TODO(debug): bridge.forceRekey()
-                _snack(context, 'Rekey triggered (stub)');
-              },
-              child: const Text('Rekey'),
-            ),
-          ),
-
-          // Killswitch test — creates a temporary identity, erases it, verifies.
-          ListTile(
-            leading: const Icon(Icons.verified_outlined),
-            title: const Text('Test emergency erase (safe)'),
-            subtitle: const Text(
-              'Creates a temporary identity, erases it, verifies cleanup',
-            ),
-            trailing: FilledButton.tonal(
-              style: FilledButton.styleFrom(
-                backgroundColor: Colors.orange.withValues(alpha: 0.2),
-              ),
-              onPressed: () {
-                // TODO(debug): bridge.testKillswitch()
-                _snack(context, 'Killswitch test stub — not yet wired');
-              },
-              child: const Text('Run test'),
-            ),
-          ),
-
-          // State dump — exports full JSON snapshot (no key material).
-          ListTile(
-            leading: const Icon(Icons.download_outlined),
-            title: const Text('Export debug dump'),
-            subtitle: const Text('Full state snapshot as JSON (no key material)'),
-            trailing: IconButton(
-              icon: const Icon(Icons.download),
-              onPressed: () {
-                // TODO(debug): bridge.exportDump() then share/copy
-                _snack(context, 'Debug dump export not yet wired');
-              },
-            ),
-          ),
-
-          const Divider(height: 1),
-
-          // ── §22.56.4 Protocol Exerciser ────────────────────────────────
-          // Each button runs a specific protocol flow end-to-end and shows
-          // pass/fail.  Results stay visible until the screen is closed.
-          const _SectionHeader('Protocol Tests'),
-
-          _TestButton(
-            id: 'x3dh',
-            title: 'X3DH Handshake',
-            description: 'Full X3DH key agreement with self',
-            result: _testResults['x3dh'],
-            onRun: () => _runTest('x3dh'),
-          ),
-          _TestButton(
-            id: 'ratchet',
-            title: 'Double Ratchet',
-            description: 'Send 100 messages through ratchet, verify decrypt',
-            result: _testResults['ratchet'],
-            onRun: () => _runTest('ratchet'),
-          ),
-          _TestButton(
-            id: 'four_layer',
-            title: '4-Layer Encrypt',
-            description:
-                'Encrypt and decrypt a test message through all 4 layers',
-            result: _testResults['four_layer'],
-            onRun: () => _runTest('four_layer'),
-          ),
-          _TestButton(
-            id: 'sender_keys',
-            title: 'Sender Keys',
-            description:
-                'Create a group, distribute sender keys, verify group decrypt',
-            result: _testResults['sender_keys'],
-            onRun: () => _runTest('sender_keys'),
-          ),
-          _TestButton(
-            id: 'store_forward',
-            title: 'S&F Round-Trip',
-            description:
-                'Deposit a message in S&F, retrieve it, verify integrity',
-            result: _testResults['store_forward'],
-            onRun: () => _runTest('store_forward'),
-          ),
-          _TestButton(
-            id: 'relay',
-            title: 'Relay Deposit',
-            description: 'Deposit and retrieve with HMAC gate verification',
-            result: _testResults['relay'],
-            onRun: () => _runTest('relay'),
-          ),
-          _TestButton(
-            id: 'sigma',
-            title: 'Sigma Handshake',
-            description: 'Sigma protocol with self, verify proof',
-            result: _testResults['sigma'],
-            onRun: () => _runTest('sigma'),
-          ),
-
-          const Divider(height: 1),
-
-          // ── §22.56.5 FFI Call Tracer ───────────────────────────────────
-          const _SectionHeader('FFI Tracer'),
-          SwitchListTile(
-            secondary: const Icon(Icons.timeline_outlined),
-            title: const Text('FFI call tracing'),
-            subtitle: const Text(
-              'Records all Dart↔Rust calls with timing (impacts performance)',
-            ),
-            value: _ffiTracingEnabled,
-            onChanged: (v) {
-              setState(() => _ffiTracingEnabled = v);
-              // TODO(debug): bridge.setFfiTracing(v)
-              _snack(
-                context,
-                v ? 'FFI tracing enabled' : 'FFI tracing disabled',
-              );
-            },
-          ),
-          if (_ffiTracingEnabled)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text(
-                'Trace data will appear here when backend wiring is complete.',
-                style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-              ),
-            ),
-
-          const Divider(height: 1),
-
-          // ── §22.56.6 Build Info ───────────────────────────────────────
-          const _SectionHeader('Build Info'),
-          const _KV('App version', '0.3.0'),
-          _KV('Build number', kDebugMode ? 'debug' : 'release'),
-          _KV('Debug mode', '$kDebugMode'),
-          const _KV('Rust backend', 'wired — see mi_version()'),
-
+          _KV('Last backend error', bridge.getLastError() ?? '(none)'),
           const SizedBox(height: 24),
         ],
       ),
     );
   }
-
-  // ---------------------------------------------------------------------------
-  // Protocol test runner
-  // ---------------------------------------------------------------------------
-
-  /// Marks a test as running, calls the (stubbed) bridge method, updates result.
-  ///
-  /// TODO(debug): replace the stub delay with real bridge.runProtocolTest(id).
-  Future<void> _runTest(String id) async {
-    setState(() => _testResults[id] = 'running');
-    // Stub: simulate a 500 ms test run.  Replace with real call when wired.
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-    if (mounted) {
-      setState(() => _testResults[id] = 'pass'); // always passes in stub
-    }
-  }
-
-  void _snack(BuildContext context, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
-    );
-  }
 }
 
-// ---------------------------------------------------------------------------
-// _TestButton — one protocol test row
-// ---------------------------------------------------------------------------
+class _AndroidPlatformDiagnostics extends StatelessWidget {
+  const _AndroidPlatformDiagnostics({required this.bridge});
 
-/// A ListTile that shows a protocol test with a run button and a result badge.
-///
-/// [result] is null (not run), 'running', 'pass', or 'fail'.
-class _TestButton extends StatelessWidget {
-  const _TestButton({
-    required this.id,
-    required this.title,
-    required this.description,
-    required this.result,
-    required this.onRun,
-  });
-
-  final String id;
-  final String title;
-  final String description;
-
-  /// null = not run, 'running', 'pass', 'fail'.
-  final String? result;
-  final VoidCallback onRun;
+  final BackendBridge bridge;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    // Result indicator widget — spinner, green check, or red X.
-    Widget resultWidget;
-    switch (result) {
-      case 'running':
-        resultWidget = const SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        );
-      case 'pass':
-        resultWidget = Icon(Icons.check_circle_outline, color: Colors.green[600]);
-      case 'fail':
-        resultWidget = Icon(Icons.cancel_outlined, color: cs.error);
-      default:
-        // Not yet run — show a "Run" button.
-        resultWidget = TextButton(
-          onPressed: onRun,
-          child: const Text('Run'),
-        );
-    }
-
-    return ListTile(
-      title: Text(title),
-      subtitle: Text(
-        description,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: cs.onSurfaceVariant,
+    return FutureBuilder<_AndroidPlatformSnapshot>(
+      future: _loadSnapshot(),
+      builder: (context, snapshot) {
+        final data = snapshot.data;
+        if (data == null) {
+          return const ListTile(
+            leading: Icon(Icons.developer_board_outlined),
+            title: Text('Android platform adapters'),
+            subtitle: Text('Loading keystore and proximity state'),
+          );
+        }
+        return Column(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.lock_outline),
+              title: const Text('Android keystore'),
+              subtitle: Text(
+                data.keystoreAvailable
+                    ? 'Available to the running app'
+                    : 'Unavailable on this device or build',
+              ),
             ),
-      ),
-      trailing: resultWidget,
+            ListTile(
+              leading: const Icon(Icons.wifi_tethering_outlined),
+              title: const Text('Android proximity'),
+              subtitle: Text(
+                _buildProximitySummary(data.proximityCapabilities),
+              ),
+            ),
+          ],
+        );
+      },
     );
+  }
+
+  Future<_AndroidPlatformSnapshot> _loadSnapshot() async {
+    final keystoreAvailable = await AndroidKeystoreBridge.instance.isAvailable();
+    final state = await AndroidProximitySync.syncCurrentState(bridge);
+    final proximityCapabilities = state.isEmpty
+        ? null
+        : AndroidProximityCapabilities.fromMap(Map<Object?, Object?>.from(state));
+    return _AndroidPlatformSnapshot(
+      keystoreAvailable: keystoreAvailable,
+      proximityCapabilities: proximityCapabilities,
+    );
+  }
+
+  String _buildProximitySummary(AndroidProximityCapabilities? caps) {
+    if (caps == null) {
+      return 'Not supported on this platform';
+    }
+    final nfc = caps.nfcAvailable
+        ? (caps.nfcEnabled ? 'NFC ready' : 'NFC off')
+        : 'No NFC';
+    final wifiDirect = caps.wifiDirectAvailable
+        ? (caps.wifiDirectEnabled ? 'WiFi Direct ready' : 'WiFi Direct off')
+        : 'No WiFi Direct';
+    return '$nfc, $wifiDirect';
   }
 }
 
-// ---------------------------------------------------------------------------
-// _KV — key/value row for Build Info
-// ---------------------------------------------------------------------------
+class _AndroidPlatformSnapshot {
+  const _AndroidPlatformSnapshot({
+    required this.keystoreAvailable,
+    required this.proximityCapabilities,
+  });
 
-/// Simple key–value row for displaying static build information.
+  final bool keystoreAvailable;
+  final AndroidProximityCapabilities? proximityCapabilities;
+}
+
 class _KV extends StatelessWidget {
   const _KV(this.label, this.value);
 
@@ -445,15 +173,18 @@ class _KV extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Text(label, style: tt.bodyMedium),
-          ),
-          Text(
-            value,
-            style: tt.bodyMedium?.copyWith(
-              color: cs.onSurfaceVariant,
-              fontFamily: 'monospace',
+          Expanded(child: Text(label, style: tt.bodyMedium)),
+          const SizedBox(width: 16),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: tt.bodyMedium?.copyWith(
+                color: cs.onSurfaceVariant,
+                fontFamily: 'monospace',
+              ),
             ),
           ),
         ],
@@ -461,10 +192,6 @@ class _KV extends StatelessWidget {
     );
   }
 }
-
-// ---------------------------------------------------------------------------
-// _SectionHeader
-// ---------------------------------------------------------------------------
 
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader(this.title);
@@ -478,166 +205,14 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.w600,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// §22.56.1 _LogViewerScreen
-// ---------------------------------------------------------------------------
-
-/// In-app log viewer — shows the Rust ring buffer filtered by level/module.
-///
-/// Polling is started when this screen is pushed and stopped on pop, so
-/// there is no background CPU cost when the log viewer is not visible.
-///
-/// TODO(debug/logs): wire bridge.getLogs(minLevel, sinceMs) and poll on
-/// 1-second timer while this screen is mounted.
-class _LogViewerScreen extends StatefulWidget {
-  const _LogViewerScreen();
-
-  @override
-  State<_LogViewerScreen> createState() => _LogViewerScreenState();
-}
-
-class _LogViewerScreenState extends State<_LogViewerScreen> {
-  // Log level filter — show entries at this level and above.
-  String _minLevel = 'debug'; // 'trace'|'debug'|'info'|'warn'|'error'
-
-  // Stub entries — replaced by real polling in a future sprint.
-  static const List<_LogEntry> _stubEntries = [
-    _LogEntry(level: 'info', module: 'app.init', message: 'MeshInfinityApp started'),
-    _LogEntry(level: 'debug', module: 'ffi', message: 'Bridge initialised'),
-    _LogEntry(level: 'info', module: 'event_bus', message: 'Polling isolate started'),
-    _LogEntry(level: 'debug', module: 'settings', message: 'Loaded settings from backend'),
-    _LogEntry(level: 'debug', module: 'identity', message: 'Identity loaded'),
-    _LogEntry(
-      level: 'info',
-      module: 'network',
-      message: 'No active connections yet — waiting for peers',
-    ),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final tt = Theme.of(context).textTheme;
-    final cs = Theme.of(context).colorScheme;
-
-    // Filter by the selected min level (show this level and above).
-    final levels = ['trace', 'debug', 'info', 'warn', 'error'];
-    final minIdx = levels.indexOf(_minLevel);
-    final filtered = _stubEntries
-        .where((e) => levels.indexOf(e.level) >= minIdx)
-        .toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Logs'),
-        actions: [
-          // Level filter.
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.filter_list),
-            tooltip: 'Filter by level',
-            onSelected: (level) => setState(() => _minLevel = level),
-            itemBuilder: (_) => levels
-                .map(
-                  (l) => PopupMenuItem(
-                    value: l,
-                    child: Text(l.toUpperCase()),
-                  ),
-                )
-                .toList(),
-          ),
-          // Clear logs.
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: 'Clear logs',
-            onPressed: () {
-              // TODO(debug/logs): bridge.clearLogs()
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Log clearing not yet wired')),
-              );
-            },
-          ),
-        ],
-      ),
-      body: filtered.isEmpty
-          ? Center(
-              child: Text(
-                'No log entries at ${_minLevel.toUpperCase()} or above.',
-                style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
-              ),
-            )
-          : ListView.separated(
-              reverse: true, // newest at bottom
-              itemCount: filtered.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                final log = filtered[i];
-                return ListTile(
-                  dense: true,
-                  leading: Icon(
-                    _levelIcon(log.level),
-                    size: 16,
-                    color: _levelColor(log.level, cs),
-                  ),
-                  title: Text(
-                    '${log.module}: ${log.message}',
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                  ),
-                );
-              },
-            ),
-    );
-  }
-
-  IconData _levelIcon(String level) => switch (level) {
-    'trace' => Icons.grain,
-    'debug' => Icons.bug_report_outlined,
-    'info' => Icons.info_outline,
-    'warn' => Icons.warning_amber_outlined,
-    'error' => Icons.error_outline,
-    _ => Icons.circle_outlined,
-  };
-
-  Color _levelColor(String level, ColorScheme cs) => switch (level) {
-    'trace' => cs.outline,
-    'debug' => cs.onSurfaceVariant,
-    'info' => cs.primary,
-    'warn' => Colors.orange,
-    'error' => cs.error,
-    _ => cs.outline,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// _LogEntry — stub log entry model
-// ---------------------------------------------------------------------------
-
-class _LogEntry {
-  const _LogEntry({
-    required this.level,
-    required this.module,
-    required this.message,
-  });
-
-  final String level;   // 'trace'|'debug'|'info'|'warn'|'error'
-  final String module;  // e.g. 'crypto.x3dh', 'routing', 'ffi'
-  final String message;
-}
-
-// ---------------------------------------------------------------------------
-// §22.56.2 _StateInspectorScreen
-// ---------------------------------------------------------------------------
-
-/// Shows a read-only dump of internal state in expandable sections.
-///
-/// Data comes from the backend bridge's various fetch methods.
-/// All values are strings — no editing is possible from this screen.
 class _StateInspectorScreen extends StatelessWidget {
   const _StateInspectorScreen({required this.bridge});
 
@@ -645,68 +220,71 @@ class _StateInspectorScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Fetch stub identity data from bridge.
     final identity = bridge.fetchLocalIdentity();
     final settings = bridge.fetchSettings();
     final stats = bridge.getNetworkStats();
+    final diagnostics = bridge.getDiagnosticReport();
+    final routing_diagnostics = diagnostics?['routing_stats'];
+    final identity_diagnostics = diagnostics?['identity_status'];
+    final memory_diagnostics = diagnostics?['memory_usage'];
+    final transport_diagnostics = diagnostics?['transport_status'];
 
     return Scaffold(
       appBar: AppBar(title: const Text('State Inspector')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ── Identity ────────────────────────────────────────────────
           _InspectorSection(
             'Identity',
             entries: [
               _InspectorEntry(
                 'Peer ID',
-                identity?.peerId.isEmpty ?? true
-                    ? '(none)'
-                    : identity!.peerId,
+                identity?.peerId.isEmpty ?? true ? '(none)' : identity!.peerId,
               ),
               _InspectorEntry('Name', identity?.name ?? '(none)'),
+              _InspectorEntry('Public key', identity?.publicKey ?? '(none)'),
             ],
           ),
-
-          // ── Settings ─────────────────────────────────────────────
           _InspectorSection(
             'Settings',
             entries: [
+              _InspectorEntry('Node mode', '${settings?.nodeMode ?? 0}'),
+              _InspectorEntry('Threat context', '${bridge.getThreatContext()}'),
+              _InspectorEntry('Active tier', '${settings?.activeTier ?? 0}'),
               _InspectorEntry(
-                'Node mode',
-                '${settings?.nodeMode ?? 0}',
+                'Bandwidth profile',
+                '${settings?.bandwidthProfile ?? 1}',
               ),
-              _InspectorEntry(
-                'Tor',
-                '${settings?.enableTor ?? false}',
-              ),
+              _InspectorEntry('Tor', '${settings?.enableTor ?? false}'),
               _InspectorEntry(
                 'Clearnet',
                 '${settings?.enableClearnet ?? false}',
               ),
+              _InspectorEntry('I2P', '${settings?.enableI2p ?? false}'),
               _InspectorEntry(
-                'I2P',
-                '${settings?.enableI2p ?? false}',
+                'Bluetooth',
+                '${settings?.enableBluetooth ?? false}',
+              ),
+              _InspectorEntry(
+                'Mesh discovery',
+                '${settings?.meshDiscovery ?? false}',
               ),
             ],
           ),
-
-          // ── Network Stats ────────────────────────────────────────
           _InspectorSection(
-            'Network Stats',
+            'Network stats',
             entries: [
               _InspectorEntry(
-                'Active connections',
-                '${stats?['activeConnections'] ?? 0}',
+                'Connected peers',
+                '${stats?['connectedPeers'] ?? 0}',
               ),
               _InspectorEntry(
-                'Bytes sent',
-                '${stats?['bytesSent'] ?? 0}',
+                'Active tunnels',
+                '${stats?['activeTunnels'] ?? 0}',
               ),
               _InspectorEntry(
-                'Bytes received',
-                '${stats?['bytesReceived'] ?? 0}',
+                'Routing entries',
+                '${stats?['routingEntries'] ?? 0}',
               ),
               _InspectorEntry(
                 'Gossip map size',
@@ -714,17 +292,57 @@ class _StateInspectorScreen extends StatelessWidget {
               ),
             ],
           ),
-
+          _InspectorSection(
+            'Diagnostic report',
+            entries: [
+              _InspectorEntry(
+                'Timestamp',
+                '${diagnostics?['timestamp'] ?? 0}',
+              ),
+              _InspectorEntry(
+                'Transport entries',
+                transport_diagnostics is List
+                    ? '${transport_diagnostics.length}'
+                    : '0',
+              ),
+              _InspectorEntry(
+                'Total routes',
+                routing_diagnostics is Map
+                    ? '${routing_diagnostics['total_routes'] ?? 0}'
+                    : '0',
+              ),
+              _InspectorEntry(
+                'Direct peers',
+                routing_diagnostics is Map
+                    ? '${routing_diagnostics['direct_peers'] ?? 0}'
+                    : '0',
+              ),
+              _InspectorEntry(
+                'Vault unlocked',
+                identity_diagnostics is Map
+                    ? '${identity_diagnostics['vault_unlocked'] ?? false}'
+                    : 'false',
+              ),
+              _InspectorEntry(
+                'Onboarding complete',
+                identity_diagnostics is Map
+                    ? '${identity_diagnostics['onboarding_complete'] ?? false}'
+                    : 'false',
+              ),
+              _InspectorEntry(
+                'RSS bytes',
+                memory_diagnostics is Map
+                    ? '${memory_diagnostics['rss_bytes'] ?? 0}'
+                    : '0',
+              ),
+            ],
+          ),
           const SizedBox(height: 24),
         ],
       ),
     );
   }
 }
-
-// ---------------------------------------------------------------------------
-// _InspectorSection — expandable section in State Inspector
-// ---------------------------------------------------------------------------
 
 class _InspectorSection extends StatelessWidget {
   const _InspectorSection(this.title, {required this.entries});
@@ -747,13 +365,18 @@ class _InspectorSection extends StatelessWidget {
               (e) => Padding(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(child: Text(e.key, style: tt.bodySmall)),
-                    Text(
-                      e.value,
-                      style: tt.bodySmall?.copyWith(
-                        fontFamily: 'monospace',
-                        color: cs.onSurfaceVariant,
+                    const SizedBox(width: 16),
+                    Flexible(
+                      child: Text(
+                        e.value,
+                        textAlign: TextAlign.right,
+                        style: tt.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                          color: cs.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ],

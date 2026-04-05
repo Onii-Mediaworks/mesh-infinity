@@ -277,9 +277,9 @@ impl CallState {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
@@ -316,7 +316,11 @@ impl CallState {
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
-            video_codec: if is_video { Some(VideoCodec::VP9) } else { None },
+            video_codec: if is_video {
+                Some(VideoCodec::VP9)
+            } else {
+                None
+            },
         }
     }
 

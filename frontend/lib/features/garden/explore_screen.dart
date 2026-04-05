@@ -25,7 +25,36 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
   Future<void> _load() async {
     final bridge = context.read<BackendBridge>();
     final gardens = bridge.discoverGardens();
-    if (mounted) setState(() { _gardens = gardens; _loading = false; });
+    if (mounted) {
+      setState(() {
+        _gardens = gardens;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _joinGarden(Map<String, dynamic> garden) async {
+    final bridge = context.read<BackendBridge>();
+    final gardenId = garden['id'] as String? ?? '';
+    if (gardenId.isEmpty) {
+      return;
+    }
+    final ok = bridge.joinGarden(gardenId);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Joined ${garden['name'] as String? ?? 'garden'}'
+              : (bridge.getLastError() ?? 'Could not join that garden.'),
+        ),
+      ),
+    );
+    if (ok) {
+      await _load();
+    }
   }
 
   @override
@@ -39,8 +68,8 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
         children: [
           EmptyState(
             icon: Icons.explore_outlined,
-            title: 'No gardens found nearby',
-            body: 'Public and open gardens on the local mesh will appear here.',
+            title: 'No gardens found',
+            body: 'Discoverable public or open gardens will appear here.',
           ),
           GardenGnomeWidget(),
         ],
@@ -51,15 +80,19 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(vertical: 4),
         itemCount: _gardens.length,
-        itemBuilder: (context, i) => _GardenTile(garden: _gardens[i]),
+        itemBuilder: (context, i) => _GardenTile(
+          garden: _gardens[i],
+          onJoin: () => _joinGarden(_gardens[i]),
+        ),
       ),
     );
   }
 }
 
 class _GardenTile extends StatelessWidget {
-  const _GardenTile({required this.garden});
+  const _GardenTile({required this.garden, required this.onJoin});
   final Map<String, dynamic> garden;
+  final VoidCallback onJoin;
 
   @override
   Widget build(BuildContext context) {
@@ -69,6 +102,7 @@ class _GardenTile extends StatelessWidget {
     final description = garden['description'] as String? ?? '';
     final memberCount = (garden['memberCount'] as num?)?.toInt() ?? 0;
     final networkType = garden['networkType'] as String? ?? 'public';
+    final joined = garden['joined'] == true;
 
     return ListTile(
       contentPadding:
@@ -107,10 +141,15 @@ class _GardenTile extends StatelessWidget {
           ),
         ],
       ]),
-      trailing: TextButton(
-        onPressed: () {}, // TODO: join garden action
-        child: const Text('Join'),
-      ),
+      trailing: joined
+          ? Icon(
+              Icons.check_circle_outline,
+              color: cs.primary,
+            )
+          : OutlinedButton(
+              onPressed: onJoin,
+              child: const Text('Join'),
+            ),
     );
   }
 }
@@ -138,6 +177,7 @@ class _NetworkTypeBadge extends StatelessWidget {
   }
 
   Color _color() => switch (type) {
+    'joined'  => MeshTheme.secGreen,
     'public'  => MeshTheme.brand,
     'open'    => MeshTheme.secGreen,
     'closed'  => MeshTheme.secAmber,
@@ -146,6 +186,7 @@ class _NetworkTypeBadge extends StatelessWidget {
   };
 
   String _label() => switch (type) {
+    'joined'  => 'Joined',
     'public'  => 'Public',
     'open'    => 'Open',
     'closed'  => 'Closed',

@@ -17,8 +17,8 @@ pub mod mask;
 // Sub-module: peer_id — see module-level docs for details.
 pub mod peer_id;
 // Sub-module: pin — see module-level docs for details.
-pub mod pin;
 pub mod killswitch;
+pub mod pin;
 pub mod profile;
 // Sub-module: key_change — key change validation with 72h wait (§4.6).
 pub mod key_change;

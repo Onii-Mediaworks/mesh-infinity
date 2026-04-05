@@ -99,8 +99,8 @@ impl FrequencyBand {
     /// Minimum frequency in Hz.
     pub fn min_hz(&self) -> u64 {
         match self {
-            Self::Mf  =>   300_000,
-            Self::Hf  => 3_000_000,
+            Self::Mf => 300_000,
+            Self::Hf => 3_000_000,
             Self::Vhf => 30_000_000,
             Self::Uhf => 300_000_000,
             Self::Shf => 3_000_000_000,
@@ -111,8 +111,8 @@ impl FrequencyBand {
     /// Maximum frequency in Hz.
     pub fn max_hz(&self) -> u64 {
         match self {
-            Self::Mf  =>   3_000_000,
-            Self::Hf  =>  30_000_000,
+            Self::Mf => 3_000_000,
+            Self::Hf => 30_000_000,
             Self::Vhf => 300_000_000,
             Self::Uhf => 3_000_000_000,
             Self::Shf => 30_000_000_000,
@@ -123,9 +123,9 @@ impl FrequencyBand {
     /// Determine the band for a given frequency.
     pub fn classify(freq_hz: u64) -> Option<Self> {
         match freq_hz {
-            300_000..=2_999_999       => Some(Self::Mf),
-            3_000_000..=29_999_999    => Some(Self::Hf),
-            30_000_000..=299_999_999  => Some(Self::Vhf),
+            300_000..=2_999_999 => Some(Self::Mf),
+            3_000_000..=29_999_999 => Some(Self::Hf),
+            30_000_000..=299_999_999 => Some(Self::Vhf),
             300_000_000..=2_999_999_999 => Some(Self::Uhf),
             3_000_000_000..=29_999_999_999 => Some(Self::Shf),
             30_000_000_000..=300_000_000_000 => Some(Self::Ehf),
@@ -184,7 +184,10 @@ pub enum Modulation {
     // Spread spectrum
     /// LoRa chirp spread spectrum (CSS). Up to +20dB over noise floor.
     /// Spreading factor 6–12 (SF12 = longest range, lowest rate).
-    LoRaCss { spreading_factor: u8, coding_rate: LoRaCodingRate },
+    LoRaCss {
+        spreading_factor: u8,
+        coding_rate: LoRaCodingRate,
+    },
     /// Direct Sequence Spread Spectrum (DSSS). 802.11b, GPS-like.
     Dsss { chip_rate_mcps: f32 },
 
@@ -194,7 +197,10 @@ pub enum Modulation {
 
     // Custom / raw
     /// Raw IQ samples passed directly to driver. For experimentation.
-    RawIq { sample_rate_hz: u32, bits_per_sample: u8 },
+    RawIq {
+        sample_rate_hz: u32,
+        bits_per_sample: u8,
+    },
 }
 
 /// LoRa forward error correction coding rate.
@@ -259,7 +265,10 @@ impl RadioChannel {
             Modulation::Qam16 => self.bandwidth_hz * 4,
             Modulation::Qam64 => self.bandwidth_hz * 6,
             Modulation::Qam256 => self.bandwidth_hz * 8,
-            Modulation::LoRaCss { spreading_factor, coding_rate } => {
+            Modulation::LoRaCss {
+                spreading_factor,
+                coding_rate,
+            } => {
                 // LoRa data rate = SF * (BW / 2^SF) * (4 / (4 + cr_num))
                 let sf = *spreading_factor as f64;
                 let bw = self.bandwidth_hz as f64;
@@ -269,7 +278,10 @@ impl RadioChannel {
             }
             Modulation::Dsss { chip_rate_mcps } => (*chip_rate_mcps * 1_000_000.0) as u32 / 11,
             Modulation::Ofdm { subcarriers, .. } => self.bandwidth_hz * subcarriers / 1024,
-            Modulation::RawIq { sample_rate_hz, bits_per_sample } => {
+            Modulation::RawIq {
+                sample_rate_hz,
+                bits_per_sample,
+            } => {
                 *sample_rate_hz * *bits_per_sample as u32 * 2 // IQ = 2 components
             }
         }
@@ -303,12 +315,12 @@ impl FhssConfig {
     ///
     /// Uses HMAC-SHA256(hop_key, epoch_be_bytes) mod table_len.
     pub fn channel_for_epoch(&self, epoch: u64) -> usize {
-        use sha2::Sha256;
         use hmac::{Hmac, Mac};
+        use sha2::Sha256;
 
         type HmacSha256 = Hmac<Sha256>;
-        let mut mac = HmacSha256::new_from_slice(&self.hop_key)
-            .expect("HMAC can accept any key size");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.hop_key).expect("HMAC can accept any key size");
         mac.update(&epoch.to_be_bytes());
         let result = mac.finalize().into_bytes();
 
@@ -420,7 +432,9 @@ impl AleController {
             .max_by(|a, b| {
                 let score_a = ale_score(a, now);
                 let score_b = ale_score(b, now);
-                score_a.partial_cmp(&score_b).unwrap_or(std::cmp::Ordering::Equal)
+                score_a
+                    .partial_cmp(&score_b)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
             .map(|ch| ch.freq_hz)
     }
@@ -572,10 +586,10 @@ bitflags::bitflags! {
 ///
 /// Sync words are chosen to be distinct from common noise patterns
 /// and from each other. They are not secret.
-pub const SYNC_HF: [u8; 4]   = [0xD9, 0x1E, 0x8C, 0x2A];
-pub const SYNC_VHF: [u8; 4]  = [0xF3, 0x7B, 0x44, 0x11];
-pub const SYNC_UHF: [u8; 4]  = [0xA5, 0xC2, 0x6D, 0xE0];
-pub const SYNC_SHF: [u8; 4]  = [0x1B, 0x9F, 0x3C, 0x57];
+pub const SYNC_HF: [u8; 4] = [0xD9, 0x1E, 0x8C, 0x2A];
+pub const SYNC_VHF: [u8; 4] = [0xF3, 0x7B, 0x44, 0x11];
+pub const SYNC_UHF: [u8; 4] = [0xA5, 0xC2, 0x6D, 0xE0];
+pub const SYNC_SHF: [u8; 4] = [0x1B, 0x9F, 0x3C, 0x57];
 pub const SYNC_LORA: [u8; 4] = [0x34, 0x12, 0xCD, 0xAB]; // LoRa sync 0x12/0x34 extended
 pub const SYNC_FHSS: [u8; 4] = [0x72, 0xE4, 0x0B, 0x96];
 
@@ -796,7 +810,10 @@ pub enum SdrDriverType {
     /// Meshtastic-compatible node.
     Meshtastic,
     /// SoapySDR generic (any SoapySDR-compatible device).
-    SoapySdr { driver: String, serial: Option<String> },
+    SoapySdr {
+        driver: String,
+        serial: Option<String>,
+    },
     /// Simulated/test driver (no hardware required).
     Simulated,
 }
@@ -944,7 +961,7 @@ impl SdrConfig {
                 freq_hz: primary_freq_hz,
                 bandwidth_hz: 125_000,
                 modulation: Modulation::LoRaCss {
-                    spreading_factor: 12, // SF12 = max range, min rate (~250bps)
+                    spreading_factor: 12,              // SF12 = max range, min rate (~250bps)
                     coding_rate: LoRaCodingRate::Cr48, // Max FEC for reliability
                 },
                 tx_power_dbm: Some(20), // Maximum power
@@ -969,9 +986,11 @@ impl SdrConfig {
             driver,
             profile: RadioProfile::LongRange,
             primary_channel: RadioChannel {
-                freq_hz: 7_074_000, // 7.074 MHz — FT8 frequency, known good
+                freq_hz: 7_074_000,  // 7.074 MHz — FT8 frequency, known good
                 bandwidth_hz: 3_000, // 3kHz SSB bandwidth
-                modulation: Modulation::Ssb { upper_sideband: true },
+                modulation: Modulation::Ssb {
+                    upper_sideband: true,
+                },
                 tx_power_dbm: Some(37), // 5W — QRP, long range on HF
                 label: "HF 40m SSB 7.074MHz".into(),
             },
@@ -1033,76 +1052,113 @@ impl SdrConfig {
 /// ISM 433MHz sub-band channels (ETSI EN 300 220 §4.2, 869.4–869.65MHz also included).
 /// 20 channels spread across 433.05–434.79 MHz at 87.5kHz spacing.
 pub fn ism_433_channels() -> Vec<RadioChannel> {
-    (0..20u64).map(|i| RadioChannel {
-        freq_hz: 433_050_000 + i * 87_500,
-        bandwidth_hz: 125_000,
-        modulation: Modulation::LoRaCss {
-            spreading_factor: 8,
-            coding_rate: LoRaCodingRate::Cr46,
-        },
-        tx_power_dbm: Some(10),
-        label: format!("ISM433-{}", i),
-    }).collect()
+    (0..20u64)
+        .map(|i| RadioChannel {
+            freq_hz: 433_050_000 + i * 87_500,
+            bandwidth_hz: 125_000,
+            modulation: Modulation::LoRaCss {
+                spreading_factor: 8,
+                coding_rate: LoRaCodingRate::Cr46,
+            },
+            tx_power_dbm: Some(10),
+            label: format!("ISM433-{}", i),
+        })
+        .collect()
 }
 
 /// ISM 868MHz EU channels (ETSI EN 300 220, 868.0–868.6 MHz).
 /// 8 channels at 200kHz spacing (LoRaWAN EU868 band).
 pub fn ism_868_channels() -> Vec<RadioChannel> {
-    [868_100_000u64, 868_300_000, 868_500_000, 867_100_000,
-     867_300_000, 867_500_000, 867_700_000, 867_900_000]
-        .iter().enumerate().map(|(i, &freq)| RadioChannel {
-            freq_hz: freq,
-            bandwidth_hz: 125_000,
-            modulation: Modulation::LoRaCss {
-                spreading_factor: 9,
-                coding_rate: LoRaCodingRate::Cr45,
-            },
-            tx_power_dbm: Some(14),
-            label: format!("EU868-{}", i),
-        }).collect()
-}
-
-/// ISM 915MHz US/AU channels (FCC Part 15, 902–928 MHz).
-/// 64 channels at 200kHz spacing.
-pub fn ism_915_channels() -> Vec<RadioChannel> {
-    (0..64u64).map(|i| RadioChannel {
-        freq_hz: 902_300_000 + i * 200_000,
+    [
+        868_100_000u64,
+        868_300_000,
+        868_500_000,
+        867_100_000,
+        867_300_000,
+        867_500_000,
+        867_700_000,
+        867_900_000,
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, &freq)| RadioChannel {
+        freq_hz: freq,
         bandwidth_hz: 125_000,
         modulation: Modulation::LoRaCss {
             spreading_factor: 9,
             coding_rate: LoRaCodingRate::Cr45,
         },
-        tx_power_dbm: Some(20),
-        label: format!("US915-{}", i),
-    }).collect()
+        tx_power_dbm: Some(14),
+        label: format!("EU868-{}", i),
+    })
+    .collect()
+}
+
+/// ISM 915MHz US/AU channels (FCC Part 15, 902–928 MHz).
+/// 64 channels at 200kHz spacing.
+pub fn ism_915_channels() -> Vec<RadioChannel> {
+    (0..64u64)
+        .map(|i| RadioChannel {
+            freq_hz: 902_300_000 + i * 200_000,
+            bandwidth_hz: 125_000,
+            modulation: Modulation::LoRaCss {
+                spreading_factor: 9,
+                coding_rate: LoRaCodingRate::Cr45,
+            },
+            tx_power_dbm: Some(20),
+            label: format!("US915-{}", i),
+        })
+        .collect()
 }
 
 /// HF 40m band ALE channel list (7.0–7.3 MHz, 3kHz spacing).
 /// Standard amateur/emergency frequencies for ALE operation.
 pub fn hf_40m_ale_channels() -> Vec<AleChannelScore> {
-    [7_000_000u64, 7_030_000, 7_045_000, 7_074_000,
-     7_100_000, 7_150_000, 7_200_000, 7_255_000, 7_300_000]
-        .iter().map(|&freq| AleChannelScore {
-            freq_hz: freq,
-            rssi_dbm: -100.0, // Unknown — will be measured
-            lqa: 0.5,
-            last_contact: None,
-            failure_count: 0,
-        }).collect()
+    [
+        7_000_000u64,
+        7_030_000,
+        7_045_000,
+        7_074_000,
+        7_100_000,
+        7_150_000,
+        7_200_000,
+        7_255_000,
+        7_300_000,
+    ]
+    .iter()
+    .map(|&freq| AleChannelScore {
+        freq_hz: freq,
+        rssi_dbm: -100.0, // Unknown — will be measured
+        lqa: 0.5,
+        last_contact: None,
+        failure_count: 0,
+    })
+    .collect()
 }
 
 /// HF 20m band ALE channel list (14.0–14.35 MHz).
 /// Excellent daytime DX (long-distance) propagation.
 pub fn hf_20m_ale_channels() -> Vec<AleChannelScore> {
-    [14_000_000u64, 14_030_000, 14_074_000, 14_100_000,
-     14_200_000, 14_230_000, 14_280_000, 14_300_000, 14_350_000]
-        .iter().map(|&freq| AleChannelScore {
-            freq_hz: freq,
-            rssi_dbm: -100.0,
-            lqa: 0.5,
-            last_contact: None,
-            failure_count: 0,
-        }).collect()
+    [
+        14_000_000u64,
+        14_030_000,
+        14_074_000,
+        14_100_000,
+        14_200_000,
+        14_230_000,
+        14_280_000,
+        14_300_000,
+        14_350_000,
+    ]
+    .iter()
+    .map(|&freq| AleChannelScore {
+        freq_hz: freq,
+        rssi_dbm: -100.0,
+        lqa: 0.5,
+        last_contact: None,
+        failure_count: 0,
+    })
+    .collect()
 }
 
 /// Wide UHF evasive hop table spanning 433, 868, and 915MHz ISM bands.
@@ -1114,7 +1170,10 @@ pub fn uhf_evasive_channels() -> Vec<RadioChannel> {
         channels.push(RadioChannel {
             freq_hz: 433_050_000 + i * 175_000,
             bandwidth_hz: 125_000,
-            modulation: Modulation::Gfsk { deviation_hz: 62_500, bt: 0.5 },
+            modulation: Modulation::Gfsk {
+                deviation_hz: 62_500,
+                bt: 0.5,
+            },
             tx_power_dbm: Some(8),
             label: format!("Ev433-{}", i),
         });
@@ -1124,7 +1183,10 @@ pub fn uhf_evasive_channels() -> Vec<RadioChannel> {
         channels.push(RadioChannel {
             freq_hz: 868_000_000 + i * 600_000 / 10,
             bandwidth_hz: 200_000,
-            modulation: Modulation::Gfsk { deviation_hz: 100_000, bt: 0.5 },
+            modulation: Modulation::Gfsk {
+                deviation_hz: 100_000,
+                bt: 0.5,
+            },
             tx_power_dbm: Some(8),
             label: format!("Ev868-{}", i),
         });
@@ -1134,7 +1196,10 @@ pub fn uhf_evasive_channels() -> Vec<RadioChannel> {
         channels.push(RadioChannel {
             freq_hz: 902_300_000 + i * 1_720_000,
             bandwidth_hz: 200_000,
-            modulation: Modulation::Gfsk { deviation_hz: 100_000, bt: 0.5 },
+            modulation: Modulation::Gfsk {
+                deviation_hz: 100_000,
+                bt: 0.5,
+            },
             tx_power_dbm: Some(8),
             label: format!("Ev915-{}", i),
         });
@@ -1291,15 +1356,20 @@ mod hex_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &[u8; 32], s: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         s.serialize_str(&hex::encode(bytes))
     }
 
     pub fn deserialize<'de, D>(d: D) -> Result<[u8; 32], D::Error>
-    where D: Deserializer<'de> {
+    where
+        D: Deserializer<'de>,
+    {
         let s = String::deserialize(d)?;
         let v = hex::decode(&s).map_err(serde::de::Error::custom)?;
-        v.try_into().map_err(|_| serde::de::Error::custom("expected 32 bytes"))
+        v.try_into()
+            .map_err(|_| serde::de::Error::custom("expected 32 bytes"))
     }
 }
 
@@ -1314,11 +1384,26 @@ mod tests {
     #[test]
     fn test_band_classify() {
         assert_eq!(FrequencyBand::classify(7_074_000), Some(FrequencyBand::Hf));
-        assert_eq!(FrequencyBand::classify(433_920_000), Some(FrequencyBand::Uhf));
-        assert_eq!(FrequencyBand::classify(868_100_000), Some(FrequencyBand::Uhf));
-        assert_eq!(FrequencyBand::classify(2_400_000_000), Some(FrequencyBand::Uhf));
-        assert_eq!(FrequencyBand::classify(5_800_000_000), Some(FrequencyBand::Shf));
-        assert_eq!(FrequencyBand::classify(144_000_000), Some(FrequencyBand::Vhf));
+        assert_eq!(
+            FrequencyBand::classify(433_920_000),
+            Some(FrequencyBand::Uhf)
+        );
+        assert_eq!(
+            FrequencyBand::classify(868_100_000),
+            Some(FrequencyBand::Uhf)
+        );
+        assert_eq!(
+            FrequencyBand::classify(2_400_000_000),
+            Some(FrequencyBand::Uhf)
+        );
+        assert_eq!(
+            FrequencyBand::classify(5_800_000_000),
+            Some(FrequencyBand::Shf)
+        );
+        assert_eq!(
+            FrequencyBand::classify(144_000_000),
+            Some(FrequencyBand::Vhf)
+        );
         assert_eq!(FrequencyBand::classify(1), None);
     }
 
@@ -1336,8 +1421,16 @@ mod tests {
             label: "Test".into(),
         };
         let rate = ch.approx_data_rate_bps();
-        assert!(rate > 100, "SF12 data rate should be > 100bps, got {}", rate);
-        assert!(rate < 1000, "SF12 data rate should be < 1000bps, got {}", rate);
+        assert!(
+            rate > 100,
+            "SF12 data rate should be > 100bps, got {}",
+            rate
+        );
+        assert!(
+            rate < 1000,
+            "SF12 data rate should be < 1000bps, got {}",
+            rate
+        );
 
         // SF7 125kHz should be much higher (~5kbps)
         let ch7 = RadioChannel {
@@ -1381,7 +1474,11 @@ mod tests {
         };
         for epoch in 0..1000u64 {
             let idx = config.channel_for_epoch(epoch);
-            assert!(idx < config.hop_table.len(), "Channel index out of bounds at epoch {}", epoch);
+            assert!(
+                idx < config.hop_table.len(),
+                "Channel index out of bounds at epoch {}",
+                epoch
+            );
         }
     }
 
@@ -1401,7 +1498,11 @@ mod tests {
         }
         let max_count = *counts.iter().max().unwrap();
         // With 1000 epochs and 20 channels, expect ~50 per channel; allow 3x tolerance
-        assert!(max_count < 150, "FHSS distribution is too skewed: max={}", max_count);
+        assert!(
+            max_count < 150,
+            "FHSS distribution is too skewed: max={}",
+            max_count
+        );
     }
 
     #[test]
@@ -1431,7 +1532,10 @@ mod tests {
         ale.record_call_result(7_074_000, true);
         // 7.074MHz should score higher than the failed channel
         let best = ale.select_best_channel().unwrap();
-        assert_ne!(best, 7_000_000, "Heavily failed channel should not be selected");
+        assert_ne!(
+            best, 7_000_000,
+            "Heavily failed channel should not be selected"
+        );
     }
 
     #[test]
@@ -1456,7 +1560,10 @@ mod tests {
         let good = RadioChannel {
             freq_hz: 433_175_000,
             bandwidth_hz: 125_000,
-            modulation: Modulation::LoRaCss { spreading_factor: 9, coding_rate: LoRaCodingRate::Cr45 },
+            modulation: Modulation::LoRaCss {
+                spreading_factor: 9,
+                coding_rate: LoRaCodingRate::Cr45,
+            },
             tx_power_dbm: Some(14),
             label: "Test".into(),
         };
@@ -1498,7 +1605,10 @@ mod tests {
         assert!(config.is_fhss());
         let fhss = config.fhss.as_ref().unwrap();
         // Evasive table spans multiple bands
-        assert!(fhss.hop_table.len() >= 40, "Evasive table should have many channels");
+        assert!(
+            fhss.hop_table.len() >= 40,
+            "Evasive table should have many channels"
+        );
     }
 
     #[test]
@@ -1534,7 +1644,9 @@ mod tests {
     fn test_ism_channel_tables() {
         let ch433 = ism_433_channels();
         assert_eq!(ch433.len(), 20);
-        assert!(ch433.iter().all(|c| FrequencyBand::classify(c.freq_hz) == Some(FrequencyBand::Uhf)));
+        assert!(ch433
+            .iter()
+            .all(|c| FrequencyBand::classify(c.freq_hz) == Some(FrequencyBand::Uhf)));
 
         let ch868 = ism_868_channels();
         assert_eq!(ch868.len(), 8);
@@ -1548,7 +1660,14 @@ mod tests {
 
     #[test]
     fn test_sdr_driver_capabilities() {
-        assert_eq!(SdrDriverType::LoRaChip { model: LoRaChipModel::Sx1276 }.capabilities().has_lora_modem, true);
+        assert_eq!(
+            SdrDriverType::LoRaChip {
+                model: LoRaChipModel::Sx1276
+            }
+            .capabilities()
+            .has_lora_modem,
+            true
+        );
         assert_eq!(SdrDriverType::RtlSdr.capabilities().tx_channels, 0);
         assert_eq!(SdrDriverType::LimeSdr.capabilities().rx_channels, 2);
         assert!(SdrDriverType::Simulated.capabilities().max_freq_hz > 30_000_000_000);

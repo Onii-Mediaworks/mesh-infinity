@@ -37,7 +37,8 @@ use chacha20poly1305::{
     // AEAD cipher for authenticated encryption.
     // Execute this protocol step.
     // Execute this protocol step.
-    ChaCha20Poly1305, Nonce,
+    ChaCha20Poly1305,
+    Nonce,
 };
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
@@ -86,7 +87,9 @@ const HDR_ENC_INFO: &[u8] = b"MeshInfinity_HdrEnc_v1";
 /// non-repeating under a given key, not globally unique.
 // HDR_ENC_NONCE — protocol constant.
 // Defined by the spec; must not change without a version bump.
-const HDR_ENC_NONCE: [u8; 12] = [0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+const HDR_ENC_NONCE: [u8; 12] = [
+    0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+];
 
 /// Maximum number of skipped message keys to cache per peer.
 /// Prevents memory exhaustion from adversarial skip counters.
@@ -306,9 +309,9 @@ fn dh_ratchet_step(
     // Execute this protocol step.
     // Execute this protocol step.
     dh_output: &[u8; 32],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<([u8; 32], [u8; 32]), RatchetError> {
     // Set up the HKDF context for domain-separated key derivation.
     // Compute hk for this protocol step.
@@ -495,9 +498,9 @@ impl DoubleRatchetSession {
         // Execute this protocol step.
         // Execute this protocol step.
         their_ratchet_pub: &[u8; 32],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<Self, RatchetError> {
         // Generate our first ratchet keypair
         // Compute my ratchet secret for this protocol step.
@@ -591,9 +594,9 @@ impl DoubleRatchetSession {
         // Execute this protocol step.
         // Execute this protocol step.
         my_preauth_pub: &[u8; 32],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
@@ -766,9 +769,9 @@ impl DoubleRatchetSession {
         // Execute this protocol step.
         // Execute this protocol step.
         ciphertext: &[u8],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<Vec<u8>, RatchetError> {
         // Check if we have a cached skipped key for this message
         // Compute skip id for this protocol step.
@@ -982,9 +985,9 @@ impl DoubleRatchetSession {
         // Execute this protocol step.
         // Execute this protocol step.
         until: u32,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<(), RatchetError> {
         // Bounds check to enforce protocol constraints.
         // Guard: validate the condition before proceeding.
@@ -1179,17 +1182,20 @@ impl DoubleRatchetSession {
     /// On the wire the encrypted header replaces the plaintext `ratchet_pub`,
     /// `prev_chain_len`, and `msg_num` fields, preventing an observer from
     /// correlating messages by tracking ratchet key changes and counters.
-    pub fn encrypt_header_with_key(header: &RatchetHeader, key: &[u8; 32]) -> Result<Vec<u8>, RatchetError> {
+    pub fn encrypt_header_with_key(
+        header: &RatchetHeader,
+        key: &[u8; 32],
+    ) -> Result<Vec<u8>, RatchetError> {
         // Construct the AEAD cipher from the provided key.
-        let cipher = ChaCha20Poly1305::new_from_slice(key)
-            .map_err(|_| RatchetError::EncryptionFailed)?;
+        let cipher =
+            ChaCha20Poly1305::new_from_slice(key).map_err(|_| RatchetError::EncryptionFailed)?;
         // Serialise the header to a compact JSON representation.
-        let header_json = serde_json::to_vec(header)
-            .map_err(|_| RatchetError::EncryptionFailed)?;
+        let header_json = serde_json::to_vec(header).map_err(|_| RatchetError::EncryptionFailed)?;
         // Encrypt the serialised header with the fixed nonce.
         // Safe because the key is unique per-session and per-peer.
         let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
-        let ciphertext = cipher.encrypt(nonce, header_json.as_slice())
+        let ciphertext = cipher
+            .encrypt(nonce, header_json.as_slice())
             .map_err(|_| RatchetError::EncryptionFailed)?;
         Ok(ciphertext)
     }
@@ -1200,17 +1206,21 @@ impl DoubleRatchetSession {
     /// `RatchetHeader`.  If decryption or deserialisation fails, the caller
     /// should discard the frame — the header was either tampered with or
     /// encrypted under a different key.
-    pub fn decrypt_header_with_key(enc_header: &[u8], key: &[u8; 32]) -> Result<RatchetHeader, RatchetError> {
+    pub fn decrypt_header_with_key(
+        enc_header: &[u8],
+        key: &[u8; 32],
+    ) -> Result<RatchetHeader, RatchetError> {
         // Construct the AEAD cipher from the provided key.
-        let cipher = ChaCha20Poly1305::new_from_slice(key)
-            .map_err(|_| RatchetError::DecryptionFailed)?;
+        let cipher =
+            ChaCha20Poly1305::new_from_slice(key).map_err(|_| RatchetError::DecryptionFailed)?;
         // Decrypt the encrypted header bytes.
         let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
-        let plaintext = cipher.decrypt(nonce, enc_header)
+        let plaintext = cipher
+            .decrypt(nonce, enc_header)
             .map_err(|_| RatchetError::DecryptionFailed)?;
         // Deserialise the JSON header from the decrypted bytes.
-        let header: RatchetHeader = serde_json::from_slice(&plaintext)
-            .map_err(|_| RatchetError::DecryptionFailed)?;
+        let header: RatchetHeader =
+            serde_json::from_slice(&plaintext).map_err(|_| RatchetError::DecryptionFailed)?;
         Ok(header)
     }
 
@@ -1223,7 +1233,9 @@ impl DoubleRatchetSession {
     /// Both sender and receiver derive this from the same static DH
     /// shared secret (our_x25519_secret * their_x25519_pub), so both
     /// can encrypt/decrypt headers independently.
-    pub fn derive_header_key_from_dh(dh_shared_secret: &[u8; 32]) -> Result<[u8; 32], RatchetError> {
+    pub fn derive_header_key_from_dh(
+        dh_shared_secret: &[u8; 32],
+    ) -> Result<[u8; 32], RatchetError> {
         // Set up the HKDF context for domain-separated key derivation.
         let hk = Hkdf::<Sha256>::new(Some(&ZERO_SALT), dh_shared_secret);
         // Allocate the output buffer for the result.
@@ -1420,8 +1432,8 @@ impl DoubleRatchetSession {
         // Process the current step in the protocol.
         // Execute this protocol step.
         msg_key: &[u8; 32],
-    // Begin the block scope.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
     ) -> Result<ExpandedMsgKey, RatchetError> {
         // Key material — must be zeroized when no longer needed.
         // Compute mk for this protocol step.
@@ -1514,7 +1526,15 @@ impl DoubleRatchetSession {
             .into_iter()
             // Transform the result, mapping errors to the local error type.
             // Transform each element.
-            .map(|(ratchet_pub, msg_num, key)| (SkippedKeyId { ratchet_pub, msg_num }, key))
+            .map(|(ratchet_pub, msg_num, key)| {
+                (
+                    SkippedKeyId {
+                        ratchet_pub,
+                        msg_num,
+                    },
+                    key,
+                )
+            })
             // Materialize the iterator into a concrete collection.
             // Collect into a concrete collection.
             .collect();
@@ -1680,7 +1700,11 @@ mod tests {
         let bob_preauth_pub = *X25519Public::from(&bob_preauth_secret).as_bytes();
 
         let alice = DoubleRatchetSession::init_sender(&master_secret, &bob_preauth_pub).unwrap();
-        let bob = DoubleRatchetSession::init_receiver(&master_secret, bob_preauth_secret, &bob_preauth_pub);
+        let bob = DoubleRatchetSession::init_receiver(
+            &master_secret,
+            bob_preauth_secret,
+            &bob_preauth_pub,
+        );
 
         (alice, bob)
     }
@@ -1874,7 +1898,10 @@ mod tests {
 
         // Second decrypt with the identical (header, ciphertext) must fail.
         let second = bob.decrypt(&header, &ciphertext);
-        assert!(second.is_err(), "replay of in-order message must be rejected");
+        assert!(
+            second.is_err(),
+            "replay of in-order message must be rejected"
+        );
     }
 
     #[test]
@@ -1889,14 +1916,19 @@ mod tests {
         let (h2, ct2) = alice.encrypt(b"deliver first").unwrap();
 
         // Bob decrypts msg2 first — this caches the skipped key for msg1.
-        bob.decrypt(&h2, &ct2).expect("out-of-order second message must decrypt");
+        bob.decrypt(&h2, &ct2)
+            .expect("out-of-order second message must decrypt");
 
         // Bob decrypts the skipped msg1 — key is consumed.
-        bob.decrypt(&h1, &ct1).expect("skipped first message must decrypt");
+        bob.decrypt(&h1, &ct1)
+            .expect("skipped first message must decrypt");
 
         // Replaying msg1 now must fail — the skipped key was removed on use.
         let replay = bob.decrypt(&h1, &ct1);
-        assert!(replay.is_err(), "replay of already-consumed skipped key must be rejected");
+        assert!(
+            replay.is_err(),
+            "replay of already-consumed skipped key must be rejected"
+        );
     }
 
     /// Adversarial test: an attacker sends a message whose `msg_num` is
@@ -2088,7 +2120,10 @@ mod tests {
 
         // Encrypted header must differ from plaintext serialisation.
         let plaintext_json = serde_json::to_vec(&header).expect("json");
-        assert_ne!(enc, plaintext_json, "encrypted header must not match plaintext");
+        assert_ne!(
+            enc, plaintext_json,
+            "encrypted header must not match plaintext"
+        );
 
         // Bob decrypts the header using the same key.
         let decrypted = DoubleRatchetSession::decrypt_header_with_key(&enc, &bob_hdr_key)
@@ -2108,8 +2143,8 @@ mod tests {
         let bob_pub = X25519Public::from(&bob_secret);
 
         let dh = alice_secret.diffie_hellman(&bob_pub);
-        let hdr_key = DoubleRatchetSession::derive_header_key_from_dh(dh.as_bytes())
-            .expect("derive key");
+        let hdr_key =
+            DoubleRatchetSession::derive_header_key_from_dh(dh.as_bytes()).expect("derive key");
 
         let header = RatchetHeader {
             ratchet_pub: *bob_pub.as_bytes(),
@@ -2117,8 +2152,8 @@ mod tests {
             msg_num: 0,
         };
 
-        let mut enc = DoubleRatchetSession::encrypt_header_with_key(&header, &hdr_key)
-            .expect("encrypt");
+        let mut enc =
+            DoubleRatchetSession::encrypt_header_with_key(&header, &hdr_key).expect("encrypt");
         // Flip a byte to simulate tampering.
         if let Some(byte) = enc.get_mut(0) {
             *byte ^= 0xFF;
@@ -2140,8 +2175,7 @@ mod tests {
             msg_num: 10,
         };
 
-        let enc = DoubleRatchetSession::encrypt_header_with_key(&header, &key_a)
-            .expect("encrypt");
+        let enc = DoubleRatchetSession::encrypt_header_with_key(&header, &key_a).expect("encrypt");
         // Decryption with a different key must fail.
         assert!(DoubleRatchetSession::decrypt_header_with_key(&enc, &key_b).is_err());
     }

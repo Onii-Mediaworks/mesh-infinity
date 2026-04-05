@@ -20,89 +20,45 @@ use serde::{Deserialize, Serialize};
 
 /// What an exit node can do (§13.2).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// ExitCapabilities — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// ExitCapabilities — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct ExitCapabilities {
     /// Named hosted services accessible through this node.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub hosted_services: Vec<HostedServiceAd>,
     /// Darknet entry capabilities.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub darknet_entry: DarknetEntry,
     /// Conditional exit capabilities (VPN, Infinet, LAN).
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub conditional_exit: Vec<ConditionalExitType>,
     /// Whether this node offers unconditional clearnet exit.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub clearnet_exit: bool,
     /// Whether this node will relay funnel traffic.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub funnel_relay: bool,
 }
 
 /// A hosted service advertised by an exit node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// HostedServiceType — variant enumeration.
-// Match exhaustively to handle every protocol state.
-// HostedServiceType — variant enumeration.
-// Match exhaustively to handle every protocol state.
 pub enum HostedServiceType {
     /// Clearnet domain pattern (e.g., "*.example.com").
-    // Execute this protocol step.
-    // Execute this protocol step.
     ClearnetDomain { pattern: String },
     /// Specific clearnet endpoint.
-    // Execute this protocol step.
-    // Execute this protocol step.
     ClearnetEndpoint { addr: String, port: u16 },
     /// Clearnet IP range.
-    // Execute this protocol step.
-    // Execute this protocol step.
     ClearnetRange { network: String },
     /// Mesh service.
-    // Execute this protocol step.
-    // Execute this protocol step.
     MeshService { service_name: String, port: u32 },
 }
 
 /// Advertised hosted service.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// HostedServiceAd — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// HostedServiceAd — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct HostedServiceAd {
     /// The service type for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub service_type: HostedServiceType,
     /// The description for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub description: Option<String>,
 }
 
 /// Darknet entry capabilities (Tor bridge, I2P, etc.).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-// Begin the block scope.
-// DarknetEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// DarknetEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct DarknetEntry {
     /// The tor bridge for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub tor_bridge: bool,
     /// The i2p router for this instance.
     // Execute this protocol step.
@@ -129,30 +85,17 @@ pub struct DarknetEntry {
     // Execute this protocol step.
     pub dn42: bool,
     /// The briar relay for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub briar_relay: bool,
 }
 
 /// Types of conditional exit.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// ConditionalExitType — variant enumeration.
-// Match exhaustively to handle every protocol state.
-// ConditionalExitType — variant enumeration.
-// Match exhaustively to handle every protocol state.
 pub enum ConditionalExitType {
     /// Route through a VPN provider.
-    // Execute this protocol step.
-    // Execute this protocol step.
     VpnProvider { profile_id: [u8; 16] },
     /// Route through an Infinet.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Infinet { infinet_id: [u8; 32] },
     /// Route to local LAN.
-    // Execute this protocol step.
-    // Execute this protocol step.
     LocalLan,
 }
 
@@ -338,7 +281,10 @@ mod tests {
 
         // Tier 2: darknet.
         let t2 = ExitCapabilities {
-            darknet_entry: DarknetEntry { tor_bridge: true, ..Default::default() },
+            darknet_entry: DarknetEntry {
+                tor_bridge: true,
+                ..Default::default()
+            },
             ..t1.clone()
         };
         assert_eq!(classify_exit_tier(&t2), ExitTier::Tier2);
@@ -354,6 +300,10 @@ mod tests {
     #[test]
     fn test_darknet_has_any() {
         assert!(!DarknetEntry::default().has_any());
-        assert!(DarknetEntry { tor_bridge: true, ..Default::default() }.has_any());
+        assert!(DarknetEntry {
+            tor_bridge: true,
+            ..Default::default()
+        }
+        .has_any());
     }
 }

@@ -614,10 +614,7 @@ mod tests {
         let payload = test_payload(now);
 
         // Expired.
-        assert_eq!(
-            payload.validate(now + 3601),
-            Err(PayloadError::Expired)
-        );
+        assert_eq!(payload.validate(now + 3601), Err(PayloadError::Expired));
     }
 
     #[test]
@@ -639,10 +636,7 @@ mod tests {
         // Corrupt the peer ID.
         payload.peer_id = PeerId([0xFF; 32]);
 
-        assert_eq!(
-            payload.validate(now),
-            Err(PayloadError::PeerIdMismatch)
-        );
+        assert_eq!(payload.validate(now), Err(PayloadError::PeerIdMismatch));
     }
 
     #[test]

@@ -40,7 +40,6 @@
 //! `setsockopt(CAN_RAW, CAN_RAW_FD_FRAMES, 1)`
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -219,6 +218,7 @@ impl Reassembler {
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     // Linux kernel constants for SocketCAN (from <linux/can.h> and <linux/can/raw.h>).
     // SocketCAN is Linux's native CAN subsystem — it exposes CAN hardware as
@@ -244,9 +244,9 @@ mod linux_impl {
     /// SocketCAN `canfd_frame` as defined in `<linux/can/raw.h>`.
     #[repr(C)]
     struct CanFdFrame {
-        can_id: u32,        // CAN ID + EFF/RTR/ERR flags
-        len: u8,            // payload length (0..64 for CAN FD)
-        flags: u8,          // CANFD_BRS, CANFD_ESI
+        can_id: u32, // CAN ID + EFF/RTR/ERR flags
+        len: u8,     // payload length (0..64 for CAN FD)
+        flags: u8,   // CANFD_BRS, CANFD_ESI
         __res0: u8,
         __res1: u8,
         data: [u8; CANFD_MAX_DLEN],
@@ -291,11 +291,7 @@ mod linux_impl {
             // setsockopt(2) and bind(2) are stack-allocated with correct sizes.
             // Cleanup (libc::close) on every error path prevents fd leaks.
             unsafe {
-                let fd = libc::socket(
-                    AF_CAN,
-                    libc::SOCK_RAW,
-                    CAN_RAW,
-                );
+                let fd = libc::socket(AF_CAN, libc::SOCK_RAW, CAN_RAW);
                 if fd < 0 {
                     return Err(CanError::Io(std::io::Error::last_os_error()));
                 }
@@ -415,11 +411,7 @@ mod linux_impl {
                 }
             }
             let payload = &frame.data[..frame.len as usize];
-            let result = self
-                .reassembler
-                .lock()
-                .unwrap()
-                .push(payload);
+            let result = self.reassembler.lock().unwrap().push(payload);
             Ok(result)
         }
 
@@ -432,7 +424,11 @@ mod linux_impl {
                 .spawn(move || loop {
                     match transport.recv_frame() {
                         Ok(Some(pkt)) => {
-                            transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(pkt);
+                            transport
+                                .inbound
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(pkt);
                         }
                         Ok(None) => {} // fragment received, waiting for more
                         Err(_) => break,
@@ -454,11 +450,7 @@ mod linux_impl {
                     .ok()
                     .map(|d| {
                         d.flatten()
-                            .any(|e| {
-                                e.file_name()
-                                    .to_string_lossy()
-                                    .starts_with("can")
-                            })
+                            .any(|e| e.file_name().to_string_lossy().starts_with("can"))
                     })
                     .unwrap_or(false)
         }
@@ -566,9 +558,9 @@ mod tests {
         assert_eq!(frags.len(), 2);
         // Fragment 0 header.
         assert_eq!(frags[0][0], 0x07); // msg_id
-        assert_eq!(frags[0][1], 2);   // total
-        assert_eq!(frags[0][2], 0);   // seq
-        // Fragment 1 header.
+        assert_eq!(frags[0][1], 2); // total
+        assert_eq!(frags[0][2], 0); // seq
+                                    // Fragment 1 header.
         assert_eq!(frags[1][0], 0x07);
         assert_eq!(frags[1][1], 2);
         assert_eq!(frags[1][2], 1);

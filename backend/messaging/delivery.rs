@@ -391,7 +391,10 @@ impl DeliveryTracker {
         // If retrying (Failed → Pending), clear retry timer.
         // Guard: validate the condition before proceeding.
         // Guard: validate the condition before proceeding.
-        if matches!((&self.status, &new_status), (DeliveryStatus::Failed { .. }, DeliveryStatus::Pending)) {
+        if matches!(
+            (&self.status, &new_status),
+            (DeliveryStatus::Failed { .. }, DeliveryStatus::Pending)
+        ) {
             // Update the retry after to reflect the new state.
             // Advance retry after state.
             // Advance retry after state.
@@ -580,8 +583,8 @@ impl DeliveredMessageCache {
         // Retrieve or create the per-room LRU cache.
         let cache = self.rooms.entry(room_id.to_string()).or_insert_with(|| {
             // SAFETY: DEDUP_CACHE_PER_ROOM is a compile-time constant > 0.
-            let capacity = NonZeroUsize::new(DEDUP_CACHE_PER_ROOM)
-                .expect("DEDUP_CACHE_PER_ROOM must be > 0");
+            let capacity =
+                NonZeroUsize::new(DEDUP_CACHE_PER_ROOM).expect("DEDUP_CACHE_PER_ROOM must be > 0");
             LruCache::new(capacity)
         });
         // Insert the message ID; if already present, this is a no-op that
@@ -596,14 +599,15 @@ impl DeliveredMessageCache {
     /// that `from_snapshot` can restore them in the correct eviction order.
     pub fn to_snapshot(&self) -> Vec<(String, Vec<String>)> {
         // Iterate over all rooms and collect their message IDs.
-        self.rooms.iter().map(|(room_id, cache)| {
-            // LruCache::iter returns entries from least-recently-used to
-            // most-recently-used — the correct order for re-insertion.
-            let ids: Vec<String> = cache.iter()
-                .map(|(id, _)| id.clone())
-                .collect();
-            (room_id.clone(), ids)
-        }).collect()
+        self.rooms
+            .iter()
+            .map(|(room_id, cache)| {
+                // LruCache::iter returns entries from least-recently-used to
+                // most-recently-used — the correct order for re-insertion.
+                let ids: Vec<String> = cache.iter().map(|(id, _)| id.clone()).collect();
+                (room_id.clone(), ids)
+            })
+            .collect()
     }
 
     /// Restore the cache from a vault snapshot.
@@ -615,8 +619,8 @@ impl DeliveredMessageCache {
         let mut rooms = std::collections::HashMap::new();
         for (room_id, ids) in snapshot {
             // SAFETY: DEDUP_CACHE_PER_ROOM is a compile-time constant > 0.
-            let capacity = NonZeroUsize::new(DEDUP_CACHE_PER_ROOM)
-                .expect("DEDUP_CACHE_PER_ROOM must be > 0");
+            let capacity =
+                NonZeroUsize::new(DEDUP_CACHE_PER_ROOM).expect("DEDUP_CACHE_PER_ROOM must be > 0");
             let mut cache = LruCache::new(capacity);
             // Insert in snapshot order: first entry = least-recently-used.
             for id in ids {
@@ -641,7 +645,10 @@ mod tests {
         assert!(!DeliveryStatus::Pending.is_terminal());
         assert!(!DeliveryStatus::Sent.is_terminal());
         assert!(DeliveryStatus::Read.is_terminal());
-        assert!(DeliveryStatus::Failed { reason: "timeout".into() }.is_terminal());
+        assert!(DeliveryStatus::Failed {
+            reason: "timeout".into()
+        }
+        .is_terminal());
     }
 
     #[test]
@@ -705,7 +712,9 @@ mod tests {
         // Send and fail.
         tracker.transition(DeliveryStatus::Sending, 1001);
         tracker.transition(
-            DeliveryStatus::Failed { reason: "timeout".into() },
+            DeliveryStatus::Failed {
+                reason: "timeout".into(),
+            },
             1002,
         );
 
@@ -730,7 +739,9 @@ mod tests {
         for i in 0..MAX_RETRIES {
             tracker.transition(DeliveryStatus::Sending, 1000 + i as u64 * 100);
             tracker.transition(
-                DeliveryStatus::Failed { reason: "err".into() },
+                DeliveryStatus::Failed {
+                    reason: "err".into(),
+                },
                 1001 + i as u64 * 100,
             );
             if i < MAX_RETRIES - 1 {
@@ -745,7 +756,9 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let status = DeliveryStatus::Failed { reason: "network error".into() };
+        let status = DeliveryStatus::Failed {
+            reason: "network error".into(),
+        };
         let json = serde_json::to_string(&status).unwrap();
         let recovered: DeliveryStatus = serde_json::from_str(&json).unwrap();
         assert!(matches!(recovered, DeliveryStatus::Failed { .. }));

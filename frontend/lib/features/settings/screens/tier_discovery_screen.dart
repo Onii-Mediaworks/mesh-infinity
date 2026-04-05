@@ -138,22 +138,21 @@ class TierDiscoveryScreen extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton(
-                    onPressed: () {
+                    onPressed: () async {
                       Navigator.pop(context);
-                      settings.enableTier(tier);
-                      // Let the user know what's now available.
+                      final ok = await settings.enableTier(tier);
+                      if (!context.mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            '${_tierName(tier)} unlocked. '
-                            'Find new options in Settings.',
+                            ok
+                                ? '${_tierName(tier)} unlocked. Find new options in Settings.'
+                                : 'Unable to unlock ${_tierName(tier).toLowerCase()} right now.',
                           ),
                         ),
                       );
                     },
-                    style: FilledButton.styleFrom(
-                      backgroundColor: tierColor,
-                    ),
+                    style: FilledButton.styleFrom(backgroundColor: tierColor),
                     child: Text('Unlock ${_tierName(tier)}'),
                   ),
                 ),
@@ -237,9 +236,7 @@ class _TierCard extends StatelessWidget {
                     ),
                     child: Text(
                       'Active',
-                      style: tt.labelSmall?.copyWith(
-                        color: MeshTheme.secGreen,
-                      ),
+                      style: tt.labelSmall?.copyWith(color: MeshTheme.secGreen),
                     ),
                   ),
               ],
@@ -264,11 +261,7 @@ class _TierCard extends StatelessWidget {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(
-                          Icons.check_rounded,
-                          size: 14,
-                          color: tierColor,
-                        ),
+                        Icon(Icons.check_rounded, size: 14, color: tierColor),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -311,13 +304,8 @@ class _TierCard extends StatelessWidget {
 // and _TierCard can call them without passing a reference.
 
 /// Human-readable name for each tier.
-String _tierName(MeshTier t) => const [
-  'Social',
-  'Network',
-  'Infinet',
-  'Services',
-  'Power',
-][t.index];
+String _tierName(MeshTier t) =>
+    const ['Social', 'Network', 'Infinet', 'Services', 'Power'][t.index];
 
 /// Icon representing the tier in the header strip.
 IconData _tierIcon(MeshTier t) => const [
@@ -331,11 +319,11 @@ IconData _tierIcon(MeshTier t) => const [
 /// Accent colour for the tier.  Each tier has a distinct colour so users
 /// can quickly identify which tier a feature belongs to.
 Color _tierColour(MeshTier t) => [
-  MeshTheme.brand,          // Social     — brand blue
-  MeshTheme.secGreen,       // Network    — green (VPN = go / active)
-  MeshTheme.secAmber,       // Infinet    — amber (advanced, proceed with thought)
-  const Color(0xFF8B5CF6),  // Services   — purple (power-user territory)
-  MeshTheme.secRed,         // Power      — red (maximum capability / maximum care)
+  MeshTheme.brand, // Social     — brand blue
+  MeshTheme.secGreen, // Network    — green (VPN = go / active)
+  MeshTheme.secAmber, // Infinet    — amber (advanced, proceed with thought)
+  const Color(0xFF8B5CF6), // Services   — purple (power-user territory)
+  MeshTheme.secRed, // Power      — red (maximum capability / maximum care)
 ][t.index];
 
 /// One-sentence tagline for the tier.

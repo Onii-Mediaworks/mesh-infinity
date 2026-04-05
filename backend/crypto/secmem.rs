@@ -81,15 +81,13 @@ impl<T: Zeroize> SecureMemory<T> {
         // Execute this protocol step.
         init_panic_handler();
 
-        // `mut` is required by the `#[cfg(unix)]` block below (calls `data.as_mut()`).
-        // On non-unix platforms (Windows) that block is compiled out, so the compiler
-        // warns that `mut` is unnecessary.  The cfg_attr below is precise: it only
-        // silences the warning on platforms where the mut is genuinely redundant.
-        #[cfg_attr(not(unix), allow(unused_mut))]
         // Prepare the data buffer for the next processing stage.
         // Compute data for this protocol step.
         // Compute data for this protocol step.
+        #[cfg(unix)]
         let mut data = Box::new(value);
+        #[cfg(not(unix))]
+        let data = Box::new(value);
 
         #[cfg(unix)]
         {
@@ -205,7 +203,6 @@ impl<T: Zeroize> SecureMemory<T> {
             self.locked = false;
         }
     }
-
 }
 
 // Securely erase key material to prevent forensic recovery.

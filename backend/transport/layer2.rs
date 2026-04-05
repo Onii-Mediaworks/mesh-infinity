@@ -114,7 +114,6 @@ impl std::str::FromStr for MacAddress {
 }
 
 impl MacAddress {
-
     /// Returns `true` if this is the Ethernet broadcast address
     /// `FF:FF:FF:FF:FF:FF`.
     pub fn is_broadcast(&self) -> bool {
@@ -203,13 +202,19 @@ impl std::fmt::Display for Layer2Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Layer2Error::NotAvailable => {
-                write!(f, "Layer 2 raw Ethernet transport is not available on this platform")
+                write!(
+                    f,
+                    "Layer 2 raw Ethernet transport is not available on this platform"
+                )
             }
             Layer2Error::InterfaceNotFound(name) => {
                 write!(f, "network interface not found: {}", name)
             }
             Layer2Error::PermissionDenied => {
-                write!(f, "permission denied: CAP_NET_RAW or root is required for AF_PACKET sockets")
+                write!(
+                    f,
+                    "permission denied: CAP_NET_RAW or root is required for AF_PACKET sockets"
+                )
             }
             Layer2Error::IoError(msg) => write!(f, "I/O error: {}", msg),
             Layer2Error::FrameTooLarge => write!(
@@ -284,11 +289,7 @@ mod linux {
         pub fn list_interfaces() -> Vec<String> {
             datalink::interfaces()
                 .into_iter()
-                .filter(|iface| {
-                    !iface.is_loopback()
-                        && iface.is_up()
-                        && iface.mac.is_some()
-                })
+                .filter(|iface| !iface.is_loopback() && iface.is_up() && iface.mac.is_some())
                 .map(|iface| iface.name.clone())
                 .collect()
         }
@@ -353,11 +354,7 @@ mod linux {
         ///
         /// - [`Layer2Error::FrameTooLarge`] if `payload.len() > MAX_PAYLOAD`.
         /// - [`Layer2Error::IoError`] if `send` returns an error or `None`.
-        pub fn send_to(
-            &self,
-            dst_mac: &MacAddress,
-            payload: &[u8],
-        ) -> Result<(), Layer2Error> {
+        pub fn send_to(&self, dst_mac: &MacAddress, payload: &[u8]) -> Result<(), Layer2Error> {
             if payload.len() > MAX_PAYLOAD {
                 return Err(Layer2Error::FrameTooLarge);
             }
@@ -391,9 +388,7 @@ mod linux {
 
             let mut guard = self.tx.lock().unwrap_or_else(|e| e.into_inner());
             let tx = guard.as_mut().ok_or_else(|| {
-                Layer2Error::IoError(
-                    "TX channel has been consumed by the receive loop".to_owned(),
-                )
+                Layer2Error::IoError("TX channel has been consumed by the receive loop".to_owned())
             })?;
 
             match tx.send_to(&frame_buf, None) {
@@ -442,11 +437,7 @@ mod linux {
                     match rx.next() {
                         Ok(raw) => {
                             if let Some(frame) = Self::try_decode_frame(raw) {
-                                transport
-                                    .inbound
-                                    .lock()
-                                    .unwrap()
-                                    .push_back(frame);
+                                transport.inbound.lock().unwrap().push_back(frame);
                             }
                         }
                         Err(e) => {
@@ -553,9 +544,7 @@ mod stub {
     /// present so that code that conditionally uses Layer 2 can be compiled
     /// on all platforms without `#[cfg]` guards at every call site.
     pub struct Layer2Transport {
-        pub(super) interface_name: String,
         pub(super) our_mac: MacAddress,
-        pub(super) inbound: Mutex<VecDeque<Layer2Frame>>,
     }
 
     impl Layer2Transport {

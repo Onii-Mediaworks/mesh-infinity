@@ -450,10 +450,10 @@ impl TunnelSession {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
@@ -712,10 +712,10 @@ impl FragmentReassembler {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Option<Vec<u8>> {
         // Key material — must be zeroized when no longer needed.
         // Compute key for this protocol step.
@@ -955,10 +955,10 @@ impl TunnelManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> TunnelAccept {
         // Conditional branch based on the current state.
         // Guard: validate the condition before proceeding.
@@ -1117,10 +1117,10 @@ impl TunnelManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Option<Vec<u8>> {
         // Update session activity.
         // Guard: validate the condition before proceeding.
@@ -1288,7 +1288,9 @@ mod tests {
     fn make_request(id: u8) -> TunnelRequest {
         TunnelRequest {
             session_id: [id; 16],
-            target: ServiceTarget::ById { service_id: [0xAA; 16] },
+            target: ServiceTarget::ById {
+                service_id: [0xAA; 16],
+            },
             proto: TunnelProto::TCP,
             requested_at: 1000,
             requester_id: [0x01; 32],
@@ -1357,7 +1359,9 @@ mod tests {
         };
 
         // First fragment: not complete yet.
-        assert!(reassembler.process(sid, &frag0, vec![0xAA; 100], 1000).is_none());
+        assert!(reassembler
+            .process(sid, &frag0, vec![0xAA; 100], 1000)
+            .is_none());
         assert_eq!(reassembler.pending_count(), 1);
 
         // Second fragment: complete.
@@ -1395,7 +1399,12 @@ mod tests {
         mgr.handle_request(&make_request(0x01), true, 1400, 1000);
 
         // Keepalive at 1500 — session not idle yet.
-        mgr.keepalive(&TunnelKeepalive { session_id: [0x01; 16] }, 1500);
+        mgr.keepalive(
+            &TunnelKeepalive {
+                session_id: [0x01; 16],
+            },
+            1500,
+        );
 
         // GC at 1500 + IDLE_TIMEOUT - shouldn't close because keepalive reset timer.
         let closed = mgr.gc(1500 + TUNNEL_IDLE_TIMEOUT_SECS - 1);
@@ -1474,7 +1483,10 @@ mod tests {
             1400,
             1000,
         );
-        assert!(!ack.accepted, "Untrusted peer must be rejected from ssh service");
+        assert!(
+            !ack.accepted,
+            "Untrusted peer must be rejected from ssh service"
+        );
         assert_eq!(ack.reject_reason, Some(TunnelRejectReason::AccessDenied));
     }
 
@@ -1506,13 +1518,19 @@ mod tests {
 
         // Specific peer is Trusted but should hit the explicit Deny first.
         let perm = acl.check_service(&specific_peer, TrustLevel::Trusted, &[], "ssh");
-        assert_eq!(perm, AclPermission::Deny, "Explicit deny must fire before the allow rule");
+        assert_eq!(
+            perm,
+            AclPermission::Deny,
+            "Explicit deny must fire before the allow rule"
+        );
 
         let mut mgr = TunnelManager::new();
         let ack = mgr.handle_request(
             &TunnelRequest {
                 session_id: [0xDE; 16],
-                target: ServiceTarget::ById { service_id: [0xAA; 16] },
+                target: ServiceTarget::ById {
+                    service_id: [0xAA; 16],
+                },
                 proto: TunnelProto::TCP,
                 requested_at: 1000,
                 requester_id: [0xDE; 32],

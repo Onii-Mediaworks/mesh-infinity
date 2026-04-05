@@ -16,7 +16,7 @@ pub mod state_machine;
 // Sub-module: capabilities — see module-level docs for details.
 pub mod capabilities;
 // Sub-module: endorsement — see module-level docs for details.
-pub mod endorsement;
-pub mod promotion;
 pub mod acl;
+pub mod endorsement;
 pub mod governance;
+pub mod promotion;

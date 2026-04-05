@@ -23,7 +23,8 @@ use chacha20poly1305::{
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    ChaCha20Poly1305, Nonce,
+    ChaCha20Poly1305,
+    Nonce,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -42,13 +43,13 @@ use zeroize::Zeroizing;
 // MIN_M_COST — protocol constant.
 // Defined by the spec; must not change without a version bump.
 const MIN_M_COST: u32 = 65536; // 64 MB
-// Protocol constant.
-// MIN_T_COST — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// MIN_T_COST — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// MIN_T_COST — protocol constant.
-// Defined by the spec; must not change without a version bump.
+                               // Protocol constant.
+                               // MIN_T_COST — protocol constant.
+                               // Defined by the spec; must not change without a version bump.
+                               // MIN_T_COST — protocol constant.
+                               // Defined by the spec; must not change without a version bump.
+                               // MIN_T_COST — protocol constant.
+                               // Defined by the spec; must not change without a version bump.
 const MIN_T_COST: u32 = 3;
 // Protocol constant.
 // MIN_P_COST — protocol constant.
@@ -250,10 +251,10 @@ pub fn create_backup(
     // Execute this protocol step.
     // Execute this protocol step.
     is_cloud: bool,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<EncryptedBackup, BackupError> {
     // Enforce passphrase length (§3.7.4)
     // Compute min len for this protocol step.
@@ -427,10 +428,10 @@ pub fn restore_backup(
     // Execute this protocol step.
     // Execute this protocol step.
     passphrase: &[u8],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<(Vec<u8>, BackupType), BackupError> {
     // Validate version
     // Guard: validate the condition before proceeding.
@@ -485,10 +486,10 @@ pub fn restore_backup(
         // Execute this protocol step.
         // Execute this protocol step.
         backup.p_cost,
-    // Propagate errors via the ? operator — callers handle failures.
-    // Propagate errors via ?.
-    // Propagate errors via ?.
-    // Propagate errors via ?.
+        // Propagate errors via the ? operator — callers handle failures.
+        // Propagate errors via ?.
+        // Propagate errors via ?.
+        // Propagate errors via ?.
     )?;
 
     // Validate nonce length (ChaCha20-Poly1305 requires exactly 12 bytes).
@@ -615,10 +616,10 @@ fn derive_backup_key(
     // Execute this protocol step.
     // Execute this protocol step.
     p_cost: u32,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Zeroizing<[u8; 32]>, BackupError> {
     // Configure the operation parameters.
     // Compute params for this protocol step.
@@ -673,8 +674,7 @@ mod tests {
         let payload = b"secret backup data with trust graph and contacts";
         let passphrase = b"correct horse battery staple!";
 
-        let backup =
-            create_backup(payload, passphrase, BackupType::Standard, false).unwrap();
+        let backup = create_backup(payload, passphrase, BackupType::Standard, false).unwrap();
         let (restored, bt) = restore_backup(&backup, passphrase).unwrap();
 
         assert_eq!(restored, payload);
@@ -692,13 +692,19 @@ mod tests {
     #[test]
     fn test_cloud_passphrase_minimum() {
         let result = create_backup(b"data", b"short", BackupType::Standard, true);
-        assert!(matches!(result, Err(BackupError::PassphraseTooShort { required: 16, .. })));
+        assert!(matches!(
+            result,
+            Err(BackupError::PassphraseTooShort { required: 16, .. })
+        ));
     }
 
     #[test]
     fn test_local_passphrase_minimum() {
         let result = create_backup(b"data", b"1234567", BackupType::Standard, false);
-        assert!(matches!(result, Err(BackupError::PassphraseTooShort { required: 8, .. })));
+        assert!(matches!(
+            result,
+            Err(BackupError::PassphraseTooShort { required: 8, .. })
+        ));
 
         let result = create_backup(b"data", b"12345678", BackupType::Standard, false);
         assert!(result.is_ok());
@@ -709,16 +715,14 @@ mod tests {
         let payload = b"extended backup with message history";
         let passphrase = b"long enough passphrase for cloud!";
 
-        let backup =
-            create_backup(payload, passphrase, BackupType::Extended, true).unwrap();
+        let backup = create_backup(payload, passphrase, BackupType::Extended, true).unwrap();
         let (_, bt) = restore_backup(&backup, passphrase).unwrap();
         assert_eq!(bt, BackupType::Extended);
     }
 
     #[test]
     fn test_backup_serialization() {
-        let backup =
-            create_backup(b"test", b"passphrase!!", BackupType::Standard, false).unwrap();
+        let backup = create_backup(b"test", b"passphrase!!", BackupType::Standard, false).unwrap();
         let json = serde_json::to_string(&backup).unwrap();
         let recovered: EncryptedBackup = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.version, BACKUP_VERSION);
@@ -726,8 +730,7 @@ mod tests {
 
     #[test]
     fn test_param_upgrade_check() {
-        let backup =
-            create_backup(b"test", b"passphrase!!", BackupType::Standard, false).unwrap();
+        let backup = create_backup(b"test", b"passphrase!!", BackupType::Standard, false).unwrap();
         assert!(!needs_param_upgrade(&backup)); // Current params, no upgrade needed
 
         let weak = EncryptedBackup {
@@ -741,43 +744,79 @@ mod tests {
 
     #[test]
     fn test_malformed_empty_salt_rejected() {
-        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
-        let bad = EncryptedBackup { argon2id_salt: vec![], ..backup };
+        let backup =
+            create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup {
+            argon2id_salt: vec![],
+            ..backup
+        };
         let result = restore_backup(&bad, b"passphrase123");
         assert!(result.is_err(), "empty salt must be rejected");
     }
 
     #[test]
     fn test_malformed_wrong_nonce_length_rejected() {
-        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
-        let bad = EncryptedBackup { nonce: vec![0u8; 8], ..backup }; // 8 bytes instead of 12
+        let backup =
+            create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup {
+            nonce: vec![0u8; 8],
+            ..backup
+        }; // 8 bytes instead of 12
         let result = restore_backup(&bad, b"passphrase123");
         assert!(result.is_err(), "wrong-length nonce must be rejected");
     }
 
     #[test]
     fn test_malformed_truncated_ciphertext_rejected() {
-        let backup = create_backup(b"hello world", b"passphrase123", BackupType::Standard, false).unwrap();
+        let backup = create_backup(
+            b"hello world",
+            b"passphrase123",
+            BackupType::Standard,
+            false,
+        )
+        .unwrap();
         let truncated = backup.ciphertext[..backup.ciphertext.len() / 2].to_vec();
-        let bad = EncryptedBackup { ciphertext: truncated, ..backup };
+        let bad = EncryptedBackup {
+            ciphertext: truncated,
+            ..backup
+        };
         let result = restore_backup(&bad, b"passphrase123");
-        assert!(result.is_err(), "truncated ciphertext must fail AEAD verification");
+        assert!(
+            result.is_err(),
+            "truncated ciphertext must fail AEAD verification"
+        );
     }
 
     #[test]
     fn test_malformed_tampered_ciphertext_rejected() {
-        let backup = create_backup(b"hello world", b"passphrase123", BackupType::Standard, false).unwrap();
+        let backup = create_backup(
+            b"hello world",
+            b"passphrase123",
+            BackupType::Standard,
+            false,
+        )
+        .unwrap();
         let mut tampered = backup.ciphertext.clone();
         tampered[0] ^= 0xFF;
-        let bad = EncryptedBackup { ciphertext: tampered, ..backup };
+        let bad = EncryptedBackup {
+            ciphertext: tampered,
+            ..backup
+        };
         let result = restore_backup(&bad, b"passphrase123");
-        assert!(result.is_err(), "tampered ciphertext must fail AEAD verification");
+        assert!(
+            result.is_err(),
+            "tampered ciphertext must fail AEAD verification"
+        );
     }
 
     #[test]
     fn test_malformed_unknown_version_rejected() {
-        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
-        let bad = EncryptedBackup { version: 99, ..backup };
+        let backup =
+            create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup {
+            version: 99,
+            ..backup
+        };
         let result = restore_backup(&bad, b"passphrase123");
         assert!(
             matches!(result, Err(BackupError::UnknownVersion(99))),
@@ -787,8 +826,12 @@ mod tests {
 
     #[test]
     fn test_malformed_weak_params_rejected() {
-        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
-        let bad = EncryptedBackup { m_cost: 1024, ..backup };
+        let backup =
+            create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup {
+            m_cost: 1024,
+            ..backup
+        };
         let result = restore_backup(&bad, b"passphrase123");
         assert!(
             matches!(result, Err(BackupError::WeakParams)),
@@ -798,8 +841,12 @@ mod tests {
 
     #[test]
     fn test_malformed_invalid_backup_type_rejected() {
-        let backup = create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
-        let bad = EncryptedBackup { backup_type: 0xFF, ..backup };
+        let backup =
+            create_backup(b"payload", b"passphrase123", BackupType::Standard, false).unwrap();
+        let bad = EncryptedBackup {
+            backup_type: 0xFF,
+            ..backup
+        };
         // Must decrypt successfully (AEAD is intact) but fail on backup_type parse.
         // However, since the ciphertext was not re-encrypted, it will fail AEAD.
         // In practice: backup_type is not part of AEAD AAD so it CAN be tampered.

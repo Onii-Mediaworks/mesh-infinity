@@ -50,12 +50,12 @@
 //! `decline_message_request` silently removes the queue entry.  The sender
 //! receives no notification — this is intentional.
 
-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 use crate::identity::peer_id::PeerId;
+use crate::messaging::room::Room;
 use crate::pairing::contact::ContactRecord;
 use crate::pairing::methods::PairingMethod;
-use crate::messaging::room::Room;
 use crate::service::runtime::MeshRuntime;
 use crate::trust::levels::TrustLevel;
 
@@ -81,7 +81,11 @@ impl MeshRuntime {
             _ => return false,
         };
         let ed_bytes: [u8; 32] = match hex::decode(ed_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
 
@@ -91,7 +95,11 @@ impl MeshRuntime {
             _ => return false,
         };
         let _x_bytes: [u8; 32] = match hex::decode(x_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
 
@@ -118,7 +126,11 @@ impl MeshRuntime {
             _ => return false,
         };
         let sig_bytes: [u8; 64] = match hex::decode(sig_hex) {
-            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 64 => {
+                let mut a = [0u8; 64];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
 
@@ -127,7 +139,8 @@ impl MeshRuntime {
         // via stored/replayed frames.  We allow 60 s of clock skew.
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         const THIRTY_DAYS_SECS: u64 = 30 * 24 * 3600;
         const CLOCK_SKEW_SECS: u64 = 60;
         if ts + THIRTY_DAYS_SECS < now_secs || ts > now_secs + CLOCK_SKEW_SECS {
@@ -167,8 +180,12 @@ impl MeshRuntime {
         // pairing on another device and this frame arriving), skip the request
         // queue and let the normal message delivery path handle it.
         let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
-        let already_paired = self.contacts.lock().unwrap_or_else(|e| e.into_inner())
-            .get(&peer_id).is_some();
+        let already_paired = self
+            .contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&peer_id)
+            .is_some();
         if already_paired {
             // Silently discard — paired peers use normal encrypted message flow.
             return true;
@@ -177,12 +194,16 @@ impl MeshRuntime {
         // ---- Rate limiting --------------------------------------------------
         let sender_hex = hex::encode(peer_id.0);
         {
-            let queue = self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner());
+            let queue = self
+                .pending_message_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
 
             // Max 5 pending requests per sender.
-            let sender_count = queue.iter().filter(|r| {
-                r.get("peerId").and_then(|v| v.as_str()) == Some(&sender_hex)
-            }).count();
+            let sender_count = queue
+                .iter()
+                .filter(|r| r.get("peerId").and_then(|v| v.as_str()) == Some(&sender_hex))
+                .count();
             if sender_count >= 5 {
                 return true; // Silently drop — flood protection.
             }
@@ -194,7 +215,8 @@ impl MeshRuntime {
         }
 
         // ---- Build and enqueue the request ----------------------------------
-        let display_name = envelope.get("display_name")
+        let display_name = envelope
+            .get("display_name")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             // Cap display names at 64 chars to prevent oversized entries.
@@ -230,7 +252,9 @@ impl MeshRuntime {
             "_msg_id":        msg_id,
         });
 
-        self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner())
+        self.pending_message_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .push(request.clone());
 
         self.save_message_requests();
@@ -259,15 +283,23 @@ impl MeshRuntime {
     /// `senderName`, `trustLevel`, `messagePreview`, `timestamp`).
     /// Internal `_*` fields are stripped before returning.
     pub fn message_requests_json(&self) -> String {
-        let queue = self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner());
-        let public: Vec<serde_json::Value> = queue.iter().map(|r| serde_json::json!({
-            "id":             r["id"],
-            "peerId":         r["peerId"],
-            "senderName":     r["senderName"],
-            "trustLevel":     r["trustLevel"],
-            "messagePreview": r["messagePreview"],
-            "timestamp":      r["timestamp"],
-        })).collect();
+        let queue = self
+            .pending_message_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let public: Vec<serde_json::Value> = queue
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id":             r["id"],
+                    "peerId":         r["peerId"],
+                    "senderName":     r["senderName"],
+                    "trustLevel":     r["trustLevel"],
+                    "messagePreview": r["messagePreview"],
+                    "timestamp":      r["timestamp"],
+                })
+            })
+            .collect();
         serde_json::to_string(&public).unwrap_or_else(|_| "[]".to_string())
     }
 
@@ -289,34 +321,61 @@ impl MeshRuntime {
     pub fn accept_message_request(&self, request_id: &str) -> Result<(), String> {
         // Find and remove the request from the queue atomically.
         let request = {
-            let mut queue = self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner());
-            let pos = queue.iter().position(|r| {
-                r.get("id").and_then(|v| v.as_str()) == Some(request_id)
-            }).ok_or_else(|| format!("message request '{}' not found", request_id))?;
+            let mut queue = self
+                .pending_message_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let pos = queue
+                .iter()
+                .position(|r| r.get("id").and_then(|v| v.as_str()) == Some(request_id))
+                .ok_or_else(|| format!("message request '{}' not found", request_id))?;
             queue.remove(pos)
         };
 
         // Extract internal fields we stored at request-queue time.
-        let ed_hex = request.get("_ed25519").and_then(|v| v.as_str())
+        let ed_hex = request
+            .get("_ed25519")
+            .and_then(|v| v.as_str())
             .ok_or("request missing _ed25519")?;
-        let x_hex = request.get("_x25519").and_then(|v| v.as_str())
+        let x_hex = request
+            .get("_x25519")
+            .and_then(|v| v.as_str())
             .ok_or("request missing _x25519")?;
-        let text = request.get("_text").and_then(|v| v.as_str())
-            .unwrap_or("").to_string();
+        let text = request
+            .get("_text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let ts = request.get("_ts").and_then(|v| v.as_u64()).unwrap_or(0);
-        let msg_id = request.get("_msg_id").and_then(|v| v.as_str())
-            .unwrap_or(request_id).to_string();
-        let display_name_stored = request.get("senderName").and_then(|v| v.as_str())
-            .unwrap_or("").to_string();
+        let msg_id = request
+            .get("_msg_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(request_id)
+            .to_string();
+        let display_name_stored = request
+            .get("senderName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         // Decode public key bytes.
         let ed_bytes: [u8; 32] = hex::decode(ed_hex)
-            .ok().filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+            .ok()
+            .filter(|b| b.len() == 32)
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            })
             .ok_or("invalid _ed25519")?;
         let x_bytes: [u8; 32] = hex::decode(x_hex)
-            .ok().filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+            .ok()
+            .filter(|b| b.len() == 32)
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            })
             .ok_or("invalid _x25519")?;
 
         let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
@@ -324,7 +383,8 @@ impl MeshRuntime {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         // ---- Create ContactRecord -------------------------------------------
         // Trust level: Acquaintance (5) — they reached out but haven't been
@@ -342,14 +402,22 @@ impl MeshRuntime {
         }
 
         // Persist the new contact.
-        self.contacts.lock().unwrap_or_else(|e| e.into_inner()).upsert(contact);
+        self.contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upsert(contact);
         self.save_contacts();
         // Seed a routing entry for the new contact.
         self.rebuild_routing_table_from_contacts();
 
         // ---- Auto-create DM room -------------------------------------------
-        let our_peer_id = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map(|id| id.peer_id()).unwrap_or(PeerId([0u8; 32]));
+        let our_peer_id = self
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|id| id.peer_id())
+            .unwrap_or(PeerId([0u8; 32]));
         let peer_name = if display_name_stored.is_empty() {
             peer_id.short_hex()
         } else {
@@ -358,10 +426,17 @@ impl MeshRuntime {
         let room = Room::new_dm(our_peer_id, peer_id, &peer_name);
         let room_id_hex = hex::encode(room.id);
 
-        let room_already_exists = self.rooms.lock().unwrap_or_else(|e| e.into_inner())
-            .iter().any(|r| hex::encode(r.id) == room_id_hex);
+        let room_already_exists = self
+            .rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|r| hex::encode(r.id) == room_id_hex);
         if !room_already_exists {
-            self.rooms.lock().unwrap_or_else(|e| e.into_inner()).push(room);
+            self.rooms
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(room);
             self.save_rooms();
         }
 
@@ -375,7 +450,9 @@ impl MeshRuntime {
             "isOutgoing": false,
             "authStatus": "authenticated",
         });
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(room_id_hex.clone())
             .or_default()
             .push(msg.clone());
@@ -400,13 +477,18 @@ impl MeshRuntime {
         self.push_event("MessageAdded", msg);
         let room_summary = {
             let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-            rooms.iter().find(|r| hex::encode(r.id) == room_id_hex).map(|r| serde_json::json!({
-                "id":          hex::encode(r.id),
-                "name":        r.name,
-                "lastMessage": r.last_message_preview,
-                "unreadCount": r.unread_count,
-                "timestamp":   r.last_message_at,
-            }))
+            rooms
+                .iter()
+                .find(|r| hex::encode(r.id) == room_id_hex)
+                .map(|r| {
+                    serde_json::json!({
+                        "id":          hex::encode(r.id),
+                        "name":        r.name,
+                        "lastMessage": r.last_message_preview,
+                        "unreadCount": r.unread_count,
+                        "timestamp":   r.last_message_at,
+                    })
+                })
         };
         if let Some(summary) = room_summary {
             self.push_event("RoomUpdated", summary);
@@ -433,10 +515,14 @@ impl MeshRuntime {
     ///
     /// Returns `Ok(())` on success, `Err(reason)` if the ID is not found.
     pub fn decline_message_request(&self, request_id: &str) -> Result<(), String> {
-        let mut queue = self.pending_message_requests.lock().unwrap_or_else(|e| e.into_inner());
-        let pos = queue.iter().position(|r| {
-            r.get("id").and_then(|v| v.as_str()) == Some(request_id)
-        }).ok_or_else(|| format!("message request '{}' not found", request_id))?;
+        let mut queue = self
+            .pending_message_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let pos = queue
+            .iter()
+            .position(|r| r.get("id").and_then(|v| v.as_str()) == Some(request_id))
+            .ok_or_else(|| format!("message request '{}' not found", request_id))?;
         queue.remove(pos);
         drop(queue);
         self.save_message_requests();

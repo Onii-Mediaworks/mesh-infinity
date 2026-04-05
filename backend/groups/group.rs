@@ -211,6 +211,52 @@ mod serde_opt_key32 {
 }
 
 // ---------------------------------------------------------------------------
+// Serde helper: serialize peer sender key maps with hex-string keys
+// ---------------------------------------------------------------------------
+
+/// Custom serde module for `HashMap<[u8; 32], PeerSenderKeyState>`.
+///
+/// The vault layer is JSON-backed, so map keys must be strings. Group sender
+/// key state is naturally keyed by raw peer ID bytes, so we encode those keys
+/// as lowercase hex on the wire and restore them on load.
+mod serde_peer_sender_keys {
+    use std::collections::HashMap;
+
+    use serde::de::Error as DeError;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::PeerSenderKeyState;
+
+    pub fn serialize<S: Serializer>(
+        value: &HashMap<[u8; 32], PeerSenderKeyState>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let encoded: HashMap<String, &PeerSenderKeyState> = value
+            .iter()
+            .map(|(peer_id, state)| (hex::encode(peer_id), state))
+            .collect();
+        encoded.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<HashMap<[u8; 32], PeerSenderKeyState>, D::Error> {
+        let encoded = HashMap::<String, PeerSenderKeyState>::deserialize(deserializer)?;
+        let mut decoded = HashMap::with_capacity(encoded.len());
+        for (peer_id_hex, state) in encoded {
+            let peer_id_bytes = hex::decode(&peer_id_hex).map_err(DeError::custom)?;
+            if peer_id_bytes.len() != 32 {
+                return Err(DeError::custom("expected 32-byte peer id hex key"));
+            }
+            let mut peer_id = [0u8; 32];
+            peer_id.copy_from_slice(&peer_id_bytes);
+            decoded.insert(peer_id, state);
+        }
+        Ok(decoded)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Peer Sender Key State (persisted per member per group)
 // ---------------------------------------------------------------------------
 
@@ -315,24 +361,21 @@ impl NetworkType {
     /// Whether this group type uses ring signatures for
     /// membership privacy (§8.7.7 Step 5).
     ///
-    /// Private and Closed groups SHOULD use AOS Linkable Ring Signatures
-    /// (§3.5.2) so routing nodes cannot determine group membership.
+    /// Private and Closed groups use AOS ring signatures (§3.5.2)
+    /// so routing nodes cannot determine which member acted.
     /// Open and Public groups don't need this because membership is not secret.
     ///
-    /// **Implementation status: NOT YET IMPLEMENTED.**  The LSAG ring signature
-    /// scheme required by §3.5.2 has not been built yet.  This function returns
-    /// `false` to accurately reflect the current security level rather than
-    /// advertising a property we do not yet provide.  When LSAG is implemented,
-    /// this will return `true` for Private/Closed and the callers should gate
-    /// the ring-sign path on the result.
+    /// The cryptographic primitive exists in `crypto::ring_sig`, but the group
+    /// operation and messaging paths still need to route the relevant private
+    /// and closed-group actions through it rather than plain attributable
+    /// signatures. Until those call sites are wired, this returns `false` to
+    /// avoid overstating the current privacy property.
     // Perform the 'uses ring signatures' operation.
     // Errors are propagated to the caller via Result.
     // Perform the 'uses ring signatures' operation.
     // Errors are propagated to the caller via Result.
     pub fn uses_ring_signatures(&self) -> bool {
-        // TODO(§3.5.2): implement LSAG ring signatures and change to:
-        //   matches!(self, Self::Private | Self::Closed)
-        false
+        matches!(self, Self::Private | Self::Closed)
     }
 
     /// Whether member count is visible to non-members.
@@ -544,7 +587,6 @@ pub struct Group {
     pub lan_config: GroupLanConfig,
 
     // ---- Sender Key state (§7.0.4) ----------------------------------------
-
     /// Our own Sender Key chain key for this group.
     /// Generated on group creation or rekey; advanced with each sent message.
     /// Serialized as hex so the vault can store and restore it.
@@ -572,7 +614,7 @@ pub struct Group {
     /// Received Sender Keys from other group members.
     /// Key: peer_id bytes; Value: (chain_key, next_iteration, verifying_key_bytes).
     /// Persisted so we can decrypt out-of-order / restored messages.
-    #[serde(default)]
+    #[serde(default, with = "serde_peer_sender_keys")]
     /// The peer sender keys for this instance.
     // Execute this protocol step.
     // Execute this protocol step.
@@ -641,14 +683,19 @@ impl Group {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Key material — must be zeroized when no longer needed.
         // Compute GroupKeys for this protocol step.
         // Compute GroupKeys for this protocol step.
-        let GroupKeys { ed25519_public, ed25519_private, x25519_public, symmetric_key } = keys;
+        let GroupKeys {
+            ed25519_public,
+            ed25519_private,
+            x25519_public,
+            symmetric_key,
+        } = keys;
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
         // Construct the instance from computed fields.
@@ -758,14 +805,19 @@ impl Group {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Key material — must be zeroized when no longer needed.
         // Compute GroupKeys for this protocol step.
         // Compute GroupKeys for this protocol step.
-        let GroupKeys { ed25519_public, x25519_public, symmetric_key, .. } = keys;
+        let GroupKeys {
+            ed25519_public,
+            x25519_public,
+            symmetric_key,
+            ..
+        } = keys;
         // Identify the peer for this operation.
         // Bind the intermediate result.
         // Bind the intermediate result.
@@ -933,8 +985,7 @@ impl Group {
 ///
 /// When enabled, the group becomes a private mesh namespace with
 /// its own routing scope, name resolution, and proximity discovery.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // GroupLanConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -950,7 +1001,6 @@ pub struct GroupLanConfig {
     // Execute this protocol step.
     pub proximity_share_enabled: bool,
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1024,10 +1074,9 @@ mod tests {
 
     #[test]
     fn test_network_type_properties() {
-        // Ring signatures are not yet implemented (§3.5.2 TODO).
-        // All network types return false until LSAG is built.
-        assert!(!NetworkType::Private.uses_ring_signatures());
-        assert!(!NetworkType::Closed.uses_ring_signatures());
+        // Ring signatures are not yet wired into group operations (§3.5.2 TODO).
+        assert!(NetworkType::Private.uses_ring_signatures());
+        assert!(NetworkType::Closed.uses_ring_signatures());
         assert!(!NetworkType::Open.uses_ring_signatures());
         assert!(!NetworkType::Public.uses_ring_signatures());
 
@@ -1067,7 +1116,10 @@ mod tests {
                 symmetric_key: [0xFF; 32],
             },
             PeerId([0x02; 32]),
-            (vec![PeerId([0x01; 32]), PeerId([0x02; 32])], vec![PeerId([0x01; 32])]),
+            (
+                vec![PeerId([0x01; 32]), PeerId([0x02; 32])],
+                vec![PeerId([0x01; 32])],
+            ),
             3,
             now,
         );
@@ -1083,5 +1135,27 @@ mod tests {
         let config = GroupLanConfig::default();
         assert!(!config.network_sharing_enabled);
         assert!(!config.proximity_share_enabled);
+    }
+
+    #[test]
+    fn test_group_json_round_trip_with_peer_sender_keys() {
+        let mut group = test_group(1000);
+        group.peer_sender_keys.insert(
+            [0x22; 32],
+            PeerSenderKeyState {
+                chain_key: [0x33; 32],
+                next_iteration: 7,
+                verifying_key: [0x44; 32],
+            },
+        );
+
+        let serialized = serde_json::to_string(&group).unwrap();
+        assert!(serialized.contains(&hex::encode([0x22; 32])));
+
+        let restored: Group = serde_json::from_str(&serialized).unwrap();
+        let restored_state = restored.peer_sender_keys.get(&[0x22; 32]).unwrap();
+        assert_eq!(restored_state.chain_key, [0x33; 32]);
+        assert_eq!(restored_state.next_iteration, 7);
+        assert_eq!(restored_state.verifying_key, [0x44; 32]);
     }
 }

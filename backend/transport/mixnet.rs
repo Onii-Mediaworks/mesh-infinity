@@ -58,7 +58,9 @@ use chacha20poly1305::{
 use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
-use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
+use x25519_dalek::{
+    EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -156,7 +158,12 @@ impl MixnetPacket {
         onion_layer.copy_from_slice(&buf[33..33 + SPHINX_HEADER_SIZE]);
         let mut payload = [0u8; MIXNET_PAYLOAD_SIZE];
         payload.copy_from_slice(&buf[33 + SPHINX_HEADER_SIZE..]);
-        MixnetPacket { version, packet_id, onion_layer, payload }
+        MixnetPacket {
+            version,
+            packet_id,
+            onion_layer,
+            payload,
+        }
     }
 
     /// True if this packet is a cover-traffic dummy.
@@ -270,8 +277,8 @@ pub fn sphinx_build_header(
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Encrypt routing_info with ChaCha20-Poly1305.
-        let cipher = ChaCha20Poly1305::new_from_slice(&layer_key)
-            .map_err(|_| MixnetError::CryptoError)?;
+        let cipher =
+            ChaCha20Poly1305::new_from_slice(&layer_key).map_err(|_| MixnetError::CryptoError)?;
         let encrypted_routing = cipher
             .encrypt(nonce, routing_info.as_ref())
             .map_err(|_| MixnetError::CryptoError)?;
@@ -282,10 +289,9 @@ pub fn sphinx_build_header(
         //   [48..64] encrypted routing info (first 16 bytes of encrypted_routing)
         header[slot_start..slot_start + 32].copy_from_slice(&eph_pub_bytes);
         if encrypted_routing.len() >= 32 {
-            header[slot_start + 32..slot_start + 48]
-                .copy_from_slice(&encrypted_routing[16..32]); // tag portion
-            header[slot_start + 48..slot_start + 64]
-                .copy_from_slice(&encrypted_routing[..16]); // ciphertext
+            header[slot_start + 32..slot_start + 48].copy_from_slice(&encrypted_routing[16..32]); // tag portion
+            header[slot_start + 48..slot_start + 64].copy_from_slice(&encrypted_routing[..16]);
+            // ciphertext
         }
     }
 
@@ -332,8 +338,8 @@ pub fn sphinx_peel_layer(
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Decrypt routing info.
-    let cipher = ChaCha20Poly1305::new_from_slice(&layer_key)
-        .map_err(|_| MixnetError::CryptoError)?;
+    let cipher =
+        ChaCha20Poly1305::new_from_slice(&layer_key).map_err(|_| MixnetError::CryptoError)?;
     // Reconstruct AEAD ciphertext (ciphertext || tag).
     let mut ct = [0u8; 32];
     ct[..16].copy_from_slice(&enc_routing);
@@ -349,8 +355,7 @@ pub fn sphinx_peel_layer(
 
     // Shift header: drop slot 0, shift remaining slots up, fill tail with random.
     let mut new_header = [0u8; SPHINX_HEADER_SIZE];
-    new_header[..SPHINX_HEADER_SIZE - SPHINX_HOP_SIZE]
-        .copy_from_slice(&header[SPHINX_HOP_SIZE..]);
+    new_header[..SPHINX_HEADER_SIZE - SPHINX_HOP_SIZE].copy_from_slice(&header[SPHINX_HOP_SIZE..]);
     rng.fill_bytes(&mut new_header[SPHINX_HEADER_SIZE - SPHINX_HOP_SIZE..]);
 
     Ok((hop, new_header))
@@ -504,16 +509,14 @@ impl MixnetNode {
             return Err(MixnetError::Replay);
         }
 
-        let (hop, new_header) =
-            sphinx_peel_layer(&pkt.onion_layer, &self.privkey, &mut self.rng)?;
+        let (hop, new_header) = sphinx_peel_layer(&pkt.onion_layer, &self.privkey, &mut self.rng)?;
 
         if hop.flags & 0x01 != 0 {
             // Final destination — extract plaintext payload (strip random padding).
             // Payload is variable-length plaintext followed by random padding.
             // Length prefix is in payload[0..2] (big-endian u16).
             if pkt.payload.len() >= 2 {
-                let len =
-                    u16::from_be_bytes([pkt.payload[0], pkt.payload[1]]) as usize;
+                let len = u16::from_be_bytes([pkt.payload[0], pkt.payload[1]]) as usize;
                 if len <= pkt.payload.len() - 2 {
                     self.inbound.push(pkt.payload[2..2 + len].to_vec());
                 }
@@ -583,7 +586,12 @@ impl MixnetNode {
         let mut payload = [0u8; MIXNET_PAYLOAD_SIZE];
         self.rng.fill_bytes(&mut payload);
 
-        MixnetPacket { version: 1, packet_id, onion_layer, payload }
+        MixnetPacket {
+            version: 1,
+            packet_id,
+            onion_layer,
+            payload,
+        }
     }
 
     /// Whether relay traffic this window satisfies the cover obligation.
@@ -633,7 +641,12 @@ pub fn wrap_for_path(
         let mut packet_id = [0u8; 32];
         rng.fill_bytes(&mut packet_id);
 
-        packets.push(MixnetPacket { version: 1, packet_id, onion_layer, payload });
+        packets.push(MixnetPacket {
+            version: 1,
+            packet_id,
+            onion_layer,
+            payload,
+        });
     }
 
     Ok(packets)
@@ -653,7 +666,10 @@ impl MixnetHandle {
     }
 
     pub fn receive(&self, wire: &[u8; MIXNET_MTU]) -> Result<(), MixnetError> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).receive(wire)
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .receive(wire)
     }
 
     pub fn tick(&self) {
@@ -710,7 +726,12 @@ mod tests {
         rng.fill_bytes(&mut onion_layer);
         rng.fill_bytes(&mut payload);
 
-        let pkt = MixnetPacket { version: 1, packet_id, onion_layer, payload };
+        let pkt = MixnetPacket {
+            version: 1,
+            packet_id,
+            onion_layer,
+            payload,
+        };
         let wire = pkt.to_bytes();
         let pkt2 = MixnetPacket::from_bytes(&wire);
 
@@ -747,8 +768,14 @@ mod tests {
     fn replay_cache_rejects_duplicate() {
         let mut cache = ReplayCache::new();
         let id = [0x42u8; 32];
-        assert!(!cache.check_and_insert(&id), "first insert should return false (not replay)");
-        assert!(cache.check_and_insert(&id), "second insert should return true (replay)");
+        assert!(
+            !cache.check_and_insert(&id),
+            "first insert should return false (not replay)"
+        );
+        assert!(
+            cache.check_and_insert(&id),
+            "second insert should return true (replay)"
+        );
     }
 
     #[test]
@@ -767,8 +794,7 @@ mod tests {
     fn empty_batch_emits_cover_traffic() {
         let mut node = MixnetNode::new(MixRole::MixNode, [1u8; 32]);
         // Force the batch window to appear elapsed by manipulating created_at.
-        node.batch.created_at =
-            Instant::now() - Duration::from_millis(BATCH_WINDOW_MS + 100);
+        node.batch.created_at = Instant::now() - Duration::from_millis(BATCH_WINDOW_MS + 100);
         node.tick();
         assert_eq!(
             node.outbound.len(),
@@ -780,8 +806,7 @@ mod tests {
     #[test]
     fn client_does_not_emit_cover_traffic() {
         let mut node = MixnetNode::new(MixRole::Client, [0u8; 32]);
-        node.batch.created_at =
-            Instant::now() - Duration::from_millis(BATCH_WINDOW_MS + 100);
+        node.batch.created_at = Instant::now() - Duration::from_millis(BATCH_WINDOW_MS + 100);
         node.tick();
         // Clients don't relay; outbound should be empty.
         assert!(
@@ -818,8 +843,18 @@ mod tests {
 
     #[test]
     fn gateway_role_with_katzenpost_flag() {
-        let node = MixnetNode::new(MixRole::Gateway { katzenpost_mode: true }, [0u8; 32]);
-        assert!(matches!(node.role, MixRole::Gateway { katzenpost_mode: true }));
+        let node = MixnetNode::new(
+            MixRole::Gateway {
+                katzenpost_mode: true,
+            },
+            [0u8; 32],
+        );
+        assert!(matches!(
+            node.role,
+            MixRole::Gateway {
+                katzenpost_mode: true
+            }
+        ));
     }
 
     // ── Header build (smoke test — full ECDH requires live keys) ─────────────
@@ -831,7 +866,11 @@ mod tests {
         let pubkey = X25519PublicKey::from(&secret);
         let addr = [0u8; 14];
         let result = sphinx_build_header(&[pubkey], &[addr], &mut rng);
-        assert!(result.is_ok(), "single-hop header build failed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "single-hop header build failed: {:?}",
+            result
+        );
         let header = result.unwrap();
         assert_eq!(header.len(), SPHINX_HEADER_SIZE);
     }
@@ -872,7 +911,10 @@ mod tests {
         let (hop, _new_header) = sphinx_peel_layer(&header, &node_privkey_bytes, &mut rng)
             .expect("peel should succeed — ECDH shared secret must match");
 
-        assert_eq!(hop.next_hop, next_hop_addr, "peeled routing info must match encoded address");
+        assert_eq!(
+            hop.next_hop, next_hop_addr,
+            "peeled routing info must match encoded address"
+        );
         assert_eq!(hop.flags, 0x01, "single-hop flag must be set");
     }
 
@@ -883,32 +925,37 @@ mod tests {
         let secrets: Vec<x25519_dalek::StaticSecret> = (0..3)
             .map(|_| x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng))
             .collect();
-        let pubkeys: Vec<X25519PublicKey> = secrets.iter().map(|s| X25519PublicKey::from(s)).collect();
+        let pubkeys: Vec<X25519PublicKey> =
+            secrets.iter().map(|s| X25519PublicKey::from(s)).collect();
         let addrs: Vec<[u8; 14]> = (0u8..3)
-            .map(|i| { let mut a = [0u8; 14]; a[0] = i; a })
+            .map(|i| {
+                let mut a = [0u8; 14];
+                a[0] = i;
+                a
+            })
             .collect();
 
-        let header = sphinx_build_header(&pubkeys, &addrs, &mut rng)
-            .expect("3-hop build should succeed");
+        let header =
+            sphinx_build_header(&pubkeys, &addrs, &mut rng).expect("3-hop build should succeed");
 
         // Peel hop 0
         let privkey_0: [u8; 32] = secrets[0].to_bytes();
-        let (hop0, header1) = sphinx_peel_layer(&header, &privkey_0, &mut rng)
-            .expect("peel hop 0 should succeed");
+        let (hop0, header1) =
+            sphinx_peel_layer(&header, &privkey_0, &mut rng).expect("peel hop 0 should succeed");
         assert_eq!(hop0.next_hop[0], 0, "hop 0 addr byte 0");
         assert_eq!(hop0.flags, 0x00, "hop 0 is not final");
 
         // Peel hop 1
         let privkey_1: [u8; 32] = secrets[1].to_bytes();
-        let (hop1, header2) = sphinx_peel_layer(&header1, &privkey_1, &mut rng)
-            .expect("peel hop 1 should succeed");
+        let (hop1, header2) =
+            sphinx_peel_layer(&header1, &privkey_1, &mut rng).expect("peel hop 1 should succeed");
         assert_eq!(hop1.next_hop[0], 1, "hop 1 addr byte 0");
         assert_eq!(hop1.flags, 0x00, "hop 1 is not final");
 
         // Peel hop 2 (final)
         let privkey_2: [u8; 32] = secrets[2].to_bytes();
-        let (hop2, _) = sphinx_peel_layer(&header2, &privkey_2, &mut rng)
-            .expect("peel hop 2 should succeed");
+        let (hop2, _) =
+            sphinx_peel_layer(&header2, &privkey_2, &mut rng).expect("peel hop 2 should succeed");
         assert_eq!(hop2.next_hop[0], 2, "hop 2 addr byte 0");
         assert_eq!(hop2.flags, 0x01, "hop 2 is final");
     }

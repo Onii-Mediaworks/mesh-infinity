@@ -563,9 +563,9 @@ impl TunnelGossipProcessor {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> bool {
         // Ignore our own advertisements.
         // Guard: validate the condition before proceeding.
@@ -674,8 +674,8 @@ impl TunnelGossipProcessor {
         req: &CoverageRequest,
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
     ) -> bool {
         // Conditional branch based on the current state.
         // Guard: validate the condition before proceeding.

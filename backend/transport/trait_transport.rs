@@ -254,10 +254,7 @@ mod tests {
 
         /// Enqueue a fake inbound packet. The next `poll_recv()` will return it.
         fn inject(&self, sender: &str, data: Vec<u8>) {
-            self.inbox
-                .lock()
-                .unwrap()
-                .push((sender.to_string(), data));
+            self.inbox.lock().unwrap().push((sender.to_string(), data));
         }
 
         /// Drain the outbox and return all sent packets for assertion.
@@ -363,7 +360,10 @@ mod tests {
         assert!(!t.is_available());
 
         t.enable().expect("enable must succeed for stub");
-        assert!(t.is_available(), "transport must be available after enable()");
+        assert!(
+            t.is_available(),
+            "transport must be available after enable()"
+        );
     }
 
     /// Disabling an enabled transport makes it unavailable.
@@ -373,7 +373,10 @@ mod tests {
         assert!(t.is_available());
 
         t.disable();
-        assert!(!t.is_available(), "transport must be unavailable after disable()");
+        assert!(
+            !t.is_available(),
+            "transport must be unavailable after disable()"
+        );
     }
 
     /// `status_json` must include required fields.

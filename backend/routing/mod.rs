@@ -30,13 +30,13 @@
 //! - **isolation** — network isolation mode (darknet mode) for maximum
 //!   privacy, restricting connections to pre-configured peers only
 
-pub mod table;
 pub mod announcement;
-pub mod path_selection;
-pub mod loop_prevention;
-pub mod store_forward;
-pub mod relay;
-pub mod losec;
-pub mod isolation;
-pub mod tunnel_gossip;
 pub mod fast_routing;
+pub mod isolation;
+pub mod loop_prevention;
+pub mod losec;
+pub mod path_selection;
+pub mod relay;
+pub mod store_forward;
+pub mod table;
+pub mod tunnel_gossip;

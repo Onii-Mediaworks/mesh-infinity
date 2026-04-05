@@ -232,8 +232,8 @@ impl MeshRuntime {
         };
 
         let signal = crate::calls::CallSignal::Hangup {
-            call_id:   call_id_bytes,
-            reason:    crate::calls::HangupReason::Declined,
+            call_id: call_id_bytes,
+            reason: crate::calls::HangupReason::Declined,
         };
         let payload = match serde_json::to_string(&signal) {
             Ok(s) => s,
@@ -320,12 +320,8 @@ impl MeshRuntime {
         // Store incoming call state (CallState::new_outgoing is reused here
         // because the caller is the *other* side; "outgoing" means the call
         // was initiated by the remote peer toward us).
-        let call_state = crate::calls::CallState::new_outgoing(
-            call_id,
-            is_video,
-            PeerId(sender_id_bytes),
-            now,
-        );
+        let call_state =
+            crate::calls::CallState::new_outgoing(call_id, is_video, PeerId(sender_id_bytes), now);
         *self.active_call.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((call_state, sender_hex.clone()));
 
@@ -437,7 +433,7 @@ impl MeshRuntime {
     /// required keys cannot be retrieved.
     pub fn process_wg_init_frame(&self, envelope: &serde_json::Value) -> bool {
         use crate::crypto::channel_key::derive_channel_key;
-        use crate::transport::wireguard::{HandshakeInit, respond_to_handshake};
+        use crate::transport::wireguard::{respond_to_handshake, HandshakeInit};
 
         // Sender peer ID (64 hex chars = 32 bytes).
         let sender_hex = match envelope.get("sender").and_then(|v| v.as_str()) {
@@ -507,16 +503,11 @@ impl MeshRuntime {
         };
 
         // Run the responder-side handshake to derive session keys.
-        let (session, response) = match respond_to_handshake(
-            &init_msg,
-            &our_secret,
-            &psk,
-            our_peer_id,
-            initiator_id,
-        ) {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
+        let (session, response) =
+            match respond_to_handshake(&init_msg, &our_secret, &psk, our_peer_id, initiator_id) {
+                Ok(r) => r,
+                Err(_) => return false,
+            };
 
         // Store the established session keyed by the initiator's peer ID.
         self.wireguard_sessions
@@ -655,9 +646,8 @@ impl MeshRuntime {
 
         // Derive per-channel PSK.
         let our_secret = x25519_dalek::StaticSecret::from(our_secret_bytes);
-        let psk =
-            derive_channel_key(&our_secret, &their_x25519_pub, &our_pub_id, &target_peer_id)
-                .map_err(|_| "PSK derivation failed")?;
+        let psk = derive_channel_key(&our_secret, &their_x25519_pub, &our_pub_id, &target_peer_id)
+            .map_err(|_| "PSK derivation failed")?;
 
         // Build the pending handshake and init message.
         let (pending, init_msg) = PendingInitiatorHandshake::new(
@@ -695,7 +685,7 @@ impl MeshRuntime {
         init_hex: &str,
     ) -> Result<String, String> {
         use crate::crypto::channel_key::derive_channel_key;
-        use crate::transport::wireguard::{HandshakeInit, respond_to_handshake};
+        use crate::transport::wireguard::{respond_to_handshake, HandshakeInit};
 
         // Parse the initiator's peer ID.
         let peer_bytes: [u8; 32] = hex::decode(peer_id_hex)
@@ -737,18 +727,17 @@ impl MeshRuntime {
         };
 
         let our_secret = x25519_dalek::StaticSecret::from(our_secret_bytes);
-        let psk =
-            derive_channel_key(&our_secret, &their_x25519_pub, &our_peer_id, &initiator_peer_id)
-                .map_err(|_| "PSK derivation failed")?;
-
-        let (session, response) = respond_to_handshake(
-            &init_msg,
+        let psk = derive_channel_key(
             &our_secret,
-            &psk,
-            our_peer_id,
-            initiator_peer_id,
+            &their_x25519_pub,
+            &our_peer_id,
+            &initiator_peer_id,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "PSK derivation failed")?;
+
+        let (session, response) =
+            respond_to_handshake(&init_msg, &our_secret, &psk, our_peer_id, initiator_peer_id)
+                .map_err(|e| e.to_string())?;
 
         // Store the established session.
         self.wireguard_sessions
@@ -796,7 +785,9 @@ impl MeshRuntime {
                 a
             })
             .ok_or("response_hex must be 32 bytes")?;
-        let response = HandshakeResponse { eph_r_pub: resp_bytes };
+        let response = HandshakeResponse {
+            eph_r_pub: resp_bytes,
+        };
 
         // Retrieve our peer ID.
         let our_peer_id = {

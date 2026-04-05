@@ -405,9 +405,9 @@ impl PromotionVote {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
@@ -636,9 +636,9 @@ impl MembershipManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<(), MembershipError> {
         // Check that the actor is an admin.
         // Guard: validate the condition before proceeding.
@@ -742,9 +742,9 @@ impl MembershipManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<bool, MembershipError> {
         // Check that the actor is an admin.
         // Guard: validate the condition before proceeding.
@@ -817,9 +817,9 @@ impl MembershipManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<bool, MembershipError> {
         // Conditional branch based on the current state.
         // Guard: validate the condition before proceeding.
@@ -876,9 +876,9 @@ impl MembershipManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<(), MembershipError> {
         // Conditional branch based on the current state.
         // Guard: validate the condition before proceeding.
@@ -917,7 +917,9 @@ impl MembershipManager {
         // Identify the peer for this operation.
         // Compute eligible for this protocol step.
         // Compute eligible for this protocol step.
-        let eligible: Vec<PeerId> = self.members.iter()
+        let eligible: Vec<PeerId> = self
+            .members
+            .iter()
             // Select only elements matching the predicate.
             // Filter by the predicate.
             // Filter by the predicate.
@@ -961,9 +963,9 @@ impl MembershipManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<(), MembershipError> {
         // Find the pending promotion.
         // Compute vote idx for this protocol step.
@@ -1289,7 +1291,11 @@ mod tests {
         // Add a second admin for voting.
         mgr.add_member(pid(0x02), pid(0x01), 1, 1001).unwrap();
         // Manually make them admin.
-        mgr.members.iter_mut().find(|m| m.peer_id == pid(0x02)).unwrap().role = MemberRole::Admin;
+        mgr.members
+            .iter_mut()
+            .find(|m| m.peer_id == pid(0x02))
+            .unwrap()
+            .role = MemberRole::Admin;
         // Add the candidate.
         mgr.add_member(pid(0x03), pid(0x01), 1, 1002).unwrap();
 
@@ -1322,14 +1328,18 @@ mod tests {
         mgr.pending_promotions[0].reject(pid(0xFF));
 
         assert_eq!(
-            mgr.pending_promotions[0].rejections.len(), 0,
+            mgr.pending_promotions[0].rejections.len(),
+            0,
             "ineligible rejector must not count"
         );
 
         // Promotion should still confirm after the window.
         let after_window = 1003 + VOTE_TO_REJECT_WINDOW_SECS + 1;
         let result = mgr.confirm_promotion(&pid(0x03), after_window);
-        assert!(result.is_ok(), "ineligible rejections must not block promotion");
+        assert!(
+            result.is_ok(),
+            "ineligible rejections must not block promotion"
+        );
         assert!(mgr.is_admin(&pid(0x03)));
     }
 
@@ -1342,6 +1352,9 @@ mod tests {
 
         assert_eq!(mgr.events.len(), 2);
         assert!(matches!(mgr.events[0], MembershipEvent::MemberAdded { .. }));
-        assert!(matches!(mgr.events[1], MembershipEvent::MemberRemoved { .. }));
+        assert!(matches!(
+            mgr.events[1],
+            MembershipEvent::MemberRemoved { .. }
+        ));
     }
 }

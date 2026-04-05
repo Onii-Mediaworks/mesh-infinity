@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -6,6 +7,8 @@ import 'package:provider/provider.dart';
 import '../../../backend/backend_bridge.dart';
 import '../../../backend/models/network_models.dart';
 import '../../../features/peers/peers_state.dart';
+import '../../../platform/android_proximity_bridge.dart';
+import '../../../platform/android_proximity_sync.dart';
 import '../network_state.dart';
 import '../widgets/transport_toggle_row.dart';
 import '../widgets/network_stat_card.dart';
@@ -158,8 +161,8 @@ class NetworkScreen extends StatelessWidget {
             // VPN Settings
             ListTile(
               leading: const Icon(Icons.vpn_key_outlined),
-              title: const Text('VPN Settings'),
-              subtitle: const Text('Exit nodes, routing modes, kill switch'),
+              title: const Text('Traffic Routing'),
+              subtitle: Text(_routingSummary(net)),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
@@ -258,6 +261,10 @@ class NetworkScreen extends StatelessWidget {
                 ],
               ),
             ),
+
+            const Divider(height: 1),
+
+            const _AndroidProximitySection(),
 
             const Divider(height: 1),
 
@@ -368,6 +375,26 @@ class NetworkScreen extends StatelessWidget {
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  String _routingSummary(NetworkState net) {
+    final status = switch (net.vpnConnectionStatus) {
+      'connected' => 'Connected',
+      'connecting' => 'Connecting',
+      'blocked' => 'Blocked',
+      'disconnecting' => 'Disconnecting',
+      _ => 'Off',
+    };
+
+    return switch (net.vpnMode) {
+      'mesh_only' => '$status · Mesh traffic stays in the mesh',
+      'exit_node' => (net.selectedExitNodeId != null ||
+              net.selectedTailscaleExitNode != null)
+          ? '$status · Internet traffic uses a selected exit node'
+          : '$status · Exit node mode without a selected node',
+      'policy_based' => '$status · Custom rules choose where traffic goes',
+      _ => 'Off · Use your normal connection unless you choose otherwise',
+    };
   }
 }
 
@@ -543,6 +570,282 @@ class _DiscoveredPeerTileState extends State<_DiscoveredPeerTile> {
                 ))
           : null,
     );
+  }
+}
+
+class _AndroidProximitySection extends StatefulWidget {
+  const _AndroidProximitySection();
+
+  @override
+  State<_AndroidProximitySection> createState() =>
+      _AndroidProximitySectionState();
+}
+
+class _AndroidProximitySectionState extends State<_AndroidProximitySection> {
+  AndroidProximityCapabilities? _capabilities;
+  List<AndroidWifiDirectPeer> _peers = const [];
+  StreamSubscription<AndroidProximityEvent>? _sub;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _sub = AndroidProximityBridge.instance.events.listen((event) {
+      if (event is WifiDirectStateChangedEvent ||
+          event is WifiDirectPeersChangedEvent) {
+        _load();
+      }
+    });
+  }
+
+  Future<void> _load() async {
+    final bridge = context.read<BackendBridge>();
+    final state = await AndroidProximitySync.syncCurrentState(bridge);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _capabilities = _readCapabilities(state);
+      _peers = _readPeers(state);
+      _loading = false;
+    });
+  }
+
+  Future<void> _toggleWifiDirectScan() async {
+    final caps = _capabilities;
+    if (caps == null) {
+      return;
+    }
+    if (caps.wifiDirectDiscoveryActive) {
+      await AndroidProximityBridge.instance.stopWifiDirectDiscovery();
+      await _load();
+      return;
+    }
+
+    final permissionGranted = caps.wifiDirectPermissionGranted ||
+        await AndroidProximityBridge.instance.requestWifiDirectPermission();
+    if (!permissionGranted) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Nearby Wi-Fi permission is required before WiFi Direct discovery can start.',
+          ),
+        ),
+      );
+      await _load();
+      return;
+    }
+
+    await AndroidProximityBridge.instance.startWifiDirectDiscovery();
+    await _load();
+  }
+
+  Future<void> _connectWifiPeer(AndroidWifiDirectPeer peer) async {
+    if (_capabilities == null) {
+      return;
+    }
+    final caps = _capabilities!;
+    final permissionGranted = caps.wifiDirectPermissionGranted ||
+        await AndroidProximityBridge.instance.requestWifiDirectPermission();
+    if (!permissionGranted) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Nearby Wi-Fi permission is required before WiFi Direct can connect.',
+          ),
+        ),
+      );
+      await _load();
+      return;
+    }
+    final ok = await AndroidProximityBridge.instance.connectWifiDirectPeer(
+      peer.deviceAddress,
+    );
+    await _load();
+    if (!mounted || ok) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Could not start a WiFi Direct connection to that device.'),
+      ),
+    );
+  }
+
+  Future<void> _disconnectWifiPeer() async {
+    await AndroidProximityBridge.instance.disconnectWifiDirectPeer();
+    await _load();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final caps = _capabilities;
+    if (_loading) {
+      return const SizedBox.shrink();
+    }
+    if (caps == null || (!caps.nfcAvailable && !caps.wifiDirectAvailable)) {
+      return const SizedBox.shrink();
+    }
+
+    return _Section(
+      title: 'Android Proximity',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (caps.nfcAvailable)
+            ListTile(
+              leading: const Icon(Icons.nfc_outlined),
+              title: const Text('NFC Tap-to-Pair'),
+              subtitle: Text(
+                caps.nfcEnabled
+                    ? 'Ready to receive pairing payloads from nearby tags or devices'
+                    : 'Supported, but NFC is turned off in system settings',
+              ),
+            ),
+          if (caps.wifiDirectAvailable)
+            ListTile(
+              leading: const Icon(Icons.wifi_tethering_outlined),
+              title: const Text('WiFi Direct Discovery'),
+              subtitle: Text(_wifiSubtitle(caps, _peers.length)),
+              trailing: Wrap(
+                spacing: 8,
+                children: [
+                  if (caps.wifiDirectConnected)
+                    OutlinedButton(
+                      onPressed: _disconnectWifiPeer,
+                      child: const Text('Disconnect'),
+                    ),
+                  FilledButton.tonal(
+                    onPressed: caps.wifiDirectEnabled ? _toggleWifiDirectScan : null,
+                    child: Text(caps.wifiDirectDiscoveryActive ? 'Stop' : 'Scan'),
+                  ),
+                ],
+              ),
+            ),
+          if (caps.wifiDirectConnected)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                _wifiConnectionSummary(caps),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          if (_peers.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Nearby Android devices',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  for (final peer in _peers)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.devices_outlined),
+                      title: Text(
+                        peer.deviceName.isEmpty
+                            ? 'Nearby device'
+                            : peer.deviceName,
+                      ),
+                      subtitle: Text(_wifiPeerSubtitle(peer)),
+                      trailing: (caps.wifiDirectConnected &&
+                              caps.wifiDirectConnectedDeviceAddress ==
+                                  peer.deviceAddress)
+                          ? const Icon(Icons.check_circle_outline)
+                          : OutlinedButton(
+                              onPressed: peer.deviceAddress.isEmpty
+                                  ? null
+                                  : () => _connectWifiPeer(peer),
+                              child: const Text('Connect'),
+                            ),
+                    ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _wifiSubtitle(AndroidProximityCapabilities caps, int count) {
+    if (!caps.wifiDirectEnabled) {
+      return 'Supported, but WiFi Direct is currently unavailable';
+    }
+    if (!caps.wifiDirectPermissionGranted) {
+      return 'Nearby Wi-Fi permission is required before this device can scan';
+    }
+    if (!caps.wifiDirectDiscoveryActive) {
+      return 'Use WiFi Direct to find nearby Android devices without a router';
+    }
+    if (count == 0) {
+      return 'Scanning for nearby Android devices';
+    }
+    return 'Found $count nearby ${count == 1 ? 'device' : 'devices'}';
+  }
+
+  String _wifiConnectionSummary(AndroidProximityCapabilities caps) {
+    final role = switch (caps.wifiDirectConnectionRole) {
+      'group_owner' => 'Connected as group owner',
+      'client' => 'Connected as client',
+      _ => 'Connected',
+    };
+    final groupOwner = caps.wifiDirectGroupOwnerAddress;
+    if (groupOwner == null || groupOwner.isEmpty) {
+      return role;
+    }
+    return '$role • group owner $groupOwner';
+  }
+
+  String _wifiPeerSubtitle(AndroidWifiDirectPeer peer) {
+    final status = switch (peer.status) {
+      'available' => 'Available',
+      'connected' => 'Connected',
+      'invited' => 'Invited',
+      'failed' => 'Failed',
+      'unavailable' => 'Unavailable',
+      _ => 'Unknown',
+    };
+    return peer.deviceAddress.isEmpty
+        ? status
+        : '$status • ${peer.deviceAddress}';
+  }
+
+  AndroidProximityCapabilities? _readCapabilities(Map<String, dynamic> state) {
+    if (state.isEmpty) {
+      return null;
+    }
+    return AndroidProximityCapabilities.fromMap(
+      Map<Object?, Object?>.from(state),
+    );
+  }
+
+  List<AndroidWifiDirectPeer> _readPeers(Map<String, dynamic> state) {
+    final raw = state['peers'];
+    if (raw is! List) {
+      return const [];
+    }
+    return raw
+        .whereType<Map>()
+        .map((peer) => AndroidWifiDirectPeer.fromMap(Map<Object?, Object?>.from(peer)))
+        .toList(growable: false);
   }
 }
 

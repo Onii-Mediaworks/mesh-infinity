@@ -46,7 +46,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // Identity errors (§3.1, §9)
     // -----------------------------------------------------------------------
-
     /// No identity exists on disk — the user must create one first.
     ///
     /// Returned by: `mi_unlock_identity`, `mi_get_identity_summary`, and any
@@ -78,7 +77,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // Cryptographic errors (§7)
     // -----------------------------------------------------------------------
-
     /// Ed25519 or X25519 key material was invalid.
     ///
     /// Common causes: wrong length, low-order Curve25519 point, or an
@@ -110,7 +108,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // Transport errors (§5)
     // -----------------------------------------------------------------------
-
     /// A network connection attempt failed.
     ///
     /// `endpoint` is the address we tried to reach; `reason` is the OS or
@@ -148,7 +145,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // Serialization errors (§17.5)
     // -----------------------------------------------------------------------
-
     /// JSON parsing or serialization failed.
     ///
     /// Used when decoding inbound frames or encoding outbound JSON responses.
@@ -159,7 +155,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // Storage errors (§17.9)
     // -----------------------------------------------------------------------
-
     /// The vault could not be opened, or a named collection is missing.
     ///
     /// The `String` describes which vault operation failed. Recovery: check
@@ -182,7 +177,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // Protocol errors (§6, §8)
     // -----------------------------------------------------------------------
-
     /// An inbound frame had an unrecognized or malformed format.
     ///
     /// The `String` describes the specific problem (e.g., "missing `type` field").
@@ -212,7 +206,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // FFI input validation (§17.5)
     // -----------------------------------------------------------------------
-
     /// A caller-supplied C string pointer was null.
     ///
     /// FFI shims check all `*const c_char` parameters before dereferencing.
@@ -244,7 +237,6 @@ pub enum MeshError {
     // -----------------------------------------------------------------------
     // Catch-all
     // -----------------------------------------------------------------------
-
     /// An unexpected internal error occurred.
     ///
     /// Use this when none of the typed variants above apply. The `String`
@@ -376,13 +368,11 @@ mod tests {
         // These are security events — the threat context system (§16.9) cares.
         assert!(MeshError::InvalidSignature.is_security_failure());
         assert!(MeshError::DecryptionFailed.is_security_failure());
-        assert!(
-            MeshError::TrustInsufficient {
-                peer: "abc".to_string(),
-                level: 0
-            }
-            .is_security_failure()
-        );
+        assert!(MeshError::TrustInsufficient {
+            peer: "abc".to_string(),
+            level: 0
+        }
+        .is_security_failure());
 
         // These are NOT security events.
         assert!(!MeshError::NoIdentity.is_security_failure());

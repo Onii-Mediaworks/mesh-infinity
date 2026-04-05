@@ -19,6 +19,6 @@
 //!   possession after key exchange
 //! - **contact** — the contact record created after a successful pairing
 
-pub mod methods;
-pub mod handshake;
 pub mod contact;
+pub mod handshake;
+pub mod methods;

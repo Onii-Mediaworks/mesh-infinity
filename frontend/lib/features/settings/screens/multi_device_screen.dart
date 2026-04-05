@@ -1,275 +1,246 @@
-// multi_device_screen.dart
-//
-// MultiDeviceScreen — manage the set of devices sharing this identity (§22.10.7).
-//
-// WHAT THIS SCREEN SHOWS:
-// -----------------------
-// One Mesh Infinity identity can be installed on multiple devices — phone,
-// tablet, laptop, etc.  This screen shows:
-//   1. "This device" card — the current device with its platform icon and
-//      a star if it's the primary device.
-//   2. "Other devices" list — paired devices that share this identity, with
-//      last-seen relative timestamps and a remove option.
-//   3. AppBar "+" button — starts the pairing flow for a new device.
-//
-// BACKEND STATUS:
-// ---------------
-// Multi-device is not yet implemented in the backend.  The screen shows a
-// static representation of "this device" and an empty "other devices" section.
-// When the backend wires up (§8.4, §11.1), replace _thisDevice and
-// _otherDevices with real data from `bridge.fetchDevices()`.
-//
-// DESIGN PHILOSOPHY (§22.22):
-// ----------------------------
-// Devices are shown with plain-language platform names (not UUIDs).
-// The primary device star is subtle — not everyone needs multi-device, and
-// the concept of "primary" shouldn't alarm users who only have one device.
-//
-// Reached from: Settings → Identity & Devices → My Devices.
-
-import 'dart:io' show Platform;
-
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
-// ---------------------------------------------------------------------------
-// Data model (stub — replaced by backend model when ready)
-// ---------------------------------------------------------------------------
+import '../../../backend/backend_bridge.dart';
 
-/// Represents one device sharing this identity.
-///
-/// [id] is an opaque backend identifier.
-/// [name] is a human-readable label the user assigns (or the platform default).
-/// [platform] describes the OS/form factor for icon selection.
-/// [isPrimary] — the primary device receives all messages when multiple devices
-///   are online.  Only one device can be primary at a time (§11.1.2).
-/// [lastSeenMs] is the Unix timestamp of the last heartbeat, or null if unknown.
-class _DeviceModel {
-  const _DeviceModel({
-    required this.id,
-    required this.name,
-    required this.platform,
-    required this.isPrimary,
-    required this.lastSeenMs,
-  });
-
-  final String id;
-  final String name;
-  final String platform; // 'android' | 'ios' | 'macos' | 'linux' | 'windows' | 'web'
-  final bool isPrimary;
-
-  // null = local device (always live); non-null = Unix ms of last heartbeat.
-  // Required (not optional) so callers must explicitly pass null for "this device",
-  // preventing accidentally omitted timestamps when constructing real device data.
-  final int? lastSeenMs;
-}
-
-// ---------------------------------------------------------------------------
-// MultiDeviceScreen
-// ---------------------------------------------------------------------------
-
-/// Shows the paired device list and allows adding or removing devices.
-class MultiDeviceScreen extends StatelessWidget {
+class MultiDeviceScreen extends StatefulWidget {
   const MultiDeviceScreen({super.key});
 
-  // ---------------------------------------------------------------------------
-  // Platform detection
-  // ---------------------------------------------------------------------------
-  // Detects the current platform for displaying the correct icon on the
-  // "This device" card.  Web is checked first because kIsWeb is true even
-  // when Platform.* would throw on web.
-  static String get _currentPlatform {
-    if (kIsWeb) return 'web';
-    if (Platform.isAndroid) return 'android';
-    if (Platform.isIOS) return 'ios';
-    if (Platform.isMacOS) return 'macos';
-    if (Platform.isLinux) return 'linux';
-    if (Platform.isWindows) return 'windows';
-    return 'unknown';
+  @override
+  State<MultiDeviceScreen> createState() => _MultiDeviceScreenState();
+}
+
+class _MultiDeviceScreenState extends State<MultiDeviceScreen> {
+  List<Map<String, dynamic>> _devices = const [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
   }
 
-  // Stub "this device" — replaced by backend data when §11.1 is wired.
-  // The name defaults to the platform; users can rename in a future update.
-  static _DeviceModel get _thisDevice => _DeviceModel(
-    id: 'local',
-    name: _platformDisplayName(_currentPlatform),
-    platform: _currentPlatform,
-    isPrimary: true, // by default, this device is primary (only device)
-    lastSeenMs: null, // local device is always live — no heartbeat timestamp
-  );
-
-  // Empty other-devices list — populated by backend in a future sprint.
-  static const List<_DeviceModel> _otherDevices = [];
+  Future<void> _load() async {
+    final devices = context.read<BackendBridge>().fetchDevices();
+    if (!mounted) return;
+    setState(() {
+      _devices = devices;
+      _loading = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
     final cs = Theme.of(context).colorScheme;
+    final thisDevice = _devices.cast<Map<String, dynamic>>().firstWhere(
+          (device) => device['isThisDevice'] == true,
+          orElse: () => const <String, dynamic>{},
+        );
+    final otherDevices = _devices
+        .where((device) => device['isThisDevice'] != true)
+        .toList(growable: false);
+    final isPrimary = thisDevice['isPrimary'] == true;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('My Devices'),
-        actions: [
-          // "+" button starts the device pairing flow (stub).
-          IconButton(
-            icon: const Icon(Icons.add),
-            tooltip: 'Pair a new device',
-            onPressed: () => _stubPairDevice(context),
-          ),
-        ],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // ---------------------------------------------------------------------------
-          // Explanation paragraph
-          // ---------------------------------------------------------------------------
-          // Brief plain-language description so users understand what "sharing an
-          // identity across devices" means before they start adding devices.
-          Text(
-            'All devices listed here share your identity and can send and '
-            'receive messages on your behalf.  The primary device is '
-            'preferred when multiple devices are online simultaneously.',
-            style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-          ),
+      appBar: AppBar(title: const Text('My Devices')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Text(
+                    'When you add a device, your identity keys are copied to it over an encrypted channel. '
+                    'History stays on each device unless you share it manually. '
+                    'Removing a device rotates keys for future sessions.',
+                    style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 12),
+                  if (isPrimary)
+                    FilledButton.icon(
+                      onPressed: () => _openPrimaryEnrollmentDialog(context),
+                      icon: const Icon(Icons.add_link_outlined),
+                      label: const Text('Link a new device'),
+                    ),
+                  const SizedBox(height: 20),
+                  const _SectionLabel('This device'),
+                  if (thisDevice.isNotEmpty)
+                    _DeviceTile(
+                      device: thisDevice,
+                      isThisDevice: true,
+                    ),
+                  const SizedBox(height: 20),
+                  const _SectionLabel('Other devices'),
+                  if (otherDevices.isEmpty)
+                    const _OtherDevicesEmptyState()
+                  else
+                    for (final device in otherDevices)
+                      _DeviceTile(
+                        device: device,
+                        isThisDevice: false,
+                        canRemove: isPrimary,
+                        onRemove: () => _confirmRemoveDevice(device),
+                      ),
+                  const SizedBox(height: 24),
+                ],
+              ),
+            ),
+    );
+  }
 
-          const SizedBox(height: 20),
-
-          // ---------------------------------------------------------------------------
-          // "This device" section
-          // ---------------------------------------------------------------------------
-          const _SectionLabel('This device'),
-          _DeviceTile(
-            device: _thisDevice,
-            isThisDevice: true, // suppresses "remove" option
-            onRemove: null,
-          ),
-
-          const SizedBox(height: 20),
-
-          // ---------------------------------------------------------------------------
-          // "Other devices" section
-          // ---------------------------------------------------------------------------
-          Row(
+  Future<void> _openPrimaryEnrollmentDialog(BuildContext context) async {
+    final requestCtrl = TextEditingController();
+    final responseCtrl = TextEditingController();
+    final generatedPackage = ValueNotifier<String?>(null);
+    await showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Link a new device'),
+        content: SizedBox(
+          width: 440,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Expanded(child: _SectionLabel('Other devices')),
-              // Secondary pairing button in the section row — mirrors AppBar.
-              TextButton.icon(
-                onPressed: () => _stubPairDevice(context),
-                icon: const Icon(Icons.add, size: 16),
-                label: const Text('Pair device'),
+              TextField(
+                controller: requestCtrl,
+                minLines: 4,
+                maxLines: 8,
+                decoration: const InputDecoration(
+                  labelText: 'Enrollment request from the new device',
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton(
+                  onPressed: () {
+                    final bridge = context.read<BackendBridge>();
+                    final package = bridge.completeDeviceEnrollment(
+                      requestCtrl.text.trim(),
+                    );
+                    if (package == null || package.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            bridge.getLastError() ??
+                                'Could not complete the device link request.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                    generatedPackage.value = package;
+                    responseCtrl.text = package;
+                    _load();
+                  },
+                  child: const Text('Create link package'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              ValueListenableBuilder<String?>(
+                valueListenable: generatedPackage,
+                builder: (context, package, _) {
+                  if (package == null || package.isEmpty) {
+                    return const SizedBox.shrink();
+                  }
+                  return Column(
+                    children: [
+                      TextField(
+                        controller: responseCtrl,
+                        minLines: 4,
+                        maxLines: 8,
+                        decoration: const InputDecoration(
+                          labelText: 'Link package for the new device',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: package));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Link package copied.'),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.copy_outlined),
+                          label: const Text('Copy package'),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ],
           ),
-
-          // Empty state — shown until the backend returns paired devices.
-          // The empty state is intentionally simple; multi-device is optional.
-          if (_otherDevices.isEmpty)
-            _OtherDevicesEmptyState(onPair: () => _stubPairDevice(context))
-          else
-            for (final device in _otherDevices)
-              _DeviceTile(
-                device: device,
-                isThisDevice: false,
-                onRemove: () => _confirmRemove(context, device),
-              ),
-
-          const SizedBox(height: 24),
-        ],
-      ),
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
-
-  /// Stub: shows a SnackBar until the pairing flow is implemented.
-  ///
-  /// When the backend wires device pairing (§11.1.1), navigate to a
-  /// DevicePairingScreen instead.
-  void _stubPairDevice(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Device pairing coming in a future update.'),
-        duration: Duration(seconds: 3),
-      ),
-    );
-  }
-
-  /// Shows a confirmation dialog before removing a paired device.
-  ///
-  /// Removing a device revokes its access to this identity — it cannot
-  /// send or receive messages as you until it is re-paired (§11.1.3).
-  void _confirmRemove(BuildContext context, _DeviceModel device) {
-    final cs = Theme.of(context).colorScheme;
-
-    showDialog<void>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: Text('Remove "${device.name}"?'),
-        content: Text(
-          'This device will no longer be able to send or receive messages '
-          'as you.  You can re-pair it later if needed.',
-          style: Theme.of(context).textTheme.bodySmall,
         ),
         actions: [
-          // Cancel — safe path.
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          // Remove — destructive, but reversible (re-pairing is always possible).
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: cs.error),
-            onPressed: () {
-              Navigator.pop(context);
-              // TODO(backend/multi-device): call bridge.removeDevice(device.id).
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Device removal not yet available.'),
-                ),
-              );
-            },
-            child: const Text('Remove'),
+            child: const Text('Close'),
           ),
         ],
       ),
     );
+    requestCtrl.dispose();
+    responseCtrl.dispose();
+    generatedPackage.dispose();
   }
 
-  // ---------------------------------------------------------------------------
-  // Platform display helpers
-  // ---------------------------------------------------------------------------
+  Future<void> _confirmRemoveDevice(Map<String, dynamic> device) async {
+    final bridge = context.read<BackendBridge>();
+    final name = device['name'] as String? ?? 'this device';
+    final deviceId = device['id'] as String? ?? '';
+    if (deviceId.isEmpty) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: Text('Remove $name?'),
+            content: const Text(
+              'Removing a device rotates keys for future sessions. That device will no longer decrypt new messages.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Remove device'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!confirmed || !mounted) {
+      return;
+    }
+    final ok = bridge.removeDevice(deviceId);
+    if (!mounted) {
+      return;
+    }
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            bridge.getLastError() ?? 'Could not remove the selected device.',
+          ),
+        ),
+      );
+      return;
+    }
+    await _load();
+  }
 
-  /// Returns the icon that best represents the device's platform.
-  static IconData _platformIcon(String platform) => switch (platform) {
-    'android' => Icons.phone_android_outlined,
-    'ios' => Icons.phone_iphone_outlined,
-    'macos' => Icons.laptop_mac_outlined,
-    'windows' => Icons.laptop_windows_outlined,
-    'linux' => Icons.computer_outlined,
-    'web' => Icons.language_outlined,
-    _ => Icons.devices_outlined,
-  };
-
-  /// Returns a human-readable platform name for the "This device" card.
-  static String _platformDisplayName(String platform) => switch (platform) {
-    'android' => 'Android',
-    'ios' => 'iPhone',
-    'macos' => 'Mac',
-    'windows' => 'Windows PC',
-    'linux' => 'Linux',
-    'web' => 'Web browser',
-    _ => 'This device',
-  };
 }
 
-// ---------------------------------------------------------------------------
-// _SectionLabel — muted label above each device group
-// ---------------------------------------------------------------------------
-
-/// Small, muted section label matching the style used throughout Settings.
 class _SectionLabel extends StatelessWidget {
   const _SectionLabel(this.title);
 
@@ -290,88 +261,67 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------------------------
-// _DeviceTile — one row in the device list
-// ---------------------------------------------------------------------------
-
-/// Renders one device as a ListTile inside a Card.
-///
-/// Shows the platform icon, device name, primary badge (star), last-seen
-/// time (or "This device" for the local device), and an optional remove
-/// button (hidden for the local device — you can't remove yourself).
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
     required this.device,
     required this.isThisDevice,
-    required this.onRemove,
+    this.canRemove = false,
+    this.onRemove,
   });
 
-  final _DeviceModel device;
-
-  /// True for the "This device" card — suppresses the remove action.
+  final Map<String, dynamic> device;
   final bool isThisDevice;
-
-  /// Callback for the remove button.  Null when [isThisDevice] is true.
+  final bool canRemove;
   final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-
-    // Relative last-seen string.
-    // "This device" is always live; other devices show how long ago they
-    // sent a heartbeat.
-    final lastSeenText = isThisDevice ? 'Active now' : _relativeTime(device.lastSeenMs);
+    final platform = device['platform'] as String? ?? 'unknown';
+    final name = device['name'] as String? ?? 'Unnamed device';
+    final isPrimary = device['isPrimary'] == true;
+    final peerId = device['peerId'] as String? ?? '';
+    final lastSeenMs = (device['lastSeenMs'] as num?)?.toInt();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
-        // Platform icon — gives a quick visual cue (phone vs laptop etc.).
         leading: Icon(
-          MultiDeviceScreen._platformIcon(device.platform),
+          _platformIcon(platform),
           color: isThisDevice ? cs.primary : cs.onSurfaceVariant,
         ),
-
-        // Device name + optional "primary" star badge.
         title: Row(
           children: [
-            Text(device.name),
-            if (device.isPrimary) ...[
-              const SizedBox(width: 6),
-              // Star badge — indicates this is the primary device.
-              // Subtle: icon-only, no extra label needed.
+            Expanded(child: Text(name)),
+            if (isPrimary)
               Icon(Icons.star_rounded, size: 14, color: cs.primary),
-            ],
           ],
         ),
-
-        // Last-seen line — helps users identify stale devices.
         subtitle: Text(
-          lastSeenText,
+          isThisDevice
+              ? peerId.isEmpty
+                  ? 'Active now'
+                  : 'Active now · ${_short(peerId)}'
+              : _relativeTime(lastSeenMs),
           style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
         ),
-
-        // Remove button — only for other devices (hidden for "This device").
-        // Using an icon button rather than a swipe gesture for clarity and
-        // accessibility (§22.22 plain-language principle extends to actions).
-        trailing: isThisDevice
-            ? null
-            : IconButton(
-                icon: const Icon(Icons.remove_circle_outline),
-                color: cs.error,
-                tooltip: 'Remove this device',
+        trailing: !isThisDevice && canRemove
+            ? IconButton(
                 onPressed: onRemove,
-              ),
+                tooltip: 'Remove device',
+                icon: Icon(
+                  Icons.remove_circle_outline,
+                  color: cs.error,
+                ),
+              )
+            : null,
       ),
     );
   }
 
-  /// Returns a plain-language relative time string.
-  ///
-  /// Falls back to 'Never seen' if no heartbeat timestamp is recorded.
   String _relativeTime(int? ms) {
-    if (ms == null) return 'Never seen';
+    if (ms == null) return 'Unavailable';
     final now = DateTime.now().millisecondsSinceEpoch;
     final diff = now - ms;
     if (diff < 60000) return 'Just now';
@@ -379,21 +329,23 @@ class _DeviceTile extends StatelessWidget {
     if (diff < 86400000) return '${diff ~/ 3600000}h ago';
     return '${diff ~/ 86400000}d ago';
   }
+
+  String _short(String value) =>
+      value.length > 16 ? '${value.substring(0, 16)}…' : value;
 }
 
-// ---------------------------------------------------------------------------
-// _OtherDevicesEmptyState — shown when no other devices are paired
-// ---------------------------------------------------------------------------
+IconData _platformIcon(String platform) => switch (platform) {
+      'android' => Icons.phone_android_outlined,
+      'ios' => Icons.phone_iphone_outlined,
+      'macos' => Icons.laptop_mac_outlined,
+      'windows' => Icons.laptop_windows_outlined,
+      'linux' => Icons.computer_outlined,
+      'web' => Icons.language_outlined,
+      _ => Icons.devices_outlined,
+    };
 
-/// Empty state for the "Other devices" section.
-///
-/// Multi-device is optional — the empty state is friendly, not alarming.
-/// Most users will only ever see this.
 class _OtherDevicesEmptyState extends StatelessWidget {
-  const _OtherDevicesEmptyState({required this.onPair});
-
-  /// Called when the user taps "Pair a device" inside the empty state.
-  final VoidCallback onPair;
+  const _OtherDevicesEmptyState();
 
   @override
   Widget build(BuildContext context) {
@@ -407,19 +359,12 @@ class _OtherDevicesEmptyState extends StatelessWidget {
           children: [
             Icon(Icons.devices_outlined, size: 40, color: cs.outline),
             const SizedBox(height: 12),
-            Text('No other devices', style: tt.titleSmall),
+            Text('No other devices visible', style: tt.titleSmall),
             const SizedBox(height: 6),
             Text(
-              'Pair another device to use your identity across phones, '
-              'tablets, or computers.',
+              'Additional devices will appear here when the backend can verify them.',
               style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
               textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            // Action button inside the card — mirrors the AppBar "+" button.
-            FilledButton.tonal(
-              onPressed: onPair,
-              child: const Text('Pair a device'),
             ),
           ],
         ),

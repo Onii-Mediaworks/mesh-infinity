@@ -31,11 +31,11 @@
 // tiny serialisation overhead.
 // =============================================================================
 
-import 'dart:convert';  // jsonDecode / jsonEncode — parse/build JSON strings
-import 'dart:ffi';      // Core FFI types: DynamicLibrary, Pointer, Struct, etc.
-import 'dart:io';       // Platform.isAndroid / isIOS etc. — detect the OS at runtime
+import 'dart:convert'; // jsonDecode / jsonEncode — parse/build JSON strings
+import 'dart:ffi'; // Core FFI types: DynamicLibrary, Pointer, Struct, etc.
+import 'dart:io'; // Platform.isAndroid / isIOS etc. — detect the OS at runtime
 
-import 'package:ffi/ffi.dart';         // Extra FFI helpers: Utf8, calloc
+import 'package:ffi/ffi.dart'; // Extra FFI helpers: Utf8, calloc
 import 'package:flutter/foundation.dart'; // debugPrint — prints only in debug builds
 
 import 'models/file_transfer_models.dart';
@@ -219,7 +219,9 @@ class BackendBridge {
     final namePtr = name.toNativeUtf8();
     try {
       final roomId = _readString(_bindings!.createRoom(_context, namePtr));
-      if (roomId == null) throw StateError(getLastError() ?? 'Failed to create room');
+      if (roomId == null) {
+        throw StateError(getLastError() ?? 'Failed to create room');
+      }
       return roomId;
     } finally {
       // IMPORTANT: we must always free the native string we allocated above.
@@ -322,6 +324,138 @@ class BackendBridge {
     return result == 0;
   }
 
+  /// Return the backend-owned Android proximity snapshot.
+  Map<String, dynamic> getAndroidProximityState() {
+    if (!isAvailable) return const {};
+    final json = _readString(_bindings!.androidProximityStateJson(_context));
+    if (json == null || json.isEmpty) return const {};
+    final decoded = jsonDecode(json);
+    return decoded is Map<String, dynamic> ? decoded : const {};
+  }
+
+  /// Update the backend-owned Android proximity snapshot from the platform layer.
+  bool updateAndroidProximityState(Map<String, dynamic> state) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(state).toNativeUtf8();
+    try {
+      final result = _bindings!.androidProximityUpdateState(_context, ptr);
+      return result == 0;
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  /// Return the backend-owned Android startup snapshot.
+  Map<String, dynamic> getAndroidStartupState() {
+    if (!isAvailable) return const {};
+    final json = _readString(_bindings!.androidStartupStateJson(_context));
+    if (json == null || json.isEmpty) return const {};
+    final decoded = jsonDecode(json);
+    return decoded is Map<String, dynamic> ? decoded : const {};
+  }
+
+  /// Update the backend-owned Android startup snapshot from the platform layer.
+  bool updateAndroidStartupState(Map<String, dynamic> state) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(state).toNativeUtf8();
+    try {
+      final result = _bindings!.androidStartupUpdateState(_context, ptr);
+      return result == 0;
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  /// Submit a pairing payload received over Android NFC or Wi-Fi Direct.
+  bool ingestAndroidPairingPayload(String payloadJson, String source) {
+    if (!isAvailable || payloadJson.isEmpty || source.isEmpty) return false;
+    final payloadPtr = payloadJson.toNativeUtf8();
+    final sourcePtr = source.toNativeUtf8();
+    try {
+      final result = _bindings!.androidProximityIngestPairingPayload(
+        _context,
+        payloadPtr,
+        sourcePtr,
+      );
+      return result == 0;
+    } finally {
+      calloc.free(payloadPtr);
+      calloc.free(sourcePtr);
+    }
+  }
+
+  /// Queue a backend-authored Wi-Fi Direct pairing payload for Android exchange.
+  bool queueAndroidWifiDirectPairingPayload(String payloadJson) {
+    if (!isAvailable || payloadJson.isEmpty) return false;
+    final payloadPtr = payloadJson.toNativeUtf8();
+    try {
+      final result = _bindings!.androidWifiDirectQueuePairingPayload(
+        _context,
+        payloadPtr,
+      );
+      return result == 0;
+    } finally {
+      calloc.free(payloadPtr);
+    }
+  }
+
+  /// Return the next backend-authored Wi-Fi Direct pairing payload, if any.
+  String? dequeueAndroidWifiDirectPairingPayload() {
+    if (!isAvailable) return null;
+    final json = _readString(
+      _bindings!.androidWifiDirectDequeuePairingPayload(_context),
+    );
+    if (json == null || json.isEmpty) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map<String, dynamic>) return null;
+    final payload = decoded['payloadJson'];
+    return payload is String && payload.isNotEmpty ? payload : null;
+  }
+
+  /// Submit one generic Wi-Fi Direct session frame received by Android.
+  bool ingestAndroidWifiDirectSessionFrame(List<int> frameBytes) {
+    if (!isAvailable || frameBytes.isEmpty) return false;
+    final framePtr = hexEncode(frameBytes).toNativeUtf8();
+    try {
+      final result = _bindings!.androidWifiDirectIngestSessionFrame(
+        _context,
+        framePtr,
+      );
+      return result == 0;
+    } finally {
+      calloc.free(framePtr);
+    }
+  }
+
+  /// Queue one backend-authored generic Wi-Fi Direct session frame.
+  bool queueAndroidWifiDirectSessionFrame(List<int> frameBytes) {
+    if (!isAvailable || frameBytes.isEmpty) return false;
+    final framePtr = hexEncode(frameBytes).toNativeUtf8();
+    try {
+      final result = _bindings!.androidWifiDirectQueueSessionFrame(
+        _context,
+        framePtr,
+      );
+      return result == 0;
+    } finally {
+      calloc.free(framePtr);
+    }
+  }
+
+  /// Return the next backend-authored Wi-Fi Direct session frame, if any.
+  List<int>? dequeueAndroidWifiDirectSessionFrame() {
+    if (!isAvailable) return null;
+    final json = _readString(
+      _bindings!.androidWifiDirectDequeueSessionFrame(_context),
+    );
+    if (json == null || json.isEmpty) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map<String, dynamic>) return null;
+    final frameHex = decoded['frameHex'];
+    if (frameHex is! String || frameHex.isEmpty) return null;
+    return hexDecode(frameHex);
+  }
+
   /// Record a trust attestation — one peer (endorser) vouches for another
   /// (target) at a specific trust level using a verification method code.
   ///
@@ -336,7 +470,11 @@ class BackendBridge {
     final endorserPtr = endorserPeerId.toNativeUtf8();
     final targetPtr = targetPeerId.toNativeUtf8();
     final result = _bindings!.trustAttest(
-      _context, endorserPtr, targetPtr, trustLevel, verificationMethod,
+      _context,
+      endorserPtr,
+      targetPtr,
+      trustLevel,
+      verificationMethod,
     );
     calloc.free(endorserPtr);
     calloc.free(targetPtr);
@@ -355,7 +493,9 @@ class BackendBridge {
     final targetPtr = targetPeerId.toNativeUtf8();
     // The markers list is passed as a JSON string — simpler than a custom struct.
     final markersPtr = jsonEncode(markers).toNativeUtf8();
-    final json = _readString(_bindings!.trustVerifyJson(_context, targetPtr, markersPtr));
+    final json = _readString(
+      _bindings!.trustVerifyJson(_context, targetPtr, markersPtr),
+    );
     calloc.free(targetPtr);
     calloc.free(markersPtr);
     if (json == null) return null;
@@ -454,7 +594,61 @@ class BackendBridge {
     if (json == null) return null;
     final decoded = jsonDecode(json);
     if (decoded is! Map) return null;
-    return LocalIdentitySummary.fromJson(Map<String, dynamic>.from(decoded));
+    final normalized = Map<String, dynamic>.from(decoded);
+    if (normalized['locked'] == true) {
+      return null;
+    }
+    normalized['publicKey'] ??= normalized['ed25519Pub'];
+    normalized['name'] ??= normalized['displayName'];
+    return LocalIdentitySummary.fromJson(normalized);
+  }
+
+  /// Fetch the current device list for the multi-device settings screen.
+  List<Map<String, dynamic>> fetchDevices() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.devicesJson(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.cast<Map<String, dynamic>>();
+  }
+
+  /// Create a new-device enrollment request for linking this device.
+  String? createDeviceEnrollmentRequest({String? deviceName}) {
+    if (!isAvailable) return null;
+    final namePtr = deviceName != null ? deviceName.toNativeUtf8() : nullptr;
+    final result = _readString(
+      _bindings!.createDeviceEnrollmentRequest(_context, namePtr),
+    );
+    if (namePtr != nullptr) calloc.free(namePtr);
+    return result;
+  }
+
+  /// Complete an enrollment request on the primary device.
+  String? completeDeviceEnrollment(String requestJson) {
+    if (!isAvailable) return null;
+    final ptr = requestJson.toNativeUtf8();
+    final result = _readString(_bindings!.completeDeviceEnrollment(_context, ptr));
+    calloc.free(ptr);
+    return result;
+  }
+
+  /// Accept an enrollment package on the new device.
+  bool acceptDeviceEnrollment(String packageJson) {
+    if (!isAvailable) return false;
+    final ptr = packageJson.toNativeUtf8();
+    final result = _bindings!.acceptDeviceEnrollment(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Remove a secondary device from the shared identity.
+  bool removeDevice(String deviceId) {
+    if (!isAvailable || deviceId.isEmpty) return false;
+    final ptr = deviceId.toNativeUtf8();
+    final result = _bindings!.removeDevice(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
   }
 
   /// Returns true if the Rust backend has a saved identity (key pair) on disk.
@@ -486,6 +680,110 @@ class BackendBridge {
     final pinPtr = pin != null ? pin.toNativeUtf8() : nullptr;
     final result = _bindings!.unlockIdentity(_context, pinPtr);
     if (pinPtr != nullptr) calloc.free(pinPtr);
+    return result == 0;
+  }
+
+  /// Return backend-owned security configuration for app-lock settings.
+  Map<String, dynamic>? fetchSecurityConfig() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.getSecurityConfig(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Persist backend-owned security settings.
+  bool setSecurityConfig(Map<String, dynamic> config) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(config).toNativeUtf8();
+    final result = _bindings!.setSecurityConfig(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Persist the current identity with a PIN-wrapped master key.
+  bool setPin(String pin) {
+    if (!isAvailable) return false;
+    final pinPtr = pin.toNativeUtf8();
+    final result = _bindings!.setPin(_context, pinPtr);
+    calloc.free(pinPtr);
+    return result == 0;
+  }
+
+  /// Change the app PIN after verifying the current value.
+  bool changePin(String currentPin, String newPin) {
+    if (!isAvailable) return false;
+    final currentPtr = currentPin.toNativeUtf8();
+    final newPtr = newPin.toNativeUtf8();
+    final result = _bindings!.changePin(_context, currentPtr, newPtr);
+    calloc.free(currentPtr);
+    calloc.free(newPtr);
+    return result == 0;
+  }
+
+  /// Remove the app PIN after verifying the current value.
+  bool removePin(String currentPin) {
+    if (!isAvailable) return false;
+    final currentPtr = currentPin.toNativeUtf8();
+    final result = _bindings!.removePin(_context, currentPtr);
+    calloc.free(currentPtr);
+    return result == 0;
+  }
+
+  /// Set or replace the duress PIN for emergency fresh-account unlock.
+  bool setDuressPin(String pin) {
+    if (!isAvailable) return false;
+    final pinPtr = pin.toNativeUtf8();
+    final result = _bindings!.setDuressPin(_context, pinPtr);
+    calloc.free(pinPtr);
+    return result == 0;
+  }
+
+  /// Change the current duress PIN after verifying it.
+  bool changeDuressPin(String currentPin, String newPin) {
+    if (!isAvailable) return false;
+    final currentPtr = currentPin.toNativeUtf8();
+    final newPtr = newPin.toNativeUtf8();
+    final result = _bindings!.changeDuressPin(_context, currentPtr, newPtr);
+    calloc.free(currentPtr);
+    calloc.free(newPtr);
+    return result == 0;
+  }
+
+  /// Remove the duress PIN after verifying it.
+  bool removeDuressPin(String currentPin) {
+    if (!isAvailable) return false;
+    final currentPtr = currentPin.toNativeUtf8();
+    final result = _bindings!.removeDuressPin(_context, currentPtr);
+    calloc.free(currentPtr);
+    return result == 0;
+  }
+
+  /// Fetch stored mask metadata for the current identity.
+  List<Map<String, dynamic>> fetchMasks() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.masksJson(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded.cast<Map<String, dynamic>>();
+  }
+
+  /// Create a new mask. Returns true on success.
+  bool createMask({
+    required String name,
+    int avatarColor = 0,
+    bool isAnonymous = false,
+  }) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(<String, dynamic>{
+      'name': name,
+      'avatarColor': avatarColor,
+      'isAnonymous': isAnonymous,
+    }).toNativeUtf8();
+    final result = _bindings!.createMask(_context, ptr);
+    calloc.free(ptr);
     return result == 0;
   }
 
@@ -523,17 +821,25 @@ class BackendBridge {
     if (!isAvailable) return null;
     final passphrasePtr = passphrase.toNativeUtf8();
     final result = _readString(
-        _bindings!.createBackup(_context, passphrasePtr, backupType));
+      _bindings!.createBackup(_context, passphrasePtr, backupType),
+    );
     calloc.free(passphrasePtr);
     return result;
   }
 
   /// Restore an identity from an encrypted backup payload + passphrase.
-  bool importIdentity({required String backupJson, required String passphrase}) {
+  bool importIdentity({
+    required String backupJson,
+    required String passphrase,
+  }) {
     if (!isAvailable) return false;
     final backupPtr = backupJson.toNativeUtf8();
     final passphrasePtr = passphrase.toNativeUtf8();
-    final result = _bindings!.importIdentity(_context, backupPtr, passphrasePtr);
+    final result = _bindings!.importIdentity(
+      _context,
+      backupPtr,
+      passphrasePtr,
+    );
     calloc.free(backupPtr);
     calloc.free(passphrasePtr);
     return result == 0;
@@ -576,6 +882,18 @@ class BackendBridge {
     return _bindings!.setClearnetPort(_context, port) == 0;
   }
 
+  /// Persist the mesh participation profile (0=minimal, 1=standard, 2=generous).
+  bool setBandwidthProfile(int profile) {
+    if (!isAvailable) return false;
+    return _bindings!.setBandwidthProfile(_context, profile) == 0;
+  }
+
+  /// Persist the highest unlocked feature tier (0=social .. 4=power).
+  bool setActiveTier(int tier) {
+    if (!isAvailable) return false;
+    return _bindings!.setActiveTier(_context, tier) == 0;
+  }
+
   /// Update the threat context level (0=Normal, 1=Elevated, 2=Critical).
   /// Elevated/Critical automatically suppresses cloud push tiers.
   bool setThreatContext(int level) {
@@ -604,7 +922,11 @@ class BackendBridge {
   bool setConversationSecurityMode(String roomId, int mode) {
     if (!isAvailable) return false;
     final roomPtr = roomId.toNativeUtf8();
-    final result = _bindings!.setConversationSecurityMode(_context, roomPtr, mode);
+    final result = _bindings!.setConversationSecurityMode(
+      _context,
+      roomPtr,
+      mode,
+    );
     calloc.free(roomPtr);
     return result == 0;
   }
@@ -620,7 +942,11 @@ class BackendBridge {
     if (!isAvailable) return false;
     final ptr = transportName.toNativeUtf8();
     // Dart booleans become ints (1/0) at the FFI boundary — C has no bool type.
-    final result = _bindings!.toggleTransportFlag(_context, ptr, enabled ? 1 : 0);
+    final result = _bindings!.toggleTransportFlag(
+      _context,
+      ptr,
+      enabled ? 1 : 0,
+    );
     calloc.free(ptr);
     return result != 0;
   }
@@ -637,14 +963,15 @@ class BackendBridge {
   }) {
     if (!isAvailable) return false;
     return _bindings!.setTransportFlags(
-      _context,
-      enableTor ? 1 : 0,
-      enableClearnet ? 1 : 0,
-      meshDiscovery ? 1 : 0,
-      allowRelays ? 1 : 0,
-      enableI2p ? 1 : 0,
-      enableBluetooth ? 1 : 0,
-    ) == 0;
+          _context,
+          enableTor ? 1 : 0,
+          enableClearnet ? 1 : 0,
+          meshDiscovery ? 1 : 0,
+          allowRelays ? 1 : 0,
+          enableI2p ? 1 : 0,
+          enableBluetooth ? 1 : 0,
+        ) ==
+        0;
   }
 
   /// Set the VPN routing mode (§6.9).
@@ -671,7 +998,7 @@ class BackendBridge {
     final ptr = jsonEncode(routeConfig).toNativeUtf8();
     final result = _bindings!.setClearnetRoute(_context, ptr);
     calloc.free(ptr);
-    return result != 0;
+    return result == 0;
   }
 
   /// Configure VPN routing (alias for [setVpnModeConfig]).
@@ -689,28 +1016,32 @@ class BackendBridge {
 
   /// Set the VPN mode (§6.9).
   ///
-  /// [mode] is one of: "off", "mesh_only", "exit_node", "policy".
-  /// [exitNodePeerId] is required when mode is "exit_node".
-  bool setVpnMode(String mode, {String? exitNodePeerId}) {
-    if (exitNodePeerId != null) setExitNode(exitNodePeerId);
-    return setVpnModeConfig({'mode': mode});
+  /// [mode] is one of: "off", "mesh_only", "exit_node", "policy_based".
+  /// [exitNodePeerId] or [tailscaleExitNode] identifies the exit target.
+  bool setVpnMode(
+    String mode, {
+    String? exitNodePeerId,
+    String? tailscaleExitNode,
+    String? exitProfileId,
+  }) {
+    return setVpnModeConfig({
+      'mode': mode,
+      if (exitNodePeerId != null) 'exitNodePeerId': exitNodePeerId,
+      if (tailscaleExitNode != null) 'tailscaleExitNode': tailscaleExitNode,
+      if (exitProfileId != null) 'exitProfileId': exitProfileId,
+    });
   }
 
   /// Enable or disable the VPN kill switch (§6.9.4).
   bool setVpnKillSwitch(bool enabled) {
-    return setVpnModeConfig({'killSwitch': enabled ? 'strict' : 'disabled'});
+    return setVpnModeConfig({'killSwitch': enabled ? 'strict' : 'permissive'});
   }
 
   /// Fetch current VPN status from the backend.
   ///
-  /// Returns a map with keys: mode, exitNodePeerId, connectionStatus,
-  /// killSwitch, uptimeSeconds.  Returns null if the backend has no VPN
-  /// state yet.
-  ///
-  /// Fetch current VPN status from the backend.
-  ///
-  /// Returns a map with keys: enabled, mode, state, killSwitch, exitPeerId,
-  /// internetAllowed.  Returns null if the backend is not available.
+  /// Returns backend-owned routing state including exit identifiers,
+  /// connection status, and security posture. Returns null if the backend
+  /// has no VPN state yet.
   Map<String, dynamic>? getVpnStatus() {
     if (!isAvailable) return null;
     final json = _readString(_bindings!.getVpnStatus(_context));
@@ -718,6 +1049,25 @@ class BackendBridge {
     final decoded = jsonDecode(json);
     if (decoded is! Map) return null;
     return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Fetch the App Connector configuration owned by the backend.
+  Map<String, dynamic>? getAppConnectorConfig() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.getAppConnectorConfig(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Replace the App Connector configuration in the backend.
+  bool setAppConnectorConfig(Map<String, dynamic> config) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(config).toNativeUtf8();
+    final result = _bindings!.setAppConnectorConfig(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
   }
 
   /// Perform a standard emergency erase (§3.9.1).
@@ -872,6 +1222,26 @@ class BackendBridge {
     return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
   }
 
+  /// Fetch a privacy-safe backend diagnostic report.
+  ///
+  /// This is contributor/debug output generated entirely by the backend.
+  Map<String, dynamic>? getDiagnosticReport() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.getDiagnosticReport(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
+  /// Fetch the backend-owned Android VPN enforcement policy.
+  Map<String, dynamic>? getAndroidVpnPolicy() {
+    if (!isAvailable) return null;
+    final json = _readString(_bindings!.getAndroidVpnPolicy(_context));
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+  }
+
   /// Get routing table summary statistics (§6).
   Map<String, dynamic>? getRoutingTableStats() {
     if (!isAvailable) return null;
@@ -915,7 +1285,10 @@ class BackendBridge {
     final flagName = 'trusted_ctx_$context';
     final flagPtr = flagName.toNativeUtf8();
     final result = _bindings!.toggleTransportFlag(
-        _context, flagPtr, enabled ? 1 : 0);
+      _context,
+      flagPtr,
+      enabled ? 1 : 0,
+    );
     calloc.free(flagPtr);
     return result == 0;
   }
@@ -934,9 +1307,7 @@ class BackendBridge {
     if (json == null) return const [];
     final decoded = jsonDecode(json);
     if (decoded is! List) return const [];
-    return decoded
-        .map((e) => Map<String, dynamic>.from(e as Map))
-        .toList();
+    return decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
   // ---------------------------------------------------------------------------
@@ -1018,7 +1389,11 @@ class BackendBridge {
   bool setDisappearingTimer(String roomId, int durationSecs) {
     if (!isAvailable) return false;
     final roomPtr = roomId.toNativeUtf8();
-    final result = _bindings!.setDisappearingTimer(_context, roomPtr, durationSecs);
+    final result = _bindings!.setDisappearingTimer(
+      _context,
+      roomPtr,
+      durationSecs,
+    );
     calloc.free(roomPtr);
     return result == 0;
   }
@@ -1028,7 +1403,9 @@ class BackendBridge {
     if (!isAvailable) return false;
     final roomPtr = roomId.toNativeUtf8();
     final result = _bindings!.sendTypingIndicator(
-      _context, roomPtr, isTyping ? 1 : 0,
+      _context,
+      roomPtr,
+      isTyping ? 1 : 0,
     );
     calloc.free(roomPtr);
     return result == 0;
@@ -1051,7 +1428,12 @@ class BackendBridge {
     final roomPtr = roomId.toNativeUtf8();
     final parentPtr = parentId.toNativeUtf8();
     final textPtr = text.toNativeUtf8();
-    final result = _bindings!.replyToMessage(_context, roomPtr, parentPtr, textPtr);
+    final result = _bindings!.replyToMessage(
+      _context,
+      roomPtr,
+      parentPtr,
+      textPtr,
+    );
     calloc.free(roomPtr);
     calloc.free(parentPtr);
     calloc.free(textPtr);
@@ -1181,7 +1563,7 @@ class BackendBridge {
   /// Authenticate with Tailscale using a pre-auth key.
   ///
   /// [authKey] is a Tailscale pre-authentication key from the admin console.
-  /// [controlUrl] is the control plane URL — pass empty string for
+  /// [controlUrl] is the external coordination-service URL — pass empty string for
   /// the default Tailscale SaaS (`https://controlplane.tailscale.com`), or
   /// a Headscale URL for self-hosted deployments.
   ///
@@ -1198,7 +1580,7 @@ class BackendBridge {
 
   /// Begin a Tailscale OAuth flow (browser-based login).
   ///
-  /// [controlUrl] is the control plane URL, same convention as
+  /// [controlUrl] is the external coordination-service URL, same convention as
   /// [tailscaleAuthKey].  An empty string uses the default Tailscale SaaS.
   ///
   /// The backend emits a `TailscaleOAuthUrl` event with the URL to open.
@@ -1208,6 +1590,33 @@ class BackendBridge {
     final urlPtr = controlUrl.toNativeUtf8();
     final result = _bindings!.tailscaleBeginOAuth(_context, urlPtr);
     calloc.free(urlPtr);
+    return result == 0;
+  }
+
+  /// Disconnect and forget the current Tailscale configuration.
+  bool tailscaleDisconnect() {
+    if (!isAvailable) return false;
+    return _bindings!.tailscaleDisconnect(_context) == 0;
+  }
+
+  /// Refresh Tailscale state from the controller.
+  bool tailscaleRefresh() {
+    if (!isAvailable) return false;
+    return _bindings!.tailscaleRefresh(_context) == 0;
+  }
+
+  /// Toggle whether mesh relay is preferred over DERP for Tailscale.
+  bool tailscaleSetPreferMeshRelay(bool enabled) {
+    if (!isAvailable) return false;
+    return _bindings!.tailscaleSetPreferMeshRelay(_context, enabled ? 1 : 0) == 0;
+  }
+
+  /// Select or clear the active Tailscale exit node by peer name.
+  bool tailscaleSetExitNode(String peerName) {
+    if (!isAvailable) return false;
+    final peerPtr = peerName.toNativeUtf8();
+    final result = _bindings!.tailscaleSetExitNode(_context, peerPtr);
+    calloc.free(peerPtr);
     return result == 0;
   }
 
@@ -1221,7 +1630,11 @@ class BackendBridge {
   /// [networkIds] is the list of 16-hex-digit ZeroTier network IDs to join.
   ///
   /// Returns true if Rust accepted the configuration.
-  bool zerotierConnect(String apiKey, String controllerUrl, List<String> networkIds) {
+  bool zerotierConnect(
+    String apiKey,
+    String controllerUrl,
+    List<String> networkIds,
+  ) {
     if (!isAvailable) return false;
     final keyPtr = apiKey.toNativeUtf8();
     final urlPtr = controllerUrl.toNativeUtf8();
@@ -1230,6 +1643,53 @@ class BackendBridge {
     calloc.free(keyPtr);
     calloc.free(urlPtr);
     calloc.free(idsPtr);
+    return result == 0;
+  }
+
+  /// Disconnect and forget the current ZeroTier configuration.
+  bool zerotierDisconnect() {
+    if (!isAvailable) return false;
+    return _bindings!.zerotierDisconnect(_context) == 0;
+  }
+
+  /// Refresh ZeroTier state from the controller.
+  bool zerotierRefresh() {
+    if (!isAvailable) return false;
+    return _bindings!.zerotierRefresh(_context) == 0;
+  }
+
+  /// Join an additional ZeroTier network using stored credentials.
+  bool zerotierJoinNetwork(String networkId) {
+    if (!isAvailable) return false;
+    final networkPtr = networkId.toNativeUtf8();
+    final result = _bindings!.zerotierJoinNetwork(_context, networkPtr);
+    calloc.free(networkPtr);
+    return result == 0;
+  }
+
+  /// Toggle whether mesh relay is preferred over vendor relay for ZeroTier.
+  bool zerotierSetPreferMeshRelay(bool enabled) {
+    if (!isAvailable) return false;
+    return _bindings!.zerotierSetPreferMeshRelay(_context, enabled ? 1 : 0) == 0;
+  }
+
+  /// Authorize or deauthorize a ZeroTier member on a specific network.
+  bool zerotierSetMemberAuthorized(
+    String networkId,
+    String nodeId,
+    bool authorized,
+  ) {
+    if (!isAvailable) return false;
+    final networkPtr = networkId.toNativeUtf8();
+    final nodePtr = nodeId.toNativeUtf8();
+    final result = _bindings!.zerotierSetMemberAuthorized(
+      _context,
+      networkPtr,
+      nodePtr,
+      authorized ? 1 : 0,
+    );
+    calloc.free(networkPtr);
+    calloc.free(nodePtr);
     return result == 0;
   }
 
@@ -1327,7 +1787,8 @@ class BackendBridge {
     final namePtr = name.toNativeUtf8();
     final descPtr = description.toNativeUtf8();
     final json = _readString(
-        _bindings!.createGroup(_context, namePtr, descPtr, networkType));
+      _bindings!.createGroup(_context, namePtr, descPtr, networkType),
+    );
     calloc.free(namePtr);
     calloc.free(descPtr);
     if (json == null) return null;
@@ -1343,7 +1804,8 @@ class BackendBridge {
     if (json == null) return [];
     final decoded = jsonDecode(json);
     if (decoded is List) {
-      return decoded.whereType<Map>()
+      return decoded
+          .whereType<Map>()
           .map((e) => Map<String, dynamic>.from(e))
           .toList();
     }
@@ -1359,7 +1821,8 @@ class BackendBridge {
     if (json == null) return [];
     final decoded = jsonDecode(json);
     if (decoded is List) {
-      return decoded.whereType<Map>()
+      return decoded
+          .whereType<Map>()
           .map((e) => Map<String, dynamic>.from(e))
           .toList();
     }
@@ -1490,7 +1953,11 @@ class BackendBridge {
     final json = _readString(_bindings!.wgInitiateHandshake(_context, ptr));
     calloc.free(ptr);
     if (json == null) return null;
-    try { return jsonDecode(json) as Map<String, dynamic>; } catch (_) { return null; }
+    try {
+      return jsonDecode(json) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Respond to an incoming WireGuard handshake from [peerIdHex].
@@ -1502,11 +1969,17 @@ class BackendBridge {
     if (!isAvailable) return null;
     final peerPtr = peerIdHex.toNativeUtf8();
     final initPtr = initHex.toNativeUtf8();
-    final json = _readString(_bindings!.wgRespondToHandshake(_context, peerPtr, initPtr));
+    final json = _readString(
+      _bindings!.wgRespondToHandshake(_context, peerPtr, initPtr),
+    );
     calloc.free(peerPtr);
     calloc.free(initPtr);
     if (json == null) return null;
-    try { return jsonDecode(json) as Map<String, dynamic>; } catch (_) { return null; }
+    try {
+      return jsonDecode(json) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Complete an initiator-side WireGuard handshake after receiving the
@@ -1515,15 +1988,24 @@ class BackendBridge {
   /// [peerIdHex] is the responder's peer ID.
   /// [responseHex] is the 32-byte ephemeral public key from the responder.
   /// Returns a map with `session_established: true` or `error` on failure.
-  Map<String, dynamic>? wgCompleteHandshake(String peerIdHex, String responseHex) {
+  Map<String, dynamic>? wgCompleteHandshake(
+    String peerIdHex,
+    String responseHex,
+  ) {
     if (!isAvailable) return null;
     final peerPtr = peerIdHex.toNativeUtf8();
     final respPtr = responseHex.toNativeUtf8();
-    final json = _readString(_bindings!.wgCompleteHandshake(_context, peerPtr, respPtr));
+    final json = _readString(
+      _bindings!.wgCompleteHandshake(_context, peerPtr, respPtr),
+    );
     calloc.free(peerPtr);
     calloc.free(respPtr);
     if (json == null) return null;
-    try { return jsonDecode(json) as Map<String, dynamic>; } catch (_) { return null; }
+    try {
+      return jsonDecode(json) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1565,11 +2047,22 @@ class BackendBridge {
     return decoded.cast<Map<String, dynamic>>();
   }
 
+  /// Join a discoverable garden by ID.
+  bool joinGarden(String gardenId) {
+    if (!isAvailable || gardenId.isEmpty) return false;
+    final ptr = gardenId.toNativeUtf8();
+    final result = _bindings!.gardenJoin(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
   /// Publish a post to a garden. Returns true on success.
   bool postToGarden(String gardenId, String content) {
     if (!isAvailable) return false;
-    final ptr = jsonEncode({'gardenId': gardenId, 'content': content})
-        .toNativeUtf8();
+    final ptr = jsonEncode({
+      'gardenId': gardenId,
+      'content': content,
+    }).toNativeUtf8();
     final result = _bindings!.gardenPost(_context, ptr);
     calloc.free(ptr);
     return result == 0;
@@ -1683,6 +2176,25 @@ class BackendBridge {
     bindings.stringFree(ptr);
     return value;
   }
+
+  String hexEncode(List<int> bytes) {
+    final buffer = StringBuffer();
+    for (final byte in bytes) {
+      buffer.write(byte.toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
+  }
+
+  List<int> hexDecode(String hexString) {
+    if (hexString.length.isOdd) {
+      throw const FormatException('hex string must have even length');
+    }
+    final bytes = <int>[];
+    for (var index = 0; index < hexString.length; index += 2) {
+      bytes.add(int.parse(hexString.substring(index, index + 2), radix: 16));
+    }
+    return bytes;
+  }
 }
 
 // =============================================================================
@@ -1708,8 +2220,8 @@ Pointer<Void> _initContext(
   final resolvedPath = (configPath != null && configPath.isNotEmpty)
       ? configPath
       : (envConfigPath != null && envConfigPath.isNotEmpty)
-          ? envConfigPath
-          : null;
+      ? envConfigPath
+      : null;
 
   // Allow overriding the WireGuard UDP port at runtime for testing (debug only).
   final wireguardPort = kDebugMode
@@ -1739,19 +2251,28 @@ Pointer<Void> _initContext(
   // write Dart-side field assignments that map directly to the C struct layout.
   config.ref
     ..configPath = configPathPtr
-    ..logLevel = 2          // 2 = INFO level in Rust's log crate convention
-    ..enableTor = 1         // Start with Tor enabled by default
-    ..enableClearnet = 0    // Clearnet disabled by default (privacy-first posture)
-    ..meshDiscovery = 1     // Enable local-network peer discovery
-    ..allowRelays = 1       // Allow peers to act as relay nodes
-    ..enableI2p = 0         // I2P disabled until more mature
-    ..enableBluetooth = 0   // Bluetooth transport off by default
-    ..enableRf = 0          // RF (radio) transport off by default
+    ..logLevel =
+        2 // 2 = INFO level in Rust's log crate convention
+    ..enableTor =
+        1 // Start with Tor enabled by default
+    ..enableClearnet =
+        0 // Clearnet disabled by default (privacy-first posture)
+    ..meshDiscovery =
+        1 // Enable local-network peer discovery
+    ..allowRelays =
+        1 // Allow peers to act as relay nodes
+    ..enableI2p =
+        0 // I2P disabled until more mature
+    ..enableBluetooth =
+        0 // Bluetooth transport off by default
+    ..enableRf =
+        0 // RF (radio) transport off by default
     ..wireguardPort =
         (wireguardPort != null && wireguardPort > 0 && wireguardPort <= 65535)
         ? wireguardPort
-        : 0                 // 0 means "let Rust pick a free port"
-    ..maxPeers = 0          // 0 means "no limit" in Rust
+        : 0 // 0 means "let Rust pick a free port"
+    ..maxPeers =
+        0 // 0 means "no limit" in Rust
     ..maxConnections = 0
     ..nodeMode = nodeMode;
 
@@ -1817,73 +2338,168 @@ class _BackendBindings {
   /// If any symbol is missing, this throws immediately — fail fast.
   _BackendBindings(this._lib)
     : meshInit = _lib.lookupFunction<MeshInitNative, MeshInitDart>('mesh_init'),
-      meshDestroy =
-          _lib.lookupFunction<MeshDestroyNative, MeshDestroyDart>('mesh_destroy'),
-      roomsJson =
-          _lib.lookupFunction<RoomsJsonNative, RoomsJsonDart>('mi_rooms_json'),
-      messagesJson = _lib
-          .lookupFunction<MessagesJsonNative, MessagesJsonDart>('mi_messages_json'),
-      peerListJson = _lib
-          .lookupFunction<PeerListJsonNative, PeerListJsonDart>('mi_get_peer_list'),
+      meshDestroy = _lib.lookupFunction<MeshDestroyNative, MeshDestroyDart>(
+        'mesh_destroy',
+      ),
+      roomsJson = _lib.lookupFunction<RoomsJsonNative, RoomsJsonDart>(
+        'mi_rooms_json',
+      ),
+      messagesJson = _lib.lookupFunction<MessagesJsonNative, MessagesJsonDart>(
+        'mi_messages_json',
+      ),
+      peerListJson = _lib.lookupFunction<PeerListJsonNative, PeerListJsonDart>(
+        'mi_get_peer_list',
+      ),
       fileTransfersJson = _lib
           .lookupFunction<FileTransfersJsonNative, FileTransfersJsonDart>(
             'mi_file_transfers_json',
           ),
-      activeRoomId = _lib
-          .lookupFunction<ActiveRoomIdNative, ActiveRoomIdDart>('mi_active_room_id'),
-      createRoom =
-          _lib.lookupFunction<CreateRoomNative, CreateRoomDart>('mi_create_room'),
-      selectRoom =
-          _lib.lookupFunction<SelectRoomNative, SelectRoomDart>('mi_select_room'),
-      deleteRoom =
-          _lib.lookupFunction<DeleteRoomNative, DeleteRoomDart>('mi_delete_room'),
+      activeRoomId = _lib.lookupFunction<ActiveRoomIdNative, ActiveRoomIdDart>(
+        'mi_active_room_id',
+      ),
+      createRoom = _lib.lookupFunction<CreateRoomNative, CreateRoomDart>(
+        'mi_create_room',
+      ),
+      selectRoom = _lib.lookupFunction<SelectRoomNative, SelectRoomDart>(
+        'mi_select_room',
+      ),
+      deleteRoom = _lib.lookupFunction<DeleteRoomNative, DeleteRoomDart>(
+        'mi_delete_room',
+      ),
       sendTextMessage = _lib
           .lookupFunction<SendTextMessageNative, SendTextMessageDart>(
             'mi_send_text_message',
           ),
       deleteMessage = _lib
-          .lookupFunction<DeleteMessageNative, DeleteMessageDart>('mi_delete_message'),
-      setNodeMode =
-          _lib.lookupFunction<SetNodeModeNative, SetNodeModeDart>('mi_set_node_mode'),
-      settingsJson = _lib
-          .lookupFunction<SettingsJsonNative, SettingsJsonDart>('mi_settings_json'),
+          .lookupFunction<DeleteMessageNative, DeleteMessageDart>(
+            'mi_delete_message',
+          ),
+      setNodeMode = _lib.lookupFunction<SetNodeModeNative, SetNodeModeDart>(
+        'mi_set_node_mode',
+      ),
+      setBandwidthProfile = _lib
+          .lookupFunction<SetBandwidthProfileNative, SetBandwidthProfileDart>(
+            'mi_set_bandwidth_profile',
+          ),
+      setActiveTier = _lib
+          .lookupFunction<SetActiveTierNative, SetActiveTierDart>(
+            'mi_set_active_tier',
+          ),
+      settingsJson = _lib.lookupFunction<SettingsJsonNative, SettingsJsonDart>(
+        'mi_settings_json',
+      ),
       setTransportFlags = _lib
           .lookupFunction<SetTransportFlagsNative, SetTransportFlagsDart>(
             'mi_set_transport_flags',
           ),
-      pairPeer =
-          _lib.lookupFunction<PairPeerNative, PairPeerDart>('mi_pair_peer'),
+      pairPeer = _lib.lookupFunction<PairPeerNative, PairPeerDart>(
+        'mi_pair_peer',
+      ),
+      androidProximityStateJson = _lib.lookupFunction<
+        AndroidProximityStateJsonNative,
+        AndroidProximityStateJsonDart
+      >('mi_android_proximity_state_json'),
+      androidStartupStateJson = _lib.lookupFunction<
+        AndroidStartupStateJsonNative,
+        AndroidStartupStateJsonDart
+      >('mi_android_startup_state_json'),
+      androidProximityUpdateState = _lib.lookupFunction<
+        AndroidProximityUpdateStateNative,
+        AndroidProximityUpdateStateDart
+      >('mi_android_proximity_update_state'),
+      androidStartupUpdateState = _lib.lookupFunction<
+        AndroidStartupUpdateStateNative,
+        AndroidStartupUpdateStateDart
+      >('mi_android_startup_update_state'),
+      androidProximityIngestPairingPayload = _lib.lookupFunction<
+        AndroidProximityIngestPairingPayloadNative,
+        AndroidProximityIngestPairingPayloadDart
+      >('mi_android_proximity_ingest_pairing_payload'),
+      androidWifiDirectQueuePairingPayload = _lib.lookupFunction<
+        AndroidWifiDirectQueuePairingPayloadNative,
+        AndroidWifiDirectQueuePairingPayloadDart
+      >('mi_android_wifi_direct_queue_pairing_payload'),
+      androidWifiDirectDequeuePairingPayload = _lib.lookupFunction<
+        AndroidWifiDirectDequeuePairingPayloadNative,
+        AndroidWifiDirectDequeuePairingPayloadDart
+      >('mi_android_wifi_direct_dequeue_pairing_payload'),
+      androidWifiDirectIngestSessionFrame = _lib.lookupFunction<
+        AndroidWifiDirectIngestSessionFrameNative,
+        AndroidWifiDirectIngestSessionFrameDart
+      >('mi_android_wifi_direct_ingest_session_frame'),
+      androidWifiDirectQueueSessionFrame = _lib.lookupFunction<
+        AndroidWifiDirectQueueSessionFrameNative,
+        AndroidWifiDirectQueueSessionFrameDart
+      >('mi_android_wifi_direct_queue_session_frame'),
+      androidWifiDirectDequeueSessionFrame = _lib.lookupFunction<
+        AndroidWifiDirectDequeueSessionFrameNative,
+        AndroidWifiDirectDequeueSessionFrameDart
+      >('mi_android_wifi_direct_dequeue_session_frame'),
       localIdentityJson = _lib
           .lookupFunction<LocalIdentityJsonNative, LocalIdentityJsonDart>(
             'mi_local_identity_json',
           ),
-      trustAttest =
-          _lib.lookupFunction<TrustAttestNative, TrustAttestDart>('mi_trust_attest'),
+      devicesJson = _lib.lookupFunction<DevicesJsonNative, DevicesJsonDart>(
+        'mi_devices_json',
+      ),
+      createDeviceEnrollmentRequest = _lib.lookupFunction<
+        CreateDeviceEnrollmentRequestNative,
+        CreateDeviceEnrollmentRequestDart
+      >('mi_create_device_enrollment_request'),
+      completeDeviceEnrollment = _lib.lookupFunction<
+        CompleteDeviceEnrollmentNative,
+        CompleteDeviceEnrollmentDart
+      >('mi_complete_device_enrollment'),
+      acceptDeviceEnrollment = _lib.lookupFunction<
+        AcceptDeviceEnrollmentNative,
+        AcceptDeviceEnrollmentDart
+      >('mi_accept_device_enrollment'),
+      removeDevice = _lib.lookupFunction<RemoveDeviceNative, RemoveDeviceDart>(
+        'mi_remove_device',
+      ),
+      trustAttest = _lib.lookupFunction<TrustAttestNative, TrustAttestDart>(
+        'mi_trust_attest',
+      ),
       trustVerifyJson = _lib
           .lookupFunction<TrustVerifyJsonNative, TrustVerifyJsonDart>(
             'mi_trust_verify_json',
           ),
-      hasIdentity =
-          _lib.lookupFunction<HasIdentityNative, HasIdentityDart>('mi_has_identity'),
+      hasIdentity = _lib.lookupFunction<HasIdentityNative, HasIdentityDart>(
+        'mi_has_identity',
+      ),
       lastErrorMessage = _lib
           .lookupFunction<LastErrorMessageNative, LastErrorMessageDart>(
             'mi_last_error_message',
           ),
-      stringFree =
-          _lib.lookupFunction<StringFreeNative, StringFreeDart>('mi_string_free'),
-      mdnsEnable =
-          _lib.lookupFunction<MdnsEnableNative, MdnsEnableDart>('mi_mdns_enable'),
-      mdnsDisable =
-          _lib.lookupFunction<MdnsDisableNative, MdnsDisableDart>('mi_mdns_disable'),
+      stringFree = _lib.lookupFunction<StringFreeNative, StringFreeDart>(
+        'mi_string_free',
+      ),
+      mdnsEnable = _lib.lookupFunction<MdnsEnableNative, MdnsEnableDart>(
+        'mi_mdns_enable',
+      ),
+      mdnsDisable = _lib.lookupFunction<MdnsDisableNative, MdnsDisableDart>(
+        'mi_mdns_disable',
+      ),
       mdnsIsRunning = _lib
-          .lookupFunction<MdnsIsRunningNative, MdnsIsRunningDart>('mi_mdns_is_running'),
-      mdnsGetDiscoveredPeers = _lib
-          .lookupFunction<MdnsGetDiscoveredPeersNative, MdnsGetDiscoveredPeersDart>(
-            'mi_mdns_get_discovered_peers',
+          .lookupFunction<MdnsIsRunningNative, MdnsIsRunningDart>(
+            'mi_mdns_is_running',
           ),
+      mdnsGetDiscoveredPeers = _lib
+          .lookupFunction<
+            MdnsGetDiscoveredPeersNative,
+            MdnsGetDiscoveredPeersDart
+          >('mi_mdns_get_discovered_peers'),
       getNetworkStats = _lib
           .lookupFunction<GetNetworkStatsNative, GetNetworkStatsDart>(
             'mi_get_network_stats',
+          ),
+      getDiagnosticReport = _lib
+          .lookupFunction<GetDiagnosticReportNative, GetDiagnosticReportDart>(
+            'mi_get_diagnostic_report',
+          ),
+      getAndroidVpnPolicy = _lib
+          .lookupFunction<GetAndroidVpnPolicyNative, GetAndroidVpnPolicyDart>(
+            'mi_get_android_vpn_policy',
           ),
       routingTableStats = _lib
           .lookupFunction<RoutingTableStatsNative, RoutingTableStatsDart>(
@@ -1917,10 +2533,12 @@ class _BackendBindings {
           .lookupFunction<ToggleTransportFlagNative, ToggleTransportFlagDart>(
             'mi_toggle_transport_flag',
           ),
-      setVpnMode =
-          _lib.lookupFunction<SetVpnModeNative, SetVpnModeDart>('mi_set_vpn_mode'),
-      setExitNode =
-          _lib.lookupFunction<SetExitNodeNative, SetExitNodeDart>('mi_set_exit_node'),
+      setVpnMode = _lib.lookupFunction<SetVpnModeNative, SetVpnModeDart>(
+        'mi_set_vpn_mode',
+      ),
+      setExitNode = _lib.lookupFunction<SetExitNodeNative, SetExitNodeDart>(
+        'mi_set_exit_node',
+      ),
       setClearnetRoute = _lib
           .lookupFunction<SetClearnetRouteNative, SetClearnetRouteDart>(
             'mi_set_clearnet_route',
@@ -1933,6 +2551,39 @@ class _BackendBindings {
           .lookupFunction<UnlockIdentityNative, UnlockIdentityDart>(
             'mi_unlock_identity',
           ),
+      getSecurityConfig = _lib
+          .lookupFunction<GetSecurityConfigNative, GetSecurityConfigDart>(
+            'mi_get_security_config',
+          ),
+      setSecurityConfig = _lib
+          .lookupFunction<SetSecurityConfigNative, SetSecurityConfigDart>(
+            'mi_set_security_config',
+          ),
+      setPin = _lib.lookupFunction<SetPinNative, SetPinDart>('mi_set_pin'),
+      changePin = _lib.lookupFunction<ChangePinNative, ChangePinDart>(
+        'mi_change_pin',
+      ),
+      removePin = _lib.lookupFunction<RemovePinNative, RemovePinDart>(
+        'mi_remove_pin',
+      ),
+      setDuressPin = _lib
+          .lookupFunction<SetDuressPinNative, SetDuressPinDart>(
+            'mi_set_duress_pin',
+          ),
+      changeDuressPin = _lib
+          .lookupFunction<ChangeDuressPinNative, ChangeDuressPinDart>(
+            'mi_change_duress_pin',
+          ),
+      removeDuressPin = _lib
+          .lookupFunction<RemoveDuressPinNative, RemoveDuressPinDart>(
+            'mi_remove_duress_pin',
+          ),
+      masksJson = _lib.lookupFunction<MasksJsonNative, MasksJsonDart>(
+        'mi_masks_json',
+      ),
+      createMask = _lib.lookupFunction<CreateMaskNative, CreateMaskDart>(
+        'mi_create_mask',
+      ),
       setPublicProfile = _lib
           .lookupFunction<SetPublicProfileNative, SetPublicProfileDart>(
             'mi_set_public_profile',
@@ -1941,10 +2592,9 @@ class _BackendBindings {
           .lookupFunction<SetPrivateProfileNative, SetPrivateProfileDart>(
             'mi_set_private_profile',
           ),
-      createBackup = _lib
-          .lookupFunction<CreateBackupNative, CreateBackupDart>(
-            'mi_create_backup',
-          ),
+      createBackup = _lib.lookupFunction<CreateBackupNative, CreateBackupDart>(
+        'mi_create_backup',
+      ),
       importIdentity = _lib
           .lookupFunction<ImportIdentityNative, ImportIdentityDart>(
             'mi_import_identity',
@@ -1953,14 +2603,12 @@ class _BackendBindings {
           .lookupFunction<ResetIdentityNative, ResetIdentityDart>(
             'mi_reset_identity',
           ),
-      sendReaction = _lib
-          .lookupFunction<SendReactionNative, SendReactionDart>(
-            'mi_send_reaction',
-          ),
-      editMessage = _lib
-          .lookupFunction<EditMessageNative, EditMessageDart>(
-            'mi_edit_message',
-          ),
+      sendReaction = _lib.lookupFunction<SendReactionNative, SendReactionDart>(
+        'mi_send_reaction',
+      ),
+      editMessage = _lib.lookupFunction<EditMessageNative, EditMessageDart>(
+        'mi_edit_message',
+      ),
       deleteForEveryone = _lib
           .lookupFunction<DeleteForEveryoneNative, DeleteForEveryoneDart>(
             'mi_delete_for_everyone',
@@ -1989,36 +2637,42 @@ class _BackendBindings {
           .lookupFunction<SearchMessagesNative, SearchMessagesDart>(
             'mi_search_messages',
           ),
-      pinMessage = _lib
-          .lookupFunction<PinMessageNative, PinMessageDart>(
-            'mi_pin_message',
-          ),
-      unpinMessage = _lib
-          .lookupFunction<UnpinMessageNative, UnpinMessageDart>(
-            'mi_unpin_message',
-          ),
+      pinMessage = _lib.lookupFunction<PinMessageNative, PinMessageDart>(
+        'mi_pin_message',
+      ),
+      unpinMessage = _lib.lookupFunction<UnpinMessageNative, UnpinMessageDart>(
+        'mi_unpin_message',
+      ),
       pruneExpiredMessages = _lib
           .lookupFunction<PruneExpiredMessagesNative, PruneExpiredMessagesDart>(
             'mi_prune_expired_messages',
           ),
-      getVpnStatus =
-          _lib.lookupFunction<GetVpnStatusNative, GetVpnStatusDart>('mi_get_vpn_status'),
+      getVpnStatus = _lib.lookupFunction<GetVpnStatusNative, GetVpnStatusDart>(
+        'mi_get_vpn_status',
+      ),
+      getAppConnectorConfig = _lib
+          .lookupFunction<
+            GetAppConnectorConfigNative,
+            GetAppConnectorConfigDart
+          >('mi_get_app_connector_config'),
+      setAppConnectorConfig = _lib
+          .lookupFunction<
+            SetAppConnectorConfigNative,
+            SetAppConnectorConfigDart
+          >('mi_set_app_connector_config'),
       emergencyErase = _lib
           .lookupFunction<EmergencyEraseNative, EmergencyEraseDart>(
             'mi_emergency_erase',
           ),
-      duressErase = _lib
-          .lookupFunction<DuressEraseNative, DuressEraseDart>(
-            'mi_duress_erase',
-          ),
-      sdrConfigure = _lib
-          .lookupFunction<SdrConfigureNative, SdrConfigureDart>(
-            'mi_sdr_configure',
-          ),
-      sdrStatus = _lib
-          .lookupFunction<SdrStatusNative, SdrStatusDart>(
-            'mi_sdr_status',
-          ),
+      duressErase = _lib.lookupFunction<DuressEraseNative, DuressEraseDart>(
+        'mi_duress_erase',
+      ),
+      sdrConfigure = _lib.lookupFunction<SdrConfigureNative, SdrConfigureDart>(
+        'mi_sdr_configure',
+      ),
+      sdrStatus = _lib.lookupFunction<SdrStatusNative, SdrStatusDart>(
+        'mi_sdr_status',
+      ),
       sdrCurrentChannel = _lib
           .lookupFunction<SdrCurrentChannelNative, SdrCurrentChannelDart>(
             'mi_sdr_current_channel',
@@ -2039,18 +2693,59 @@ class _BackendBindings {
           .lookupFunction<TailscaleBeginOAuthNative, TailscaleBeginOAuthDart>(
             'mi_tailscale_begin_oauth',
           ),
+      tailscaleDisconnect = _lib
+          .lookupFunction<TailscaleDisconnectNative, TailscaleDisconnectDart>(
+            'mi_tailscale_disconnect',
+          ),
+      tailscaleRefresh = _lib
+          .lookupFunction<TailscaleRefreshNative, TailscaleRefreshDart>(
+            'mi_tailscale_refresh',
+          ),
+      tailscaleSetPreferMeshRelay = _lib.lookupFunction<
+        TailscaleSetPreferMeshRelayNative,
+        TailscaleSetPreferMeshRelayDart
+      >(
+        'mi_tailscale_set_prefer_mesh_relay',
+      ),
+      tailscaleSetExitNode = _lib
+          .lookupFunction<TailscaleSetExitNodeNative, TailscaleSetExitNodeDart>(
+            'mi_tailscale_set_exit_node',
+          ),
       zerotierConnect = _lib
           .lookupFunction<ZeroTierConnectNative, ZeroTierConnectDart>(
             'mi_zerotier_connect',
           ),
+      zerotierDisconnect = _lib
+          .lookupFunction<ZeroTierDisconnectNative, ZeroTierDisconnectDart>(
+            'mi_zerotier_disconnect',
+          ),
+      zerotierRefresh = _lib
+          .lookupFunction<ZeroTierRefreshNative, ZeroTierRefreshDart>(
+            'mi_zerotier_refresh',
+          ),
+      zerotierJoinNetwork = _lib
+          .lookupFunction<ZeroTierJoinNetworkNative, ZeroTierJoinNetworkDart>(
+            'mi_zerotier_join_network',
+          ),
+      zerotierSetPreferMeshRelay = _lib.lookupFunction<
+        ZeroTierSetPreferMeshRelayNative,
+        ZeroTierSetPreferMeshRelayDart
+      >(
+        'mi_zerotier_set_prefer_mesh_relay',
+      ),
+      zerotierSetMemberAuthorized = _lib.lookupFunction<
+        ZeroTierSetMemberAuthorizedNative,
+        ZeroTierSetMemberAuthorizedDart
+      >(
+        'mi_zerotier_set_member_authorized',
+      ),
       overlayStatus = _lib
           .lookupFunction<OverlayStatusNative, OverlayStatusDart>(
             'mi_overlay_status',
           ),
-      loSecRequest = _lib
-          .lookupFunction<LoSecRequestNative, LoSecRequestDart>(
-            'mi_losec_request',
-          ),
+      loSecRequest = _lib.lookupFunction<LoSecRequestNative, LoSecRequestDart>(
+        'mi_losec_request',
+      ),
       loSecAmbientStatus = _lib
           .lookupFunction<LoSecAmbientStatusNative, LoSecAmbientStatusDart>(
             'mi_losec_ambient_status',
@@ -2060,9 +2755,10 @@ class _BackendBindings {
             'mi_get_pairing_payload',
           ),
       startClearnetListener = _lib
-          .lookupFunction<StartClearnetListenerNative, StartClearnetListenerDart>(
-            'mi_start_clearnet_listener',
-          ),
+          .lookupFunction<
+            StartClearnetListenerNative,
+            StartClearnetListenerDart
+          >('mi_start_clearnet_listener'),
       stopClearnetListener = _lib
           .lookupFunction<StopClearnetListenerNative, StopClearnetListenerDart>(
             'mi_stop_clearnet_listener',
@@ -2084,25 +2780,22 @@ class _BackendBindings {
             'mi_set_trust_level',
           ),
       setConversationSecurityMode = _lib
-          .lookupFunction<SetConversationSecurityModeNative, SetConversationSecurityModeDart>(
-            'mi_set_conversation_security_mode',
-          ),
-      createGroup = _lib
-          .lookupFunction<CreateGroupNative, CreateGroupDart>(
-            'mi_create_group',
-          ),
-      listGroups = _lib
-          .lookupFunction<ListGroupsNative, ListGroupsDart>(
-            'mi_list_groups',
-          ),
-      groupMembers = _lib
-          .lookupFunction<GroupMembersNative, GroupMembersDart>(
-            'mi_group_members',
-          ),
-      leaveGroup = _lib
-          .lookupFunction<LeaveGroupNative, LeaveGroupDart>(
-            'mi_leave_group',
-          ),
+          .lookupFunction<
+            SetConversationSecurityModeNative,
+            SetConversationSecurityModeDart
+          >('mi_set_conversation_security_mode'),
+      createGroup = _lib.lookupFunction<CreateGroupNative, CreateGroupDart>(
+        'mi_create_group',
+      ),
+      listGroups = _lib.lookupFunction<ListGroupsNative, ListGroupsDart>(
+        'mi_list_groups',
+      ),
+      groupMembers = _lib.lookupFunction<GroupMembersNative, GroupMembersDart>(
+        'mi_group_members',
+      ),
+      leaveGroup = _lib.lookupFunction<LeaveGroupNative, LeaveGroupDart>(
+        'mi_leave_group',
+      ),
       groupSendMessage = _lib
           .lookupFunction<GroupSendMessageNative, GroupSendMessageDart>(
             'mi_group_send_message',
@@ -2111,30 +2804,28 @@ class _BackendBindings {
           .lookupFunction<GroupInvitePeerNative, GroupInvitePeerDart>(
             'mi_group_invite_peer',
           ),
-      callOffer = _lib
-          .lookupFunction<CallOfferNative, CallOfferDart>(
-            'mi_call_offer',
-          ),
-      callAnswer = _lib
-          .lookupFunction<CallAnswerNative, CallAnswerDart>(
-            'mi_call_answer',
-          ),
-      callHangup = _lib
-          .lookupFunction<CallHangupNative, CallHangupDart>(
-            'mi_call_hangup',
-          ),
-      callStatus = _lib
-          .lookupFunction<CallStatusNative, CallStatusDart>(
-            'mi_call_status',
-          ),
+      callOffer = _lib.lookupFunction<CallOfferNative, CallOfferDart>(
+        'mi_call_offer',
+      ),
+      callAnswer = _lib.lookupFunction<CallAnswerNative, CallAnswerDart>(
+        'mi_call_answer',
+      ),
+      callHangup = _lib.lookupFunction<CallHangupNative, CallHangupDart>(
+        'mi_call_hangup',
+      ),
+      callStatus = _lib.lookupFunction<CallStatusNative, CallStatusDart>(
+        'mi_call_status',
+      ),
       getNotificationConfig = _lib
-          .lookupFunction<GetNotificationConfigNative, GetNotificationConfigDart>(
-            'mi_get_notification_config',
-          ),
+          .lookupFunction<
+            GetNotificationConfigNative,
+            GetNotificationConfigDart
+          >('mi_get_notification_config'),
       setNotificationConfig = _lib
-          .lookupFunction<SetNotificationConfigNative, SetNotificationConfigDart>(
-            'mi_set_notification_config',
-          ),
+          .lookupFunction<
+            SetNotificationConfigNative,
+            SetNotificationConfigDart
+          >('mi_set_notification_config'),
       wgInitiateHandshake = _lib
           .lookupFunction<WgInitiateHandshakeNative, WgInitiateHandshakeDart>(
             'mi_wg_initiate_handshake',
@@ -2147,30 +2838,29 @@ class _BackendBindings {
           .lookupFunction<WgCompleteHandshakeNative, WgCompleteHandshakeDart>(
             'mi_wg_complete_handshake',
           ),
-      gardenPosts = _lib
-          .lookupFunction<GardenPostsNative, GardenPostsDart>(
-            'mi_garden_posts',
-          ),
+      gardenPosts = _lib.lookupFunction<GardenPostsNative, GardenPostsDart>(
+        'mi_garden_posts',
+      ),
       gardenDiscover = _lib
           .lookupFunction<GardenDiscoverNative, GardenDiscoverDart>(
             'mi_garden_discover',
           ),
-      gardenPost = _lib
-          .lookupFunction<GardenPostNative, GardenPostDart>(
-            'mi_garden_post',
-          ),
-      storageStats = _lib
-          .lookupFunction<StorageStatsNative, StorageStatsDart>(
-            'mi_storage_stats',
-          ),
+      gardenJoin = _lib.lookupFunction<GardenJoinNative, GardenJoinDart>(
+        'mi_garden_join',
+      ),
+      gardenPost = _lib.lookupFunction<GardenPostNative, GardenPostDart>(
+        'mi_garden_post',
+      ),
+      storageStats = _lib.lookupFunction<StorageStatsNative, StorageStatsDart>(
+        'mi_storage_stats',
+      ),
       publishedFiles = _lib
           .lookupFunction<PublishedFilesNative, PublishedFilesDart>(
             'mi_published_files',
           ),
-      publishFile = _lib
-          .lookupFunction<PublishFileNative, PublishFileDart>(
-            'mi_publish_file',
-          ),
+      publishFile = _lib.lookupFunction<PublishFileNative, PublishFileDart>(
+        'mi_publish_file',
+      ),
       unpublishFile = _lib
           .lookupFunction<UnpublishFileNative, UnpublishFileDart>(
             'mi_unpublish_file',
@@ -2183,10 +2873,9 @@ class _BackendBindings {
           .lookupFunction<HostingConfigNative, HostingConfigDart>(
             'mi_hosting_config',
           ),
-      hostingSet = _lib
-          .lookupFunction<HostingSetNative, HostingSetDart>(
-            'mi_hosting_set',
-          ),
+      hostingSet = _lib.lookupFunction<HostingSetNative, HostingSetDart>(
+        'mi_hosting_set',
+      ),
       messageRequestsJson = _lib
           .lookupFunction<MessageRequestsJsonNative, MessageRequestsJsonDart>(
             'mi_message_requests_json',
@@ -2196,14 +2885,16 @@ class _BackendBindings {
             'mi_accept_message_request',
           ),
       declineMessageRequestFn = _lib
-          .lookupFunction<DeclineMessageRequestNative, DeclineMessageRequestDart>(
-            'mi_decline_message_request',
-          );
+          .lookupFunction<
+            DeclineMessageRequestNative,
+            DeclineMessageRequestDart
+          >('mi_decline_message_request');
 
   // Keep a reference to the library so it is not garbage-collected while
   // any of our function pointers are still alive.
-  // ignore: unused_field
   final DynamicLibrary _lib;
+
+  DynamicLibrary get libraryHandle => _lib;
 
   // Each field below is a Dart function that directly invokes a Rust symbol.
   // Calling `meshInit(configPtr)` here is exactly like calling
@@ -2221,10 +2912,33 @@ class _BackendBindings {
   final SendTextMessageDart sendTextMessage;
   final DeleteMessageDart deleteMessage;
   final SetNodeModeDart setNodeMode;
+  final SetBandwidthProfileDart setBandwidthProfile;
+  final SetActiveTierDart setActiveTier;
   final SettingsJsonDart settingsJson;
   final SetTransportFlagsDart setTransportFlags;
   final PairPeerDart pairPeer;
+  final AndroidProximityStateJsonDart androidProximityStateJson;
+  final AndroidStartupStateJsonDart androidStartupStateJson;
+  final AndroidProximityUpdateStateDart androidProximityUpdateState;
+  final AndroidStartupUpdateStateDart androidStartupUpdateState;
+  final AndroidProximityIngestPairingPayloadDart
+  androidProximityIngestPairingPayload;
+  final AndroidWifiDirectIngestSessionFrameDart
+  androidWifiDirectIngestSessionFrame;
+  final AndroidWifiDirectQueuePairingPayloadDart
+  androidWifiDirectQueuePairingPayload;
+  final AndroidWifiDirectDequeuePairingPayloadDart
+  androidWifiDirectDequeuePairingPayload;
+  final AndroidWifiDirectQueueSessionFrameDart
+  androidWifiDirectQueueSessionFrame;
+  final AndroidWifiDirectDequeueSessionFrameDart
+  androidWifiDirectDequeueSessionFrame;
   final LocalIdentityJsonDart localIdentityJson;
+  final DevicesJsonDart devicesJson;
+  final CreateDeviceEnrollmentRequestDart createDeviceEnrollmentRequest;
+  final CompleteDeviceEnrollmentDart completeDeviceEnrollment;
+  final AcceptDeviceEnrollmentDart acceptDeviceEnrollment;
+  final RemoveDeviceDart removeDevice;
   final TrustAttestDart trustAttest;
   final TrustVerifyJsonDart trustVerifyJson;
   final HasIdentityDart hasIdentity;
@@ -2235,6 +2949,8 @@ class _BackendBindings {
   final MdnsIsRunningDart mdnsIsRunning;
   final MdnsGetDiscoveredPeersDart mdnsGetDiscoveredPeers;
   final GetNetworkStatsDart getNetworkStats;
+  final GetDiagnosticReportDart getDiagnosticReport;
+  final GetAndroidVpnPolicyDart getAndroidVpnPolicy;
   final RoutingTableStatsDart routingTableStats;
   final RoutingLookupDart routingLookup;
   final FileTransferStartDart fileTransferStart;
@@ -2248,6 +2964,16 @@ class _BackendBindings {
   final SetClearnetRouteDart setClearnetRoute;
   final CreateIdentityDart createIdentity;
   final UnlockIdentityDart unlockIdentity;
+  final GetSecurityConfigDart getSecurityConfig;
+  final SetSecurityConfigDart setSecurityConfig;
+  final SetPinDart setPin;
+  final ChangePinDart changePin;
+  final RemovePinDart removePin;
+  final SetDuressPinDart setDuressPin;
+  final ChangeDuressPinDart changeDuressPin;
+  final RemoveDuressPinDart removeDuressPin;
+  final MasksJsonDart masksJson;
+  final CreateMaskDart createMask;
   final SetPublicProfileDart setPublicProfile;
   final SetPrivateProfileDart setPrivateProfile;
   final CreateBackupDart createBackup;
@@ -2266,6 +2992,8 @@ class _BackendBindings {
   final UnpinMessageDart unpinMessage;
   final PruneExpiredMessagesDart pruneExpiredMessages;
   final GetVpnStatusDart getVpnStatus;
+  final GetAppConnectorConfigDart getAppConnectorConfig;
+  final SetAppConnectorConfigDart setAppConnectorConfig;
   final EmergencyEraseDart emergencyErase;
   final DuressEraseDart duressErase;
   final SdrConfigureDart sdrConfigure;
@@ -2275,7 +3003,16 @@ class _BackendBindings {
   final SdrListHardwareDart sdrListHardware;
   final TailscaleAuthKeyDart tailscaleAuthKey;
   final TailscaleBeginOAuthDart tailscaleBeginOAuth;
+  final TailscaleDisconnectDart tailscaleDisconnect;
+  final TailscaleRefreshDart tailscaleRefresh;
+  final TailscaleSetPreferMeshRelayDart tailscaleSetPreferMeshRelay;
+  final TailscaleSetExitNodeDart tailscaleSetExitNode;
   final ZeroTierConnectDart zerotierConnect;
+  final ZeroTierDisconnectDart zerotierDisconnect;
+  final ZeroTierRefreshDart zerotierRefresh;
+  final ZeroTierJoinNetworkDart zerotierJoinNetwork;
+  final ZeroTierSetPreferMeshRelayDart zerotierSetPreferMeshRelay;
+  final ZeroTierSetMemberAuthorizedDart zerotierSetMemberAuthorized;
   final OverlayStatusDart overlayStatus;
   final LoSecRequestDart loSecRequest;
   final LoSecAmbientStatusDart loSecAmbientStatus;
@@ -2305,6 +3042,7 @@ class _BackendBindings {
   // Garden
   final GardenPostsDart gardenPosts;
   final GardenDiscoverDart gardenDiscover;
+  final GardenJoinDart gardenJoin;
   final GardenPostDart gardenPost;
   // Storage
   final StorageStatsDart storageStats;
@@ -2443,7 +3181,8 @@ typedef RoomsJsonDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_messages_json(ctx, room_id: *const c_char) -> *mut c_char
 // Returns a JSON array of messages for the given room (null room_id = active room).
-typedef MessagesJsonNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef MessagesJsonNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef MessagesJsonDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_get_peer_list(ctx) -> *mut c_char
@@ -2484,6 +3223,14 @@ typedef DeleteMessageDart = int Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetNodeModeNative = Int32 Function(Pointer<Void>, Uint8);
 typedef SetNodeModeDart = int Function(Pointer<Void>, int);
 
+// mi_set_bandwidth_profile(ctx, profile: u8) -> i32
+typedef SetBandwidthProfileNative = Int32 Function(Pointer<Void>, Uint8);
+typedef SetBandwidthProfileDart = int Function(Pointer<Void>, int);
+
+// mi_set_active_tier(ctx, tier: u8) -> i32
+typedef SetActiveTierNative = Int32 Function(Pointer<Void>, Uint8);
+typedef SetActiveTierDart = int Function(Pointer<Void>, int);
+
 // mi_settings_json(ctx) -> *mut c_char
 typedef SettingsJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef SettingsJsonDart = Pointer<Utf8> Function(Pointer<Void>);
@@ -2498,9 +3245,71 @@ typedef SetTransportFlagsDart =
 typedef PairPeerNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef PairPeerDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
+// mi_android_proximity_state_json(ctx) -> *const c_char
+typedef AndroidProximityStateJsonNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef AndroidProximityStateJsonDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_android_startup_state_json(ctx) -> *const c_char
+typedef AndroidStartupStateJsonNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef AndroidStartupStateJsonDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_android_proximity_update_state(ctx, state_json) -> i32
+typedef AndroidProximityUpdateStateNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AndroidProximityUpdateStateDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_android_startup_update_state(ctx, state_json) -> i32
+typedef AndroidStartupUpdateStateNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AndroidStartupUpdateStateDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_android_proximity_ingest_pairing_payload(ctx, payload_json, source) -> i32
+typedef AndroidProximityIngestPairingPayloadNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef AndroidProximityIngestPairingPayloadDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
 // mi_local_identity_json(ctx) -> *mut c_char
 typedef LocalIdentityJsonNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef LocalIdentityJsonDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_devices_json(ctx) -> *mut c_char
+typedef DevicesJsonNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef DevicesJsonDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_create_device_enrollment_request(ctx, device_name) -> *mut c_char
+typedef CreateDeviceEnrollmentRequestNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef CreateDeviceEnrollmentRequestDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_complete_device_enrollment(ctx, request_json) -> *mut c_char
+typedef CompleteDeviceEnrollmentNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef CompleteDeviceEnrollmentDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_accept_device_enrollment(ctx, package_json) -> i32
+typedef AcceptDeviceEnrollmentNative = Int32 Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+);
+typedef AcceptDeviceEnrollmentDart = int Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+);
+
+// mi_remove_device(ctx, device_id) -> i32
+typedef RemoveDeviceNative = Int32 Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+);
+typedef RemoveDeviceDart = int Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+);
 
 // mi_trust_attest(ctx, endorser_id, target_id, trust_level: i32, method: u8) -> i32
 typedef TrustAttestNative =
@@ -2546,15 +3355,25 @@ typedef MdnsGetDiscoveredPeersDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_routing_table_stats(ctx) -> *const c_char (JSON)
 typedef RoutingTableStatsNative = Pointer<Utf8> Function(Pointer<Void>);
-typedef RoutingTableStatsDart   = Pointer<Utf8> Function(Pointer<Void>);
+typedef RoutingTableStatsDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_routing_lookup(ctx, dest_peer_id_hex) -> *const c_char (JSON)
-typedef RoutingLookupNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
-typedef RoutingLookupDart   = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef RoutingLookupNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef RoutingLookupDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_get_network_stats(ctx) -> *mut c_char  (JSON object)
 typedef GetNetworkStatsNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetNetworkStatsDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_get_diagnostic_report(ctx) -> *mut c_char (JSON object)
+typedef GetDiagnosticReportNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetDiagnosticReportDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_get_android_vpn_policy(ctx) -> *mut c_char (JSON object)
+typedef GetAndroidVpnPolicyNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetAndroidVpnPolicyDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_file_transfer_start(ctx, direction, peer_id, file_path) -> *mut c_char
 typedef FileTransferStartNative =
@@ -2577,8 +3396,10 @@ typedef FileTransferCancelNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef FileTransferCancelDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_file_transfer_accept(ctx, transfer_id, save_path) -> i32
-typedef FileTransferAcceptNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
-typedef FileTransferAcceptDart = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef FileTransferAcceptNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef FileTransferAcceptDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 
 // mi_get_service_list(ctx) -> *mut c_char  (JSON array)
 typedef GetServiceListNative = Pointer<Utf8> Function(Pointer<Void>);
@@ -2615,6 +3436,50 @@ typedef CreateIdentityDart = int Function(Pointer<Void>, Pointer<Utf8>);
 // mi_unlock_identity(ctx, pin: *const c_char) -> i32  (pin may be nullptr for no-PIN)
 typedef UnlockIdentityNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef UnlockIdentityDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_get_security_config(ctx) -> *const c_char
+typedef GetSecurityConfigNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetSecurityConfigDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_set_security_config(ctx, config_json) -> i32
+typedef SetSecurityConfigNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetSecurityConfigDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_set_pin(ctx, pin) -> i32
+typedef SetPinNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetPinDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_change_pin(ctx, current_pin, new_pin) -> i32
+typedef ChangePinNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ChangePinDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_remove_pin(ctx, current_pin) -> i32
+typedef RemovePinNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef RemovePinDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_set_duress_pin(ctx, pin) -> i32
+typedef SetDuressPinNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetDuressPinDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_change_duress_pin(ctx, current_pin, new_pin) -> i32
+typedef ChangeDuressPinNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ChangeDuressPinDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_remove_duress_pin(ctx, current_pin) -> i32
+typedef RemoveDuressPinNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef RemoveDuressPinDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_masks_json(ctx) -> *const c_char
+typedef MasksJsonNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef MasksJsonDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_create_mask(ctx, mask_json) -> i32
+typedef CreateMaskNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef CreateMaskDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_set_public_profile(ctx, profile_json: *const c_char) -> i32
 typedef SetPublicProfileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
@@ -2715,6 +3580,15 @@ typedef PruneExpiredMessagesDart = int Function(Pointer<Void>);
 typedef GetVpnStatusNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetVpnStatusDart = Pointer<Utf8> Function(Pointer<Void>);
 
+// mi_get_app_connector_config(ctx) -> *const c_char
+typedef GetAppConnectorConfigNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef GetAppConnectorConfigDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_set_app_connector_config(ctx, config_json) -> i32
+typedef SetAppConnectorConfigNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetAppConnectorConfigDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
 // mi_emergency_erase(ctx) -> i32  (standard killswitch — destroys all layers)
 typedef EmergencyEraseNative = Int32 Function(Pointer<Void>);
 typedef EmergencyEraseDart = int Function(Pointer<Void>);
@@ -2744,23 +3618,73 @@ typedef SdrListHardwareNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef SdrListHardwareDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_tailscale_auth_key(ctx, auth_key, control_url) -> i32
-typedef TailscaleAuthKeyNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
-typedef TailscaleAuthKeyDart = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleAuthKeyNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleAuthKeyDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 
 // mi_tailscale_begin_oauth(ctx, control_url) -> i32
-typedef TailscaleBeginOAuthNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleBeginOAuthNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef TailscaleBeginOAuthDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
+// mi_tailscale_disconnect(ctx) -> i32
+typedef TailscaleDisconnectNative = Int32 Function(Pointer<Void>);
+typedef TailscaleDisconnectDart = int Function(Pointer<Void>);
+
+// mi_tailscale_refresh(ctx) -> i32
+typedef TailscaleRefreshNative = Int32 Function(Pointer<Void>);
+typedef TailscaleRefreshDart = int Function(Pointer<Void>);
+
+// mi_tailscale_set_prefer_mesh_relay(ctx, enabled) -> i32
+typedef TailscaleSetPreferMeshRelayNative =
+    Int32 Function(Pointer<Void>, Int32);
+typedef TailscaleSetPreferMeshRelayDart = int Function(Pointer<Void>, int);
+
+// mi_tailscale_set_exit_node(ctx, peer_name) -> i32
+typedef TailscaleSetExitNodeNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleSetExitNodeDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
 // mi_zerotier_connect(ctx, api_key, controller_url, network_ids_json) -> i32
-typedef ZeroTierConnectNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
-typedef ZeroTierConnectDart = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ZeroTierConnectNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ZeroTierConnectDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_zerotier_disconnect(ctx) -> i32
+typedef ZeroTierDisconnectNative = Int32 Function(Pointer<Void>);
+typedef ZeroTierDisconnectDart = int Function(Pointer<Void>);
+
+// mi_zerotier_refresh(ctx) -> i32
+typedef ZeroTierRefreshNative = Int32 Function(Pointer<Void>);
+typedef ZeroTierRefreshDart = int Function(Pointer<Void>);
+
+// mi_zerotier_join_network(ctx, network_id) -> i32
+typedef ZeroTierJoinNetworkNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef ZeroTierJoinNetworkDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_zerotier_set_prefer_mesh_relay(ctx, enabled) -> i32
+typedef ZeroTierSetPreferMeshRelayNative =
+    Int32 Function(Pointer<Void>, Int32);
+typedef ZeroTierSetPreferMeshRelayDart = int Function(Pointer<Void>, int);
+
+// mi_zerotier_set_member_authorized(ctx, network_id, node_id, authorized) -> i32
+typedef ZeroTierSetMemberAuthorizedNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Int32);
+typedef ZeroTierSetMemberAuthorizedDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, int);
 
 // mi_overlay_status(ctx) -> *const c_char  (JSON overlay state)
 typedef OverlayStatusNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef OverlayStatusDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_losec_request(ctx, request_json) -> *const c_char  (JSON accepted/rejection)
-typedef LoSecRequestNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef LoSecRequestNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef LoSecRequestDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_losec_ambient_status(ctx) -> *const c_char  (JSON ambient traffic info)
@@ -2770,6 +3694,36 @@ typedef LoSecAmbientStatusDart = Pointer<Utf8> Function(Pointer<Void>);
 // mi_get_pairing_payload(ctx) -> *const c_char  (JSON PairingPayload with keys + token)
 typedef GetPairingPayloadNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetPairingPayloadDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_android_wifi_direct_queue_pairing_payload(ctx, payload_json) -> i32
+typedef AndroidWifiDirectQueuePairingPayloadNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AndroidWifiDirectQueuePairingPayloadDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_android_wifi_direct_dequeue_pairing_payload(ctx) -> *const c_char
+typedef AndroidWifiDirectDequeuePairingPayloadNative =
+    Pointer<Utf8> Function(Pointer<Void>);
+typedef AndroidWifiDirectDequeuePairingPayloadDart =
+    Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_android_wifi_direct_ingest_session_frame(ctx, frame_hex) -> i32
+typedef AndroidWifiDirectIngestSessionFrameNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AndroidWifiDirectIngestSessionFrameDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_android_wifi_direct_queue_session_frame(ctx, frame_hex) -> i32
+typedef AndroidWifiDirectQueueSessionFrameNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AndroidWifiDirectQueueSessionFrameDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_android_wifi_direct_dequeue_session_frame(ctx) -> *const c_char
+typedef AndroidWifiDirectDequeueSessionFrameNative =
+    Pointer<Utf8> Function(Pointer<Void>);
+typedef AndroidWifiDirectDequeueSessionFrameDart =
+    Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_start_clearnet_listener(ctx) -> i32  (0=ok, -1=fail)
 typedef StartClearnetListenerNative = Int32 Function(Pointer<Void>);
@@ -2792,7 +3746,8 @@ typedef GetThreatContextNative = Uint8 Function(Pointer<Void>);
 typedef GetThreatContextDart = int Function(Pointer<Void>);
 
 // mi_set_trust_level(ctx, peer_id: *const c_char, level: u8) -> i32
-typedef SetTrustLevelNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Uint8);
+typedef SetTrustLevelNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Uint8);
 typedef SetTrustLevelDart = int Function(Pointer<Void>, Pointer<Utf8>, int);
 
 // mi_set_conversation_security_mode(ctx, room_id: *const c_char, mode: u8) -> i32
@@ -2812,7 +3767,8 @@ typedef ListGroupsNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef ListGroupsDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_group_members(ctx, group_id) -> *const c_char (JSON array)
-typedef GroupMembersNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef GroupMembersNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 typedef GroupMembersDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_leave_group(ctx, group_id) -> i32
@@ -2832,8 +3788,10 @@ typedef GroupInvitePeerDart =
     int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 
 // mi_call_offer(ctx, peer_id_hex, is_video) -> *const c_char (JSON ok/error)
-typedef CallOfferNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Int32);
-typedef CallOfferDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, int);
+typedef CallOfferNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef CallOfferDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, int);
 
 // mi_call_answer(ctx, call_id_hex, accept) -> i32
 typedef CallAnswerNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
@@ -2852,12 +3810,15 @@ typedef GetNotificationConfigNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef GetNotificationConfigDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_set_notification_config(ctx, json) -> i32
-typedef SetNotificationConfigNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef SetNotificationConfigNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetNotificationConfigDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_wg_initiate_handshake(ctx, peer_id_hex) -> *const c_char  (JSON)
-typedef WgInitiateHandshakeNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
-typedef WgInitiateHandshakeDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef WgInitiateHandshakeNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef WgInitiateHandshakeDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_wg_respond_to_handshake(ctx, peer_id_hex, init_hex) -> *const c_char  (JSON)
 typedef WgRespondToHandshakeNative =
@@ -2872,53 +3833,60 @@ typedef WgCompleteHandshakeDart =
     Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 
 // mi_garden_posts(ctx, garden_id) -> *const c_char  (JSON array of posts)
-typedef GardenPostsNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
-typedef GardenPostsDart   = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef GardenPostsNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef GardenPostsDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_garden_discover(ctx) -> *const c_char  (JSON array of discoverable gardens)
 typedef GardenDiscoverNative = Pointer<Utf8> Function(Pointer<Void>);
-typedef GardenDiscoverDart   = Pointer<Utf8> Function(Pointer<Void>);
+typedef GardenDiscoverDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_garden_join(ctx, garden_id) -> i32  (0 = success)
+typedef GardenJoinNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef GardenJoinDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_garden_post(ctx, post_json) -> i32  (0 = success)
 typedef GardenPostNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef GardenPostDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+typedef GardenPostDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_storage_stats(ctx) -> *const c_char  (JSON object)
 typedef StorageStatsNative = Pointer<Utf8> Function(Pointer<Void>);
-typedef StorageStatsDart   = Pointer<Utf8> Function(Pointer<Void>);
+typedef StorageStatsDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_published_files(ctx) -> *const c_char  (JSON array of published file records)
 typedef PublishedFilesNative = Pointer<Utf8> Function(Pointer<Void>);
-typedef PublishedFilesDart   = Pointer<Utf8> Function(Pointer<Void>);
+typedef PublishedFilesDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_publish_file(ctx, path) -> i32  (0 = success)
 typedef PublishFileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef PublishFileDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+typedef PublishFileDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_unpublish_file(ctx, file_id) -> i32  (0 = success)
 typedef UnpublishFileNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef UnpublishFileDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+typedef UnpublishFileDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_mesh_services_discover(ctx) -> *const c_char  (JSON array of mesh services)
 typedef MeshServicesDiscoverNative = Pointer<Utf8> Function(Pointer<Void>);
-typedef MeshServicesDiscoverDart   = Pointer<Utf8> Function(Pointer<Void>);
+typedef MeshServicesDiscoverDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_hosting_config(ctx) -> *const c_char  (JSON object of hosting flags)
 typedef HostingConfigNative = Pointer<Utf8> Function(Pointer<Void>);
-typedef HostingConfigDart   = Pointer<Utf8> Function(Pointer<Void>);
+typedef HostingConfigDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_hosting_set(ctx, service_id, enabled) -> i32  (0 = success)
 typedef HostingSetNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
-typedef HostingSetDart   = int   Function(Pointer<Void>, Pointer<Utf8>, int);
+typedef HostingSetDart = int Function(Pointer<Void>, Pointer<Utf8>, int);
 
 // mi_message_requests_json(ctx) -> *const c_char  (JSON array of pending requests)
 typedef MessageRequestsJsonNative = Pointer<Utf8> Function(Pointer<Void>);
-typedef MessageRequestsJsonDart   = Pointer<Utf8> Function(Pointer<Void>);
+typedef MessageRequestsJsonDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_accept_message_request(ctx, request_id) -> i32  (0 = success)
-typedef AcceptMessageRequestNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef AcceptMessageRequestDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+typedef AcceptMessageRequestNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AcceptMessageRequestDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_decline_message_request(ctx, request_id) -> i32  (0 = success)
-typedef DeclineMessageRequestNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef DeclineMessageRequestDart   = int   Function(Pointer<Void>, Pointer<Utf8>);
+typedef DeclineMessageRequestNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef DeclineMessageRequestDart = int Function(Pointer<Void>, Pointer<Utf8>);

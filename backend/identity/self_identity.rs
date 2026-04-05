@@ -36,7 +36,8 @@ use chacha20poly1305::{
     // AEAD cipher for authenticated encryption.
     // Execute this protocol step.
     // Execute this protocol step.
-    XChaCha20Poly1305, XNonce,
+    XChaCha20Poly1305,
+    XNonce,
 };
 use ed25519_dalek::SigningKey;
 use ml_kem::{EncodedSizeUser, KemCore, MlKem768};
@@ -279,7 +280,9 @@ impl SelfIdentity {
         // that introduced a non-serializable field) — a panic is the correct signal.
         // Compute json for this protocol step.
         // Compute json for this protocol step.
-        let json = serde_json::to_vec(&metadata).expect("IdentityMetadata serialization is infallible — all fields are String/Option<String>");
+        let json = serde_json::to_vec(&metadata).expect(
+            "IdentityMetadata serialization is infallible — all fields are String/Option<String>",
+        );
 
         // Serialize to the wire format for transmission or storage.
         // Compute json len for this protocol step.
@@ -511,22 +514,24 @@ impl SelfIdentity {
                 // Argon2id password hashing for key derivation.
                 // Execute this protocol step.
                 // Execute this protocol step.
-                argon2.hash_password_into(
-                    // Extract the raw byte representation for wire encoding.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    pin_str.as_bytes(),
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    &salt_bytes,
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    &mut *wrapping_key,
-                // Transform the result, mapping errors to the local error type.
-                // Map the error to the local error type.
-                // Map the error to the local error type.
-                ).map_err(|_| IdentityError::Crypto)?;
+                argon2
+                    .hash_password_into(
+                        // Extract the raw byte representation for wire encoding.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        pin_str.as_bytes(),
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        &salt_bytes,
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        &mut *wrapping_key,
+                        // Transform the result, mapping errors to the local error type.
+                        // Map the error to the local error type.
+                        // Map the error to the local error type.
+                    )
+                    .map_err(|_| IdentityError::Crypto)?;
 
                 // Fresh nonce — must never be reused with the same key.
                 // Compute nonce bytes for this protocol step.
@@ -694,9 +699,9 @@ impl SelfIdentity {
                 // Execute this protocol step.
                 IdentityError::Io(e)
             }
-        // Propagate errors via the ? operator — callers handle failures.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
+            // Propagate errors via the ? operator — callers handle failures.
+            // Propagate errors via ?.
+            // Propagate errors via ?.
         })?;
 
         // Key material — must be zeroized when no longer needed.
@@ -767,22 +772,24 @@ impl SelfIdentity {
                 // Argon2id password hashing for key derivation.
                 // Execute this protocol step.
                 // Execute this protocol step.
-                argon2.hash_password_into(
-                    // Extract the raw byte representation for wire encoding.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    pin_str.as_bytes(),
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    salt_bytes,
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    &mut *wrapping_key,
-                // Transform the result, mapping errors to the local error type.
-                // Map the error to the local error type.
-                // Map the error to the local error type.
-                ).map_err(|_| IdentityError::WrongPin)?;
+                argon2
+                    .hash_password_into(
+                        // Extract the raw byte representation for wire encoding.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        pin_str.as_bytes(),
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        salt_bytes,
+                        // Process the current step in the protocol.
+                        // Execute this protocol step.
+                        // Execute this protocol step.
+                        &mut *wrapping_key,
+                        // Transform the result, mapping errors to the local error type.
+                        // Map the error to the local error type.
+                        // Map the error to the local error type.
+                    )
+                    .map_err(|_| IdentityError::WrongPin)?;
 
                 // Fresh nonce — must never be reused with the same key.
                 // Compute nonce for this protocol step.
@@ -887,7 +894,9 @@ impl SelfIdentity {
             // Decrypt and authenticate the ciphertext.
             // Map the error to the local error type.
             // Map the error to the local error type.
-            cipher.decrypt(nonce, ciphertext).map_err(|_| IdentityError::Crypto)?
+            cipher
+                .decrypt(nonce, ciphertext)
+                .map_err(|_| IdentityError::Crypto)?,
         );
 
         // Prepare the data buffer for the next processing stage.
@@ -1023,7 +1032,8 @@ pub fn derive_preauth_keypair(ik_secret: &X25519Secret) -> (X25519Secret, X25519
         // Begin the block scope.
         // Execute this protocol step.
         // Execute this protocol step.
-        .duration_since(std::time::UNIX_EPOCH) {
+        .duration_since(std::time::UNIX_EPOCH)
+    {
         // Wrap the computed value in the success variant.
         // Success path — return the computed value.
         // Success path — return the computed value.
@@ -1181,13 +1191,19 @@ mod tests {
         // Confirm x25519 secret is actually the secret, not public key bytes
         let x_secret_bytes = id.x25519_secret.to_bytes();
         let x_pub_bytes = *id.x25519_pub.as_bytes();
-        assert_ne!(x_secret_bytes, x_pub_bytes, "serialize_payload stored public key instead of secret");
+        assert_ne!(
+            x_secret_bytes, x_pub_bytes,
+            "serialize_payload stored public key instead of secret"
+        );
 
         // Verify the serialized payload ends with the secret, not the public key
         let payload_slice = payload.as_slice();
         let payload_len = payload_slice.len();
         let serialized_x25519 = &payload_slice[payload_len - 32..];
-        assert_eq!(serialized_x25519, &x_secret_bytes, "payload must store x25519 SECRET");
+        assert_eq!(
+            serialized_x25519, &x_secret_bytes,
+            "payload must store x25519 SECRET"
+        );
     }
 
     #[test]
@@ -1209,13 +1225,15 @@ mod tests {
         let id = SelfIdentity::generate(Some("PinUser".into()));
         let original_pub = id.ed25519_pub;
 
-        id.save_to_disk(dir.path(), Some("secret123")).expect("save failed");
+        id.save_to_disk(dir.path(), Some("secret123"))
+            .expect("save failed");
 
         // Wrong PIN should fail
         assert!(SelfIdentity::load_from_disk(dir.path(), Some("wrongpin")).is_err());
 
         // Correct PIN should succeed
-        let loaded = SelfIdentity::load_from_disk(dir.path(), Some("secret123")).expect("load failed");
+        let loaded =
+            SelfIdentity::load_from_disk(dir.path(), Some("secret123")).expect("load failed");
         assert_eq!(loaded.ed25519_pub, original_pub);
         assert_eq!(loaded.display_name, Some("PinUser".into()));
     }
@@ -1229,8 +1247,11 @@ mod tests {
         id.save_to_disk(dir.path(), None).expect("save failed");
         let loaded = SelfIdentity::load_from_disk(dir.path(), None).expect("load failed");
 
-        assert_eq!(loaded.x25519_secret.to_bytes(), original_secret_bytes,
-            "x25519 secret must survive save/load roundtrip");
+        assert_eq!(
+            loaded.x25519_secret.to_bytes(),
+            original_secret_bytes,
+            "x25519 secret must survive save/load roundtrip"
+        );
     }
 
     #[test]
@@ -1258,10 +1279,14 @@ mod tests {
         id.save_to_disk(dir.path(), None).expect("save failed");
         let loaded = SelfIdentity::load_from_disk(dir.path(), None).expect("load failed");
 
-        assert_ne!(*loaded.master_key, [0u8; 32],
-            "master_key must not be all-zero after load (would indicate un-restored key)");
-        assert_eq!(*loaded.master_key, original_master,
-            "master_key must be exactly restored to the pre-save value");
+        assert_ne!(
+            *loaded.master_key, [0u8; 32],
+            "master_key must not be all-zero after load (would indicate un-restored key)"
+        );
+        assert_eq!(
+            *loaded.master_key, original_master,
+            "master_key must be exactly restored to the pre-save value"
+        );
     }
 
     /// After load_from_disk, ML-KEM keys must be populated (non-empty).
@@ -1275,10 +1300,14 @@ mod tests {
         id.save_to_disk(dir.path(), None).expect("save failed");
         let loaded = SelfIdentity::load_from_disk(dir.path(), None).expect("load failed");
 
-        assert!(!loaded.kem_decapsulation_key.is_empty(),
-            "kem_decapsulation_key must be populated after load");
-        assert!(!loaded.kem_encapsulation_key.is_empty(),
-            "kem_encapsulation_key must be populated after load");
+        assert!(
+            !loaded.kem_decapsulation_key.is_empty(),
+            "kem_decapsulation_key must be populated after load"
+        );
+        assert!(
+            !loaded.kem_encapsulation_key.is_empty(),
+            "kem_encapsulation_key must be populated after load"
+        );
     }
 
     /// The KEM keys derived after load must be consistent with the master key.
@@ -1294,9 +1323,13 @@ mod tests {
         let loaded1 = SelfIdentity::load_from_disk(dir.path(), None).expect("first load failed");
         let loaded2 = SelfIdentity::load_from_disk(dir.path(), None).expect("second load failed");
 
-        assert_eq!(loaded1.kem_encapsulation_key, loaded2.kem_encapsulation_key,
-            "KEM encapsulation key must be deterministically derived from master key");
-        assert_eq!(loaded1.kem_decapsulation_key, loaded2.kem_decapsulation_key,
-            "KEM decapsulation key must be deterministically derived from master key");
+        assert_eq!(
+            loaded1.kem_encapsulation_key, loaded2.kem_encapsulation_key,
+            "KEM encapsulation key must be deterministically derived from master key"
+        );
+        assert_eq!(
+            loaded1.kem_decapsulation_key, loaded2.kem_decapsulation_key,
+            "KEM decapsulation key must be deterministically derived from master key"
+        );
     }
 }

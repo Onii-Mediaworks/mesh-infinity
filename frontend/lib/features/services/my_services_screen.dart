@@ -43,17 +43,9 @@ class _ServiceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final health = service.health;
-    final statusColor = switch (health) {
-      ServiceHealth.healthy => MeshTheme.secGreen,
-      ServiceHealth.degraded => MeshTheme.secAmber,
-      ServiceHealth.offline => MeshTheme.secRed,
-    };
-    final statusLabel = switch (health) {
-      ServiceHealth.healthy => 'Online',
-      ServiceHealth.degraded => 'Degraded',
-      ServiceHealth.offline => 'Offline',
-    };
+    final statusColor =
+        service.enabled ? MeshTheme.secGreen : Theme.of(context).colorScheme.outline;
+    final statusLabel = service.enabled ? 'Available to mesh peers' : 'Off';
 
     return Card(
       clipBehavior: Clip.antiAlias,
@@ -68,26 +60,33 @@ class _ServiceTile extends StatelessWidget {
                 children: [
                   const Icon(Icons.hub_outlined, size: 28),
                   const Spacer(),
-                  GestureDetector(
-                    onTap: () =>
-                        state.setEnabled(service.id, !service.enabled),
-                    child: Container(
-                      width: 10,
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: statusColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
+                  Switch(
+                    value: service.enabled,
+                    onChanged: (value) => state.setEnabled(service.id, value),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
                 ],
               ),
               const SizedBox(height: 8),
-              Text(
-                service.name,
-                style: Theme.of(context).textTheme.labelLarge,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      service.name,
+                      style: Theme.of(context).textTheme.labelLarge,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: statusColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 2),
               Text(

@@ -29,9 +29,9 @@
 //! - **membership** — member management, roles, and permissions
 //! - **rekey** — Sender Key rekeying and the superset ring model
 
+pub mod garden;
 pub mod group;
 pub mod membership;
 pub mod rekey;
-pub mod garden;
 // Sub-module: governance — quorum-based group governance (§8.10).
 pub mod governance;

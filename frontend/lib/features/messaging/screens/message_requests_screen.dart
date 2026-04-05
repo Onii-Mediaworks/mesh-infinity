@@ -127,7 +127,8 @@ class _MessageRequestsScreenState extends State<MessageRequestsScreen> {
                   ? const EmptyState(
                       icon: Icons.mark_unread_chat_alt_outlined,
                       title: 'No pending requests',
-                      body: 'Message requests from new contacts will appear here.',
+                      body:
+                          'Message requests from new contacts will appear here.',
                     )
                   // Non-empty: a separated list, one tile per request.
                   // ListView.separated draws a thin Divider between items
@@ -183,9 +184,6 @@ class _MessageRequestsScreenState extends State<MessageRequestsScreen> {
   /// flight, the widget will have been disposed and `mounted` will be false —
   /// calling setState or ScaffoldMessenger on a disposed widget throws.
   Future<void> _accept(MessagingState messaging, MessageRequest req) async {
-    // Wait for the backend to confirm the accept.  The bridge stub currently
-    // returns false (backend not yet wired); once real FFI is in place this
-    // will return true and the conversation will appear in the chat list.
     final ok = await messaging.acceptRequest(req.id);
 
     // Guard: stop if the screen was disposed during the async wait.
@@ -225,9 +223,8 @@ class _MessageRequestsScreenState extends State<MessageRequestsScreen> {
           content: const Text('Request declined.'),
           action: SnackBarAction(
             label: 'Undo',
-            // Undo re-fetches from the backend.  If the backend has a
-            // restore mechanism this will bring the request back; for now
-            // (stub) it will simply refresh the empty list.
+            // Undo re-fetches from the backend rather than reconstructing
+            // a request client-side.
             onPressed: () => messaging.loadRequests(),
           ),
           // 5-second window gives the user time to see and act on the undo.

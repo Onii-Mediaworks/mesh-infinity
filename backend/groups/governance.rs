@@ -34,8 +34,10 @@
 //! - Default voting period: 72 hours
 //! - Votes are signed with Ed25519 to prevent forgery
 
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
+use crate::crypto::ring_sig::{ring_sign, ring_verify, RingSignature};
 use crate::crypto::signing::{sign, verify, DOMAIN_GROUP_GOVERNANCE};
 use crate::error::MeshError;
 use crate::identity::peer_id::PeerId;
@@ -215,17 +217,31 @@ pub enum ProposalStatus {
 /// vote forgery and ensures non-repudiation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Vote {
-    /// The peer ID of the voter who cast this vote.
-    /// Must correspond to a member of the group.
-    pub voter: PeerId,
-
     /// The voter's decision: approve or reject the proposal.
     pub decision: VoteDecision,
 
-    /// Ed25519 signature over (proposal_id || decision_byte).
-    /// Signed with DOMAIN_GROUP_GOVERNANCE to prevent cross-protocol replay.
-    /// The signature binds the vote to a specific proposal and decision.
-    pub signature: Vec<u8>,
+    /// Cryptographic proof that an eligible voter cast this vote.
+    pub proof: GovernanceProof,
+}
+
+/// Proof attached to a governance proposal or vote.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GovernanceProof {
+    /// Attributable Ed25519 proof used for Open and Public groups.
+    Attributed {
+        /// Peer ID of the acting member.
+        signer: PeerId,
+        /// Actual Ed25519 public key used for verification.
+        ed25519_public: [u8; 32],
+        /// Ed25519 signature over the governance payload.
+        signature: Vec<u8>,
+    },
+    /// Unlinkable ring proof used for Private and Closed groups.
+    Ring {
+        /// AOS ring signature over the current member public-key set.
+        ring_signature: RingSignature,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -381,9 +397,12 @@ pub struct Proposal {
     /// Used to scope the proposal and prevent cross-group replay.
     pub group_id: [u8; 16],
 
-    /// Who created the proposal (peer ID).
-    /// Must have a role in `policy.proposer_roles` at creation time.
-    pub proposer: PeerId,
+    /// Who created the proposal when attribution is intentionally visible.
+    /// Private and Closed groups omit this from the outer proposal surface.
+    pub proposer: Option<PeerId>,
+
+    /// Proof that an eligible member created the proposal.
+    pub proposer_proof: GovernanceProof,
 
     /// What action is proposed (remove member, change role, etc.).
     /// The action is immutable after creation — you cannot change
@@ -426,6 +445,7 @@ pub fn create_proposal(
     proposer_role: &GroupRole,
     action: GovernanceAction,
     policy: &GovernancePolicy,
+    secret_key: &[u8; 32],
 ) -> Result<Proposal, MeshError> {
     // Validate the policy before using it for proposal creation.
     // This catches misconfigured policies early.
@@ -455,16 +475,62 @@ pub fn create_proposal(
     // Generate a random 16-byte proposal ID using the system RNG.
     // This ensures uniqueness across all proposals in the group.
     let mut id = [0u8; 16];
-    getrandom::fill(&mut id).map_err(|e| {
-        MeshError::Internal(format!("RNG failed for proposal ID: {}", e))
-    })?;
+    getrandom::fill(&mut id)
+        .map_err(|e| MeshError::Internal(format!("RNG failed for proposal ID: {}", e)))?;
 
     // Construct the proposal with Open status and empty vote list.
     // The caller is responsible for distributing this to group members.
+    let proof = governance_attributed_proof(
+        secret_key,
+        proposer,
+        proposal_message(&id, group_id, &action, now, expires_at)?,
+    );
+
     Ok(Proposal {
         id,
         group_id: *group_id,
-        proposer: proposer.clone(),
+        proposer: Some(*proposer),
+        proposer_proof: proof,
+        action,
+        created_at: now,
+        expires_at,
+        votes: Vec::new(),
+        status: ProposalStatus::Open,
+    })
+}
+
+/// Create a proposal with an unlinkable ring proof for Private/Closed groups.
+pub fn create_ring_proposal(
+    group_id: &[u8; 16],
+    proposer_role: &GroupRole,
+    action: GovernanceAction,
+    policy: &GovernancePolicy,
+    secret_key: &[u8; 32],
+    ring: &[[u8; 32]],
+) -> Result<Proposal, MeshError> {
+    policy.validate()?;
+    if !policy.proposer_roles.contains(proposer_role) {
+        return Err(MeshError::Internal(format!(
+            "role {:?} is not allowed to create proposals",
+            proposer_role,
+        )));
+    }
+    validate_action_role(&action, proposer_role)?;
+
+    let now = current_unix_timestamp();
+    let expires_at = now.saturating_add(policy.voting_period_secs);
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id)
+        .map_err(|e| MeshError::Internal(format!("RNG failed for proposal ID: {}", e)))?;
+    let message = proposal_message(&id, group_id, &action, now, expires_at)?;
+    let ring_signature = ring_sign(secret_key, ring, &message)
+        .map_err(|e| MeshError::Internal(format!("ring proposal signing failed: {e}")))?;
+
+    Ok(Proposal {
+        id,
+        group_id: *group_id,
+        proposer: None,
+        proposer_proof: GovernanceProof::Ring { ring_signature },
         action,
         created_at: now,
         expires_at,
@@ -593,7 +659,12 @@ pub fn cast_vote(
 
     // Reject duplicate votes — each voter can cast exactly one vote.
     // Changing your vote is not supported; you must live with your choice.
-    if proposal.votes.iter().any(|v| v.voter == *voter) {
+    if proposal.votes.iter().any(|v| {
+        matches!(
+            &v.proof,
+            GovernanceProof::Attributed { signer, .. } if *signer == *voter
+        )
+    }) {
         return Err(MeshError::Internal(
             "voter has already cast a vote on this proposal".to_string(),
         ));
@@ -609,14 +680,10 @@ pub fn cast_vote(
 
     // Sign the payload with the voter's Ed25519 secret key.
     // Uses DOMAIN_GROUP_GOVERNANCE for cross-protocol replay prevention.
-    let signature = sign(secret_key, DOMAIN_GROUP_GOVERNANCE, &sig_payload);
+    let proof = governance_attributed_proof(secret_key, voter, sig_payload);
 
     // Construct and record the vote with the cryptographic signature.
-    let vote = Vote {
-        voter: voter.clone(),
-        decision,
-        signature,
-    };
+    let vote = Vote { decision, proof };
 
     // Append the vote to the proposal's vote list.
     // Votes are stored in chronological order.
@@ -631,6 +698,43 @@ pub fn cast_vote(
     Ok(())
 }
 
+/// Cast a governance vote using an unlinkable ring proof.
+pub fn cast_ring_vote(
+    proposal: &mut Proposal,
+    voter_role: &GroupRole,
+    decision: VoteDecision,
+    secret_key: &[u8; 32],
+    ring: &[[u8; 32]],
+    policy: &GovernancePolicy,
+    eligible_voter_count: usize,
+) -> Result<(), MeshError> {
+    if proposal.status != ProposalStatus::Open {
+        return Err(MeshError::Internal(format!(
+            "proposal is {:?}, not Open — cannot accept votes",
+            proposal.status,
+        )));
+    }
+    if !policy.voter_roles.contains(voter_role) {
+        return Err(MeshError::Internal(format!(
+            "role {:?} is not allowed to vote",
+            voter_role,
+        )));
+    }
+
+    let mut sig_payload = Vec::with_capacity(17);
+    sig_payload.extend_from_slice(&proposal.id);
+    sig_payload.push(decision.as_byte());
+    let ring_signature = ring_sign(secret_key, ring, &sig_payload)
+        .map_err(|e| MeshError::Internal(format!("ring vote signing failed: {e}")))?;
+
+    proposal.votes.push(Vote {
+        decision,
+        proof: GovernanceProof::Ring { ring_signature },
+    });
+    tally_votes_with_ring(proposal, policy, eligible_voter_count, Some(ring));
+    Ok(())
+}
+
 /// Verify that a vote's Ed25519 signature is valid.
 ///
 /// Reconstructs the signed payload (proposal_id || decision_byte) and
@@ -638,9 +742,15 @@ pub fn cast_vote(
 /// their peer ID, since PeerId wraps a 32-byte Ed25519 public key).
 ///
 /// Returns true if the signature is valid, false otherwise.
-pub fn verify_vote_signature(
+pub fn verify_vote_signature(proposal_id: &[u8; 16], vote: &Vote) -> bool {
+    verify_vote_signature_with_ring(proposal_id, vote, None)
+}
+
+/// Verify a vote proof, optionally permitting ring proofs against the supplied ring.
+pub fn verify_vote_signature_with_ring(
     proposal_id: &[u8; 16],
     vote: &Vote,
+    ring: Option<&[[u8; 32]]>,
 ) -> bool {
     // Reconstruct the exact payload that was signed.
     // Must match the construction in cast_vote exactly.
@@ -650,14 +760,26 @@ pub fn verify_vote_signature(
     // Append the decision byte (1 byte).
     sig_payload.push(vote.decision.as_byte());
 
-    // The voter's peer ID IS their Ed25519 public key (32 bytes).
-    // Verify the signature using the centralized verify function.
-    verify(
-        vote.voter.as_bytes(),
-        DOMAIN_GROUP_GOVERNANCE,
-        &sig_payload,
-        &vote.signature,
-    )
+    match &vote.proof {
+        GovernanceProof::Attributed {
+            signer,
+            ed25519_public,
+            signature,
+        } => {
+            if PeerId::from_ed25519_pub(ed25519_public) != *signer {
+                return false;
+            }
+            verify(
+                ed25519_public,
+                DOMAIN_GROUP_GOVERNANCE,
+                &sig_payload,
+                signature,
+            )
+        }
+        GovernanceProof::Ring { ring_signature } => ring
+            .map(|public_ring| ring_verify(public_ring, &sig_payload, ring_signature))
+            .unwrap_or(false),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -684,6 +806,16 @@ pub fn tally_votes(
     policy: &GovernancePolicy,
     eligible_voter_count: usize,
 ) -> ProposalStatus {
+    tally_votes_with_ring(proposal, policy, eligible_voter_count, None)
+}
+
+/// Tally votes, verifying attributable or ring proofs as appropriate.
+pub fn tally_votes_with_ring(
+    proposal: &mut Proposal,
+    policy: &GovernancePolicy,
+    eligible_voter_count: usize,
+    ring: Option<&[[u8; 32]]>,
+) -> ProposalStatus {
     // Only tally proposals that are still Open.
     // Decided proposals should not have their status changed.
     if proposal.status != ProposalStatus::Open {
@@ -703,7 +835,7 @@ pub fn tally_votes(
     let verified_approve_count = proposal
         .votes
         .iter()
-        .filter(|v| verify_vote_signature(&proposal.id, v))
+        .filter(|v| verify_vote_signature_with_ring(&proposal.id, v, ring))
         .filter(|v| v.decision == VoteDecision::Approve)
         .count();
 
@@ -711,7 +843,7 @@ pub fn tally_votes(
     let verified_total = proposal
         .votes
         .iter()
-        .filter(|v| verify_vote_signature(&proposal.id, v))
+        .filter(|v| verify_vote_signature_with_ring(&proposal.id, v, ring))
         .count();
 
     // Use the verified counts for all subsequent calculations.
@@ -735,10 +867,8 @@ pub fn tally_votes(
     // Calculate how many approvals would be needed if all eligible voted.
     // We need `approve_count >= ceil(threshold * total_cast)` where
     // total_cast could be up to eligible_voter_count.
-    let approvals_needed_at_full = ceiling_fraction(
-        policy.approval_threshold,
-        eligible_voter_count,
-    );
+    let approvals_needed_at_full =
+        ceiling_fraction(policy.approval_threshold, eligible_voter_count);
 
     // Early rejection: if even with all remaining voters approving,
     // we still cannot reach the threshold, reject immediately.
@@ -775,6 +905,75 @@ pub fn tally_votes(
     // Quorum met but threshold not yet reached — stays Open.
     // More votes could still push it over the threshold.
     ProposalStatus::Open
+}
+
+/// Verify a proposal proof, optionally allowing an unlinkable ring proof.
+pub fn verify_proposal_signature(proposal: &Proposal, ring: Option<&[[u8; 32]]>) -> bool {
+    let Ok(message) = proposal_message(
+        &proposal.id,
+        &proposal.group_id,
+        &proposal.action,
+        proposal.created_at,
+        proposal.expires_at,
+    ) else {
+        return false;
+    };
+    match &proposal.proposer_proof {
+        GovernanceProof::Attributed {
+            signer,
+            ed25519_public,
+            signature,
+        } => {
+            if proposal.proposer != Some(*signer) {
+                return false;
+            }
+            if PeerId::from_ed25519_pub(ed25519_public) != *signer {
+                return false;
+            }
+            verify(ed25519_public, DOMAIN_GROUP_GOVERNANCE, &message, signature)
+        }
+        GovernanceProof::Ring { ring_signature } => {
+            if proposal.proposer.is_some() {
+                return false;
+            }
+            ring.map(|public_ring| ring_verify(public_ring, &message, ring_signature))
+                .unwrap_or(false)
+        }
+    }
+}
+
+fn governance_attributed_proof(
+    secret_key: &[u8; 32],
+    signer: &PeerId,
+    message: Vec<u8>,
+) -> GovernanceProof {
+    let signing_key = SigningKey::from_bytes(secret_key);
+    let ed25519_public = signing_key.verifying_key().to_bytes();
+    let signature = sign(secret_key, DOMAIN_GROUP_GOVERNANCE, &message);
+    GovernanceProof::Attributed {
+        signer: *signer,
+        ed25519_public,
+        signature,
+    }
+}
+
+fn proposal_message(
+    proposal_id: &[u8; 16],
+    group_id: &[u8; 16],
+    action: &GovernanceAction,
+    created_at: u64,
+    expires_at: u64,
+) -> Result<Vec<u8>, MeshError> {
+    let action_bytes = serde_json::to_vec(action)
+        .map_err(|e| MeshError::Internal(format!("failed to encode governance action: {e}")))?;
+    let mut message = Vec::with_capacity(64 + action_bytes.len());
+    message.extend_from_slice(proposal_id);
+    message.extend_from_slice(group_id);
+    message.extend_from_slice(&created_at.to_le_bytes());
+    message.extend_from_slice(&expires_at.to_le_bytes());
+    message.extend_from_slice(&(action_bytes.len() as u64).to_le_bytes());
+    message.extend_from_slice(&action_bytes);
+    Ok(message)
 }
 
 /// Check if a proposal has expired and update its status.
@@ -856,7 +1055,7 @@ mod tests {
 
     /// Create a PeerId from a public key.
     fn peer_id(public: &[u8; 32]) -> PeerId {
-        PeerId(*public)
+        PeerId::from_ed25519_pub(public)
     }
 
     /// Create a default policy for testing.
@@ -868,15 +1067,24 @@ mod tests {
     fn test_proposal(
         group_id: &[u8; 16],
         proposer: &PeerId,
+        proposer_secret: &[u8; 32],
         action: GovernanceAction,
     ) -> Proposal {
+        let created_at = 1000;
+        let expires_at = 1000 + DEFAULT_VOTING_PERIOD_SECS;
+        let proof = governance_attributed_proof(
+            proposer_secret,
+            proposer,
+            proposal_message(&[1u8; 16], group_id, &action, created_at, expires_at).unwrap(),
+        );
         Proposal {
             id: [1u8; 16],
             group_id: *group_id,
-            proposer: proposer.clone(),
+            proposer: Some(*proposer),
+            proposer_proof: proof,
             action,
-            created_at: 1000,
-            expires_at: 1000 + DEFAULT_VOTING_PERIOD_SECS,
+            created_at,
+            expires_at,
             votes: Vec::new(),
             status: ProposalStatus::Open,
         }
@@ -890,7 +1098,7 @@ mod tests {
     #[test]
     fn test_create_proposal_admin_all_actions() {
         let group_id = [0xAA; 16];
-        let (_, pub_key) = test_keypair(1);
+        let (secret_key, pub_key) = test_keypair(1);
         let proposer = peer_id(&pub_key);
         let policy = test_policy();
 
@@ -920,6 +1128,7 @@ mod tests {
                 &GroupRole::Admin,
                 action,
                 &policy,
+                &secret_key,
             );
             // Admin can propose everything — no errors expected.
             assert!(result.is_ok(), "admin should create any proposal");
@@ -936,7 +1145,7 @@ mod tests {
     #[test]
     fn test_create_proposal_moderator_restrictions() {
         let group_id = [0xBB; 16];
-        let (_, pub_key) = test_keypair(2);
+        let (secret_key, pub_key) = test_keypair(2);
         let proposer = peer_id(&pub_key);
         let policy = test_policy();
 
@@ -950,6 +1159,7 @@ mod tests {
                 new_role: GroupRole::Member,
             },
             &policy,
+            &secret_key,
         );
         assert!(result.is_ok(), "moderator should propose ChangeRole");
 
@@ -962,6 +1172,7 @@ mod tests {
                 settings_json: "{}".to_string(),
             },
             &policy,
+            &secret_key,
         );
         assert!(result.is_ok(), "moderator should propose ChangeSettings");
 
@@ -974,6 +1185,7 @@ mod tests {
                 peer_id: peer_id(&[0u8; 32]),
             },
             &policy,
+            &secret_key,
         );
         assert!(result.is_err(), "moderator should not propose RemoveMember");
 
@@ -984,6 +1196,7 @@ mod tests {
             &GroupRole::Moderator,
             GovernanceAction::Dissolve,
             &policy,
+            &secret_key,
         );
         assert!(result.is_err(), "moderator should not propose Dissolve");
 
@@ -996,6 +1209,7 @@ mod tests {
                 new_policy: GovernancePolicy::default_policy(),
             },
             &policy,
+            &secret_key,
         );
         assert!(result.is_err(), "moderator should not propose ChangePolicy");
     }
@@ -1004,7 +1218,7 @@ mod tests {
     #[test]
     fn test_create_proposal_member_rejected() {
         let group_id = [0xCC; 16];
-        let (_, pub_key) = test_keypair(3);
+        let (secret_key, pub_key) = test_keypair(3);
         let proposer = peer_id(&pub_key);
         let policy = test_policy();
 
@@ -1018,6 +1232,7 @@ mod tests {
                 settings_json: "{}".to_string(),
             },
             &policy,
+            &secret_key,
         );
         assert!(result.is_err(), "members should not create proposals");
     }
@@ -1032,11 +1247,11 @@ mod tests {
         let group_id = [0xDD; 16];
         let (sk1, pk1) = test_keypair(10);
         let (sk2, pk2) = test_keypair(11);
-        let (sk3, pk3) = test_keypair(12);
+        let (_, pk3) = test_keypair(12);
 
         let proposer = peer_id(&pk1);
         let voter1 = peer_id(&pk2);
-        let voter2 = peer_id(&pk3);
+        let _voter2 = peer_id(&pk3);
 
         let policy = test_policy();
 
@@ -1044,6 +1259,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: r#"{"name":"new"}"#.to_string(),
             },
@@ -1096,6 +1312,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1135,13 +1352,14 @@ mod tests {
         // Create 4 voters with unique keypairs.
         let (sk1, pk1) = test_keypair(30);
         let (sk2, pk2) = test_keypair(31);
-        let (sk3, pk3) = test_keypair(32);
-        let (sk4, pk4) = test_keypair(33);
+        let _ = test_keypair(32);
+        let _ = test_keypair(33);
 
         let proposer = peer_id(&pk1);
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1186,13 +1404,14 @@ mod tests {
         let policy = test_policy(); // threshold = 0.67
 
         let (sk1, pk1) = test_keypair(40);
-        let (sk2, pk2) = test_keypair(41);
-        let (sk3, pk3) = test_keypair(42);
+        let _ = test_keypair(41);
+        let _ = test_keypair(42);
 
         let proposer = peer_id(&pk1);
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1236,6 +1455,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &[50; 32],
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1258,11 +1478,8 @@ mod tests {
         let proposer = peer_id(&pk1);
 
         // Create a proposal and mark it Approved.
-        let mut proposal = test_proposal(
-            &group_id,
-            &proposer,
-            GovernanceAction::Dissolve,
-        );
+        let mut proposal =
+            test_proposal(&group_id, &proposer, &[51; 32], GovernanceAction::Dissolve);
         proposal.status = ProposalStatus::Approved;
 
         // Even after expiry time, the status should remain Approved.
@@ -1286,6 +1503,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1341,6 +1559,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1374,10 +1593,12 @@ mod tests {
 
         // Create a vote with a garbage signature.
         let forged_vote = Vote {
-            voter: peer_id(&pk1),
             decision: VoteDecision::Approve,
-            // 64 bytes of zeros — not a valid Ed25519 signature.
-            signature: vec![0u8; 64],
+            proof: GovernanceProof::Attributed {
+                signer: peer_id(&pk1),
+                ed25519_public: pk1,
+                signature: vec![0u8; 64],
+            },
         };
 
         let proposal_id = [0xBB; 16];
@@ -1400,6 +1621,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1449,6 +1671,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1479,11 +1702,7 @@ mod tests {
         let proposer = peer_id(&pk1);
         let policy = test_policy();
 
-        let mut proposal = test_proposal(
-            &group_id,
-            &proposer,
-            GovernanceAction::Dissolve,
-        );
+        let mut proposal = test_proposal(&group_id, &proposer, &sk1, GovernanceAction::Dissolve);
 
         // Mark the proposal as Approved.
         proposal.status = ProposalStatus::Approved;
@@ -1552,20 +1771,14 @@ mod tests {
 
         // Zero threshold should fail.
         policy.approval_threshold = 0.0;
-        assert!(
-            policy.validate().is_err(),
-            "zero threshold should fail",
-        );
+        assert!(policy.validate().is_err(), "zero threshold should fail",);
 
         // Reset threshold, test voting period.
         policy.approval_threshold = DEFAULT_APPROVAL_THRESHOLD;
 
         // Zero voting period should fail.
         policy.voting_period_secs = 0;
-        assert!(
-            policy.validate().is_err(),
-            "zero voting period should fail",
-        );
+        assert!(policy.validate().is_err(), "zero voting period should fail",);
 
         // Reset voting period, test empty roles.
         policy.voting_period_secs = DEFAULT_VOTING_PERIOD_SECS;
@@ -1580,10 +1793,7 @@ mod tests {
         // Reset proposer roles, test empty voter roles.
         policy.proposer_roles = vec![GroupRole::Admin];
         policy.voter_roles = vec![];
-        assert!(
-            policy.validate().is_err(),
-            "empty voter_roles should fail",
-        );
+        assert!(policy.validate().is_err(), "empty voter_roles should fail",);
     }
 
     /// Test that the default policy is valid.
@@ -1634,6 +1844,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1669,6 +1880,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1710,12 +1922,13 @@ mod tests {
         let (sk1, pk1) = test_keypair(140);
         let (sk2, pk2) = test_keypair(141);
         let (sk3, pk3) = test_keypair(142);
-        let (sk4, pk4) = test_keypair(143);
+        let _ = test_keypair(143);
 
         let proposer = peer_id(&pk1);
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1776,7 +1989,7 @@ mod tests {
     #[test]
     fn test_create_proposal_generates_id() {
         let group_id = [0xAA; 16];
-        let (_, pk1) = test_keypair(150);
+        let (sk1, pk1) = test_keypair(150);
         let proposer = peer_id(&pk1);
         let policy = test_policy();
 
@@ -1786,6 +1999,7 @@ mod tests {
             &GroupRole::Admin,
             GovernanceAction::Dissolve,
             &policy,
+            &sk1,
         )
         .expect("should create proposal");
 
@@ -1795,6 +2009,7 @@ mod tests {
             &GroupRole::Admin,
             GovernanceAction::Dissolve,
             &policy,
+            &sk1,
         )
         .expect("should create second proposal");
 
@@ -1831,6 +2046,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1854,10 +2070,12 @@ mod tests {
         // attacker who has write access to the proposal storage but
         // does not possess voter2's Ed25519 private key).
         let forged_vote = Vote {
-            voter: peer_id(&pk2),
             decision: VoteDecision::Approve,
-            // Garbage signature — not a valid Ed25519 signature.
-            signature: vec![0xDE; 64],
+            proof: GovernanceProof::Attributed {
+                signer: peer_id(&pk2),
+                ed25519_public: pk2,
+                signature: vec![0xDE; 64],
+            },
         };
         proposal.votes.push(forged_vote);
 
@@ -1898,6 +2116,7 @@ mod tests {
         let mut proposal = test_proposal(
             &group_id,
             &proposer,
+            &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
@@ -1935,5 +2154,96 @@ mod tests {
             ProposalStatus::Approved,
             "proposal with valid signatures should be approved"
         );
+    }
+
+    #[test]
+    fn test_ring_proposal_verification() {
+        let group_id = [0x91; 16];
+        let policy = test_policy();
+        let (sk1, pk1) = test_keypair(220);
+        let (_, pk2) = test_keypair(221);
+        let ring = vec![pk1, pk2];
+
+        let proposal = create_ring_proposal(
+            &group_id,
+            &GroupRole::Admin,
+            GovernanceAction::ChangeSettings {
+                settings_json: "{}".to_string(),
+            },
+            &policy,
+            &sk1,
+            &ring,
+        )
+        .expect("ring proposal should succeed");
+
+        assert!(proposal.proposer.is_none());
+        assert!(verify_proposal_signature(&proposal, Some(&ring)));
+        assert!(!verify_proposal_signature(&proposal, None));
+    }
+
+    #[test]
+    fn test_ring_vote_verification_and_tally() {
+        let group_id = [0x92; 16];
+        let policy = GovernancePolicy {
+            quorum: 0.5,
+            approval_threshold: 0.5,
+            voting_period_secs: DEFAULT_VOTING_PERIOD_SECS,
+            proposer_roles: vec![GroupRole::Admin, GroupRole::Moderator],
+            voter_roles: vec![GroupRole::Admin, GroupRole::Moderator, GroupRole::Member],
+        };
+        let (sk1, pk1) = test_keypair(230);
+        let (sk2, pk2) = test_keypair(231);
+        let ring = vec![pk1, pk2];
+        let proposer = peer_id(&pk1);
+
+        let mut proposal = test_proposal(
+            &group_id,
+            &proposer,
+            &sk1,
+            GovernanceAction::ChangeSettings {
+                settings_json: "{}".to_string(),
+            },
+        );
+
+        cast_ring_vote(
+            &mut proposal,
+            &GroupRole::Admin,
+            VoteDecision::Approve,
+            &sk1,
+            &ring,
+            &policy,
+            2,
+        )
+        .expect("first ring vote");
+        assert!(verify_vote_signature_with_ring(
+            &proposal.id,
+            &proposal.votes[0],
+            Some(&ring)
+        ));
+        assert_eq!(proposal.status, ProposalStatus::Approved);
+
+        let mut second_proposal = test_proposal(
+            &group_id,
+            &proposer,
+            &sk1,
+            GovernanceAction::ChangeSettings {
+                settings_json: "{}".to_string(),
+            },
+        );
+        cast_ring_vote(
+            &mut second_proposal,
+            &GroupRole::Member,
+            VoteDecision::Approve,
+            &sk2,
+            &ring,
+            &policy,
+            2,
+        )
+        .expect("second ring vote");
+        assert!(verify_vote_signature_with_ring(
+            &second_proposal.id,
+            &second_proposal.votes[0],
+            Some(&ring),
+        ));
     }
 }

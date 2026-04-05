@@ -16,10 +16,10 @@
 //!
 //! ## Peer Discovery
 //!
-//! Peers advertise `MESH_INFINITY_SERVICE_UUID` in their BLE advertisement.
-//! Service data in the advertisement encodes the peer's hex-encoded peer ID
-//! (32 bytes → 64 hex ASCII bytes).  Nodes passively scan for these
-//! advertisements and enqueue discovered peers into the `inbound` queue.
+//! BLE discovery is non-identifying. Advertisements are scanned without a
+//! Mesh-specific UUID filter, and the transport extracts only an opaque
+//! rotating token from plausible advertisement payloads. Discovery does not
+//! disclose peer IDs or any other stable identity material.
 //!
 //! ## Data Channel (GATT)
 //!
@@ -58,14 +58,10 @@ use std::sync::{
 // Constants (always-available)
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Raw `u128` value of the Mesh Infinity BLE service UUID.
+/// Raw `u128` value of the Mesh Infinity GATT service UUID.
 ///
-/// All mesh nodes advertise this UUID in their BLE advertisement so that
-/// peer discovery can use a targeted scan filter (§5.6.1).  The human-readable
-/// form is `6ba7b810-9dad-11d1-80b4-00c04fd430c8`.
-///
-/// Value is a placeholder UUID in the IETF namespace — production deployment
-/// should register a private UUID with the Bluetooth SIG.
+/// This UUID is used only after a connection is established for the GATT data
+/// channel. It is intentionally not used as an advertisement fingerprint.
 pub const MESH_INFINITY_SERVICE_UUID_U128: u128 = 0x6ba7b810_9dad_11d1_80b4_00c04fd430c8;
 
 /// Raw `u128` value of the TX characteristic UUID.
@@ -103,8 +99,8 @@ pub const RX_CHAR_UUID: uuid::Uuid = uuid::Uuid::from_u128(RX_CHAR_UUID_U128);
 /// data and the GATT service characteristic.
 pub const MAX_ADVERTISEMENT_BYTES: usize = 31;
 
-/// Peer ID hex length (32 raw bytes → 64 hex characters).
-pub const PEER_ID_HEX_LEN: usize = 64;
+/// BLE rotating advertisement tokens are 64 bits (§5.6.1).
+pub const ROTATING_TOKEN_BYTES: usize = 8;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Always-available types
@@ -113,10 +109,11 @@ pub const PEER_ID_HEX_LEN: usize = 64;
 /// A Mesh Infinity peer discovered via BLE advertisement.
 #[derive(Debug, Clone)]
 pub struct BluetoothPeer {
-    /// Hex-encoded peer ID extracted from the BLE advertisement service data.
+    /// Opaque rotating advertisement token extracted from the advertisement.
     ///
-    /// A 64-character lowercase hex string representing the 32-byte peer ID.
-    pub peer_id_hex: String,
+    /// This is discovery-only metadata. It is not a peer ID and must not be
+    /// treated as stable identity.
+    pub token_hex: String,
 
     /// Received Signal Strength Indicator at the time of discovery.
     ///
@@ -126,9 +123,8 @@ pub struct BluetoothPeer {
 
     /// Raw advertisement bytes received from the peer.
     ///
-    /// Includes the service data payload (peer ID) and any other
-    /// advertisement fields the device broadcasts.  Maximum 31 bytes
-    /// (BLE advertisement payload limit).
+    /// Includes the token-carrying payload fragment and any adjacent bytes the
+    /// transport retained for later likelihood checks. Maximum 31 bytes.
     pub advertisement_data: Vec<u8>,
 }
 
@@ -405,9 +401,6 @@ mod native {
         /// `scanning` atomic to `false`).  Discovered peers are appended to
         /// `self.inbound`; call `drain_inbound()` to retrieve them.
         ///
-        /// The scan uses a `ScanFilter` restricted to `MESH_INFINITY_SERVICE_UUID`
-        /// so the adapter only surfaces relevant advertisements (§5.6.1).
-        ///
         /// # Errors
         ///
         /// Errors are logged via `tracing`; the scan task does not propagate
@@ -443,16 +436,16 @@ mod native {
                 .await
                 .map_err(|e| BluetoothError::ScanFailed(format!("event stream: {e}")))?;
 
-            // Start scan with a service UUID filter to limit noise.
-            let filter = ScanFilter {
-                services: vec![MESH_INFINITY_SERVICE_UUID],
-            };
+            // Scan broadly. The spec explicitly forbids a fixed Mesh service
+            // UUID advertisement fingerprint, so discovery cannot rely on a
+            // UUID-based scan filter.
+            let filter = ScanFilter::default();
             adapter
                 .start_scan(filter)
                 .await
                 .map_err(|e| BluetoothError::ScanFailed(format!("start_scan: {e}")))?;
 
-            tracing::info!("BLE scan started (service UUID filter active)");
+            tracing::info!("BLE scan started (broad scan, token-based matching)");
 
             // Process events until stop_scan() flips the atomic.
             while self.scanning.load(Ordering::Relaxed) {
@@ -499,11 +492,8 @@ mod native {
         /// Extract peer information from a peripheral's advertisement and
         /// enqueue it into `self.inbound`.
         ///
-        /// Advertisement service data is expected to contain exactly
-        /// `PEER_ID_HEX_LEN` (64) bytes of lowercase ASCII hex encoding
-        /// the 32-byte peer ID.  Advertisements that do not meet this
-        /// requirement are silently dropped (they are not Mesh Infinity peers,
-        /// or they are using an incompatible version).
+        /// Discovery extracts only a rotating token from advertisement payloads.
+        /// Advertisements that do not yield a plausible token are dropped.
         async fn process_peripheral_advertisement(&self, peripheral: &Peripheral) {
             // Fetch properties (advertisement data, RSSI, etc.).
             let props = match peripheral.properties().await {
@@ -511,66 +501,72 @@ mod native {
                 _ => return,
             };
 
-            // Extract service data for our UUID.
-            let raw_service_data = props
-                .service_data
-                .get(&MESH_INFINITY_SERVICE_UUID)
-                .cloned()
-                .unwrap_or_default();
-
-            // Decode peer ID from advertisement service data.
-            // The first PEER_ID_HEX_LEN bytes must be the hex peer ID.
-            let peer_id_hex = match Self::decode_peer_id_from_adv(&raw_service_data) {
-                Some(id) => id,
-                None => {
-                    tracing::trace!(
-                        "BLE advertisement from {:?} lacks valid peer ID service data",
-                        peripheral.id()
-                    );
-                    return;
-                }
+            let (token_hex, advertisement_data) = match Self::extract_rotating_token(&props) {
+                Some(token) => token,
+                None => return,
             };
 
             let rssi = props.rssi.map(|r| r as i16);
 
-            // Truncate advertisement payload to MAX_ADVERTISEMENT_BYTES to
-            // avoid unbounded memory growth from malformed peripherals.
-            let advertisement_data = raw_service_data
-                .into_iter()
-                .take(MAX_ADVERTISEMENT_BYTES)
-                .collect();
-
             let peer = BluetoothPeer {
-                peer_id_hex,
+                token_hex,
                 rssi,
                 advertisement_data,
             };
 
             let mut queue = self.inbound.lock().unwrap_or_else(|e| e.into_inner());
-            // Deduplicate: update existing entry if the peer is already queued.
-            if let Some(existing) = queue.iter_mut().find(|p| p.peer_id_hex == peer.peer_id_hex) {
+            if let Some(existing) = queue.iter_mut().find(|p| p.token_hex == peer.token_hex) {
                 existing.rssi = peer.rssi;
+                existing.advertisement_data = peer.advertisement_data.clone();
             } else {
                 queue.push(peer);
             }
         }
 
-        /// Decode a hex peer ID from advertisement service data bytes.
+        /// Extract a discovery token from manufacturer or service data.
         ///
-        /// Returns `Some(hex_string)` if the first `PEER_ID_HEX_LEN` bytes are
-        /// valid lowercase ASCII hex.  Returns `None` otherwise.
-        fn decode_peer_id_from_adv(data: &[u8]) -> Option<String> {
-            if data.len() < PEER_ID_HEX_LEN {
+        /// This intentionally avoids any identity-bearing interpretation of
+        /// the advertisement.
+        fn extract_rotating_token(
+            props: &btleplug::api::PeripheralProperties,
+        ) -> Option<(String, Vec<u8>)> {
+            for payload in props.manufacturer_data.values() {
+                if let Some(token_hex) = Self::decode_rotating_token(payload) {
+                    return Some((
+                        token_hex,
+                        payload
+                            .iter()
+                            .copied()
+                            .take(MAX_ADVERTISEMENT_BYTES)
+                            .collect(),
+                    ));
+                }
+            }
+            for payload in props.service_data.values() {
+                if let Some(token_hex) = Self::decode_rotating_token(payload) {
+                    return Some((
+                        token_hex,
+                        payload
+                            .iter()
+                            .copied()
+                            .take(MAX_ADVERTISEMENT_BYTES)
+                            .collect(),
+                    ));
+                }
+            }
+            None
+        }
+
+        /// Decode a 64-bit rotating token from advertisement bytes.
+        pub(super) fn decode_rotating_token(data: &[u8]) -> Option<String> {
+            if data.len() < ROTATING_TOKEN_BYTES {
                 return None;
             }
-            let hex_bytes = &data[..PEER_ID_HEX_LEN];
-            // Validate: all bytes must be ASCII hex digits.
-            if !hex_bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+            let token = &data[..ROTATING_TOKEN_BYTES];
+            if token.iter().all(|b| *b == 0) {
                 return None;
             }
-            // SAFETY: we just validated all bytes are ASCII.
-            let hex_str = std::str::from_utf8(hex_bytes).ok()?.to_ascii_lowercase();
-            Some(hex_str)
+            Some(hex::encode(token))
         }
 
         /// Signal the background scan task to stop.
@@ -722,7 +718,6 @@ impl BluetoothTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     // ── BluetoothCapability ──────────────────────────────────────────────────
 
@@ -788,7 +783,7 @@ mod tests {
         {
             let mut q = transport.inbound.lock().unwrap_or_else(|e| e.into_inner());
             q.push(BluetoothPeer {
-                peer_id_hex: "aa".repeat(32),
+                token_hex: "aa".repeat(ROTATING_TOKEN_BYTES),
                 rssi: Some(-70),
                 advertisement_data: vec![0x01, 0x02],
             });
@@ -810,11 +805,12 @@ mod tests {
 
     #[test]
     fn start_scan_without_feature_sets_no_flag() {
-        let transport = Arc::new(BluetoothTransport::new());
         // Without the native feature, start_scan is a no-op that does NOT
         // set scanning=true.
         #[cfg(not(feature = "transport-bluetooth-native"))]
         {
+            use std::sync::Arc;
+            let transport = Arc::new(BluetoothTransport::new());
             transport.clone().start_scan();
             assert!(!transport.is_scanning());
         }
@@ -906,47 +902,42 @@ mod tests {
     #[cfg(feature = "transport-bluetooth-native")]
     mod native_tests {
         use super::super::BluetoothTransport;
-        use super::super::PEER_ID_HEX_LEN;
+        use super::super::ROTATING_TOKEN_BYTES;
 
         #[test]
-        fn decode_peer_id_valid() {
-            let hex = "ab".repeat(32); // 64 hex chars
-            let data: Vec<u8> = hex.as_bytes().to_vec();
-            let result = BluetoothTransport::decode_peer_id_from_adv(&data);
-            assert_eq!(result, Some("ab".repeat(32)));
+        fn decode_token_valid() {
+            let data = vec![0xabu8; ROTATING_TOKEN_BYTES];
+            let result = BluetoothTransport::decode_rotating_token(&data);
+            assert_eq!(result, Some("ab".repeat(ROTATING_TOKEN_BYTES)));
         }
 
         #[test]
-        fn decode_peer_id_too_short() {
-            let data = vec![0x61u8; PEER_ID_HEX_LEN - 1];
-            let result = BluetoothTransport::decode_peer_id_from_adv(&data);
+        fn decode_token_too_short() {
+            let data = vec![0x61u8; ROTATING_TOKEN_BYTES - 1];
+            let result = BluetoothTransport::decode_rotating_token(&data);
             assert!(result.is_none());
         }
 
         #[test]
-        fn decode_peer_id_invalid_chars() {
-            // 0x00 bytes are not valid hex ASCII.
-            let data = vec![0x00u8; PEER_ID_HEX_LEN];
-            let result = BluetoothTransport::decode_peer_id_from_adv(&data);
+        fn decode_token_all_zero_rejected() {
+            let data = vec![0x00u8; ROTATING_TOKEN_BYTES];
+            let result = BluetoothTransport::decode_rotating_token(&data);
             assert!(result.is_none());
         }
 
         #[test]
-        fn decode_peer_id_with_extra_bytes() {
-            // Should succeed even with trailing bytes beyond PEER_ID_HEX_LEN.
-            let mut data: Vec<u8> = "cd".repeat(32).into_bytes();
+        fn decode_token_with_extra_bytes() {
+            let mut data: Vec<u8> = vec![0xcdu8; ROTATING_TOKEN_BYTES];
             data.extend_from_slice(&[0xFF, 0xFE]); // extra bytes
-            let result = BluetoothTransport::decode_peer_id_from_adv(&data);
-            assert_eq!(result, Some("cd".repeat(32)));
+            let result = BluetoothTransport::decode_rotating_token(&data);
+            assert_eq!(result, Some("cd".repeat(ROTATING_TOKEN_BYTES)));
         }
 
         #[test]
-        fn decode_peer_id_normalises_to_lowercase() {
-            // Input with uppercase hex digits should be normalised.
-            let hex = "AB".repeat(32); // 64 uppercase hex chars
-            let data: Vec<u8> = hex.as_bytes().to_vec();
-            let result = BluetoothTransport::decode_peer_id_from_adv(&data);
-            assert_eq!(result, Some("ab".repeat(32)));
+        fn decode_token_binary_payload() {
+            let data = vec![0x10, 0x22, 0x34, 0x48, 0x5a, 0x6c, 0x7e, 0x80];
+            let result = BluetoothTransport::decode_rotating_token(&data);
+            assert_eq!(result, Some("102234485a6c7e80".to_string()));
         }
     }
 }

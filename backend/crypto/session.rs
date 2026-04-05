@@ -857,7 +857,10 @@ mod tests {
             has_more: true,
             session_epoch: 1,
         };
-        assert!(partial.has_more, "has_more must be true when more messages exist");
+        assert!(
+            partial.has_more,
+            "has_more must be true when more messages exist"
+        );
 
         let complete = SyncResponse {
             conversation_id: [0x01; 32],
@@ -865,6 +868,9 @@ mod tests {
             has_more: false,
             session_epoch: 1,
         };
-        assert!(!complete.has_more, "has_more must be false when all messages delivered");
+        assert!(
+            !complete.has_more,
+            "has_more must be false when all messages delivered"
+        );
     }
 }

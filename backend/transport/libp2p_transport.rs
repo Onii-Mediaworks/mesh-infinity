@@ -37,8 +37,8 @@
 //! native gossip protocol).  Nodes subscribing to this topic receive map
 //! updates from any peer who has them.
 
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Topic and protocol IDs
@@ -74,16 +74,10 @@ pub const LIBP2P_TCP_PORT: u16 = 4001;
 // ────────────────────────────────────────────────────────────────────────────
 
 use libp2p::{
-    gossipsub::{self, IdentTopic, TopicHash},
-    rendezvous,
     autonat,
-    noise,
-    tcp,
-    yamux,
+    gossipsub::{self, IdentTopic, TopicHash},
     identity::Keypair,
-    Multiaddr,
-    PeerId,
-    SwarmBuilder,
+    noise, rendezvous, tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
 };
 
 /// Events emitted by the libp2p transport.
@@ -201,7 +195,10 @@ impl Libp2pTransport {
     pub fn publish(&self, topic: &str, data: Vec<u8>) {
         let t = IdentTopic::new(topic);
         // Mutex recovery: outbound queue is valid after poison.
-        self.outbound.lock().unwrap_or_else(|e| e.into_inner()).push((t, data));
+        self.outbound
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((t, data));
     }
 
     /// Publish a network map update.
@@ -285,14 +282,7 @@ impl Libp2pTransport {
 pub async fn build_swarm(
     keypair: Keypair,
     config: &Libp2pConfig,
-) -> Result<
-    (
-        libp2p::Swarm<MeshBehaviour>,
-        IdentTopic,
-        IdentTopic,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(libp2p::Swarm<MeshBehaviour>, IdentTopic, IdentTopic), Box<dyn std::error::Error>> {
     let network_map_topic = IdentTopic::new(GOSSIPSUB_NETWORK_MAP_TOPIC);
     let peer_announce_topic = IdentTopic::new(GOSSIPSUB_PEER_ANNOUNCE_TOPIC);
     let fanout = config.gossipsub_fanout;
@@ -324,10 +314,8 @@ pub async fn build_swarm(
             let rendezvous = rendezvous::client::Behaviour::new(key.clone());
 
             // AutoNAT — detect our reachability.
-            let autonat = autonat::Behaviour::new(
-                PeerId::from(key.public()),
-                autonat::Config::default(),
-            );
+            let autonat =
+                autonat::Behaviour::new(PeerId::from(key.public()), autonat::Config::default());
 
             Ok(MeshBehaviour {
                 gossipsub,
@@ -335,9 +323,7 @@ pub async fn build_swarm(
                 autonat,
             })
         })?
-        .with_swarm_config(|c| {
-            c.with_idle_connection_timeout(std::time::Duration::from_secs(60))
-        })
+        .with_swarm_config(|c| c.with_idle_connection_timeout(std::time::Duration::from_secs(60)))
         .build();
 
     Ok((swarm, network_map_topic, peer_announce_topic))
@@ -365,7 +351,10 @@ mod tests {
     fn transport_new_random_peer_id() {
         let t1 = Libp2pTransport::new_random();
         let t2 = Libp2pTransport::new_random();
-        assert_ne!(t1.peer_id, t2.peer_id, "random transports must have different peer IDs");
+        assert_ne!(
+            t1.peer_id, t2.peer_id,
+            "random transports must have different peer IDs"
+        );
     }
 
     #[test]

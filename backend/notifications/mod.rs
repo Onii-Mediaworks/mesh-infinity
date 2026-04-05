@@ -25,8 +25,8 @@
 //! Elevated or Critical → Tiers 3 and 4 automatically suppressed.
 //! Cannot be re-enabled while threat context is active.
 
-use serde::{Deserialize, Serialize};
 use crate::network::threat_context::ThreatContext;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Notification Tier
@@ -1012,7 +1012,9 @@ mod tests {
         let mut config = NotificationConfig::default();
         config.tier = NotificationTier::SilentPush;
         config.push_relay = Some(PushRelayConfig {
-            relay_address: RelayAddress::MeshService { service_id: [0x42; 16] },
+            relay_address: RelayAddress::MeshService {
+                service_id: [0x42; 16],
+            },
             device_token: vec![0xAB; 32],
             platform: PushPlatform::FCM,
         });
@@ -1035,7 +1037,9 @@ mod tests {
         let mut config = NotificationConfig::default();
         config.tier = NotificationTier::SilentPush;
         config.push_relay = Some(PushRelayConfig {
-            relay_address: RelayAddress::ClearnetUrl { url: "https://relay.example.com".into() },
+            relay_address: RelayAddress::ClearnetUrl {
+                url: "https://relay.example.com".into(),
+            },
             device_token: vec![],
             platform: PushPlatform::APNs,
         });

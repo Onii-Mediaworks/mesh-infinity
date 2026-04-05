@@ -86,7 +86,7 @@ import '../backend/backend_bridge.dart';
 ///   identity      — set your private identity name; this is your primary mask
 ///                   and the "self" shown to trusted contacts
 ///   publicProfile — optional: set a public display name; toggle discoverability
-enum _Step { choice, importBackup, identity, publicProfile }
+enum _Step { choice, importBackup, linkDevice, identity, publicProfile }
 
 // ---------------------------------------------------------------------------
 // OnboardingScreen — the top-level StatefulWidget
@@ -173,6 +173,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// Multi-line field for the import wizard: line 1 = passphrase, rest = JSON.
   final _phrase = TextEditingController();
 
+  /// Optional human-readable name for this device during multi-device linking.
+  final _deviceLinkName = TextEditingController();
+
+  /// Generated enrollment request to copy to an existing trusted device.
+  final _deviceRequestController = TextEditingController();
+
+  /// Enrollment package pasted back from the existing trusted device.
+  final _devicePackageController = TextEditingController();
+
   // -------------------------------------------------------------------------
   // Lifecycle — dispose() cleans up controllers to prevent memory leaks
   // -------------------------------------------------------------------------
@@ -186,6 +195,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     _nameController.dispose();
     _privBio.dispose();
     _phrase.dispose();
+    _deviceLinkName.dispose();
+    _deviceRequestController.dispose();
+    _devicePackageController.dispose();
     super.dispose(); // Always call super.dispose() last.
   }
 
@@ -261,10 +273,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!mounted) return;
 
     if (ok) {
-      // Start accepting incoming clearnet connections now that the identity
-      // is live.  Pairing requires the listener to be running so the other
-      // side can reach us after scanning our QR code.
-      bridge.startClearnetListener();
       setState(() {
         _busy = false;
         _step = _Step.identity; // Advance to "Your Identity" step.
@@ -331,7 +339,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!mounted) return;
 
     if (ok) {
-      bridge.startClearnetListener();
       setState(() {
         _busy = false;
         _step = _Step.identity; // Advance to "Your Identity" step.
@@ -343,6 +350,56 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             'Import failed. Check your passphrase and backup data.';
       });
     }
+  }
+
+  /// Generate the request payload for linking this device to an existing identity.
+  void _startDeviceLink() {
+    final bridge = context.read<BackendBridge>();
+    final request = bridge.createDeviceEnrollmentRequest(
+      deviceName: _deviceLinkName.text.trim().isEmpty
+          ? null
+          : _deviceLinkName.text.trim(),
+    );
+    if (!mounted) return;
+    if (request == null || request.isEmpty) {
+      setState(() {
+        _error = bridge.getLastError() ?? 'Failed to create device link request.';
+      });
+      return;
+    }
+    setState(() {
+      _error = null;
+      _deviceRequestController.text = request;
+    });
+  }
+
+  /// Accept the package created by the primary device and complete onboarding.
+  void _acceptDeviceLinkPackage() {
+    final package = _devicePackageController.text.trim();
+    if (package.isEmpty) {
+      setState(() {
+        _error = 'Paste the link package from your existing device.';
+      });
+      return;
+    }
+    final bridge = context.read<BackendBridge>();
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final ok = bridge.acceptDeviceEnrollment(package);
+    if (!mounted) return;
+    if (ok) {
+      setState(() {
+        _busy = false;
+      });
+      widget.onComplete();
+      return;
+    }
+    setState(() {
+      _busy = false;
+      _error = bridge.getLastError() ?? 'Failed to accept the device link package.';
+    });
   }
 
   /// Save both profile payloads to the backend and call [onComplete] to
@@ -494,6 +551,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             _step = _Step.importBackup;
             _error = null; // Clear error when switching steps.
           }),
+          onLinkDevice: () => setState(() {
+            _step = _Step.linkDevice;
+            _error = null;
+          }),
         );
 
       case _Step.importBackup:
@@ -503,6 +564,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           busy: _busy,
           error: _error,
           onImport: _importBackup,
+          onBack: () => setState(() {
+            _step = _Step.choice;
+            _error = null;
+          }),
+        );
+
+      case _Step.linkDevice:
+        return _LinkDeviceStep(
+          key: const ValueKey(_Step.linkDevice),
+          deviceNameController: _deviceLinkName,
+          requestController: _deviceRequestController,
+          packageController: _devicePackageController,
+          busy: _busy,
+          error: _error,
+          onGenerateRequest: _startDeviceLink,
+          onAcceptPackage: _acceptDeviceLinkPackage,
           onBack: () => setState(() {
             _step = _Step.choice;
             _error = null;
@@ -627,6 +704,7 @@ class _ChoiceStep extends StatelessWidget {
     required this.error,
     required this.onCreateNew,
     required this.onImport,
+    required this.onLinkDevice,
   });
 
   /// True while the identity creation call to Rust is in-flight.
@@ -642,6 +720,9 @@ class _ChoiceStep extends StatelessWidget {
   /// Called when the user taps "Import Backup" — just transitions the wizard
   /// to the import step; no async work happens here.
   final VoidCallback onImport;
+
+  /// Called when the user wants to link this device to an existing identity.
+  final VoidCallback onLinkDevice;
 
   @override
   Widget build(BuildContext context) {
@@ -688,6 +769,17 @@ class _ChoiceStep extends StatelessWidget {
           onPressed: busy ? null : onImport,
           icon: const Icon(Icons.download_rounded),
           label: const Text('Import Backup'),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 52),
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        OutlinedButton.icon(
+          onPressed: busy ? null : onLinkDevice,
+          icon: const Icon(Icons.devices_rounded),
+          label: const Text('Link Existing Device'),
           style: OutlinedButton.styleFrom(
             minimumSize: const Size(double.infinity, 52),
           ),
@@ -782,6 +874,104 @@ class _ImportStep extends StatelessWidget {
         // TextButton is the low-emphasis Material 3 button (text only).
         // Used for "Back" — it's a secondary action and shouldn't compete
         // visually with the primary "Import" button.
+        TextButton(
+          onPressed: busy ? null : onBack,
+          child: const Text('Back'),
+        ),
+      ],
+    );
+  }
+}
+
+class _LinkDeviceStep extends StatelessWidget {
+  const _LinkDeviceStep({
+    super.key,
+    required this.deviceNameController,
+    required this.requestController,
+    required this.packageController,
+    required this.busy,
+    required this.error,
+    required this.onGenerateRequest,
+    required this.onAcceptPackage,
+    required this.onBack,
+  });
+
+  final TextEditingController deviceNameController;
+  final TextEditingController requestController;
+  final TextEditingController packageController;
+  final bool busy;
+  final String? error;
+  final VoidCallback onGenerateRequest;
+  final VoidCallback onAcceptPackage;
+  final VoidCallback onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _Header(
+          title: 'Link Existing Device',
+          subtitle:
+              'Create a link request here, move it to a trusted device that already has your identity, then paste the returned package back here.',
+        ),
+        if (error != null) ...[
+          _ErrorBanner(error!),
+          const SizedBox(height: 16),
+        ],
+        TextField(
+          controller: deviceNameController,
+          enabled: !busy,
+          decoration: const InputDecoration(
+            labelText: 'Device name (optional)',
+            hintText: 'e.g. Pixel 9 or Work Laptop',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton(
+          onPressed: busy ? null : onGenerateRequest,
+          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
+          child: const Text('Generate link request'),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: requestController,
+          enabled: false,
+          minLines: 4,
+          maxLines: 8,
+          decoration: const InputDecoration(
+            labelText: 'Link request',
+            hintText: 'Generate a request, then move it to your existing device.',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 20),
+        TextField(
+          controller: packageController,
+          enabled: !busy,
+          minLines: 4,
+          maxLines: 8,
+          decoration: const InputDecoration(
+            labelText: 'Link package',
+            hintText: 'Paste the package created by your existing device.',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 20),
+        FilledButton(
+          onPressed: busy ? null : onAcceptPackage,
+          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
+          child: busy
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Finish linking'),
+        ),
+        const SizedBox(height: 12),
         TextButton(
           onPressed: busy ? null : onBack,
           child: const Text('Back'),

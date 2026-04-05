@@ -2,9 +2,9 @@
 //!
 //! A room represents a conversation — either a 1:1 DM or a group chat.
 
-use serde::{Deserialize, Serialize};
-use crate::identity::peer_id::PeerId;
 use super::message::{ConversationType, MessageSecurityMode};
+use crate::identity::peer_id::PeerId;
+use serde::{Deserialize, Serialize};
 
 /// A conversation room.
 #[derive(Clone, Debug, Serialize, Deserialize)]

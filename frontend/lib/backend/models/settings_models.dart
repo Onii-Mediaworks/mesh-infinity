@@ -1,6 +1,7 @@
 class SettingsModel {
   const SettingsModel({
     this.nodeMode = 0,
+    this.threatContext = 0,
     this.enableTor = false,
     this.enableClearnet = false,
     this.clearnetFallback = false,
@@ -12,11 +13,15 @@ class SettingsModel {
     this.pairingCode,
     this.localPeerId = '',
     this.clearnetPort = 7234,
+    this.activeTier = 0,
+    this.bandwidthProfile = 1,
   });
 
   final int nodeMode;
+  final int threatContext;
   final bool enableTor;
   final bool enableClearnet;
+
   /// Whether this node (as message originator) may fall back to clearnet when
   /// all privacy-preserving transports have failed.  Relay hops are unaffected.
   final bool clearnetFallback;
@@ -25,12 +30,20 @@ class SettingsModel {
   final bool enableI2p;
   final bool enableBluetooth;
   final bool enableRf;
+
   /// Null means the backend has not configured a pairing code yet.
   /// Empty string is distinct from null (code explicitly set to '').
   final String? pairingCode;
   final String localPeerId;
+
   /// TCP listen port for the clearnet transport (default 7234).
   final int clearnetPort;
+
+  /// Highest unlocked feature tier (0 = social .. 4 = power).
+  final int activeTier;
+
+  /// Mesh participation profile (0 = minimal, 1 = standard, 2 = generous).
+  final int bandwidthProfile;
 
   String get nodeModeLabel => switch (nodeMode) {
     0 => 'Client',
@@ -47,6 +60,7 @@ class SettingsModel {
     final nodeMode = (rawMode >= 0 && rawMode <= 2) ? rawMode : 0;
     return SettingsModel(
       nodeMode: nodeMode,
+      threatContext: ((json['threatContext'] as num?)?.toInt() ?? 0).clamp(0, 3),
       enableTor: json['enableTor'] as bool? ?? false,
       enableClearnet: json['enableClearnet'] as bool? ?? false,
       clearnetFallback: json['clearnetFallback'] as bool? ?? false,
@@ -59,11 +73,15 @@ class SettingsModel {
       pairingCode: json['pairingCode'] as String?,
       localPeerId: json['localPeerId'] as String? ?? '',
       clearnetPort: (json['clearnetPort'] as num?)?.toInt() ?? 7234,
+      activeTier: ((json['activeTier'] as num?)?.toInt() ?? 0).clamp(0, 4),
+      bandwidthProfile: ((json['bandwidthProfile'] as num?)?.toInt() ?? 1)
+          .clamp(0, 2),
     );
   }
 
   SettingsModel copyWith({
     int? nodeMode,
+    int? threatContext,
     bool? enableTor,
     bool? enableClearnet,
     bool? clearnetFallback,
@@ -75,8 +93,11 @@ class SettingsModel {
     String? pairingCode,
     String? localPeerId,
     int? clearnetPort,
+    int? activeTier,
+    int? bandwidthProfile,
   }) => SettingsModel(
     nodeMode: nodeMode ?? this.nodeMode,
+    threatContext: threatContext ?? this.threatContext,
     enableTor: enableTor ?? this.enableTor,
     enableClearnet: enableClearnet ?? this.enableClearnet,
     clearnetFallback: clearnetFallback ?? this.clearnetFallback,
@@ -88,6 +109,8 @@ class SettingsModel {
     pairingCode: pairingCode ?? this.pairingCode,
     localPeerId: localPeerId ?? this.localPeerId,
     clearnetPort: clearnetPort ?? this.clearnetPort,
+    activeTier: activeTier ?? this.activeTier,
+    bandwidthProfile: bandwidthProfile ?? this.bandwidthProfile,
   );
 }
 

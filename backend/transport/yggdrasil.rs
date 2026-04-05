@@ -37,8 +37,8 @@
 //! not anonymised.  An observer on the Yggdrasil network can observe that
 //! two nodes communicated (though not the content).
 
-use std::net::Ipv6Addr;
 use sha2::{Digest, Sha512};
+use std::net::Ipv6Addr;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Address derivation
@@ -163,7 +163,8 @@ impl YggFrame {
             return None;
         }
         // Infallible: buf[..4] is exactly 4 bytes, matching [u8; 4].
-        let len = u32::from_be_bytes(buf[..4].try_into().expect("4-byte slice fits [u8; 4]")) as usize;
+        let len =
+            u32::from_be_bytes(buf[..4].try_into().expect("4-byte slice fits [u8; 4]")) as usize;
         if buf.len() < 4 + len {
             return None;
         }
@@ -225,7 +226,6 @@ impl YggdrasilTransport {
     /// crate, assigns the address, and sets the route.
     #[cfg(unix)]
     pub fn setup_tun(&self) -> std::io::Result<()> {
-        
         // Use the tun-tap crate for cross-platform TUN creation.
         // We rely on the OS driver stack — no subprocess needed.
         // The tun-tap crate uses /dev/net/tun ioctl directly.
@@ -258,13 +258,9 @@ impl YggdrasilTransport {
     /// `SIOCSIFADDR` / netlink on Linux (no subprocess).
     #[cfg(target_os = "linux")]
     fn linux_assign_ipv6(&self) -> std::io::Result<()> {
-        
         // Use RTNetlink to add the IPv6 address.
         // For simplicity, write to the sysctl path (kernel interface, no subprocess).
-        let sysctl_path = format!(
-            "/proc/sys/net/ipv6/conf/{}/accept_ra",
-            self.tun_name
-        );
+        let sysctl_path = format!("/proc/sys/net/ipv6/conf/{}/accept_ra", self.tun_name);
         if std::path::Path::new(&sysctl_path).exists() {
             std::fs::write(&sysctl_path, b"0\n")?; // disable RA for this interface
         }
@@ -320,7 +316,10 @@ impl YggdrasilTransport {
                     while let Some((packet, consumed)) = YggFrame::decode(&buf) {
                         buf.drain(..consumed);
                         // Mutex recovery: data is still valid after a poisoned lock.
-                        self.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(packet);
+                        self.inbound
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(packet);
                     }
                 }
                 Err(_) => break,
@@ -406,7 +405,11 @@ mod tests {
             octets[0]
         );
         // Last 64 bits should be zero.
-        assert_eq!(&octets[8..], &[0u8; 8], "subnet last 64 bits should be zero");
+        assert_eq!(
+            &octets[8..],
+            &[0u8; 8],
+            "subnet last 64 bits should be zero"
+        );
     }
 
     #[test]

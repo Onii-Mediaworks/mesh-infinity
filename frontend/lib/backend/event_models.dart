@@ -177,6 +177,27 @@ sealed class BackendEvent {
           : null,
 
         // -----------------------------------------------------------------------
+        // 'AppConnectorConfigChanged'
+        // Fired when the backend-owned App Connector configuration changes.
+        // The payload is intentionally left as a generic map because this
+        // configuration is still evolving and the UI only needs the current
+        // backend-owned fields.
+        // -----------------------------------------------------------------------
+        'AppConnectorConfigChanged' => dataMap != null
+          ? AppConnectorConfigChangedEvent(Map<String, dynamic>.from(dataMap))
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'OverlayStatusChanged'
+        // Fired when backend-owned Tailscale or ZeroTier state changes.
+        // The UI still reloads the full backend snapshot rather than trusting
+        // the event delta as canonical state.
+        // -----------------------------------------------------------------------
+        'OverlayStatusChanged' => dataMap != null
+          ? OverlayStatusChangedEvent(Map<String, dynamic>.from(dataMap))
+          : null,
+
+        // -----------------------------------------------------------------------
         // 'ActiveRoomChanged'
         // Fired when the currently selected/active room changes.
         // The roomId may be null if no room is now selected (e.g. the user
@@ -436,6 +457,20 @@ final class TransferUpdatedEvent extends BackendEvent {
 final class SettingsUpdatedEvent extends BackendEvent {
   const SettingsUpdatedEvent(this.settings);
   final SettingsModel settings;
+}
+
+/// The backend-owned App Connector configuration has changed.
+/// [config] contains the latest mode and app list from Rust.
+final class AppConnectorConfigChangedEvent extends BackendEvent {
+  const AppConnectorConfigChangedEvent(this.config);
+  final Map<String, dynamic> config;
+}
+
+/// Tailscale or ZeroTier state changed in the backend.
+/// [status] contains a lightweight delta for the changed overlay.
+final class OverlayStatusChangedEvent extends BackendEvent {
+  const OverlayStatusChangedEvent(this.status);
+  final Map<String, dynamic> status;
 }
 
 /// The currently active (selected) room has changed.

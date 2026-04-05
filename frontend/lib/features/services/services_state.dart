@@ -8,20 +8,6 @@ import '../../backend/event_models.dart';
 import '../../backend/models/settings_models.dart';
 
 // ---------------------------------------------------------------------------
-// ServiceHealth — derived health status for a service
-// ---------------------------------------------------------------------------
-
-enum ServiceHealth { healthy, degraded, offline }
-
-extension ServiceModelExt on ServiceModel {
-  // TODO: real health check when backend exposes per-service runtime status.
-  // For now, enabled == healthy; disabled == offline.
-  bool get isHealthy => enabled;
-  ServiceHealth get health =>
-      enabled ? ServiceHealth.healthy : ServiceHealth.offline;
-}
-
-// ---------------------------------------------------------------------------
 // ServicesState — manages the list of mesh services
 // ---------------------------------------------------------------------------
 
@@ -39,7 +25,7 @@ class ServicesState extends ChangeNotifier {
   List<ServiceModel> get services => List.unmodifiable(_services);
 
   int get runningCount => _services.where((s) => s.enabled).length;
-  bool get anyDegraded => _services.any((s) => s.enabled && !s.isHealthy);
+  bool get anyDegraded => false;
 
   @override
   void dispose() {

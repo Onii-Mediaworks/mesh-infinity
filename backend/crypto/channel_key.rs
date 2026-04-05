@@ -68,11 +68,11 @@ pub fn derive_channel_key(
     // Execute this protocol step.
     // Execute this protocol step.
     their_peer_id: &PeerId,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Zeroizing<[u8; 32]>, ChannelKeyError> {
     // X25519 DH
     // Compute shared secret for this protocol step.

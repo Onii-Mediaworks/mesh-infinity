@@ -2175,7 +2175,7 @@ Service-specific I2P keys are derived identically to Tor service keys, with a di
 
 I2P is slower to establish than Tor (tunnel building takes longer) but may be more resilient in environments where Tor is actively blocked.
 
-**Emissary maturity caveat:** As of early 2026, emissary (the Rust I2P client) is actively developed but not yet production-stable — SSU2 (primary I2P transport) is described by the developer as "very experimental, only tested locally." No external binary fallback is acceptable (impossible on iOS, restricted on Android, supply chain risk). I2P support is best-effort until emissary or an equivalent embeddable Rust implementation reaches production stability.
+**Emissary maturity caveat:** As of early 2026, emissary (the Rust I2P client) is actively developed but not yet production-stable — SSU2 (primary I2P transport) is described by the developer as "very experimental, only tested locally." No external binary fallback is acceptable (impossible on iOS, restricted on Android, supply chain risk). Therefore I2P is classified as an **experimental transport** until an embeddable Rust implementation passes the transport conformance suite. Experimental here is precise: the app MUST model support as `Unsupported`, `Unavailable`, or `ExperimentalReady`; it MUST NOT advertise I2P reachability in the network map unless the local implementation has actually passed capability checks and the transport is enabled by the user.
 
 **Relay participation:** Same policy as Tor (§5.3) — I2P router participation enabled by default when I2P is enabled, with bandwidth cap by connection type. I2P router contribution (forwarding tunnels for other nodes) follows the same relay_cover_reduction model as Tor.
 
@@ -2264,7 +2264,14 @@ This is not a feature we offer to users. It is what we do.
 
 **Transport compatibility:** Briar BTP v4 uses RFCOMM (Classic Bluetooth) and GATT (BLE) with MTU-negotiated fragmented records. Our §5.6.3 GATT profile is compatible at the transport level.
 
-**Memory card interoperability:** Briar supports memory card (USB/SD) sync. The §5.28.1 `PhysicalTransferHeader` reserves a `protocol_hint` field for foreign bundle formats. Briar memory card bundle compatibility is a target for a future pass.
+**Memory card interoperability:** Briar supports memory card (USB/SD) sync. §5.28.1 defines a `protocol_hint` field for foreign bundle formats. Mesh Infinity v1 recognises `protocol_hint = "briar-memory-v1"` as an opaque Briar memory-card bundle. The payload is not decrypted, transformed, or merged into Mesh Infinity message history. It is handled as foreign relay content only:
+
+- On import, the bundle is hash-checked, size-checked, and stored in volatile relay storage only.
+- Retention is capped at 24 hours, matching BSP relay retention.
+- The UI exposes only `Forward to nearby Briar participant` and `Export back to media`.
+- If Briar participation is disabled, the bundle may still be imported for delayed forwarding, but no attempt is made to interpret its contents.
+
+This keeps Briar bundle interoperability concrete without creating a hidden parsing or identity-linkage surface.
 
 **Solidarity model:** We run Briar relay the same way we run Tor relay — because the network is only as strong as its least-contributing member, and because the people using Briar may not have access to anything else. Our existence is not justified by the size of the Mesh Infinity network. It is justified by the aggregate reach of every network we strengthen.
 
@@ -2921,7 +2928,7 @@ Point-to-Point Protocol over Ethernet. PPPoE sessions are established directly b
 
 Mesh Infinity registers a custom EtherType value and sends WireGuard packets directly in Ethernet frames, bypassing the IP stack entirely.
 
-**EtherType:** `0x88B5` (locally administered experimental use; pending IANA registration — deployments should coordinate locally to avoid conflicts with other experimental uses on the same segment). Frames are sent to specific destination MAC addresses (unicast) or the broadcast address (for discovery).
+**EtherType:** `0x88B5` by default (locally administered experimental use). This specification does not depend on IANA assignment. Implementations MUST support a per-interface override for operators who encounter a collision on a shared segment. If a standards-assigned EtherType is adopted in a future revision, implementations MUST accept both values during the transition period and prefer the standards-assigned value for new deployments.
 
 **Discovery:** Mesh Infinity broadcasts a discovery frame on the local segment. Responding nodes send their mesh identity WireGuard public key. The responding node is then reachable via direct Ethernet frames.
 
@@ -3139,6 +3146,8 @@ Mesh Infinity implements the ZeroTier protocol directly. It does not depend on a
 - **Authentication:** Users authenticate via API key (from ZeroTier Central or a self-hosted controller). The key is stored encrypted in the vault (§3.5). A first-time setup flow guides enrollment.
 - **Network management:** Users can view member lists, authorize/deauthorize peer devices, and view network configuration directly within Mesh Infinity — functions normally requiring the ZeroTier Central dashboard or CLI.
 
+**Boundary clarification:** Mesh Infinity is a **ZeroTier client only**. It joins existing ZeroTier networks ("zeronets") that are administered by ZeroTier Central or by an external self-hosted ZeroTier controller. Mesh Infinity does **not** implement, host, replace, federate, or emulate the ZeroTier controller itself. Mesh Infinity's own decentralized control surface exists under **Infinet** (§13.14), not under the ZeroTier integration.
+
 #### 5.22.2 ZeroTier Authentication Flow
 
 ```
@@ -3188,6 +3197,8 @@ Tailscale is a managed WireGuard overlay network. Nodes authenticate via Tailsca
 #### 5.23.1 Mesh Infinity as a First-Class Tailscale Client
 
 Mesh Infinity implements the Tailscale control protocol and WireGuard data plane directly — it does not depend on an external Tailscale daemon or the `tailscale` CLI. On mobile, this is mandatory: there is one VPN slot. On desktop, Mesh Infinity manages its own network interface independent of any installed Tailscale service.
+
+**Boundary clarification:** Mesh Infinity is a **Tailscale/Headscale client only**. It joins existing tailnets administered by Tailscale or by an external Headscale instance. Mesh Infinity does **not** implement, host, replace, federate, or emulate the Tailscale/Headscale coordination service. Mesh Infinity's only Tailscale-like decentralized control plane is **Infinet** (§13.14), which is a separate Mesh Infinity-native system rather than a Tailscale replacement layer for vendor tailnets.
 
 **Implementation note — WireGuard over WireGuard:** The outer Tailscale WireGuard provides the overlay network path; the inner Mesh Infinity WireGuard provides mesh-level encryption and authentication. Both layers use WireGuard but serve different roles. The outer layer is transport; the inner layer is identity and routing. This double encryption is intentional and harmless.
 
@@ -3557,7 +3568,18 @@ Solutions, in order of strength:
 3. **Built-in bootstrap nodes** — known mesh nodes that can act as initial relays, reachable via obfs4 or other pluggable transports.
 4. **Community-shared bridges** — users in non-censored regions can share their node as a bootstrap bridge for censored-region users. Opt-in, bandwidth-limited.
 
-The bootstrap process is the hardest part of censorship resistance. It is specified here as a design goal; full implementation is deferred to a focused censorship-resistance pass.
+The bootstrap process is the hardest part of censorship resistance. Mesh Infinity therefore defines a concrete v1 bootstrap ladder instead of leaving this to a later pass.
+
+**Mandatory bootstrap ladder:**
+1. **Signed bootstrap manifest** — every build ships with a signed manifest containing mirror domains, fronted endpoints, bootstrap bridge descriptors, and their pinned keys/fingerprints. The manifest is signed by the project release key and may be updated over the mesh via §17.10.
+2. **Transport order** — the client attempts bootstrap in this order unless the user overrides it: `meek/domain-fronted` → `mirror domains over HTTPS` → `obfs4/bootstrap bridge` → `community-shared bridge`.
+3. **Pinned identity** — every bootstrap endpoint is pinned by release-signed descriptor plus endpoint key material. DNS or routing alone must never be sufficient to trust a bootstrap endpoint.
+4. **No silent downgrade** — if obfuscated bootstrap fails and the next available path is materially more detectable, the user must be told exactly which downgrade is about to occur. Automatic fallback may continue only within the same exposure class.
+5. **Failure indistinguishability** — unauthorized or malformed bootstrap probes must fail as timeout, TLS failure, or generic network failure. They must not emit a Mesh-distinctive rejection signature.
+6. **Rotation and retry** — endpoints within the same class are tried in randomized order with exponential backoff and per-endpoint failure budgets to avoid creating a stable retry fingerprint.
+7. **Cache discipline** — successfully used bootstrap descriptors are cached locally with expiry and pinning metadata so a later reinstall or reconnect does not depend on the original distribution channel.
+
+This bootstrap ladder is part of the core censorship-resistance behavior, not an optional later feature.
 
 #### 5.27.4 Hardware Acceleration Integration
 
@@ -3602,6 +3624,7 @@ All offline transport bundles carry a physical transfer header prepended to the 
 PhysicalTransferHeader {
     magic:          [u8; 4],    // 0x4D_49_4F_54 ("MIOT") — identifies Mesh Infinity offline transfer
     version:        u8,         // format version; currently 1
+    protocol_hint:  ProtocolHint, // mesh-native or foreign opaque bundle family
     routing_mode:   RoutingMode,
     source_id:      [u8; 32],   // sender's mesh peer ID (or [0u8;32] for anonymous)
     dest_id:        Option<[u8; 32]>,  // destination peer ID if point-to-point; None if routed
@@ -3618,6 +3641,12 @@ RoutingMode {
     NeedsRouting,   // dest_id is the next intended hop or None for best-effort; receiver injects
                     // into mesh routing; behaves like a store-and-forward node on arrival
     Broadcast,      // no specific destination; all receiving nodes process as applicable
+}
+
+ProtocolHint {
+    MeshInfinity,          // standard mesh bundle
+    BriarMemoryV1,         // opaque Briar memory-card payload
+    OpaqueForeign,         // unknown foreign bundle family; import/export only
 }
 ```
 
@@ -4836,7 +4865,12 @@ Group chats use **Signal Sender Keys** rather than a static group channel key:
 - Group messages are encrypted with `msg_key` from a single KDF_CK step on the sender's chain — one encryption, decryptable by all members who hold the sender's current chain state
 - Member departure triggers Sender Key rekeying: the admin distributes new Sender Keys to all remaining members; the departed member's key is discarded
 
-**Scalability caveat — O(n) distribution cost:** Sender Key distribution on join or rekeying requires one individually encrypted message per group member. For a group of N members, joining costs O(N) messages. This is acceptable for groups under ~50 members; for larger groups it becomes a meaningful coordination burden. A subgroup key distribution tree (O(log N) messages per hop) would mitigate this but adds protocol complexity. Deferred: this is a known scalability limitation, flagged for resolution when better methodologies mature. Current implementation should enforce a soft group size warning at 50 members and a hard cap at a configurable limit (default: 300 members, matching §6.9 large group reference).
+**Scalability caveat — O(n) distribution cost:** Sender Key distribution on join or rekeying requires one individually encrypted message per group member. For a group of N members, joining costs O(N) messages. This is acceptable for groups under ~50 members; for larger groups it becomes a meaningful coordination burden. A subgroup key distribution tree (O(log N) messages per hop) is explicitly **out of scope for this spec revision**. The normative v1 decision is:
+
+- soft warning at 50 members,
+- default hard cap at 300 members,
+- operators may lower but not raise the hard cap without a separate protocol revision,
+- large-group optimisation is not implied by the current Sender Key design and must not be assumed by implementations.
 
 ---
 
@@ -8208,7 +8242,7 @@ Knowledge of a private address already implies knowledge of services on it — t
 | Range | Purpose |
 |-------|---------|
 | 0–65535 | **IANA-compatible** — exact mirror of internet port conventions, including the 49152–65535 ephemeral sub-range. Preserved as-is for virtual addressing compatibility. |
-| 65536–66999 | **Reserved critical zone** — currently unassigned by design. This range sits between the IANA space and the service block range deliberately. No legitimate service is ever hosted here. Any inbound connection attempt to this zone is anomalous by definition, making it a natural honeypot. Future use: connections to this range will only be accepted when handed off from a prior authenticated connection on a higher-order service port — a port-knocking model where the higher port vouches for the critical zone access. Implementation is deferred; the design intent is recorded now. |
+| 65536–66999 | **Reserved critical zone** — never used for ordinary service hosting. Access is valid only via authenticated handoff tokens issued over an already-authenticated higher-order service port. A critical-zone token is single-use, source-bound, target-bound, sub-port-bound, and expires after 30 seconds. Unauthenticated traffic to this range is always anomalous, rejected without service-specific response, and eligible for local abuse scoring. |
 | 67000–133999 | **Mesh Infinity native service blocks** — 67 reserved blocks of 1000 ports each, 5 currently assigned. See §12.1.1. |
 | 134000–2,147,483,647 | **Free application/operator space** — available in 1000-port blocks or as individual ports. A port addressing agent (§12.1.2) manages allocation to prevent conflicts between block and individual assignments. |
 
@@ -8996,8 +9030,8 @@ InfinetState {
     members:           Vec<InfinetMember>,
     subnet_allocations: HashMap<PeerId, Ipv4Net>,  // /16 per member
     ipv6_allocations:  HashMap<PeerId, Ipv6Net>,   // /64 per member
-    acls:              Vec<InfinetACL>,        // see §13.14.5 pending pass
-    dns_records:       Vec<InfinetDNSRecord>,  // see §13.14.5 pending pass
+    acls:              Vec<InfinetACL>,        // see definitions below
+    dns_records:       Vec<InfinetDNSRecord>,  // see definitions below
     state_version:     u64,                    // monotonically increasing
     state_sig:         [u8; 64],               // Ed25519 over canonical state; signed by admin quorum
 }
@@ -10223,7 +10257,7 @@ The architecture must be implementable **consistently across all supported platf
 - **§17.7 Mesh URL Scheme** -- `meshinfinity://` protocol segments; deep-link registration
 - **§17.8 Flutter UI Layer** -- MVVM; async events; no business logic in UI
 - **§17.9 Encrypted Vault Storage** -- XChaCha20-Poly1305 blobs; HKDF-derived per-collection keys; atomic writes
-- **§17.10 Mesh-Delivered Updates** -- signed releases over mesh; design goal
+- **§17.10 Mesh-Delivered Updates** -- signed releases over mesh; manifest, verification, rollback rules
 - **§17.11 Mesh DNS System** -- four namespaces; resolver architecture; clearnet accessibility
 
 ### 17.1 Single-Process Architecture
@@ -10823,9 +10857,58 @@ Compromise of one collection file does not expose others (different derived keys
 
 ### 17.10 Mesh-Delivered Updates
 
-Updates are delivered over the mesh itself -- signed by the project's release keypair, verifiable without a central server, distributed via the same store-and-forward and distributed storage infrastructure used for everything else.
+Updates are delivered over the mesh itself -- signed by the project's release keypair, verifiable without a central server, and distributed via the same store-and-forward and distributed storage infrastructure used for everything else.
 
-This is a design goal, not a current implementation. Supply chain hardening (reproducible builds, signed releases, verification infrastructure) is a priority outside of spec scope.
+**Release objects:**
+
+```rust
+ReleaseManifest {
+    release_id:        [u8; 32],      // SHA-256 of canonical manifest bytes
+    version:           String,        // semantic version
+    channel:           ReleaseChannel, // stable | beta | nightly
+    published_at:      u64,
+    min_supported_from: String,       // rollback floor for secure upgrade path
+    artifacts:         Vec<ReleaseArtifact>,
+    bootstrap_manifest: Option<BootstrapManifestRef>, // optional updated §5.27 bootstrap descriptor set
+    notes_hash:        [u8; 32],      // release notes content hash
+    signatures:        Vec<ReleaseSignature>,
+}
+
+ReleaseArtifact {
+    platform:          String,        // android-arm64, linux-x86_64, etc.
+    artifact_type:     ReleaseArtifactType, // apk | aab | appimage | msi | zip
+    sha256:            [u8; 32],
+    size_bytes:        u64,
+    fetch_addresses:   Vec<MeshUrl>,  // mesh-native fetch endpoints
+}
+
+ReleaseSignature {
+    signer_pubkey:     [u8; 32],      // project root or delegated release key
+    signature:         [u8; 64],      // Ed25519 over canonical manifest
+}
+```
+
+**Verification rules:**
+- Every release manifest MUST be signed by the project root release key or a delegated release key chained to it.
+- Every artifact MUST hash-match the manifest before install.
+- Clients MUST reject updates that attempt rollback below `min_supported_from`.
+- Clients MUST preserve the previous working artifact until the new artifact has passed first-launch validation.
+- Updates received over the mesh are untrusted until signature and hash verification succeed.
+
+**Distribution rules:**
+- Release manifests propagate over store-and-forward and distributed storage.
+- Artifact fetch may use any available mesh transport, but the verification model is identical on every path.
+- Bootstrap descriptor updates are distributed through the same signed manifest path; bootstrap metadata is never updated from unsigned network data.
+
+**User interaction rules:**
+- Security updates may auto-download.
+- Installation still requires platform-appropriate user confirmation unless the platform provides a documented unattended mechanism that preserves signature verification and rollback safety.
+- In `ThreatContext::Critical`, the client MUST NOT auto-switch update channel or trust new bootstrap infrastructure without explicit user approval.
+
+**Supply-chain minimum:**
+- Signed releases are mandatory.
+- Reproducible-build metadata and verifier instructions are part of the release artifact set.
+- If reproducibility data is absent, the release may be installed only after the UI surfaces that supply-chain assurance is reduced.
 
 ### 17.11 Mesh DNS System
 
@@ -11557,7 +11640,43 @@ Every major system in Mesh Infinity has corresponding scopes. Most systems have 
 - The user receives a specific warning when granting `anonymous.access`: *"This plugin will be able to see activity under your anonymous identities. Anonymous identities are designed to be unlinkable — granting this access breaks that guarantee for this plugin."*
 - Plugin API responses for identity enumeration (`list_masks()`) omit anonymous masks unless `anonymous.access` is held. A plugin cannot infer the existence of anonymous masks from the absence of expected data.
 
-The full scope list with all restriction axes per scope is a dedicated design document (§18 Plugin Permission Scope Reference). This requires exhaustive design to ensure no capability leaks and no legitimate use case is crippled. It will be completed as a separate design sprint after the spec rewrite.
+The plugin scope catalogue is **closed-world** in this spec revision. If a scope is not named here, it does not exist and cannot be requested. Restriction axes from §18.2 apply to every scope unless a scope definition narrows them further.
+
+**Core scope catalogue for v1:**
+- `identity.read`
+- `identity.write`
+- `masks.read`
+- `masks.write`
+- `anonymous.access`
+- `network.read`
+- `routing.read`
+- `routing.write`
+- `transport.read`
+- `transport.write`
+- `store_forward.read`
+- `store_forward.write`
+- `files.read`
+- `files.write`
+- `services.read`
+- `services.write`
+- `exit_nodes.read`
+- `exit_nodes.write`
+- `messaging.read`
+- `messaging.write`
+- `groups.read`
+- `groups.write`
+- `garden.read`
+- `garden.write`
+- `notifications.send`
+- `calls.read`
+- `calls.write`
+- `discovery.read`
+- `profiles.read`
+- `profiles.write`
+- `metrics.read`
+- `observability.read`
+
+There is no hidden auxiliary scope list outside this specification. Future scope additions require a spec revision and API version bump when they change the permission surface.
 
 #### 18.2.1 Trust System Scope — Read and Suggest Only
 
@@ -12241,7 +12360,7 @@ Tapping a device opens a purpose assignment sheet:
 
 **Session indicator (UI in §20):** When a MISLP session is active, a persistent coloured banner at the top of the screen shows: `[colour bar] [purpose device name] — [purpose tag]`. This is the mesh equivalent of Qubes window borders — the user always knows which compartment they are in.
 
-**TaskCreateScreen (deferred to §20 UI pass):** The manual task dispatch UI (arbitrary commands to arbitrary devices) is a power-user escape hatch from the purpose model. It exists but is not the primary flow. The primary flow is always: "I want to do X → here is the device for X."
+**TaskCreateScreen (defined in §22.10.8b):** The manual task dispatch UI (arbitrary commands to arbitrary devices) is a power-user escape hatch from the purpose model. It exists but is not the primary flow. The primary flow is always: "I want to do X → here is the device for X."
 
 ---
 
@@ -16398,7 +16517,13 @@ Backend call: `bridge.fetchGardenPosts('')` — empty string means all joined ga
 
 **File**: `features/garden/explore_screen.dart`
 
-Discovery screen for public/open gardens on the mesh. Calls `bridge.discoverGardens()`. Each `_GardenTile` shows name, network type badge (Public=brand, Open=green, Closed=amber, Private=purple), member count, and description with a "Join" button (TODO: join garden action backed by `bridge.joinGarden(id)`).
+Discovery screen for public/open gardens on the mesh. Calls `bridge.discoverGardens()`. Each `_GardenTile` shows name, network type badge (Public=brand, Open=green, Closed=amber, Private=purple), member count, and description with a `Join` button wired to `bridge.joinGarden(id)`.
+
+Join button states:
+- `Join` — user is not a member; tapping calls `bridge.joinGarden(id)`
+- `Joining…` — join request in flight
+- `Open` — already joined; opens the community
+- `Request sent` — for moderated/open-by-approval gardens where the backend reports pending membership
 
 `EmptyState` shown when no discoverable gardens found.
 
@@ -16744,7 +16869,7 @@ ListTile(
 
 Previously called "Storage Tab" in earlier spec iterations. Renamed to "Shared" to better describe its purpose: files the user has published to the distributed mesh storage network.
 
-Backend calls: `bridge.fetchStorageStats()` (usage bar) + `bridge.fetchPublishedFiles()` (file list). Unpublish calls `bridge.unpublishFile(fileId)`. Publish action: file picker → `bridge.publishFile(path)` (TODO).
+Backend calls: `bridge.fetchStorageStats()` (usage bar) + `bridge.fetchPublishedFiles()` (file list). Unpublish calls `bridge.unpublishFile(fileId)`. Publish action: file picker → `bridge.publishFile(path)`.
 
 #### 22.7.4 Shared sub-page content
 
@@ -21949,7 +22074,9 @@ ListView(padding: EdgeInsets.all(16), children: [
 
 **`_SelfCard`:** Large `CircleAvatar` (radius 40, initials), display name (`headlineSmall`, bold), truncated peer ID (monospace, tappable to copy), inline `QrImageView` (160×160, white background), `OutlinedButton.icon('Edit profile')` → `ProfileEditScreen`.
 
-**`_MasksSection`:** Row with "Masks" title and "New mask" button (disabled until backend implements masks), followed by an empty-state `Card` explaining masks are contextual identities coming in a future update.
+**`_MasksSection`:** Row with "Masks" title and "New mask" button, followed by either:
+- a list of contextual masks currently stored in backend state, or
+- an empty-state `Card` explaining what contextual masks are and offering creation.
 
 Loading state (identity == null): `Center(child: CircularProgressIndicator())`.
 
@@ -21957,7 +22084,7 @@ Loading state (identity == null): `Center(child: CircularProgressIndicator())`.
 
 **Backend:** `bridge.fetchIdentity()` via `SettingsState.loadAll()`. Pull-to-refresh calls `settings.loadAll()`.
 
-**Masks:** Not yet implemented in backend. `_MasksSection` renders empty state. When implemented, masks will be stored via `bridge.fetchMasks()` / `bridge.createMask(...)` / `bridge.setActiveMask(id)`.
+**Masks:** Backed by `bridge.fetchMasks()` / `bridge.createMask(...)` / `bridge.setActiveMask(id)`. The screen manages contextual masks only; primary identity masks remain surfaced through the `You` and profile flows.
 
 ---
 
@@ -25051,7 +25178,12 @@ Backend: `ServicesState.services` from `bridge.fetchHostingConfig()`.
 
 **File:** `features/services/browse_screen.dart`
 
-Discover mesh services offered by connected peers. Calls `bridge.discoverMeshServices()`. Each `_ServiceTile` shows service type icon, host name, trust level requirement, description, and a "Connect" button (TODO: connect action).
+Discover mesh services offered by connected peers. Calls `bridge.discoverMeshServices()`. Each `_ServiceTile` shows service type icon, host name, trust level requirement, description, and a `Connect` button.
+
+`Connect` behavior:
+- If the service advertises a mesh-native handler, open the corresponding mesh route directly.
+- If the service is a generic hosted service, open the generated `meshinfinity://service//...` URL or the specific protocol form (`http`, `https`, `group`, etc.).
+- If local capability is missing, the button is replaced with an explicit unavailable state rather than a no-op.
 
 Empty state: `EmptyState(icon: Icons.hub_outlined, title: 'No services found', body: 'Services offered by mesh peers will appear here.')`.
 

@@ -480,9 +480,9 @@ impl RoutingTable {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Option<&RoutingEntry> {
         // Priority 1: local/private plane (direct connections).
         // These are always preferred because they're the most direct
@@ -632,9 +632,9 @@ impl RoutingTable {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> bool {
         // Execute the operation and bind the result.
         // Compute group table for this protocol step.
@@ -776,7 +776,7 @@ impl RoutingTable {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
+        // Begin the block scope.
     ) {
         // Evict expired BLE entries first.
         // Filter elements that match the predicate.
@@ -946,8 +946,8 @@ impl RoutingTable {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
     ) -> bool {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.

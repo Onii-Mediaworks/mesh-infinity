@@ -33,7 +33,7 @@
 //! - IPv4: `224.0.0.251:5353`
 //! - IPv6: `[ff02::fb]:5353`
 //!
-//! The service type is `_meshinfinity._tcp.local.`
+//! The service type is `_meshinfinity._udp.local.`
 //!
 //! ## Platform matrix
 //!
@@ -55,11 +55,15 @@
 //! - RFC 6762 — Multicast DNS
 //! - RFC 6763 — DNS-Based Service Discovery
 
+use std::collections::VecDeque;
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
+
+#[cfg(target_os = "linux")]
+use std::{net::TcpListener, time::Instant};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -75,12 +79,14 @@ pub const MDNS_PORT: u16 = 5353;
 pub const MDNS_IPV6_MULTICAST: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 
 /// Mesh Infinity mDNS service type used for DNS-SD announcements.
-pub const MDNS_SERVICE_TYPE: &str = "_meshinfinity._tcp.local.";
+pub const MDNS_SERVICE_TYPE: &str = "_meshinfinity._udp.local.";
 
 /// How often to poll for a group interface IP address after group formation (ms).
+#[cfg(target_os = "linux")]
 const IP_POLL_INTERVAL_MS: u64 = 500;
 
 /// Maximum time to wait for the group interface to obtain an IP (seconds).
+#[cfg(target_os = "linux")]
 const IP_ACQUIRE_TIMEOUT_SECS: u64 = 20;
 
 /// DNS message query/response flag mask.
@@ -211,7 +217,10 @@ impl std::fmt::Display for WifiDirectError {
                 write!(f, "WiFi Direct P2P is not available on this platform")
             }
             WifiDirectError::Nl80211NotAvailable => {
-                write!(f, "nl80211 not available — no WiFi hardware or driver not loaded")
+                write!(
+                    f,
+                    "nl80211 not available — no WiFi hardware or driver not loaded"
+                )
             }
             WifiDirectError::InterfaceNotFound(iface) => {
                 write!(f, "WiFi interface '{iface}' not found or not usable")
@@ -276,6 +285,158 @@ pub struct WifiDirectTransport {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Android adapter state
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Backend-owned snapshot of Android Wi-Fi Direct capability and peer state.
+#[derive(Default, Clone)]
+struct AndroidWifiDirectAdapterState {
+    /// Whether Wi-Fi Direct hardware exists.
+    available: bool,
+    /// Whether Wi-Fi Direct is enabled.
+    enabled: bool,
+    /// Whether the required runtime permission is granted.
+    permission_granted: bool,
+    /// Whether discovery is currently active.
+    discovery_active: bool,
+    /// Whether an Android Wi-Fi Direct session is active.
+    connected: bool,
+    /// Current Android-reported connection role.
+    connection_role: Option<String>,
+    /// Current Android-reported group owner address.
+    group_owner_address: Option<String>,
+    /// Current Android-reported connected peer address.
+    connected_device_address: Option<String>,
+    /// Current Android-reported peers.
+    peers: Vec<WifiDirectPeer>,
+    /// Pairing payloads received by the Android platform bridge.
+    inbound_pairing_payloads: VecDeque<String>,
+    /// Pairing payloads Rust has queued for Android-native exchange.
+    outbound_pairing_payloads: VecDeque<String>,
+    /// Generic session frames received by the Android platform bridge.
+    inbound_session_frames: VecDeque<Vec<u8>>,
+    /// Generic session frames Rust has queued for Android-native exchange.
+    outbound_session_frames: VecDeque<Vec<u8>>,
+}
+
+/// Return the global Android Wi-Fi Direct adapter state.
+fn android_wifi_direct_adapter_state() -> &'static Mutex<AndroidWifiDirectAdapterState> {
+    static STATE: OnceLock<Mutex<AndroidWifiDirectAdapterState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(AndroidWifiDirectAdapterState::default()))
+}
+
+/// Update the backend-owned Android Wi-Fi Direct adapter snapshot.
+pub fn update_android_adapter_state(
+    available: bool,
+    enabled: bool,
+    permission_granted: bool,
+    discovery_active: bool,
+    connected: bool,
+    connection_role: Option<String>,
+    group_owner_address: Option<String>,
+    connected_device_address: Option<String>,
+    peers: Vec<WifiDirectPeer>,
+) {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.available = available;
+    state.enabled = enabled;
+    state.permission_granted = permission_granted;
+    state.discovery_active = discovery_active;
+    state.connected = connected;
+    state.connection_role = connection_role;
+    state.group_owner_address = group_owner_address;
+    state.connected_device_address = connected_device_address;
+    state.peers = peers;
+}
+
+/// Queue one pairing payload received by the Android Wi-Fi Direct bridge.
+pub fn enqueue_android_inbound_pairing_payload(payload_json: &str) {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if state.available && state.enabled {
+        state
+            .inbound_pairing_payloads
+            .push_back(payload_json.to_string());
+    }
+}
+
+/// Remove the next Android-received Wi-Fi Direct pairing payload.
+pub fn dequeue_android_inbound_pairing_payload() -> Option<String> {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.inbound_pairing_payloads.pop_front()
+}
+
+/// Queue one backend-authored pairing payload for Android-native exchange.
+pub fn queue_android_outbound_pairing_payload(payload_json: &str) {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if state.available && state.enabled && state.connected {
+        state
+            .outbound_pairing_payloads
+            .push_back(payload_json.to_string());
+    }
+}
+
+/// Remove the next backend-authored pairing payload queued for Android exchange.
+pub fn dequeue_android_outbound_pairing_payload() -> Option<String> {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.outbound_pairing_payloads.pop_front()
+}
+
+/// Queue one generic session frame received by the Android Wi-Fi Direct bridge.
+pub fn enqueue_android_inbound_session_frame(frame: &[u8]) {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if state.available && state.enabled {
+        state.inbound_session_frames.push_back(frame.to_vec());
+    }
+}
+
+/// Remove the next Android-received Wi-Fi Direct session frame.
+pub fn dequeue_android_inbound_session_frame() -> Option<Vec<u8>> {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.inbound_session_frames.pop_front()
+}
+
+/// Queue one backend-authored generic session frame for Android-native exchange.
+pub fn queue_android_outbound_session_frame(frame: &[u8]) {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if state.available && state.enabled && state.connected {
+        state.outbound_session_frames.push_back(frame.to_vec());
+    }
+}
+
+/// Remove the next backend-authored session frame queued for Android exchange.
+pub fn dequeue_android_outbound_session_frame() -> Option<Vec<u8>> {
+    let mut state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    state.outbound_session_frames.pop_front()
+}
+
+#[cfg(not(target_os = "linux"))]
+/// Snapshot the current Android Wi-Fi Direct adapter state.
+fn android_wifi_direct_snapshot() -> AndroidWifiDirectAdapterState {
+    android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Linux implementation — direct nl80211 kernel interface (no wpa_supplicant)
 // ────────────────────────────────────────────────────────────────────────────
 //
@@ -320,28 +481,24 @@ mod linux_impl {
                     ifa = (*ifa).ifa_next;
                     continue;
                 }
-                let name = std::ffi::CStr::from_ptr(name_ptr)
-                    .to_str()
-                    .unwrap_or("");
+                let name = std::ffi::CStr::from_ptr(name_ptr).to_str().unwrap_or("");
                 if name == iface {
                     if let Some(sa) = (*ifa).ifa_addr.as_ref() {
                         match sa.sa_family as libc::c_int {
                             libc::AF_INET => {
-                                let sin = &*(sa as *const libc::sockaddr
-                                    as *const libc::sockaddr_in);
-                                let ip =
-                                    Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                                let sin =
+                                    &*(sa as *const libc::sockaddr as *const libc::sockaddr_in);
+                                let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
                                 if !ip.is_link_local() && !ip.is_loopback() {
                                     result.push(IpAddr::V4(ip));
                                 }
                             }
                             libc::AF_INET6 => {
-                                let sin6 = &*(sa as *const libc::sockaddr
-                                    as *const libc::sockaddr_in6);
+                                let sin6 =
+                                    &*(sa as *const libc::sockaddr as *const libc::sockaddr_in6);
                                 let ip = Ipv6Addr::from(sin6.sin6_addr.s6_addr);
                                 let o = ip.octets();
-                                let link_local =
-                                    o[0] == 0xfe && (o[1] & 0xc0) == 0x80;
+                                let link_local = o[0] == 0xfe && (o[1] & 0xc0) == 0x80;
                                 if !link_local && ip != Ipv6Addr::LOCALHOST {
                                     result.push(IpAddr::V6(ip));
                                 }
@@ -533,29 +690,25 @@ mod linux_impl {
             let iface = ifaces
                 .iter()
                 .find(|i| i.ifname == self.interface)
-                .ok_or_else(|| {
-                    WifiDirectError::InterfaceNotFound(self.interface.clone())
-                })?;
+                .ok_or_else(|| WifiDirectError::InterfaceNotFound(self.interface.clone()))?;
 
             let conn = direct_connect(&nl, iface.ifindex, peer_id_hex, P2P_DEFAULT_FREQ_MHZ)
                 .map_err(|e| WifiDirectError::ConnectFailed(e.to_string()))?;
 
-            let our_ip =
-                wait_for_ip(&conn.ifname, Duration::from_secs(IP_ACQUIRE_TIMEOUT_SECS))
-                    .ok_or_else(|| {
-                        WifiDirectError::ConnectFailed(format!(
-                            "interface {} did not obtain an IP",
-                            conn.ifname
-                        ))
-                    })?;
+            let our_ip = wait_for_ip(&conn.ifname, Duration::from_secs(IP_ACQUIRE_TIMEOUT_SECS))
+                .ok_or_else(|| {
+                    WifiDirectError::ConnectFailed(format!(
+                        "interface {} did not obtain an IP",
+                        conn.ifname
+                    ))
+                })?;
 
             let peer_ip = derive_group_owner_ip(&conn.ifname, our_ip).ok_or_else(|| {
                 WifiDirectError::ConnectFailed("could not determine peer IP".into())
             })?;
 
             let addr = SocketAddr::new(peer_ip, self.listen_port);
-            TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-                .map_err(WifiDirectError::Io)
+            TcpStream::connect_timeout(&addr, Duration::from_secs(10)).map_err(WifiDirectError::Io)
         }
 
         /// Start a TCP listener on the active group interface.
@@ -568,13 +721,12 @@ mod linux_impl {
                     "no group interface active — connect to a peer first".into(),
                 )
             })?;
-            let listen_ip =
-                wait_for_ip(group_iface, Duration::from_secs(IP_ACQUIRE_TIMEOUT_SECS))
-                    .ok_or_else(|| {
-                        WifiDirectError::ConnectFailed(format!(
-                            "group interface {group_iface} has no IP"
-                        ))
-                    })?;
+            let listen_ip = wait_for_ip(group_iface, Duration::from_secs(IP_ACQUIRE_TIMEOUT_SECS))
+                .ok_or_else(|| {
+                    WifiDirectError::ConnectFailed(format!(
+                        "group interface {group_iface} has no IP"
+                    ))
+                })?;
             let addr = SocketAddr::new(listen_ip, self.listen_port);
             let listener = TcpListener::bind(addr)?;
             let transport = Arc::clone(&self);
@@ -582,7 +734,11 @@ mod linux_impl {
                 .name("wifi-direct-listener".into())
                 .spawn(move || {
                     for stream in listener.incoming().flatten() {
-                        transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(stream);
+                        transport
+                            .inbound
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(stream);
                     }
                 })
                 .map_err(WifiDirectError::Io)?;
@@ -627,33 +783,77 @@ impl WifiDirectTransport {
     /// On Android, WiFi Direct is handled by the platform layer via
     /// `WifiP2pManager` / JNI.  On iOS/macOS/Windows there is no equivalent
     /// nl80211 interface exposed to Rust.
-    pub fn new(_interface: &str, _device_name: &str, _listen_port: u16) -> Result<Self, WifiDirectError> {
-        Err(WifiDirectError::NotAvailable)
+    pub fn new(
+        interface: &str,
+        device_name: &str,
+        listen_port: u16,
+    ) -> Result<Self, WifiDirectError> {
+        let state = android_wifi_direct_snapshot();
+        if !state.available {
+            return Err(WifiDirectError::NotAvailable);
+        }
+        Ok(WifiDirectTransport {
+            interface: interface.to_owned(),
+            group_interface: None,
+            our_device_name: device_name.to_owned(),
+            peer_devices: Mutex::new(state.peers),
+            inbound: Mutex::new(Vec::new()),
+            listen_port,
+        })
     }
 
-    /// Always returns `false` on non-Linux platforms.
+    /// On Android, availability follows the backend-owned capability state.
     pub fn is_available() -> bool {
-        false
+        let state = android_wifi_direct_snapshot();
+        state.available && state.enabled && state.permission_granted
     }
 
-    /// Returns `WifiDirectError::NotAvailable`.
+    /// On Android, scanning availability is represented by the backend-owned
+    /// adapter snapshot. The platform layer performs the actual scan.
     pub fn start_scan(&self) -> Result<(), WifiDirectError> {
-        Err(WifiDirectError::NotAvailable)
+        let state = android_wifi_direct_snapshot();
+        if !state.available {
+            return Err(WifiDirectError::NotAvailable);
+        }
+        if !state.permission_granted {
+            return Err(WifiDirectError::ScanFailed(
+                "android wifi direct permission is not granted".to_string(),
+            ));
+        }
+        if !state.enabled {
+            return Err(WifiDirectError::ScanFailed(
+                "android wifi direct is disabled".to_string(),
+            ));
+        }
+        Ok(())
     }
 
-    /// Returns an empty list on non-Linux platforms.
+    /// On Android, return peers from the backend-owned adapter snapshot.
     pub fn discovered_peers(&self) -> Vec<WifiDirectPeer> {
-        Vec::new()
+        android_wifi_direct_snapshot().peers
     }
 
-    /// Returns `WifiDirectError::NotAvailable`.
+    /// The Android platform layer owns the Wi-Fi Direct data plane today.
     pub fn connect_peer(&self, _mac: &str) -> Result<TcpStream, WifiDirectError> {
-        Err(WifiDirectError::NotAvailable)
+        let state = android_wifi_direct_snapshot();
+        if !state.available {
+            return Err(WifiDirectError::NotAvailable);
+        }
+        Err(WifiDirectError::ConnectFailed(
+            "android wifi direct connections are managed by the native platform bridge".to_string(),
+        ))
     }
 
-    /// Returns `WifiDirectError::NotAvailable`.
+    /// The Android platform layer owns the Wi-Fi Direct listener today.
     pub fn start_listener(self: Arc<Self>) -> Result<(), WifiDirectError> {
-        Err(WifiDirectError::NotAvailable)
+        let state = android_wifi_direct_snapshot();
+        if !state.available {
+            return Err(WifiDirectError::NotAvailable);
+        }
+        let _ = self;
+        Err(WifiDirectError::ConnectFailed(
+            "android wifi direct listener is managed by the native platform bridge".to_string(),
+        ))
     }
 
     /// Returns an empty list on non-Linux platforms.
@@ -661,9 +861,14 @@ impl WifiDirectTransport {
         Vec::new()
     }
 
-    /// Returns `WifiDirectError::NotAvailable`.
+    /// On Android, disconnect intent exists at the backend boundary even
+    /// though the platform still performs the actual disconnect.
     pub fn disconnect_all(&self) -> Result<(), WifiDirectError> {
-        Err(WifiDirectError::NotAvailable)
+        let state = android_wifi_direct_snapshot();
+        if !state.available {
+            return Err(WifiDirectError::NotAvailable);
+        }
+        Ok(())
     }
 }
 
@@ -674,14 +879,11 @@ impl WifiDirectTransport {
 /// A Mesh Infinity service instance discovered via mDNS-SD.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MdnsService {
-    /// Hex-encoded Mesh Infinity peer ID.
-    pub peer_id_hex: String,
-
     /// Resolved `SocketAddr` (`IP:port`) to connect to.
     pub address: SocketAddr,
 
-    /// Human-readable device name extracted from the TXT record `name` key.
-    pub device_name: String,
+    /// Advertised protocol version from the TXT `ver` key.
+    pub protocol_version: u8,
 }
 
 /// mDNS-SD discovery and announcement engine.
@@ -695,15 +897,14 @@ pub struct MdnsService {
 /// Announcements are Multicast DNS (RFC 6762) "answers-only" packets
 /// (QR=1, Opcode=0, AA=1) containing:
 ///
-/// - **PTR** record: `_meshinfinity._tcp.local.` → `<peer_id>._meshinfinity._tcp.local.`
-/// - **SRV** record: `<peer_id>._meshinfinity._tcp.local.` → port + target hostname
-/// - **TXT** record: `<peer_id>._meshinfinity._tcp.local.` → `id=<peer_id_hex>` and `name=<device_name>`
+/// - **PTR** record: `_meshinfinity._udp.local.` → `node._meshinfinity._udp.local.`
+/// - **SRV** record: `node._meshinfinity._udp.local.` → port + target hostname
+/// - **TXT** record: `node._meshinfinity._udp.local.` → `ver=1` and `port=<port>`
 ///
 /// Listeners parse PTR/TXT records and store any discovered services in
 /// `discovered`.
 pub struct MdnsDiscovery {
-    /// Fully-qualified service instance name, e.g.
-    /// `"abc123._meshinfinity._tcp.local."`.
+    /// Fully-qualified service instance name.
     service_name: String,
 
     /// TCP port to advertise in the SRV record.
@@ -714,9 +915,9 @@ pub struct MdnsDiscovery {
 }
 
 impl MdnsDiscovery {
-    /// Create a new `MdnsDiscovery` that will advertise `peer_id_hex` on `port`.
-    pub fn new(peer_id_hex: &str, port: u16) -> Self {
-        let service_name = format!("{peer_id_hex}.{MDNS_SERVICE_TYPE}");
+    /// Create a new `MdnsDiscovery` that advertises only rendezvous data.
+    pub fn new(_peer_id_hex: &str, port: u16) -> Self {
+        let service_name = format!("node.{MDNS_SERVICE_TYPE}");
         MdnsDiscovery {
             service_name,
             port,
@@ -726,7 +927,10 @@ impl MdnsDiscovery {
 
     /// Return all services discovered so far.
     pub fn discovered(&self) -> Vec<MdnsService> {
-        self.discovered.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.discovered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Spawn a background thread that periodically broadcasts mDNS
@@ -765,7 +969,7 @@ impl MdnsDiscovery {
     ///
     /// Joins the `224.0.0.251` multicast group on all IPv4 interfaces and
     /// parses received DNS packets for PTR/TXT records matching
-    /// `_meshinfinity._tcp.local.`.
+    /// `_meshinfinity._udp.local.`.
     pub fn scan(&self) -> std::thread::JoinHandle<()> {
         let discovered = Arc::new(Mutex::new(Vec::<MdnsService>::new()));
         // Share the internal discovered list so the spawned thread can write to it.
@@ -811,8 +1015,8 @@ impl MdnsDiscovery {
                 .spawn(move || {
                     for svc in rx {
                         let mut guard = inner_discovered.lock().unwrap_or_else(|e| e.into_inner());
-                        // Deduplicate by peer_id_hex.
-                        if !guard.iter().any(|s| s.peer_id_hex == svc.peer_id_hex) {
+                        // Deduplicate by the endpoint we would probe next.
+                        if !guard.iter().any(|s| s.address == svc.address) {
                             guard.push(svc);
                         }
                     }
@@ -844,8 +1048,9 @@ impl MdnsDiscovery {
                                 }
                             }
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                || e.kind() == std::io::ErrorKind::TimedOut =>
                         {
                             // Timeout — loop again.
                         }
@@ -924,9 +1129,9 @@ fn build_txt_rdata(pairs: &[&str]) -> Vec<u8> {
 /// three answers: PTR, TXT, SRV.
 ///
 /// ```text
-/// PTR: _meshinfinity._tcp.local.  →  <instance>._meshinfinity._tcp.local.
-/// TXT: <instance>._meshinfinity._tcp.local.  →  id=<peer_id> name=<device>
-/// SRV: <instance>._meshinfinity._tcp.local.  →  0 0 <port> <instance>.local.
+/// PTR: _meshinfinity._udp.local.  →  node._meshinfinity._udp.local.
+/// TXT: node._meshinfinity._udp.local.  →  ver=1 port=<port>
+/// SRV: node._meshinfinity._udp.local.  →  0 0 <port> node.local.
 /// ```
 pub fn build_announcement_packet(service_instance_name: &str, port: u16) -> Vec<u8> {
     let mut buf = Vec::with_capacity(512);
@@ -946,7 +1151,7 @@ pub fn build_announcement_packet(service_instance_name: &str, port: u16) -> Vec<
     write_u16(&mut buf, 0);
 
     // --- PTR record ---
-    // Owner name: _meshinfinity._tcp.local.
+    // Owner name: _meshinfinity._udp.local.
     // RDATA: service_instance_name
     {
         let mut rdata = Vec::new();
@@ -957,10 +1162,8 @@ pub fn build_announcement_packet(service_instance_name: &str, port: u16) -> Vec<
     // --- TXT record ---
     // Owner name: service_instance_name
     {
-        // Extract peer_id_hex from service_instance_name (first label).
-        let peer_id = service_instance_name.split('.').next().unwrap_or("");
-        let id_pair = format!("id={peer_id}");
-        let rdata = build_txt_rdata(&[&id_pair]);
+        let port_pair = format!("port={port}");
+        let rdata = build_txt_rdata(&["ver=1", &port_pair]);
         write_rr(
             &mut buf,
             service_instance_name,
@@ -998,7 +1201,7 @@ pub fn build_announcement_packet(service_instance_name: &str, port: u16) -> Vec<
 
 /// Minimal DNS packet parser.
 ///
-/// Extracts PTR, TXT, and SRV records matching `_meshinfinity._tcp.local.`.
+/// Extracts PTR, TXT, and SRV records matching `_meshinfinity._udp.local.`.
 /// Returns discovered [`MdnsService`] entries, or `None` if the packet is
 /// malformed or contains no relevant records.
 fn parse_mdns_packet(data: &[u8], src: SocketAddr) -> Option<Vec<MdnsService>> {
@@ -1032,11 +1235,12 @@ fn parse_mdns_packet(data: &[u8], src: SocketAddr) -> Option<Vec<MdnsService>> {
     }
 
     // Collected TXT data: instance_name → Vec<(key, value)>
-    let mut txt_records: std::collections::HashMap<String, std::collections::HashMap<String, String>> =
-        std::collections::HashMap::new();
+    let mut txt_records: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, String>,
+    > = std::collections::HashMap::new();
     // Collected SRV data: instance_name → port
-    let mut srv_ports: std::collections::HashMap<String, u16> =
-        std::collections::HashMap::new();
+    let mut srv_ports: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
     // PTR records: service_type → Vec<instance_name>
     let mut ptr_instances: Vec<String> = Vec::new();
 
@@ -1075,10 +1279,7 @@ fn parse_mdns_packet(data: &[u8], src: SocketAddr) -> Option<Vec<MdnsService>> {
             DNS_TYPE_TXT => {
                 // Parse TXT RDATA: sequence of length-prefixed strings.
                 let kv = parse_txt_rdata(rdata);
-                txt_records
-                    .entry(owner.clone())
-                    .or_default()
-                    .extend(kv);
+                txt_records.entry(owner.clone()).or_default().extend(kv);
             }
             DNS_TYPE_SRV => {
                 // SRV: priority(2) + weight(2) + port(2) + target
@@ -1096,31 +1297,29 @@ fn parse_mdns_packet(data: &[u8], src: SocketAddr) -> Option<Vec<MdnsService>> {
     // Build MdnsService entries from PTR instances we found.
     let mut services = Vec::new();
     for instance in &ptr_instances {
-        // Extract peer_id_hex from the first label.
-        let peer_id_hex = instance.split('.').next().unwrap_or("").to_owned();
-        if peer_id_hex.is_empty() {
-            continue;
-        }
-
         // Find port from SRV or TXT; fall back to src port.
         let port = srv_ports
             .get(instance.as_str())
             .copied()
+            .or_else(|| {
+                txt_records
+                    .get(instance.as_str())
+                    .and_then(|kv| kv.get("port"))
+                    .and_then(|raw| raw.parse::<u16>().ok())
+            })
             .unwrap_or(src.port());
 
-        // Get device name from TXT.
-        let device_name = txt_records
+        let protocol_version = txt_records
             .get(instance.as_str())
-            .and_then(|kv| kv.get("name"))
-            .cloned()
-            .unwrap_or_default();
+            .and_then(|kv| kv.get("ver"))
+            .and_then(|raw| raw.parse::<u8>().ok())
+            .unwrap_or(1);
 
         let address = SocketAddr::new(src.ip(), port);
 
         services.push(MdnsService {
-            peer_id_hex,
             address,
-            device_name,
+            protocol_version,
         });
     }
 
@@ -1382,13 +1581,34 @@ mod tests {
 
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn test_is_available_false_on_non_linux() {
-        assert!(!WifiDirectTransport::is_available());
+    fn test_android_adapter_state_controls_non_linux_availability() {
+        update_android_adapter_state(
+            true,
+            true,
+            true,
+            false,
+            false,
+            None,
+            None,
+            None,
+            vec![WifiDirectPeer {
+                mac_address: "aa:bb:cc:dd:ee:ff".to_string(),
+                device_name: "Nearby device".to_string(),
+                peer_id_hex: None,
+                group_ip: None,
+                rssi: None,
+            }],
+        );
+        assert!(WifiDirectTransport::is_available());
+        let transport =
+            WifiDirectTransport::new("p2p0", "mesh_node", 7234).expect("android adapter exists");
+        assert_eq!(transport.discovered_peers().len(), 1);
     }
 
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn test_new_returns_not_available_on_non_linux() {
+    fn test_new_returns_not_available_when_android_adapter_absent() {
+        update_android_adapter_state(false, false, false, false, false, None, None, None, vec![]);
         let result = WifiDirectTransport::new("wlan0", "test", 7234);
         assert!(matches!(result, Err(WifiDirectError::NotAvailable)));
     }
@@ -1408,10 +1628,7 @@ mod tests {
         let mut buf = Vec::new();
         write_dns_name(&mut buf, "foo.bar.local.");
         // \x03foo\x03bar\x05local\x00
-        assert_eq!(
-            buf,
-            b"\x03foo\x03bar\x05local\x00"
-        );
+        assert_eq!(buf, b"\x03foo\x03bar\x05local\x00");
     }
 
     #[test]
@@ -1459,8 +1676,7 @@ mod tests {
 
     #[test]
     fn test_announcement_packet_minimum_length() {
-        let peer_id = "d".repeat(64);
-        let name = format!("{peer_id}.{MDNS_SERVICE_TYPE}");
+        let name = format!("node.{MDNS_SERVICE_TYPE}");
         let pkt = build_announcement_packet(&name, 7234);
         // DNS header is 12 bytes; a valid packet is always longer.
         assert!(pkt.len() > 12, "packet too short: {} bytes", pkt.len());
@@ -1468,8 +1684,7 @@ mod tests {
 
     #[test]
     fn test_announcement_packet_header_flags() {
-        let peer_id = "e".repeat(64);
-        let name = format!("{peer_id}.{MDNS_SERVICE_TYPE}");
+        let name = format!("node.{MDNS_SERVICE_TYPE}");
         let pkt = build_announcement_packet(&name, 7234);
 
         let txid = u16::from_be_bytes([pkt[0], pkt[1]]);
@@ -1487,20 +1702,22 @@ mod tests {
     #[test]
     fn test_announcement_packet_parse_roundtrip() {
         // Build a packet and parse it back; we should recover a service entry.
-        let peer_id = "f".repeat(64);
-        let instance = format!("{peer_id}.{MDNS_SERVICE_TYPE}");
+        let instance = format!("node.{MDNS_SERVICE_TYPE}");
         let pkt = build_announcement_packet(&instance, 7234);
 
         let src: SocketAddr = "192.168.1.5:5353".parse().unwrap();
         let services = parse_mdns_packet(&pkt, src);
-        assert!(services.is_some(), "packet should parse to at least one service");
+        assert!(
+            services.is_some(),
+            "packet should parse to at least one service"
+        );
         let svcs = services.unwrap();
         assert!(!svcs.is_empty());
 
         let svc = &svcs[0];
-        assert_eq!(svc.peer_id_hex, peer_id);
         // Port from SRV record.
         assert_eq!(svc.address.port(), 7234);
+        assert_eq!(svc.protocol_version, 1);
     }
 
     #[test]
@@ -1525,7 +1742,7 @@ mod tests {
     fn test_mdns_discovery_new() {
         let peer_id = "0".repeat(64);
         let d = MdnsDiscovery::new(&peer_id, 7234);
-        assert!(d.service_name.starts_with(&peer_id));
+        assert_eq!(d.service_name, format!("node.{MDNS_SERVICE_TYPE}"));
         assert_eq!(d.port, 7234);
         assert!(d.discovered().is_empty());
     }
@@ -1533,12 +1750,38 @@ mod tests {
     #[test]
     fn test_mdns_service_creation() {
         let svc = MdnsService {
-            peer_id_hex: "ab12".repeat(16),
             address: "192.168.1.1:7234".parse().unwrap(),
-            device_name: "Alice's Phone".to_owned(),
+            protocol_version: 1,
         };
         assert_eq!(svc.address.port(), 7234);
-        assert_eq!(svc.device_name, "Alice's Phone");
+        assert_eq!(svc.protocol_version, 1);
+    }
+
+    #[test]
+    fn test_android_session_frame_queue_roundtrip() {
+        update_android_adapter_state(
+            true,
+            true,
+            true,
+            false,
+            true,
+            Some("client".to_string()),
+            Some("192.168.49.1".to_string()),
+            Some("02:00:00:00:00:01".to_string()),
+            Vec::new(),
+        );
+
+        queue_android_outbound_session_frame(&[0x01, 0x02, 0x03]);
+        enqueue_android_inbound_session_frame(&[0x0a, 0x0b]);
+
+        assert_eq!(
+            dequeue_android_outbound_session_frame(),
+            Some(vec![0x01, 0x02, 0x03]),
+        );
+        assert_eq!(
+            dequeue_android_inbound_session_frame(),
+            Some(vec![0x0a, 0x0b]),
+        );
     }
 
     // ── DNS name helpers ─────────────────────────────────────────────────

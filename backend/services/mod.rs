@@ -18,5 +18,5 @@ pub mod health;
 // Sub-module: module_system — see module-level docs for details.
 pub mod module_system;
 // Sub-module: plugin — see module-level docs for details.
-pub mod plugin;
 pub mod mesh_protocols;
+pub mod plugin;

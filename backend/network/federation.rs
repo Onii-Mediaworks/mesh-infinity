@@ -454,7 +454,10 @@ pub fn create_bridge(
 ) -> Result<FederationBridge, MeshError> {
     // Validate that the config has at least a homeserver URL or extra params.
     // A bridge with no connection info at all cannot be useful.
-    let has_server = config.homeserver_url.as_ref().is_some_and(|u| !u.is_empty());
+    let has_server = config
+        .homeserver_url
+        .as_ref()
+        .is_some_and(|u| !u.is_empty());
     // Check whether extra params provide enough info for a custom bridge.
     let has_extra = !config.extra.is_empty();
 
@@ -506,9 +509,7 @@ pub fn connect_bridge(bridge: &mut FederationBridge) -> Result<(), MeshError> {
     // Reject connection attempts on bridges that are already connected.
     // The caller must disconnect first to re-establish a connection.
     if bridge.status == BridgeStatus::Connected {
-        return Err(MeshError::Internal(
-            "bridge is already connected".into(),
-        ));
+        return Err(MeshError::Internal("bridge is already connected".into()));
     }
 
     // Reject connection attempts on bridges that are currently connecting.
@@ -533,9 +534,9 @@ pub fn connect_bridge(bridge: &mut FederationBridge) -> Result<(), MeshError> {
         // Check for a protocol prefix as a basic sanity check.
         // Real URL parsing happens in the protocol-specific bridge plugin.
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            bridge.status = BridgeStatus::Error(
-                format!("invalid homeserver URL: must start with http:// or https://: {url}")
-            );
+            bridge.status = BridgeStatus::Error(format!(
+                "invalid homeserver URL: must start with http:// or https://: {url}"
+            ));
             return Err(MeshError::Internal(
                 "homeserver_url must start with http:// or https://".into(),
             ));
@@ -599,15 +600,16 @@ pub fn bridge_room(
 
     // Check for duplicate: the same local room cannot be bridged twice
     // on the same bridge (it can be bridged on different bridges).
-    let already_bridged = bridge.connected_rooms.iter().any(|r| {
-        r.local_room_id == local_room_id
-    });
+    let already_bridged = bridge
+        .connected_rooms
+        .iter()
+        .any(|r| r.local_room_id == local_room_id);
     if already_bridged {
         // Format the room ID as hex for a useful error message.
         let hex_id = hex::encode(local_room_id);
-        return Err(MeshError::Internal(
-            format!("local room {hex_id} is already bridged on this bridge"),
-        ));
+        return Err(MeshError::Internal(format!(
+            "local room {hex_id} is already bridged on this bridge"
+        )));
     }
 
     // Create the room mapping linking local and remote rooms.
@@ -638,9 +640,10 @@ pub fn unbridge_room(
 ) -> Result<(), MeshError> {
     // Find the index of the bridged room matching this local room ID.
     // Linear scan is fine: bridges typically have few room mappings.
-    let position = bridge.connected_rooms.iter().position(|r| {
-        &r.local_room_id == local_room_id
-    });
+    let position = bridge
+        .connected_rooms
+        .iter()
+        .position(|r| &r.local_room_id == local_room_id);
 
     match position {
         Some(idx) => {
@@ -726,9 +729,7 @@ pub fn translate_outbound(
     let text = local_msg
         .get("text")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            MeshError::Internal("local message missing 'text' field".into())
-        })?;
+        .ok_or_else(|| MeshError::Internal("local message missing 'text' field".into()))?;
 
     // Extract the sender display name for attribution on the external platform.
     // External platforms show this as the message author.
@@ -742,29 +743,19 @@ pub fn translate_outbound(
     let formatted = match bridge_type {
         // Matrix uses HTML-formatted message bodies (m.room.message).
         // The sender is attributed via the Matrix AS user, not in the body.
-        BridgeType::Matrix => {
-            format_matrix_outbound(sender, text)
-        }
+        BridgeType::Matrix => format_matrix_outbound(sender, text),
         // XMPP uses plain text in <message><body> stanzas (XEP-0045).
         // Sender attribution is prefixed in the body for MUC rooms.
-        BridgeType::Xmpp => {
-            format_xmpp_outbound(sender, text)
-        }
+        BridgeType::Xmpp => format_xmpp_outbound(sender, text),
         // IRC uses simple plain text with sender prefix.
         // No rich formatting; markdown is stripped.
-        BridgeType::Irc => {
-            format_irc_outbound(sender, text)
-        }
+        BridgeType::Irc => format_irc_outbound(sender, text),
         // Signal uses protobuf-style content (simplified to text here).
         // The sender is attributed via the Signal bridge's identity.
-        BridgeType::Signal => {
-            format_signal_outbound(sender, text)
-        }
+        BridgeType::Signal => format_signal_outbound(sender, text),
         // Custom bridges receive a generic JSON-formatted string.
         // The bridge plugin is responsible for final format conversion.
-        BridgeType::Custom(ref name) => {
-            format_custom_outbound(name, sender, text)
-        }
+        BridgeType::Custom(ref name) => format_custom_outbound(name, sender, text),
     };
 
     Ok(formatted)
@@ -859,7 +850,10 @@ fn validate_bridge_credentials(
         // Matrix requires a homeserver URL and an access token.
         // The token authenticates the bridge as an Application Service.
         BridgeType::Matrix => {
-            if config.homeserver_url.as_ref().is_some_and(|u| !u.is_empty())
+            if config
+                .homeserver_url
+                .as_ref()
+                .is_some_and(|u| !u.is_empty())
                 && config.token.as_ref().is_some_and(|t| !t.is_empty())
             {
                 Ok(())
@@ -872,7 +866,10 @@ fn validate_bridge_credentials(
         // XMPP requires a homeserver URL (server address) and username.
         // The username is the JID for the bridge component (XEP-0114).
         BridgeType::Xmpp => {
-            if config.homeserver_url.as_ref().is_some_and(|u| !u.is_empty())
+            if config
+                .homeserver_url
+                .as_ref()
+                .is_some_and(|u| !u.is_empty())
                 && config.username.as_ref().is_some_and(|u| !u.is_empty())
             {
                 Ok(())
@@ -885,7 +882,10 @@ fn validate_bridge_credentials(
         // IRC requires a server address, provided via homeserver_url or extra.
         // IRC bridges are simpler: no token needed, just server + optional nick.
         BridgeType::Irc => {
-            let has_server = config.homeserver_url.as_ref().is_some_and(|u| !u.is_empty())
+            let has_server = config
+                .homeserver_url
+                .as_ref()
+                .is_some_and(|u| !u.is_empty())
                 || config.extra.contains_key("server");
             if has_server {
                 Ok(())
@@ -901,9 +901,7 @@ fn validate_bridge_credentials(
             if config.token.as_ref().is_some_and(|t| !t.is_empty()) {
                 Ok(())
             } else {
-                Err(MeshError::Internal(
-                    "Signal bridge requires a token".into(),
-                ))
+                Err(MeshError::Internal("Signal bridge requires a token".into()))
             }
         }
         // Custom bridges have no fixed credential requirements.
@@ -1059,8 +1057,7 @@ mod tests {
             extra: HashMap::new(),
         };
         // Create a Matrix bridge with valid config.
-        let bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Bridge should start in Disconnected state.
         assert_eq!(bridge.status, BridgeStatus::Disconnected);
         // Bridge should have no rooms initially.
@@ -1118,8 +1115,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Connect should transition to Connected state.
         connect_bridge(&mut bridge).expect("should connect");
         assert_eq!(bridge.status, BridgeStatus::Connected);
@@ -1135,8 +1131,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // First connect should succeed.
         connect_bridge(&mut bridge).expect("should connect");
         // Second connect should fail with an error.
@@ -1154,8 +1149,7 @@ mod tests {
             token: None, // Missing token.
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Connect should fail due to missing token.
         let result = connect_bridge(&mut bridge);
         assert!(result.is_err());
@@ -1171,8 +1165,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Connect should fail due to invalid URL.
         let result = connect_bridge(&mut bridge);
         assert!(result.is_err());
@@ -1192,12 +1185,16 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         connect_bridge(&mut bridge).expect("should connect");
         // Add a room mapping before disconnecting.
-        bridge_room(&mut bridge, [1u8; 16], "!room:matrix.org", BridgeDirection::Bidirectional)
-            .expect("should bridge room");
+        bridge_room(
+            &mut bridge,
+            [1u8; 16],
+            "!room:matrix.org",
+            BridgeDirection::Bidirectional,
+        )
+        .expect("should bridge room");
         // Disconnect the bridge.
         disconnect_bridge(&mut bridge);
         // Status should be Disconnected.
@@ -1216,8 +1213,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Disconnect twice — should not panic.
         disconnect_bridge(&mut bridge);
         disconnect_bridge(&mut bridge);
@@ -1236,16 +1232,23 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         connect_bridge(&mut bridge).expect("should connect");
         // Bridge a room with bidirectional flow.
-        bridge_room(&mut bridge, [1u8; 16], "!room:matrix.org", BridgeDirection::Bidirectional)
-            .expect("should bridge room");
+        bridge_room(
+            &mut bridge,
+            [1u8; 16],
+            "!room:matrix.org",
+            BridgeDirection::Bidirectional,
+        )
+        .expect("should bridge room");
         // Verify the room mapping was added.
         assert_eq!(bridge.connected_rooms.len(), 1);
         assert_eq!(bridge.connected_rooms[0].remote_room_id, "!room:matrix.org");
-        assert_eq!(bridge.connected_rooms[0].direction, BridgeDirection::Bidirectional);
+        assert_eq!(
+            bridge.connected_rooms[0].direction,
+            BridgeDirection::Bidirectional
+        );
     }
 
     /// Verify bridge_room rejects empty remote room IDs.
@@ -1258,8 +1261,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         connect_bridge(&mut bridge).expect("should connect");
         // Empty remote room ID should be rejected.
         let result = bridge_room(&mut bridge, [1u8; 16], "", BridgeDirection::Bidirectional);
@@ -1276,14 +1278,23 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         connect_bridge(&mut bridge).expect("should connect");
         // First bridge should succeed.
-        bridge_room(&mut bridge, [1u8; 16], "!room:matrix.org", BridgeDirection::Bidirectional)
-            .expect("should bridge room");
+        bridge_room(
+            &mut bridge,
+            [1u8; 16],
+            "!room:matrix.org",
+            BridgeDirection::Bidirectional,
+        )
+        .expect("should bridge room");
         // Second bridge of same local room should fail.
-        let result = bridge_room(&mut bridge, [1u8; 16], "!other:matrix.org", BridgeDirection::InboundOnly);
+        let result = bridge_room(
+            &mut bridge,
+            [1u8; 16],
+            "!other:matrix.org",
+            BridgeDirection::InboundOnly,
+        );
         assert!(result.is_err());
     }
 
@@ -1297,10 +1308,14 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Do not connect — room bridging should fail.
-        let result = bridge_room(&mut bridge, [1u8; 16], "!room:matrix.org", BridgeDirection::Bidirectional);
+        let result = bridge_room(
+            &mut bridge,
+            [1u8; 16],
+            "!room:matrix.org",
+            BridgeDirection::Bidirectional,
+        );
         assert!(result.is_err());
     }
 
@@ -1316,12 +1331,16 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         connect_bridge(&mut bridge).expect("should connect");
         let room_id = [1u8; 16];
-        bridge_room(&mut bridge, room_id, "!room:matrix.org", BridgeDirection::Bidirectional)
-            .expect("should bridge room");
+        bridge_room(
+            &mut bridge,
+            room_id,
+            "!room:matrix.org",
+            BridgeDirection::Bidirectional,
+        )
+        .expect("should bridge room");
         // Unbridge the room.
         unbridge_room(&mut bridge, &room_id).expect("should unbridge");
         // Room list should be empty.
@@ -1338,8 +1357,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Unbridge a room that was never bridged.
         let result = unbridge_room(&mut bridge, &[99u8; 16]);
         assert!(result.is_err());
@@ -1372,7 +1390,10 @@ mod tests {
         // Timestamp should be the original value.
         assert_eq!(json["timestamp"].as_u64().expect("timestamp"), 1700000000);
         // Attachments should be an empty array.
-        assert!(json["attachments"].as_array().expect("attachments").is_empty());
+        assert!(json["attachments"]
+            .as_array()
+            .expect("attachments")
+            .is_empty());
     }
 
     /// Verify translate_inbound handles attachments correctly.
@@ -1385,14 +1406,12 @@ mod tests {
             remote_room: "room@muc.xmpp.org".into(),
             content: "See attached".into(),
             timestamp: 1700000001,
-            attachments: vec![
-                BridgedAttachment {
-                    filename: "photo.jpg".into(),
-                    mime_type: "image/jpeg".into(),
-                    size_bytes: 1024,
-                    url: "https://xmpp.org/upload/photo.jpg".into(),
-                },
-            ],
+            attachments: vec![BridgedAttachment {
+                filename: "photo.jpg".into(),
+                mime_type: "image/jpeg".into(),
+                size_bytes: 1024,
+                url: "https://xmpp.org/upload/photo.jpg".into(),
+            }],
         };
         let json = translate_inbound(&msg);
         // Should have exactly one attachment.
@@ -1416,11 +1435,10 @@ mod tests {
             "sender": "mesh_user",
             "text": "Hello Matrix!",
         });
-        let result = translate_outbound(&local_msg, &BridgeType::Matrix)
-            .expect("should translate");
+        let result = translate_outbound(&local_msg, &BridgeType::Matrix).expect("should translate");
         // Result should be valid JSON containing the Matrix message fields.
-        let parsed: serde_json::Value = serde_json::from_str(&result)
-            .expect("result should be valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result).expect("result should be valid JSON");
         assert_eq!(parsed["msgtype"].as_str().expect("msgtype"), "m.text");
         // The formatted_body should contain the sender in bold.
         let formatted = parsed["formatted_body"].as_str().expect("formatted_body");
@@ -1435,8 +1453,7 @@ mod tests {
             "sender": "mesh_user",
             "text": "Hello XMPP!",
         });
-        let result = translate_outbound(&local_msg, &BridgeType::Xmpp)
-            .expect("should translate");
+        let result = translate_outbound(&local_msg, &BridgeType::Xmpp).expect("should translate");
         // Result should be plain text with angle-bracket sender prefix.
         assert_eq!(result, "<mesh_user> Hello XMPP!");
     }
@@ -1449,8 +1466,7 @@ mod tests {
             "sender": "mesh_user",
             "text": "Hello IRC!",
         });
-        let result = translate_outbound(&local_msg, &BridgeType::Irc)
-            .expect("should translate");
+        let result = translate_outbound(&local_msg, &BridgeType::Irc).expect("should translate");
         assert_eq!(result, "<mesh_user> Hello IRC!");
     }
 
@@ -1464,8 +1480,7 @@ mod tests {
             "sender": "user",
             "text": long_text,
         });
-        let result = translate_outbound(&local_msg, &BridgeType::Irc)
-            .expect("should translate");
+        let result = translate_outbound(&local_msg, &BridgeType::Irc).expect("should translate");
         // Result should end with "..." indicating truncation.
         assert!(result.ends_with("..."));
         // Result should be shorter than the input.
@@ -1480,8 +1495,7 @@ mod tests {
             "sender": "user",
             "text": "line1\nline2\nline3",
         });
-        let result = translate_outbound(&local_msg, &BridgeType::Irc)
-            .expect("should translate");
+        let result = translate_outbound(&local_msg, &BridgeType::Irc).expect("should translate");
         // Newlines should be replaced with spaces.
         assert!(!result.contains('\n'));
         assert!(result.contains("line1 line2 line3"));
@@ -1495,8 +1509,7 @@ mod tests {
             "sender": "mesh_user",
             "text": "Hello Signal!",
         });
-        let result = translate_outbound(&local_msg, &BridgeType::Signal)
-            .expect("should translate");
+        let result = translate_outbound(&local_msg, &BridgeType::Signal).expect("should translate");
         assert_eq!(result, "mesh_user: Hello Signal!");
     }
 
@@ -1511,8 +1524,8 @@ mod tests {
         let result = translate_outbound(&local_msg, &BridgeType::Custom("myproto".into()))
             .expect("should translate");
         // Result should be valid JSON with the platform field.
-        let parsed: serde_json::Value = serde_json::from_str(&result)
-            .expect("result should be valid JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result).expect("result should be valid JSON");
         assert_eq!(parsed["platform"].as_str().expect("platform"), "myproto");
         assert_eq!(parsed["text"].as_str().expect("text"), "Hello custom!");
     }
@@ -1549,11 +1562,9 @@ mod tests {
             "sender": "user",
             "text": "<script>alert('xss')</script>",
         });
-        let result = translate_outbound(&local_msg, &BridgeType::Matrix)
-            .expect("should translate");
+        let result = translate_outbound(&local_msg, &BridgeType::Matrix).expect("should translate");
         // The formatted_body should have escaped angle brackets.
-        let parsed: serde_json::Value = serde_json::from_str(&result)
-            .expect("valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("valid JSON");
         let formatted = parsed["formatted_body"].as_str().expect("formatted_body");
         assert!(formatted.contains("&lt;script&gt;"));
         assert!(!formatted.contains("<script>"));
@@ -1571,8 +1582,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         connect_bridge(&mut bridge).expect("should connect");
         // Get the status JSON.
         let status = bridge_status_json(&bridge);
@@ -1580,7 +1590,10 @@ mod tests {
         assert_eq!(status["bridgeType"].as_str().expect("type"), "matrix");
         assert_eq!(status["status"].as_str().expect("status"), "connected");
         assert_eq!(status["messageCount"].as_u64().expect("count"), 0);
-        assert!(status["connectedRooms"].as_array().expect("rooms").is_empty());
+        assert!(status["connectedRooms"]
+            .as_array()
+            .expect("rooms")
+            .is_empty());
         // Token should NOT be present in the status JSON (security).
         assert!(status.get("token").is_none());
     }
@@ -1595,8 +1608,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Manually set error status for testing.
         bridge.status = BridgeStatus::Error("connection refused".into());
         let status = bridge_status_json(&bridge);
@@ -1618,16 +1630,23 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         connect_bridge(&mut bridge).expect("should connect");
-        bridge_room(&mut bridge, [1u8; 16], "!room:matrix.org", BridgeDirection::InboundOnly)
-            .expect("should bridge room");
+        bridge_room(
+            &mut bridge,
+            [1u8; 16],
+            "!room:matrix.org",
+            BridgeDirection::InboundOnly,
+        )
+        .expect("should bridge room");
         let status = bridge_status_json(&bridge);
         // Should have one room in the list.
         let rooms = status["connectedRooms"].as_array().expect("rooms");
         assert_eq!(rooms.len(), 1);
-        assert_eq!(rooms[0]["remoteRoomId"].as_str().expect("remote"), "!room:matrix.org");
+        assert_eq!(
+            rooms[0]["remoteRoomId"].as_str().expect("remote"),
+            "!room:matrix.org"
+        );
         assert_eq!(rooms[0]["direction"].as_str().expect("dir"), "inbound_only");
         assert_eq!(status["roomCount"].as_u64().expect("count"), 1);
     }
@@ -1675,7 +1694,10 @@ mod tests {
     #[test]
     fn test_bridge_direction_distinct() {
         assert_ne!(BridgeDirection::Bidirectional, BridgeDirection::InboundOnly);
-        assert_ne!(BridgeDirection::Bidirectional, BridgeDirection::OutboundOnly);
+        assert_ne!(
+            BridgeDirection::Bidirectional,
+            BridgeDirection::OutboundOnly
+        );
         assert_ne!(BridgeDirection::InboundOnly, BridgeDirection::OutboundOnly);
     }
 
@@ -1691,8 +1713,7 @@ mod tests {
             token: None,
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Xmpp, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Xmpp, config).expect("should create bridge");
         let result = connect_bridge(&mut bridge);
         assert!(result.is_err());
     }
@@ -1709,8 +1730,7 @@ mod tests {
             token: None,
             extra,
         };
-        let mut bridge = create_bridge(BridgeType::Irc, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Irc, config).expect("should create bridge");
         // Connect should succeed because server is in extra.
         let result = connect_bridge(&mut bridge);
         assert!(result.is_ok());
@@ -1726,8 +1746,7 @@ mod tests {
             token: None, // Missing token.
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Signal, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Signal, config).expect("should create bridge");
         let result = connect_bridge(&mut bridge);
         assert!(result.is_err());
     }
@@ -1744,8 +1763,8 @@ mod tests {
             token: None,
             extra,
         };
-        let mut bridge = create_bridge(BridgeType::Custom("test".into()), config)
-            .expect("should create bridge");
+        let mut bridge =
+            create_bridge(BridgeType::Custom("test".into()), config).expect("should create bridge");
         // Connect should succeed — custom bridges have no fixed requirements.
         let result = connect_bridge(&mut bridge);
         assert!(result.is_ok());
@@ -1764,8 +1783,7 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let mut bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let mut bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         assert_eq!(bridge.status, BridgeStatus::Disconnected);
 
         // Step 2: Connect the bridge.
@@ -1774,8 +1792,13 @@ mod tests {
 
         // Step 3: Bridge a room.
         let room_id = [0x42; 16];
-        bridge_room(&mut bridge, room_id, "!test:matrix.org", BridgeDirection::Bidirectional)
-            .expect("should bridge room");
+        bridge_room(
+            &mut bridge,
+            room_id,
+            "!test:matrix.org",
+            BridgeDirection::Bidirectional,
+        )
+        .expect("should bridge room");
         assert_eq!(bridge.connected_rooms.len(), 1);
 
         // Step 4: Translate an inbound message.
@@ -1795,8 +1818,8 @@ mod tests {
             "sender": "mesh_user",
             "text": "Hello back!",
         });
-        let matrix_msg = translate_outbound(&outbound, &bridge.bridge_type)
-            .expect("should translate outbound");
+        let matrix_msg =
+            translate_outbound(&outbound, &bridge.bridge_type).expect("should translate outbound");
         assert!(!matrix_msg.is_empty());
 
         // Step 6: Check bridge status JSON.
@@ -1825,12 +1848,10 @@ mod tests {
             token: Some("secret_token".into()),
             extra: HashMap::new(),
         };
-        let bridge = create_bridge(BridgeType::Matrix, config)
-            .expect("should create bridge");
+        let bridge = create_bridge(BridgeType::Matrix, config).expect("should create bridge");
         // Serialize to JSON and back.
         let json = serde_json::to_string(&bridge).expect("should serialize");
-        let recovered: FederationBridge =
-            serde_json::from_str(&json).expect("should deserialize");
+        let recovered: FederationBridge = serde_json::from_str(&json).expect("should deserialize");
         // Bridge type should survive the round-trip.
         assert_eq!(recovered.bridge_type, BridgeType::Matrix);
         // Status should survive the round-trip.
@@ -1864,8 +1885,7 @@ mod tests {
             direction: BridgeDirection::OutboundOnly,
         };
         let json = serde_json::to_string(&room).expect("should serialize");
-        let recovered: BridgedRoom =
-            serde_json::from_str(&json).expect("should deserialize");
+        let recovered: BridgedRoom = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(recovered.direction, BridgeDirection::OutboundOnly);
         assert_eq!(recovered.remote_room_id, "!room:matrix.org");
     }
@@ -1888,8 +1908,7 @@ mod tests {
             }],
         };
         let json = serde_json::to_string(&msg).expect("should serialize");
-        let recovered: BridgedMessage =
-            serde_json::from_str(&json).expect("should deserialize");
+        let recovered: BridgedMessage = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(recovered.attachments.len(), 1);
         assert_eq!(recovered.attachments[0].filename, "doc.pdf");
     }
@@ -1910,7 +1929,10 @@ mod tests {
         let json = serde_json::to_string(&config).expect("should serialize");
         let recovered: BridgeConnectionConfig =
             serde_json::from_str(&json).expect("should deserialize");
-        assert_eq!(recovered.extra.get("irc_channel").map(|s| s.as_str()), Some("#mesh"));
+        assert_eq!(
+            recovered.extra.get("irc_channel").map(|s| s.as_str()),
+            Some("#mesh")
+        );
         assert_eq!(recovered.extra.len(), 2);
     }
 }

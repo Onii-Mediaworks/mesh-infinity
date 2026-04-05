@@ -45,9 +45,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::map::{MapError, NetworkMap, NetworkMapEntry};
 use crate::identity::peer_id::PeerId;
 use crate::trust::levels::TrustLevel;
-use super::map::{NetworkMap, NetworkMapEntry, MapError};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -200,10 +200,10 @@ impl GossipRateTracker {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> bool {
         // Determine the rate limit based on trust level
         // Compute limit for this protocol step.
@@ -320,10 +320,10 @@ impl GossipDedup {
             // Execute this protocol step.
             // Execute this protocol step.
             false // Already forwarded this one
-        // Begin the block scope.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
+                  // Begin the block scope.
+                  // Fallback when the guard was not satisfied.
+                  // Fallback when the guard was not satisfied.
+                  // Fallback when the guard was not satisfied.
         } else {
             // Insert into the lookup table for efficient retrieval.
             // Insert into the map/set.
@@ -492,10 +492,10 @@ impl GossipEngine {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<bool, MapError> {
         // Step 1: Verify Ed25519 signature (§4.5 — forgery prevention).
         //
@@ -533,7 +533,10 @@ impl GossipEngine {
         // Guard: validate the condition before proceeding.
         // Guard: validate the condition before proceeding.
         // Guard: validate the condition before proceeding.
-        if !self.rate_tracker.check_and_increment(source_peer, source_trust, now) {
+        if !self
+            .rate_tracker
+            .check_and_increment(source_peer, source_trust, now)
+        {
             // Rate limited — silently drop (the source is sending too fast)
             // Return to the caller.
             // Return to the caller.
@@ -692,7 +695,7 @@ mod tests {
         let source = PeerId([0x01; 32]);
         let unsigned = NetworkMapEntry {
             peer_id: PeerId([0x02; 32]),
-            public_keys: vec![],   // no public key → unsigned
+            public_keys: vec![], // no public key → unsigned
             last_seen: 100,
             transport_hints: vec![],
             public_profile: None,

@@ -47,8 +47,8 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::trust::levels::TrustLevel;
 use super::table::DeviceAddress;
+use crate::trust::levels::TrustLevel;
 
 /// Domain separator for relay request signatures.
 // DOMAIN_RELAY_REQ — protocol constant.
@@ -109,9 +109,9 @@ pub fn verify_relay_request(
     // Execute this protocol step.
     // Execute this protocol step.
     requester_ed25519_pub: &[u8; 32],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<(), InvalidRelaySignature> {
     // Key material — must be zeroized when no longer needed.
     // Compute vk for this protocol step.
@@ -350,7 +350,7 @@ impl Default for RelayBandwidthPolicy {
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
-            trusted_peers: None,              // Unlimited.
+            trusted_peers: None, // Unlimited.
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
@@ -677,9 +677,9 @@ impl RelayManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> RelayAck {
         // Step 0: Verify signature (§6.11 — prevents request spoofing).
         // Guard: validate the condition before proceeding.
@@ -864,9 +864,9 @@ impl RelayManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> bool {
         // Reset total rate counter if in a new second.
         // Guard: validate the condition before proceeding.
@@ -1091,7 +1091,13 @@ mod tests {
         let now = 1000;
 
         // First request: accepted.
-        mgr.handle_request(&make_request(0xAA), addr(0x01), TrustLevel::Trusted, None, now);
+        mgr.handle_request(
+            &make_request(0xAA),
+            addr(0x01),
+            TrustLevel::Trusted,
+            None,
+            now,
+        );
 
         // Same session ID: rejected.
         let ack2 = mgr.handle_request(
@@ -1110,7 +1116,13 @@ mod tests {
         let now = 1000;
         let sid = [0xAA; 32];
 
-        mgr.handle_request(&make_request(0xAA), addr(0x01), TrustLevel::Trusted, None, now);
+        mgr.handle_request(
+            &make_request(0xAA),
+            addr(0x01),
+            TrustLevel::Trusted,
+            None,
+            now,
+        );
 
         // Forward some bytes.
         assert!(mgr.forward(&sid, 1000, now));
@@ -1125,7 +1137,13 @@ mod tests {
         let mut mgr = RelayManager::with_defaults(true);
         let now = 1000;
 
-        mgr.handle_request(&make_request(0xAA), addr(0x01), TrustLevel::Trusted, None, now);
+        mgr.handle_request(
+            &make_request(0xAA),
+            addr(0x01),
+            TrustLevel::Trusted,
+            None,
+            now,
+        );
         assert_eq!(mgr.session_count(), 1);
 
         // GC after idle timeout.
@@ -1139,7 +1157,13 @@ mod tests {
         let now = 1000;
         let sid = [0xAA; 32];
 
-        mgr.handle_request(&make_request(0xAA), addr(0x01), TrustLevel::Trusted, None, now);
+        mgr.handle_request(
+            &make_request(0xAA),
+            addr(0x01),
+            TrustLevel::Trusted,
+            None,
+            now,
+        );
         assert_eq!(mgr.session_count(), 1);
 
         mgr.close_session(&sid);
@@ -1172,7 +1196,13 @@ mod tests {
         };
 
         let mut mgr = RelayManager::with_defaults(true);
-        let ack = mgr.handle_request(&request, addr(0x01), TrustLevel::Trusted, Some(&ed_pub), 1000);
+        let ack = mgr.handle_request(
+            &request,
+            addr(0x01),
+            TrustLevel::Trusted,
+            Some(&ed_pub),
+            1000,
+        );
         assert!(ack.accepted);
     }
 
@@ -1192,7 +1222,13 @@ mod tests {
         };
 
         let mut mgr = RelayManager::with_defaults(true);
-        let ack = mgr.handle_request(&request, addr(0x01), TrustLevel::Trusted, Some(&ed_pub), 1000);
+        let ack = mgr.handle_request(
+            &request,
+            addr(0x01),
+            TrustLevel::Trusted,
+            Some(&ed_pub),
+            1000,
+        );
         assert!(!ack.accepted);
     }
 
@@ -1205,12 +1241,24 @@ mod tests {
         assert_eq!(policy.cap_for_trust(TrustLevel::InnerCircle), None);
 
         // Vouched: 5 MB/s.
-        assert_eq!(policy.cap_for_trust(TrustLevel::Vouched), Some(DEFAULT_VOUCHED_BW));
-        assert_eq!(policy.cap_for_trust(TrustLevel::Acquaintance), Some(DEFAULT_VOUCHED_BW));
+        assert_eq!(
+            policy.cap_for_trust(TrustLevel::Vouched),
+            Some(DEFAULT_VOUCHED_BW)
+        );
+        assert_eq!(
+            policy.cap_for_trust(TrustLevel::Acquaintance),
+            Some(DEFAULT_VOUCHED_BW)
+        );
 
         // Unknown: 1 MB/s.
-        assert_eq!(policy.cap_for_trust(TrustLevel::Unknown), Some(DEFAULT_UNKNOWN_BW));
-        assert_eq!(policy.cap_for_trust(TrustLevel::Public), Some(DEFAULT_UNKNOWN_BW));
+        assert_eq!(
+            policy.cap_for_trust(TrustLevel::Unknown),
+            Some(DEFAULT_UNKNOWN_BW)
+        );
+        assert_eq!(
+            policy.cap_for_trust(TrustLevel::Public),
+            Some(DEFAULT_UNKNOWN_BW)
+        );
     }
 
     #[test]

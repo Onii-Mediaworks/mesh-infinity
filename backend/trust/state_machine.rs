@@ -257,7 +257,11 @@ impl TrustStateMachine {
             // Handle TrustState::FriendDisavowed { vote_count, threshold, .. }.
             // Handle TrustState::FriendDisavowed { vote_count, threshold, .. }.
             // Handle TrustState::FriendDisavowed { vote_count, threshold, .. }.
-            TrustState::FriendDisavowed { vote_count, threshold, .. } => {
+            TrustState::FriendDisavowed {
+                vote_count,
+                threshold,
+                ..
+            } => {
                 // Check if both conditions now met → Compromised
                 // Guard: validate the condition before proceeding.
                 // Guard: validate the condition before proceeding.
@@ -612,7 +616,10 @@ mod tests {
     fn test_self_disavowed() {
         let mut sm = TrustStateMachine::new(2);
         sm.receive_self_disavowed(100);
-        assert!(matches!(sm.state, TrustState::SelfDisavowed { timestamp: 100 }));
+        assert!(matches!(
+            sm.state,
+            TrustState::SelfDisavowed { timestamp: 100 }
+        ));
         assert!(sm.is_negative());
     }
 
@@ -643,7 +650,10 @@ mod tests {
         sm.receive_friend_disavowed_vote(make_vote(target, PeerId([0x02; 32]), 100));
         sm.receive_friend_disavowed_vote(make_vote(target, PeerId([0x03; 32]), 200));
 
-        assert!(matches!(sm.state, TrustState::FriendDisavowed { vote_count: 2, .. }));
+        assert!(matches!(
+            sm.state,
+            TrustState::FriendDisavowed { vote_count: 2, .. }
+        ));
     }
 
     #[test]

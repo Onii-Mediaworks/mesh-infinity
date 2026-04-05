@@ -20,15 +20,13 @@ class NotificationScreen extends StatefulWidget {
 
 class _NotificationScreenState extends State<NotificationScreen> {
   bool _loading = true;
-  bool _saving  = false;
+  bool _saving = false;
 
-  bool   _enabled            = true;
-  int    _tier               = 1;       // 1–4
-  bool   _cloudPingEnabled   = false;
-  bool   _showPreviews       = true;
-  bool   _soundEnabled       = true;
-  bool   _vibrationEnabled   = true;
-  bool   _suppressedByThreat = false;
+  bool _enabled = true;
+  int _tier = 1; // 1–4
+  bool _cloudPingEnabled = false;
+  bool _showPreviews = true;
+  bool _suppressedByThreat = false;
 
   final _urlController = TextEditingController();
 
@@ -49,14 +47,12 @@ class _NotificationScreenState extends State<NotificationScreen> {
     final cfg = bridge.getNotificationConfig();
     if (cfg != null && mounted) {
       setState(() {
-        _enabled            = cfg['enabled']            as bool?   ?? true;
-        _tier               = (cfg['tier']              as int?)   ?? 1;
-        _cloudPingEnabled   = cfg['cloudPingEnabled']   as bool?   ?? false;
-        _showPreviews       = cfg['showPreviews']       as bool?   ?? true;
-        _soundEnabled       = cfg['soundEnabled']       as bool?   ?? true;
-        _vibrationEnabled   = cfg['vibrationEnabled']   as bool?   ?? true;
-        _suppressedByThreat = cfg['suppressedByThreat'] as bool?   ?? false;
-        _urlController.text = (cfg['pushServerUrl']     as String? ?? '');
+        _enabled = cfg['enabled'] as bool? ?? true;
+        _tier = (cfg['tier'] as int?) ?? 1;
+        _cloudPingEnabled = cfg['cloudPingEnabled'] as bool? ?? false;
+        _showPreviews = cfg['showPreviews'] as bool? ?? true;
+        _suppressedByThreat = cfg['suppressedByThreat'] as bool? ?? false;
+        _urlController.text = (cfg['pushServerUrl'] as String? ?? '');
         _loading = false;
       });
     } else {
@@ -68,23 +64,27 @@ class _NotificationScreenState extends State<NotificationScreen> {
     setState(() => _saving = true);
     final bridge = context.read<BackendBridge>();
     final ok = bridge.setNotificationConfig({
-      'enabled':       _enabled,
-      'tier':          _cloudPingEnabled ? _tier.clamp(2, 4) : 1,
+      'enabled': _enabled,
+      'tier': _cloudPingEnabled ? _tier.clamp(2, 4) : 1,
       'pushServerUrl': _cloudPingEnabled ? _urlController.text.trim() : '',
-      'showPreviews':  _showPreviews,
+      'showPreviews': _showPreviews,
     });
     if (!mounted) return;
     setState(() => _saving = false);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(ok ? 'Notification settings saved' : 'Failed to save settings'),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok ? 'Notification settings saved' : 'Failed to save settings',
+        ),
+      ),
+    );
     if (ok) await _load();
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final cs    = theme.colorScheme;
+    final cs = theme.colorScheme;
 
     if (_loading) {
       return Scaffold(
@@ -101,7 +101,8 @@ class _NotificationScreenState extends State<NotificationScreen> {
             const Padding(
               padding: EdgeInsets.all(14),
               child: SizedBox(
-                width: 20, height: 20,
+                width: 20,
+                height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             )
@@ -115,7 +116,9 @@ class _NotificationScreenState extends State<NotificationScreen> {
           SwitchListTile(
             secondary: const Icon(Icons.notifications_outlined),
             title: const Text('Enable notifications'),
-            subtitle: const Text('Receive alerts for messages, calls, and events'),
+            subtitle: const Text(
+              'Receive alerts for messages, calls, and events',
+            ),
             value: _enabled,
             onChanged: (v) => setState(() => _enabled = v),
           ),
@@ -138,19 +141,9 @@ class _NotificationScreenState extends State<NotificationScreen> {
             title: const Text('Show message previews'),
             subtitle: const Text('Display sender and text in notifications'),
             value: _showPreviews,
-            onChanged: _enabled ? (v) => setState(() => _showPreviews = v) : null,
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.volume_up_outlined),
-            title: const Text('Sound'),
-            value: _soundEnabled,
-            onChanged: _enabled ? (v) => setState(() => _soundEnabled = v) : null,
-          ),
-          SwitchListTile(
-            secondary: const Icon(Icons.vibration_outlined),
-            title: const Text('Vibration'),
-            value: _vibrationEnabled,
-            onChanged: _enabled ? (v) => setState(() => _vibrationEnabled = v) : null,
+            onChanged: _enabled
+                ? (v) => setState(() => _showPreviews = v)
+                : null,
           ),
 
           const Divider(),
@@ -171,13 +164,15 @@ class _NotificationScreenState extends State<NotificationScreen> {
           SwitchListTile(
             secondary: const Icon(Icons.cloud_outlined),
             title: const Text('Enable cloud ping'),
-            subtitle: const Text('Use APNs / FCM / UnifiedPush as a wake signal'),
+            subtitle: const Text(
+              'Use APNs / FCM / UnifiedPush as a wake signal',
+            ),
             value: _cloudPingEnabled,
             onChanged: _enabled
                 ? (v) => setState(() {
-                      _cloudPingEnabled = v;
-                      if (v && _tier < 2) _tier = 2;
-                    })
+                    _cloudPingEnabled = v;
+                    if (v && _tier < 2) _tier = 2;
+                  })
                 : null,
           ),
 
@@ -201,7 +196,9 @@ class _NotificationScreenState extends State<NotificationScreen> {
                   ),
                   DropdownMenuItem(
                     value: 4,
-                    child: Text('Tier 4 — Rich push (platform sees timing + content)'),
+                    child: Text(
+                      'Tier 4 — Rich push (platform sees timing + content)',
+                    ),
                   ),
                 ],
                 onChanged: (v) {
@@ -216,8 +213,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
                 decoration: const InputDecoration(
                   labelText: 'Self-hosted push server URL',
                   hintText: 'https://ntfy.example.com',
-                  helperText:
-                      'Leave empty to use platform default (APNs/FCM)',
+                  helperText: 'Leave empty to use platform default (APNs/FCM)',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -255,8 +251,10 @@ class _NotificationScreenState extends State<NotificationScreen> {
                   padding: const EdgeInsets.all(12),
                   child: Row(
                     children: [
-                      Icon(Icons.warning_amber_rounded,
-                          color: cs.onErrorContainer),
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        color: cs.onErrorContainer,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -264,7 +262,9 @@ class _NotificationScreenState extends State<NotificationScreen> {
                           'is Elevated or Critical (§14.7). Tier 1 mesh '
                           'delivery remains active.',
                           style: TextStyle(
-                              fontSize: 12, color: cs.onErrorContainer),
+                            fontSize: 12,
+                            color: cs.onErrorContainer,
+                          ),
                         ),
                       ),
                     ],
@@ -280,26 +280,30 @@ class _NotificationScreenState extends State<NotificationScreen> {
           const ListTile(
             leading: Icon(Icons.priority_high, color: Colors.red),
             title: Text('Urgent'),
-            subtitle:
-                Text('Calls, pairing requests — immediate delivery, no jitter'),
+            subtitle: Text(
+              'Calls, pairing requests — immediate delivery, no jitter',
+            ),
           ),
           const ListTile(
             leading: Icon(Icons.arrow_upward, color: Colors.orange),
             title: Text('High'),
             subtitle: Text(
-                'Direct messages from trusted peers — up to 10 s jitter'),
+              'Direct messages from trusted peers — up to 10 s jitter',
+            ),
           ),
           const ListTile(
             leading: Icon(Icons.remove, color: Colors.blue),
             title: Text('Normal'),
             subtitle: Text(
-                'Group messages, file transfer offers — up to 60 s jitter'),
+              'Group messages, file transfer offers — up to 60 s jitter',
+            ),
           ),
           const ListTile(
             leading: Icon(Icons.arrow_downward, color: Colors.grey),
             title: Text('Low'),
             subtitle: Text(
-                'Presence updates, network map — always batched (5 min)'),
+              'Presence updates, network map — always batched (5 min)',
+            ),
           ),
           const SizedBox(height: 32),
         ],

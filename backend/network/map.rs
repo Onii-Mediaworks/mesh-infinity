@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+use super::transport_hint::TransportHint;
 use crate::identity::peer_id::PeerId;
 use crate::trust::levels::TrustLevel;
-use super::transport_hint::TransportHint;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1044,8 +1044,13 @@ mod tests {
     fn test_prune_stale() {
         let mut map = NetworkMap::new();
         let now = 10_000_000u64;
-        map.insert(make_entry(PeerId([0x01; 32]), 1, now - STALENESS_SECS - 1), now).unwrap();
-        map.insert(make_entry(PeerId([0x02; 32]), 1, now - 100), now).unwrap();
+        map.insert(
+            make_entry(PeerId([0x01; 32]), 1, now - STALENESS_SECS - 1),
+            now,
+        )
+        .unwrap();
+        map.insert(make_entry(PeerId([0x02; 32]), 1, now - 100), now)
+            .unwrap();
         assert_eq!(map.len(), 2);
 
         map.prune_stale(now);
@@ -1058,7 +1063,8 @@ mod tests {
         let mut map = NetworkMap::new();
         let now = 10_000_000u64;
         let pid = PeerId([0x01; 32]);
-        map.insert(make_entry(pid, 1, now - STALENESS_SECS - 1), now).unwrap();
+        map.insert(make_entry(pid, 1, now - STALENESS_SECS - 1), now)
+            .unwrap();
         map.get_mut(&pid).unwrap().local_trust = TrustLevel::Trusted;
 
         map.prune_stale(now);
@@ -1068,10 +1074,12 @@ mod tests {
     #[test]
     fn test_field_validation() {
         let mut entry = make_entry(PeerId([0x01; 32]), 1, 100);
-        entry.transport_hints = (0..9).map(|_| super::super::transport_hint::TransportHint {
-            transport: super::super::transport_hint::TransportType::Clearnet,
-            endpoint: Some("1.2.3.4:5".into()),
-        }).collect();
+        entry.transport_hints = (0..9)
+            .map(|_| super::super::transport_hint::TransportHint {
+                transport: super::super::transport_hint::TransportType::Clearnet,
+                endpoint: Some("1.2.3.4:5".into()),
+            })
+            .collect();
 
         let mut map = NetworkMap::new();
         assert!(map.insert(entry, 100).is_err());
@@ -1079,7 +1087,7 @@ mod tests {
 
     #[test]
     fn test_signature_sign_and_verify() {
-        use ed25519_dalek::{Signer, SigningKey};
+        use ed25519_dalek::SigningKey;
 
         let raw_key = [0x7au8; 32];
         let signing_key = SigningKey::from_bytes(&raw_key);
@@ -1091,7 +1099,13 @@ mod tests {
 
         let mut entry = NetworkMapEntry {
             peer_id,
-            public_keys: vec![super::PublicKeyRecord { ed25519_public: ed_pub, x25519_public: x25519_pub, preauth_x25519_public: None, kem_encapsulation_key: None, preauth_sig: None }],
+            public_keys: vec![super::PublicKeyRecord {
+                ed25519_public: ed_pub,
+                x25519_public: x25519_pub,
+                preauth_x25519_public: None,
+                kem_encapsulation_key: None,
+                preauth_sig: None,
+            }],
             last_seen: 1_000,
             transport_hints: vec![],
             public_profile: None,
@@ -1108,7 +1122,7 @@ mod tests {
 
     #[test]
     fn test_signature_wrong_peer_id_rejected() {
-        use ed25519_dalek::{Signer, SigningKey};
+        use ed25519_dalek::SigningKey;
 
         let raw_key = [0x7au8; 32];
         let signing_key = SigningKey::from_bytes(&raw_key);
@@ -1119,7 +1133,13 @@ mod tests {
         let wrong_peer_id = PeerId([0xFFu8; 32]);
         let mut entry = NetworkMapEntry {
             peer_id: wrong_peer_id,
-            public_keys: vec![super::PublicKeyRecord { ed25519_public: ed_pub, x25519_public: [0u8; 32], preauth_x25519_public: None, kem_encapsulation_key: None, preauth_sig: None }],
+            public_keys: vec![super::PublicKeyRecord {
+                ed25519_public: ed_pub,
+                x25519_public: [0u8; 32],
+                preauth_x25519_public: None,
+                kem_encapsulation_key: None,
+                preauth_sig: None,
+            }],
             last_seen: 1_000,
             transport_hints: vec![],
             public_profile: None,
@@ -1137,7 +1157,7 @@ mod tests {
 
     #[test]
     fn test_tampered_entry_rejected() {
-        use ed25519_dalek::{Signer, SigningKey};
+        use ed25519_dalek::SigningKey;
 
         let raw_key = [0x3bu8; 32];
         let signing_key = SigningKey::from_bytes(&raw_key);
@@ -1147,7 +1167,13 @@ mod tests {
 
         let mut entry = NetworkMapEntry {
             peer_id,
-            public_keys: vec![super::PublicKeyRecord { ed25519_public: ed_pub, x25519_public: [0u8; 32], preauth_x25519_public: None, kem_encapsulation_key: None, preauth_sig: None }],
+            public_keys: vec![super::PublicKeyRecord {
+                ed25519_public: ed_pub,
+                x25519_public: [0u8; 32],
+                preauth_x25519_public: None,
+                kem_encapsulation_key: None,
+                preauth_sig: None,
+            }],
             last_seen: 1_000,
             transport_hints: vec![],
             public_profile: None,
@@ -1165,7 +1191,6 @@ mod tests {
 
     #[test]
     fn test_capacity_eviction() {
-        let mut map = NetworkMap::new();
         // Fill to capacity wouldn't be practical in a test with 100K entries,
         // but we can test the eviction logic directly
         assert_eq!(MAX_MAP_ENTRIES, 100_000);
@@ -1174,7 +1199,8 @@ mod tests {
     #[test]
     fn test_serde_roundtrip() {
         let mut map = NetworkMap::new();
-        map.insert(make_entry(PeerId([0x01; 32]), 1, 100), 100).unwrap();
+        map.insert(make_entry(PeerId([0x01; 32]), 1, 100), 100)
+            .unwrap();
 
         let json = serde_json::to_string(&map).unwrap();
         let recovered: NetworkMap = serde_json::from_str(&json).unwrap();

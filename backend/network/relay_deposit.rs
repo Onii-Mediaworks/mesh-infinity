@@ -30,8 +30,8 @@
 //! matching proof derived from the same secret.
 
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -50,42 +50,42 @@ pub const SIZE_CLASSES: [usize; 8] = [
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    1_024,          // Class 0: 1 KB
+    1_024, // Class 0: 1 KB
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    4_096,          // Class 1: 4 KB
+    4_096, // Class 1: 4 KB
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    16_384,         // Class 2: 16 KB
+    16_384, // Class 2: 16 KB
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    65_536,         // Class 3: 64 KB
+    65_536, // Class 3: 64 KB
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    262_144,        // Class 4: 256 KB
+    262_144, // Class 4: 256 KB
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    1_048_576,      // Class 5: 1 MB
+    1_048_576, // Class 5: 1 MB
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    4_194_304,      // Class 6: 4 MB
+    4_194_304, // Class 6: 4 MB
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    16_777_216,     // Class 7: 16 MB
+    16_777_216, // Class 7: 16 MB
 ];
 
 /// Minimum relay expiry (seconds). 1 hour.
@@ -293,10 +293,10 @@ pub fn pad_payload(payload: &[u8]) -> Option<Vec<u8>> {
     // Compute class for this protocol step.
     // Compute class for this protocol step.
     let class = size_class_for(payload.len() + 4)?; // +4 for length prefix
-    // Track the count for threshold and bounds checking.
-    // Compute target size for this protocol step.
-    // Compute target size for this protocol step.
-    // Compute target size for this protocol step.
+                                                    // Track the count for threshold and bounds checking.
+                                                    // Compute target size for this protocol step.
+                                                    // Compute target size for this protocol step.
+                                                    // Compute target size for this protocol step.
     let target_size = padded_size(class);
 
     // Pre-allocate the buffer to avoid repeated reallocations.
@@ -682,7 +682,7 @@ impl RelayServer {
                 // Execute this protocol step.
                 // Execute this protocol step.
                 &deposit.expiry_sig,
-            // Begin the block scope.
+                // Begin the block scope.
             ) {
                 // Return the result to the caller.
                 // Return to the caller.
@@ -780,9 +780,9 @@ impl RelayServer {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<RelayDeposit, RetrieveResult> {
         // Check if the deposit exists and hasn't expired.
         // Compute deposit for this protocol step.
@@ -1033,14 +1033,20 @@ mod tests {
         server.deposit(dep, now);
 
         // Without proof: fails.
-        let req_no_proof = RelayRetrieve { relay_id, gate_proof: None };
+        let req_no_proof = RelayRetrieve {
+            relay_id,
+            gate_proof: None,
+        };
         assert_eq!(
             server.retrieve(&req_no_proof, now).unwrap_err(),
             RetrieveResult::GateRequired
         );
 
         // Wrong proof: fails.
-        let req_wrong = RelayRetrieve { relay_id, gate_proof: Some([0xFF; 32]) };
+        let req_wrong = RelayRetrieve {
+            relay_id,
+            gate_proof: Some([0xFF; 32]),
+        };
         assert_eq!(
             server.retrieve(&req_wrong, now).unwrap_err(),
             RetrieveResult::GateInvalid
@@ -1048,7 +1054,10 @@ mod tests {
 
         // Correct proof: succeeds.
         let proof = compute_gate_hmac(secret, &relay_id);
-        let req_ok = RelayRetrieve { relay_id, gate_proof: Some(proof) };
+        let req_ok = RelayRetrieve {
+            relay_id,
+            gate_proof: Some(proof),
+        };
         assert!(server.retrieve(&req_ok, now).is_ok());
     }
 
@@ -1088,8 +1097,11 @@ mod tests {
         let mut dep = make_deposit(0x01, 0, now + MIN_EXPIRY_SECS + 100);
         // Corrupt the signature.
         dep.expiry_sig[0] ^= 0xFF;
-        assert_eq!(server.deposit(dep, now), DepositResult::InvalidSignature,
-            "corrupted expiry signature must be rejected");
+        assert_eq!(
+            server.deposit(dep, now),
+            DepositResult::InvalidSignature,
+            "corrupted expiry signature must be rejected"
+        );
     }
 
     #[test]
@@ -1105,8 +1117,11 @@ mod tests {
         msg.extend_from_slice(&dep.expiry.to_be_bytes());
         dep.expiry_sig = signing::sign(&wrong_secret, signing::DOMAIN_RELAY_REQUEST, &msg);
         // deposit_pubkey still claims to be 0x01's key — signature won't verify.
-        assert_eq!(server.deposit(dep, now), DepositResult::InvalidSignature,
-            "expiry sig from wrong key must be rejected");
+        assert_eq!(
+            server.deposit(dep, now),
+            DepositResult::InvalidSignature,
+            "expiry sig from wrong key must be rejected"
+        );
     }
 
     #[test]
@@ -1116,7 +1131,10 @@ mod tests {
         let mut dep = make_deposit(0x01, 0, now + MIN_EXPIRY_SECS + 100);
         // Tamper with expiry after signing — signature covers original value.
         dep.expiry += 86400; // extend by 1 day
-        assert_eq!(server.deposit(dep, now), DepositResult::InvalidSignature,
-            "deposit with tampered expiry must be rejected");
+        assert_eq!(
+            server.deposit(dep, now),
+            DepositResult::InvalidSignature,
+            "deposit with tampered expiry must be rejected"
+        );
     }
 }

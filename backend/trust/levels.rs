@@ -6,7 +6,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Trust level (0-8).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[repr(u8)]
 // Begin the block scope.
 // TrustLevel — variant enumeration.
@@ -464,16 +466,33 @@ mod tests {
             .map(|v| TrustLevel::from_value(v).unwrap().routing_weight())
             .collect();
         for i in 1..weights.len() {
-            assert!(weights[i] > weights[i - 1], "Weight at level {} should be > level {}", i, i-1);
+            assert!(
+                weights[i] > weights[i - 1],
+                "Weight at level {} should be > level {}",
+                i,
+                i - 1
+            );
         }
     }
 
     #[test]
     fn test_endorsement_defaults() {
-        assert_eq!(TrustLevel::endorsement_default(TrustLevel::Trusted), Some(TrustLevel::Vouched));
-        assert_eq!(TrustLevel::endorsement_default(TrustLevel::HighlyTrusted), Some(TrustLevel::Referenced));
-        assert_eq!(TrustLevel::endorsement_default(TrustLevel::InnerCircle), Some(TrustLevel::Ally));
-        assert_eq!(TrustLevel::endorsement_default(TrustLevel::Acquaintance), None);
+        assert_eq!(
+            TrustLevel::endorsement_default(TrustLevel::Trusted),
+            Some(TrustLevel::Vouched)
+        );
+        assert_eq!(
+            TrustLevel::endorsement_default(TrustLevel::HighlyTrusted),
+            Some(TrustLevel::Referenced)
+        );
+        assert_eq!(
+            TrustLevel::endorsement_default(TrustLevel::InnerCircle),
+            Some(TrustLevel::Ally)
+        );
+        assert_eq!(
+            TrustLevel::endorsement_default(TrustLevel::Acquaintance),
+            None
+        );
     }
 
     #[test]

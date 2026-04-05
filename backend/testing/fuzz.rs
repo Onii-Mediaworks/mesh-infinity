@@ -32,12 +32,12 @@
 
 use std::panic;
 
-use crate::identity::peer_id::PeerId;
-use crate::transport::kcp::KcpState;
-use crate::transport::mixnet::{MixnetNode, MixRole, MixnetPacket, MIXNET_MTU};
-use crate::transport::wireguard::{PendingInitiatorHandshake, respond_to_handshake};
 use crate::crypto::double_ratchet::RatchetHeader;
 use crate::crypto::ring_sig::{ring_verify, RingSignature};
+use crate::identity::peer_id::PeerId;
+use crate::transport::kcp::KcpState;
+use crate::transport::mixnet::{MixRole, MixnetNode, MixnetPacket, MIXNET_MTU};
+use crate::transport::wireguard::{respond_to_handshake, PendingInitiatorHandshake};
 
 // ---------------------------------------------------------------------------
 // Target 1: KCP packet parsing
@@ -107,11 +107,8 @@ pub fn fuzz_wireguard_decrypt(data: &[u8]) -> bool {
         let responder_id = PeerId([0x22; 32]);
 
         // Step 1: Initiator creates handshake.
-        let (pending, init_msg) = PendingInitiatorHandshake::new(
-            initiator_secret,
-            responder_pub,
-            psk.clone(),
-        );
+        let (pending, init_msg) =
+            PendingInitiatorHandshake::new(initiator_secret, responder_pub, psk.clone());
 
         // Step 2: Responder processes the handshake init and produces a session.
         let (responder_session, response) = match respond_to_handshake(
@@ -127,11 +124,7 @@ pub fn fuzz_wireguard_decrypt(data: &[u8]) -> bool {
         };
 
         // Step 3: Initiator completes the handshake to get a session.
-        let _initiator_session = match pending.complete(
-            &response,
-            initiator_id,
-            responder_id,
-        ) {
+        let _initiator_session = match pending.complete(&response, initiator_id, responder_id) {
             Ok(session) => session,
             Err(_) => return,
         };
@@ -175,16 +168,21 @@ pub fn fuzz_json_frame(data: &[u8]) -> bool {
         // handling, and type coercion logic.
 
         // Room JSON: {id, name, lastMessage, unreadCount, timestamp}
-        let _room: Result<FuzzRoom, _> = serde_json::from_slice(data);
+        let room: Result<FuzzRoom, _> = serde_json::from_slice(data);
 
         // Message JSON: {id, roomId, sender, text, timestamp, isOutgoing}
-        let _msg: Result<FuzzMessage, _> = serde_json::from_slice(data);
+        let msg: Result<FuzzMessage, _> = serde_json::from_slice(data);
 
         // Settings JSON: {nodeMode, enableTor, enableClearnet, ...}
-        let _settings: Result<FuzzSettings, _> = serde_json::from_slice(data);
+        let settings: Result<FuzzSettings, _> = serde_json::from_slice(data);
 
         // Peer JSON: {id, name, trustLevel, status}
-        let _peer: Result<FuzzPeer, _> = serde_json::from_slice(data);
+        let peer: Result<FuzzPeer, _> = serde_json::from_slice(data);
+
+        let _ = room.as_ref().ok().map(FuzzRoom::touch);
+        let _ = msg.as_ref().ok().map(FuzzMessage::touch);
+        let _ = settings.as_ref().ok().map(FuzzSettings::touch);
+        let _ = peer.as_ref().ok().map(FuzzPeer::touch);
     });
 
     // Return true if no panic occurred.
@@ -194,7 +192,6 @@ pub fn fuzz_json_frame(data: &[u8]) -> bool {
 /// Minimal Room struct for JSON fuzz testing.
 /// Mirrors the FFI JSON contract without importing runtime-dependent types.
 #[derive(serde::Deserialize)]
-#[allow(dead_code)]
 struct FuzzRoom {
     /// Room identifier.
     id: Option<String>,
@@ -210,10 +207,19 @@ struct FuzzRoom {
     timestamp: Option<u64>,
 }
 
+impl FuzzRoom {
+    fn touch(&self) -> usize {
+        self.id.as_deref().unwrap_or_default().len()
+            + self.name.as_deref().unwrap_or_default().len()
+            + self.last_message.as_deref().unwrap_or_default().len()
+            + self.unread_count.unwrap_or_default() as usize
+            + self.timestamp.unwrap_or_default() as usize
+    }
+}
+
 /// Minimal Message struct for JSON fuzz testing.
 /// Mirrors the FFI JSON contract for message objects.
 #[derive(serde::Deserialize)]
-#[allow(dead_code)]
 struct FuzzMessage {
     /// Message identifier.
     id: Option<String>,
@@ -231,10 +237,20 @@ struct FuzzMessage {
     is_outgoing: Option<bool>,
 }
 
+impl FuzzMessage {
+    fn touch(&self) -> usize {
+        self.id.as_deref().unwrap_or_default().len()
+            + self.room_id.as_deref().unwrap_or_default().len()
+            + self.sender.as_deref().unwrap_or_default().len()
+            + self.text.as_deref().unwrap_or_default().len()
+            + self.timestamp.unwrap_or_default() as usize
+            + usize::from(self.is_outgoing.unwrap_or(false))
+    }
+}
+
 /// Minimal Settings struct for JSON fuzz testing.
 /// Mirrors the FFI JSON contract for settings objects.
 #[derive(serde::Deserialize)]
-#[allow(dead_code)]
 struct FuzzSettings {
     /// Node operating mode (full, relay, client).
     #[serde(rename = "nodeMode")]
@@ -250,10 +266,18 @@ struct FuzzSettings {
     mesh_discovery: Option<bool>,
 }
 
+impl FuzzSettings {
+    fn touch(&self) -> usize {
+        self.node_mode.as_deref().unwrap_or_default().len()
+            + usize::from(self.enable_tor.unwrap_or(false))
+            + usize::from(self.enable_clearnet.unwrap_or(false))
+            + usize::from(self.mesh_discovery.unwrap_or(false))
+    }
+}
+
 /// Minimal Peer struct for JSON fuzz testing.
 /// Mirrors the FFI JSON contract for peer objects.
 #[derive(serde::Deserialize)]
-#[allow(dead_code)]
 struct FuzzPeer {
     /// Peer identifier (hex public key hash).
     id: Option<String>,
@@ -264,6 +288,15 @@ struct FuzzPeer {
     trust_level: Option<u32>,
     /// Online status string (online/offline/idle).
     status: Option<String>,
+}
+
+impl FuzzPeer {
+    fn touch(&self) -> usize {
+        self.id.as_deref().unwrap_or_default().len()
+            + self.name.as_deref().unwrap_or_default().len()
+            + self.trust_level.unwrap_or_default() as usize
+            + self.status.as_deref().unwrap_or_default().len()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,14 +325,10 @@ pub fn fuzz_ratchet_header(data: &[u8]) -> bool {
             ratchet_pub.copy_from_slice(&data[..32]);
 
             // Extract the previous chain length (4 bytes, little-endian).
-            let prev_chain_len = u32::from_le_bytes([
-                data[32], data[33], data[34], data[35],
-            ]);
+            let prev_chain_len = u32::from_le_bytes([data[32], data[33], data[34], data[35]]);
 
             // Extract the message number (4 bytes, little-endian).
-            let msg_num = u32::from_le_bytes([
-                data[36], data[37], data[38], data[39],
-            ]);
+            let msg_num = u32::from_le_bytes([data[36], data[37], data[38], data[39]]);
 
             // Construct the header to verify the struct can handle any values.
             let _header = RatchetHeader {
@@ -335,11 +364,11 @@ pub fn fuzz_ring_verify(data: &[u8]) -> bool {
     // Wrap in catch_unwind for panic safety.
     let result = panic::catch_unwind(|| {
         // We need at least enough bytes to construct a minimal ring (2 keys)
-        // and a minimal signature (key_image + 2 challenges + 2 responses).
+        // and a minimal signature (2 challenges + 2 responses).
         //
         // Ring: 2 * 32 = 64 bytes for public keys.
-        // Signature: 32 (key_image) + 2*32 (challenges) + 2*32 (responses) = 160 bytes.
-        // Total minimum: 64 + 160 = 224 bytes.
+        // Signature: 2*32 (challenges) + 2*32 (responses) = 128 bytes.
+        // Total minimum: 64 + 128 = 192 bytes.
         //
         // For shorter inputs, we pad with zeros to exercise the verifier
         // with degenerate but structurally complete inputs.
@@ -354,7 +383,6 @@ pub fn fuzz_ring_verify(data: &[u8]) -> bool {
         }
 
         // Build a signature from the remaining bytes (or zeros if too short).
-        let mut key_image = [0u8; 32];
         let mut c0 = [0u8; 32];
         let mut c1 = [0u8; 32];
         let mut r0 = [0u8; 32];
@@ -362,10 +390,6 @@ pub fn fuzz_ring_verify(data: &[u8]) -> bool {
 
         // Fill signature fields from fuzz data if available.
         let mut offset = 64;
-        if data.len() >= offset + 32 {
-            key_image.copy_from_slice(&data[offset..offset + 32]);
-            offset += 32;
-        }
         if data.len() >= offset + 32 {
             c0.copy_from_slice(&data[offset..offset + 32]);
             offset += 32;
@@ -386,11 +410,10 @@ pub fn fuzz_ring_verify(data: &[u8]) -> bool {
         let sig = RingSignature {
             c: vec![c0, c1],
             r: vec![r0, r1],
-            key_image,
         };
 
         // The message to verify against is whatever bytes remain, or empty.
-        let msg_start = 64 + 160;
+        let msg_start = 64 + 128;
         let message = if data.len() > msg_start {
             &data[msg_start..]
         } else {
@@ -437,7 +460,11 @@ pub fn fuzz_cover_traffic(data: &[u8]) -> bool {
 
             // Round-trip: serialize back and verify the bytes match.
             let rebuf = packet.to_bytes();
-            assert_eq!(&rebuf[..], data, "round-trip serialization must be lossless");
+            assert_eq!(
+                &rebuf[..],
+                data,
+                "round-trip serialization must be lossless"
+            );
         }
 
         // Test 2: Exercise the MixnetNode receive path with padded input.

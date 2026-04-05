@@ -42,8 +42,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::trust::levels::TrustLevel;
 use super::table::{DeviceAddress, GroupId, RoutingEntry};
+use crate::trust::levels::TrustLevel;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -457,10 +457,10 @@ impl AnnouncementProcessor {
         // Execute this protocol step.
         // Execute this protocol step.
         link_latency_ms: Option<u32>,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> ProcessResult {
         // -------------------------------------------------------------------
         // Validation Step 1: Check if the announcement is for ourselves.
@@ -591,7 +591,7 @@ impl AnnouncementProcessor {
                 // Execute this protocol step.
                 // Execute this protocol step.
                 &announcement.signature,
-            // Begin the block scope.
+                // Begin the block scope.
             ) {
                 // Return the result to the caller.
                 // Return to the caller.
@@ -882,13 +882,7 @@ mod tests {
         let mut proc = AnnouncementProcessor::new(addr(0x01), 10);
         let ann = make_announcement(0xAA, 0, 0, 1000, AnnouncementScope::Public);
 
-        let result = proc.process(
-            &ann,
-            addr(0x02),
-            TrustLevel::Trusted,
-            1000,
-            Some(15),
-        );
+        let result = proc.process(&ann, addr(0x02), TrustLevel::Trusted, 1000, Some(15));
 
         match result {
             ProcessResult::Accepted(r) => {
@@ -921,7 +915,10 @@ mod tests {
 
         // Second time: duplicate.
         let r2 = proc.process(&ann, addr(0x03), TrustLevel::Trusted, 1000, None);
-        assert!(matches!(r2, ProcessResult::Rejected(RejectReason::Duplicate)));
+        assert!(matches!(
+            r2,
+            ProcessResult::Rejected(RejectReason::Duplicate)
+        ));
     }
 
     #[test]
@@ -939,16 +936,28 @@ mod tests {
             None,
         );
 
-        assert!(matches!(result, ProcessResult::Rejected(RejectReason::TooOld)));
+        assert!(matches!(
+            result,
+            ProcessResult::Rejected(RejectReason::TooOld)
+        ));
     }
 
     #[test]
     fn test_reject_too_many_hops() {
         let mut proc = AnnouncementProcessor::new(addr(0x01), 10);
-        let ann = make_announcement(0xAA, MAX_ANNOUNCEMENT_HOPS, 0, 1000, AnnouncementScope::Public);
+        let ann = make_announcement(
+            0xAA,
+            MAX_ANNOUNCEMENT_HOPS,
+            0,
+            1000,
+            AnnouncementScope::Public,
+        );
 
         let result = proc.process(&ann, addr(0x02), TrustLevel::Trusted, 1000, None);
-        assert!(matches!(result, ProcessResult::Rejected(RejectReason::TooManyHops)));
+        assert!(matches!(
+            result,
+            ProcessResult::Rejected(RejectReason::TooManyHops)
+        ));
     }
 
     #[test]
@@ -962,7 +971,10 @@ mod tests {
         let ann = make_announcement(0x01, 0, 0, 1000, AnnouncementScope::Public);
 
         let result = proc.process(&ann, addr(0x02), TrustLevel::Trusted, 1000, None);
-        assert!(matches!(result, ProcessResult::Rejected(RejectReason::Duplicate)));
+        assert!(matches!(
+            result,
+            ProcessResult::Rejected(RejectReason::Duplicate)
+        ));
     }
 
     #[test]
@@ -1024,7 +1036,10 @@ mod tests {
         ann.signature = Vec::new(); // Empty signature.
 
         let result = proc.process(&ann, addr(0x02), TrustLevel::Trusted, 1000, None);
-        assert!(matches!(result, ProcessResult::Rejected(RejectReason::InvalidSignature)));
+        assert!(matches!(
+            result,
+            ProcessResult::Rejected(RejectReason::InvalidSignature)
+        ));
     }
 
     #[test]
@@ -1043,12 +1058,20 @@ mod tests {
         signed_msg.extend_from_slice(&ann.destination.0);
         signed_msg.extend_from_slice(&ann.announcement_id);
         signed_msg.extend_from_slice(&ann.timestamp.to_be_bytes());
-        ann.signature = signing::sign(&wrong_secret, signing::DOMAIN_ROUTING_ANNOUNCEMENT, &signed_msg);
+        ann.signature = signing::sign(
+            &wrong_secret,
+            signing::DOMAIN_ROUTING_ANNOUNCEMENT,
+            &signed_msg,
+        );
 
         let result = proc.process(&ann, addr(0x02), TrustLevel::Trusted, 1000, None);
         assert!(
-            matches!(result, ProcessResult::Rejected(RejectReason::InvalidSignature)),
-            "announcement signed by wrong key must be rejected, got: {:?}", result
+            matches!(
+                result,
+                ProcessResult::Rejected(RejectReason::InvalidSignature)
+            ),
+            "announcement signed by wrong key must be rejected, got: {:?}",
+            result
         );
     }
 
@@ -1064,8 +1087,12 @@ mod tests {
 
         let result = proc.process(&ann, addr(0x02), TrustLevel::Trusted, 2000, None);
         assert!(
-            matches!(result, ProcessResult::Rejected(RejectReason::InvalidSignature)),
-            "announcement with tampered content must be rejected, got: {:?}", result
+            matches!(
+                result,
+                ProcessResult::Rejected(RejectReason::InvalidSignature)
+            ),
+            "announcement with tampered content must be rejected, got: {:?}",
+            result
         );
     }
 }

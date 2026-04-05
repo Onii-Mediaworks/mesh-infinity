@@ -13,7 +13,9 @@
 //!   Ed25519-signed nonce to authenticate the responder.
 //! - A 60-second cooldown prevents amplification by fast-broadcasting peers.
 
-use crate::service::runtime::{MeshRuntime, try_random_fill, write_tcp_frame, try_read_frame, local_clearnet_ip};
+use crate::service::runtime::{
+    local_clearnet_ip, try_random_fill, try_read_frame, write_tcp_frame, MeshRuntime,
+};
 
 impl MeshRuntime {
     // -----------------------------------------------------------------------
@@ -30,10 +32,15 @@ impl MeshRuntime {
     /// embed it here (it would be wrong behind many NAT configurations anyway).
     pub fn advance_lan_discovery(&self) {
         // Guard: discovery must be enabled.
-        if !*self.mdns_running.lock().unwrap_or_else(|e| e.into_inner()) { return; }
+        if !*self.mdns_running.lock().unwrap_or_else(|e| e.into_inner()) {
+            return;
+        }
 
         // Borrow the socket for the duration of this method.
-        let socket_guard = self.lan_discovery_socket.lock().unwrap_or_else(|e| e.into_inner());
+        let socket_guard = self
+            .lan_discovery_socket
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let socket = match socket_guard.as_ref() {
             Some(s) => s,
             None => return,
@@ -56,18 +63,27 @@ impl MeshRuntime {
 
         // ---- Send: broadcast our presence every 5 seconds. ----
         let now = std::time::Instant::now();
-        let next = *self.lan_next_announce.lock().unwrap_or_else(|e| e.into_inner());
-        if now < next { return; }
+        let next = *self
+            .lan_next_announce
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if now < next {
+            return;
+        }
 
         // Advance the timer before sending so a send failure does not cause
         // a tight retry loop.
-        *self.lan_next_announce.lock().unwrap_or_else(|e| e.into_inner()) =
-            now + std::time::Duration::from_secs(5);
+        *self
+            .lan_next_announce
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = now + std::time::Duration::from_secs(5);
 
         // Identity must be unlocked to know our clearnet port.
         let clearnet_port = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.is_none() { return; }
+            if guard.is_none() {
+                return;
+            }
             *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner())
         };
 
@@ -106,18 +122,21 @@ impl MeshRuntime {
     ///
     /// Returns `Some(())` on success, `None` if the packet is malformed or
     /// should be ignored (our own broadcast, cooldown not expired).
-    fn handle_lan_presence_packet(
-        &self,
-        data: &[u8],
-        src: std::net::SocketAddr,
-    ) -> Option<()> {
+    fn handle_lan_presence_packet(&self, data: &[u8], src: std::net::SocketAddr) -> Option<()> {
         // Parse the packet: must be well-formed JSON with type == "mi_presence".
         let pkt: serde_json::Value = serde_json::from_slice(data).ok()?;
-        if pkt.get("type")?.as_str()? != "mi_presence" { return None; }
-        if pkt.get("v")?.as_u64()? != 1 { return None; }
+        if pkt.get("type")?.as_str()? != "mi_presence" {
+            return None;
+        }
+        if pkt.get("v")?.as_u64()? != 1 {
+            return None;
+        }
 
         // Extract the peer's TCP port.  Default to 7234 if absent.
-        let clearnet_port = pkt.get("clearnet_port").and_then(|v| v.as_u64()).unwrap_or(7234);
+        let clearnet_port = pkt
+            .get("clearnet_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(7234);
         let src_ip = src.ip().to_string();
         let endpoint = format!("{src_ip}:{clearnet_port}");
 
@@ -126,7 +145,9 @@ impl MeshRuntime {
         let our_ip_opt = local_clearnet_ip().map(|ip| ip.to_string());
         if clearnet_port as u16 == our_port {
             if let Some(our_ip) = our_ip_opt {
-                if src_ip == our_ip { return None; }
+                if src_ip == our_ip {
+                    return None;
+                }
             }
         }
 
@@ -134,7 +155,10 @@ impl MeshRuntime {
         // amplification from a fast-broadcasting peer.
         const DISCOVERY_COOLDOWN_SECS: u64 = 60;
         {
-            let seen = self.lan_discovery_seen.lock().unwrap_or_else(|e| e.into_inner());
+            let seen = self
+                .lan_discovery_seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(&last) = seen.get(&endpoint) {
                 if last.elapsed().as_secs() < DISCOVERY_COOLDOWN_SECS {
                     return Some(());
@@ -144,7 +168,8 @@ impl MeshRuntime {
 
         // Queue for TCP challenge-response handshake in the next poll step.
         self.lan_discovery_pending
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .push(endpoint);
 
         Some(())
@@ -177,22 +202,31 @@ impl MeshRuntime {
 
         // Take ownership of the pending queue (no lock held during handshake).
         let pending: Vec<String> = {
-            let mut guard = self.lan_discovery_pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .lan_discovery_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *guard)
         };
-        if pending.is_empty() { return; }
+        if pending.is_empty() {
+            return;
+        }
 
         let now = std::time::Instant::now();
 
         for endpoint in pending {
             // Mark as seen immediately before the handshake attempt so even a
             // connection failure prevents re-queue for the cooldown window.
-            self.lan_discovery_seen.lock().unwrap_or_else(|e| e.into_inner())
+            self.lan_discovery_seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(endpoint.clone(), now);
 
             // Generate a fresh 32-byte nonce for this handshake.
             let mut nonce = [0u8; 32];
-            if !try_random_fill(&mut nonce) { continue; }
+            if !try_random_fill(&mut nonce) {
+                continue;
+            }
             let nonce_hex = hex::encode(nonce);
 
             // Connect TCP with a short timeout (LAN is fast; > 100 ms = likely NAT/WAN).
@@ -217,7 +251,9 @@ impl MeshRuntime {
                 Ok(b) => b,
                 Err(_) => continue,
             };
-            if write_tcp_frame(&mut stream, &req_bytes).is_err() { continue; }
+            if write_tcp_frame(&mut stream, &req_bytes).is_err() {
+                continue;
+            }
 
             // Read the mi_discover_ack with a generous LAN timeout.
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
@@ -244,7 +280,9 @@ impl MeshRuntime {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if ack.get("type").and_then(|t| t.as_str()) != Some("mi_discover_ack") { continue; }
+            if ack.get("type").and_then(|t| t.as_str()) != Some("mi_discover_ack") {
+                continue;
+            }
 
             // Extract required hex fields.
             let wg_pub_hex = match ack.get("wg_pub").and_then(|v| v.as_str()) {
@@ -262,16 +300,24 @@ impl MeshRuntime {
 
             // Decode keys and signature.
             let wg_pub_bytes: [u8; 32] = match hex::decode(wg_pub_hex)
-                .ok().filter(|b| b.len() == 32)
-                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
-            {
+                .ok()
+                .filter(|b| b.len() == 32)
+                .map(|b| {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    a
+                }) {
                 Some(b) => b,
                 None => continue,
             };
             let ed_pub_bytes: [u8; 32] = match hex::decode(ed_pub_hex)
-                .ok().filter(|b| b.len() == 32)
-                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
-            {
+                .ok()
+                .filter(|b| b.len() == 32)
+                .map(|b| {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    a
+                }) {
                 Some(b) => b,
                 None => continue,
             };
@@ -295,27 +341,52 @@ impl MeshRuntime {
                 continue;
             }
 
-            // Signature valid — look up the contact by their x25519 public key.
-            let matched: Option<(crate::identity::peer_id::PeerId, String, u8, bool, bool, bool, bool)> = {
+            // Signature valid — look up the contact by their mesh WireGuard
+            // public key when available, falling back to the older x25519
+            // field for contacts created before mesh transport keys were
+            // stored explicitly.
+            let matched: Option<(
+                crate::identity::peer_id::PeerId,
+                String,
+                u8,
+                bool,
+                bool,
+                bool,
+                bool,
+            )> = {
                 let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
-                contacts.all().into_iter()
-                    .find(|c| c.x25519_public == wg_pub_bytes)
-                    .map(|c| (
-                        c.peer_id,
-                        c.display_name.clone().unwrap_or_default(),
-                        c.trust_level.value(),
-                        c.can_be_exit_node,
-                        c.can_be_wrapper_node,
-                        c.can_be_store_forward,
-                        c.can_endorse_peers,
-                    ))
+                contacts
+                    .all()
+                    .into_iter()
+                    .find(|c| c.mesh_x25519_public.unwrap_or(c.x25519_public) == wg_pub_bytes)
+                    .map(|c| {
+                        (
+                            c.peer_id,
+                            c.display_name.clone().unwrap_or_default(),
+                            c.trust_level.value(),
+                            c.can_be_exit_node,
+                            c.can_be_wrapper_node,
+                            c.can_be_store_forward,
+                            c.can_endorse_peers,
+                        )
+                    })
             };
 
-            if let Some((peer_id, display_name, trust_val, cap_exit, cap_wrapper, cap_sf, cap_endorse)) = matched {
+            if let Some((
+                peer_id,
+                display_name,
+                trust_val,
+                cap_exit,
+                cap_wrapper,
+                cap_sf,
+                cap_endorse,
+            )) = matched
+            {
                 // Known peer — update their clearnet endpoint and emit PeerUpdated.
                 let wall = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs()).unwrap_or(0);
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
                 {
                     let mut contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(c) = contacts.get_mut(&peer_id) {
@@ -323,24 +394,30 @@ impl MeshRuntime {
                         c.clearnet_endpoint = Some(endpoint.clone());
                     }
                 }
-                self.push_event("PeerUpdated", serde_json::json!({
-                    "id":               peer_id.to_hex(),
-                    "name":             display_name,
-                    "trustLevel":       trust_val,
-                    "status":           "online",
-                    "canBeExitNode":    cap_exit,
-                    "canBeWrapperNode": cap_wrapper,
-                    "canBeStoreForward": cap_sf,
-                    "canEndorsePeers":  cap_endorse,
-                }));
+                self.push_event(
+                    "PeerUpdated",
+                    serde_json::json!({
+                        "id":               peer_id.to_hex(),
+                        "name":             display_name,
+                        "trustLevel":       trust_val,
+                        "status":           "online",
+                        "canBeExitNode":    cap_exit,
+                        "canBeWrapperNode": cap_wrapper,
+                        "canBeStoreForward": cap_sf,
+                        "canEndorsePeers":  cap_endorse,
+                    }),
+                );
             } else {
                 // Unknown peer — add to the discovery cache so the UI can
                 // prompt pairing.  Keys come from the verified ack, not the
                 // unauthenticated broadcast.
-                let mut discovered = self.mdns_discovered.lock().unwrap_or_else(|e| e.into_inner());
-                let already = discovered.iter().any(|e| {
-                    e.get("wgPub").and_then(|v| v.as_str()) == Some(wg_pub_hex)
-                });
+                let mut discovered = self
+                    .mdns_discovered
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let already = discovered
+                    .iter()
+                    .any(|e| e.get("wgPub").and_then(|v| v.as_str()) == Some(wg_pub_hex));
                 if !already {
                     discovered.push(serde_json::json!({
                         "wgPub":    wg_pub_hex,
@@ -369,11 +446,7 @@ impl MeshRuntime {
     ///
     /// Also emits a `DiscoveryRequest` event so the UI can log who probed us
     /// (non-passive activity — per §4.9.5).
-    pub fn handle_lan_discover_request(
-        &self,
-        frame: &[u8],
-        stream: &mut std::net::TcpStream,
-    ) {
+    pub fn handle_lan_discover_request(&self, frame: &[u8], stream: &mut std::net::TcpStream) {
         // Parse the request — malformed frames are silently dropped.
         let req: serde_json::Value = match serde_json::from_slice(frame) {
             Ok(v) => v,
@@ -389,13 +462,23 @@ impl MeshRuntime {
             None => return,
         };
 
-        // Extract our public and signing keys atomically from the locked identity.
+        // Extract our transport-facing mesh key and the signed identity key we
+        // use to authenticate the probe response.
         let (wg_pub_bytes, ed_pub_bytes, ed_sign_bytes) = {
+            let mesh_pub_bytes = match self
+                .mesh_identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                Some(identity) => identity.public_bytes(),
+                None => return,
+            };
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_ref() {
-                None => return, // Identity not unlocked — cannot respond.
+                None => return, // Identity not unlocked — cannot sign the probe.
                 Some(id) => (
-                    *id.x25519_pub.as_bytes(),
+                    mesh_pub_bytes,
                     id.ed25519_pub,
                     id.ed25519_signing.to_bytes(),
                 ),
@@ -425,11 +508,15 @@ impl MeshRuntime {
         // Emit DiscoveryRequest so the UI can show who probed us.
         // The remote IP is logged; probing requires active effort from the
         // initiator so this is non-passive activity per §4.9.5.
-        let peer_addr = stream.peer_addr()
+        let peer_addr = stream
+            .peer_addr()
             .map(|a| a.to_string())
             .unwrap_or_default();
-        self.push_event("DiscoveryRequest", serde_json::json!({
-            "fromAddress": peer_addr,
-        }));
+        self.push_event(
+            "DiscoveryRequest",
+            serde_json::json!({
+                "fromAddress": peer_addr,
+            }),
+        );
     }
 }

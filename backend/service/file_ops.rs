@@ -19,12 +19,149 @@
 
 use std::io::Write as _;
 
-use crate::service::runtime::{
-    FileDirection, FileIoState, MeshRuntime,
-    try_random_fill,
-};
+use crate::service::runtime::{try_random_fill, FileDirection, FileIoState, MeshRuntime};
 
 impl MeshRuntime {
+    /// Return local published-file storage stats as JSON.
+    pub fn get_storage_stats(&self) -> String {
+        let files = self
+            .published_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let used_bytes: u64 = files.iter().map(|f| f.size).sum();
+        let total_bytes = storage_capacity_bytes(&self.data_dir).unwrap_or(0);
+        serde_json::json!({
+            "usedBytes": used_bytes,
+            "totalBytes": total_bytes,
+            "publishedFiles": files.len(),
+        })
+        .to_string()
+    }
+
+    /// Return locally published files in the UI JSON shape.
+    pub fn get_published_files(&self) -> String {
+        let files = self
+            .published_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        serde_json::Value::Array(
+            files
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "id": hex::encode(f.manifest_hash),
+                        "name": f.name,
+                        "sizeBytes": f.size,
+                        "mimeType": f.mime_type,
+                        "publishedAt": f.published_at as i64,
+                        "downloadCount": 0,
+                    })
+                })
+                .collect(),
+        )
+        .to_string()
+    }
+
+    /// Publish a local file into the app's local distributed-files index.
+    pub fn publish_local_file(&self, path: &str) -> Result<(), String> {
+        if !self
+            .module_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .social
+            .file_sharing
+        {
+            return Err("file_sharing module is disabled".into());
+        }
+
+        let source_path = std::path::Path::new(path);
+        let metadata =
+            std::fs::metadata(source_path).map_err(|e| format!("cannot stat file: {e}"))?;
+        if !metadata.is_file() {
+            return Err("path is not a regular file".into());
+        }
+
+        let file_bytes =
+            std::fs::read(source_path).map_err(|e| format!("cannot read file: {e}"))?;
+        let manifest_hash: [u8; 32] = {
+            use sha2::Digest as _;
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(&file_bytes);
+            hasher.finalize().into()
+        };
+        let manifest_hex = hex::encode(manifest_hash);
+
+        let storage_dir = std::path::Path::new(&self.data_dir).join("published_files");
+        std::fs::create_dir_all(&storage_dir)
+            .map_err(|e| format!("cannot create storage dir: {e}"))?;
+        let stored_path = storage_dir.join(format!("{manifest_hex}.bin"));
+        std::fs::write(&stored_path, &file_bytes)
+            .map_err(|e| format!("cannot persist published file: {e}"))?;
+
+        let file_name = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let entry = crate::files::hosted::HostedFileEntry {
+            manifest_hash,
+            name: file_name.clone(),
+            size: metadata.len(),
+            mime_type: guess_mime_type(source_path),
+            description: None,
+            path: format!("/files/{file_name}"),
+            published_at: now,
+        };
+
+        {
+            let mut files = self
+                .published_files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(existing) = files.iter_mut().find(|f| f.manifest_hash == manifest_hash) {
+                *existing = entry;
+            } else {
+                files.push(entry);
+            }
+        }
+        self.save_published_files();
+        Ok(())
+    }
+
+    /// Remove a locally published file from the local manifest index.
+    pub fn unpublish_local_file(&self, file_id: &str) -> Result<(), String> {
+        let manifest_hash_vec = hex::decode(file_id).map_err(|_| "invalid file id".to_string())?;
+        let manifest_hash: [u8; 32] = manifest_hash_vec
+            .try_into()
+            .map_err(|_| "invalid file id length".to_string())?;
+
+        let removed = {
+            let mut files = self
+                .published_files
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let before = files.len();
+            files.retain(|f| f.manifest_hash != manifest_hash);
+            before != files.len()
+        };
+        if !removed {
+            return Err("published file not found".into());
+        }
+
+        let storage_dir = std::path::Path::new(&self.data_dir).join("published_files");
+        let stored_path = storage_dir.join(format!("{file_id}.bin"));
+        if stored_path.exists() {
+            let _ = std::fs::remove_file(&stored_path);
+        }
+        self.save_published_files();
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Inbound frame handlers
     // -----------------------------------------------------------------------
@@ -116,7 +253,10 @@ impl MeshRuntime {
 
         // Write to the open file handle and accumulate byte count.
         let (_total_bytes, transferred) = {
-            let mut map = self.active_file_io.lock().unwrap_or_else(|e| e.into_inner());
+            let mut map = self
+                .active_file_io
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             // Only write to an active receive slot — discard if no matching entry.
             let state = match map.get_mut(&tid) {
                 Some(s) if s.direction == FileDirection::Receive => s,
@@ -133,7 +273,10 @@ impl MeshRuntime {
         // Mirror the byte count into the JSON transfer record so the UI
         // shows consistent progress without re-querying.
         {
-            let mut transfers = self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut transfers = self
+                .file_transfers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             for t in transfers.iter_mut() {
                 if t.get("id").and_then(|v| v.as_str()) == Some(&tid) {
                     if let Some(obj) = t.as_object_mut() {
@@ -167,10 +310,7 @@ impl MeshRuntime {
         };
 
         // `ok` defaults to `true` — absence means normal completion.
-        let ok = envelope
-            .get("ok")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        let ok = envelope.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
 
         // Drop the file handle by removing the IO state; this flushes any
         // OS-level write buffer and releases the file descriptor.
@@ -181,7 +321,10 @@ impl MeshRuntime {
 
         // Update the transfer status JSON record and emit an event.
         {
-            let mut transfers = self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut transfers = self
+                .file_transfers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             for t in transfers.iter_mut() {
                 if t.get("id").and_then(|v| v.as_str()) == Some(&tid) {
                     if let Some(obj) = t.as_object_mut() {
@@ -341,8 +484,10 @@ impl MeshRuntime {
                     self.send_raw_frame(peer_id_hex, &offer_frame);
 
                     // Promote status to active immediately since IO state exists.
-                    let mut transfers =
-                        self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut transfers = self
+                        .file_transfers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     for t in transfers.iter_mut() {
                         if t.get("id").and_then(|v| v.as_str()) == Some(&transfer_id) {
                             if let Some(obj) = t.as_object_mut() {
@@ -358,8 +503,10 @@ impl MeshRuntime {
                 Err(e) => {
                     // File cannot be opened — mark as error so Flutter shows a warning.
                     eprintln!("[files] ERROR: cannot open file for transfer: {e}");
-                    let mut transfers =
-                        self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut transfers = self
+                        .file_transfers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     for t in transfers.iter_mut() {
                         if t.get("id").and_then(|v| v.as_str()) == Some(&transfer_id) {
                             if let Some(obj) = t.as_object_mut() {
@@ -399,7 +546,10 @@ impl MeshRuntime {
             .remove(transfer_id);
 
         // Remove from the transfer list, checking whether anything was removed.
-        let mut transfers = self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut transfers = self
+            .file_transfers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let before = transfers.len();
         transfers.retain(|t| t.get("id").and_then(|v| v.as_str()) != Some(transfer_id));
 
@@ -433,7 +583,10 @@ impl MeshRuntime {
         // Find the transfer record, update its status, and extract metadata
         // needed to open the destination file.
         let (peer_id, total_bytes) = {
-            let mut transfers = self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut transfers = self
+                .file_transfers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let mut found = false;
             let mut peer = String::new();
             let mut sz = 0u64;
@@ -505,12 +658,53 @@ impl MeshRuntime {
                 Ok(())
             }
             Err(e) => {
-                eprintln!(
-                    "[files] ERROR: cannot open save path {resolved_path}: {e}"
-                );
+                eprintln!("[files] ERROR: cannot open save path {resolved_path}: {e}");
                 Err(format!("cannot open save path: {e}"))
             }
         }
     }
+}
 
+fn guess_mime_type(path: &std::path::Path) -> String {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "json" => "application/json",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "mp4" => "video/mp4",
+        "mp3" => "audio/mpeg",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+#[cfg(unix)]
+fn storage_capacity_bytes(path: &str) -> Option<u64> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+
+    let c_path = CString::new(path).ok()?;
+    let mut stats = MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stats.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+
+    let stats = unsafe { stats.assume_init() };
+    Some((stats.f_blocks as u64).saturating_mul(stats.f_frsize as u64))
+}
+
+#[cfg(not(unix))]
+fn storage_capacity_bytes(_path: &str) -> Option<u64> {
+    None
 }

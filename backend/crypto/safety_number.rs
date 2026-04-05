@@ -10,8 +10,8 @@
 //!
 //! Display formats: numeric (60 digits), alphanumeric (20 chars), words, emoji.
 
-use sha2::{Digest, Sha256};
 use crate::identity::peer_id::PeerId;
+use sha2::{Digest, Sha256};
 
 // Protocol constant.
 // SAFETY_DOMAIN — protocol constant.
@@ -77,10 +77,10 @@ impl SafetyNumber {
         // Execute this protocol step.
         // Execute this protocol step.
         ed25519_pub_b: &[u8; 32],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Sort peer IDs lexicographically
         // Bind the intermediate result.
@@ -248,10 +248,10 @@ impl SafetyNumber {
         // Compute digits for this protocol step.
         // Compute digits for this protocol step.
         let mut digits = String::with_capacity(72); // 60 digits + 11 spaces
-        // Process each chunk independently for streaming compatibility.
-        // Iterate over each element.
-        // Iterate over each element.
-        // Iterate over each element.
+                                                    // Process each chunk independently for streaming compatibility.
+                                                    // Iterate over each element.
+                                                    // Iterate over each element.
+                                                    // Iterate over each element.
         for (i, chunk) in bytes.chunks(5).enumerate() {
             // Bounds check to enforce protocol constraints.
             // Guard: validate the condition before proceeding.
@@ -345,11 +345,13 @@ impl SafetyNumber {
             // Guard: validate the condition before proceeding.
             // Guard: validate the condition before proceeding.
             // Guard: validate the condition before proceeding.
-            if i >= 7 { break; } // 20 chars = 5 groups of 4
-            // Track the count for threshold and bounds checking.
-            // Compute val for this protocol step.
-            // Compute val for this protocol step.
-            // Compute val for this protocol step.
+            if i >= 7 {
+                break;
+            } // 20 chars = 5 groups of 4
+              // Track the count for threshold and bounds checking.
+              // Compute val for this protocol step.
+              // Compute val for this protocol step.
+              // Compute val for this protocol step.
             let val = if chunk.len() >= 3 {
                 // Process the current step in the protocol.
                 // Execute this protocol step.
@@ -391,7 +393,8 @@ impl SafetyNumber {
             // Compute c for this protocol step.
             // Compute c for this protocol step.
             // Compute c for this protocol step.
-            let c = ((val / (ALPHABET.len() as u32 * ALPHABET.len() as u32)) % ALPHABET.len() as u32) as usize;
+            let c = ((val / (ALPHABET.len() as u32 * ALPHABET.len() as u32))
+                % ALPHABET.len() as u32) as usize;
             // Execute the operation and bind the result.
             // Append to the collection.
             // Append to the collection.
@@ -476,7 +479,10 @@ mod tests {
         let sn_new = SafetyNumber::derive(&pid_a, &pid_b, &pub_a, &pub_b_new);
 
         assert!(sn_old.key_changed(&sn_new), "Key change should be detected");
-        assert!(!sn_old.identity_changed(&sn_new), "Identity should NOT change on key rotation");
+        assert!(
+            !sn_old.identity_changed(&sn_new),
+            "Identity should NOT change on key rotation"
+        );
     }
 
     #[test]
@@ -489,7 +495,9 @@ mod tests {
         );
         let numeric = sn.to_numeric();
         // Should contain digits and spaces
-        assert!(numeric.chars().all(|c| c.is_ascii_digit() || c == ' ' || c == '\n'));
+        assert!(numeric
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ' ' || c == '\n'));
         // Should have groups of 5
         let groups: Vec<&str> = numeric.split(|c: char| c == ' ' || c == '\n').collect();
         for g in &groups {
@@ -506,7 +514,10 @@ mod tests {
             &[0x04; 32],
         );
         let alpha = sn.to_alphanumeric();
-        assert!(alpha.len() <= 24, "Alphanumeric should be ≤24 chars (with dashes)");
+        assert!(
+            alpha.len() <= 24,
+            "Alphanumeric should be ≤24 chars (with dashes)"
+        );
     }
 
     #[test]

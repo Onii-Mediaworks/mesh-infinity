@@ -217,9 +217,7 @@ impl I2pTransport {
             "SESSION CREATE STYLE=STREAM ID={} DESTINATION=TRANSIENT\n",
             session_id
         );
-        stream
-            .write_all(cmd.as_bytes())
-            .map_err(I2pError::Io)?;
+        stream.write_all(cmd.as_bytes()).map_err(I2pError::Io)?;
         stream.flush().map_err(I2pError::Io)?;
 
         let reply = read_line(&stream)?;
@@ -231,13 +229,10 @@ impl I2pTransport {
         }
         let result = parse_kv(&reply, "RESULT").unwrap_or_default();
         if result != "OK" {
-            return Err(I2pError::SessionFailed(format!(
-                "RESULT={result}: {reply}"
-            )));
+            return Err(I2pError::SessionFailed(format!("RESULT={result}: {reply}")));
         }
-        let destination = parse_kv(&reply, "DESTINATION").ok_or_else(|| {
-            I2pError::SessionFailed(format!("no DESTINATION in reply: {reply}"))
-        })?;
+        let destination = parse_kv(&reply, "DESTINATION")
+            .ok_or_else(|| I2pError::SessionFailed(format!("no DESTINATION in reply: {reply}")))?;
 
         tracing::info!(
             session_id = %session_id,
@@ -291,9 +286,7 @@ impl I2pTransport {
             "STREAM CONNECT ID={} DESTINATION={} SILENT=false\n",
             self.session_id, peer_dest
         );
-        stream
-            .write_all(cmd.as_bytes())
-            .map_err(I2pError::Io)?;
+        stream.write_all(cmd.as_bytes()).map_err(I2pError::Io)?;
         stream.flush().map_err(I2pError::Io)?;
 
         let reply = read_line(&stream)?;
@@ -305,9 +298,7 @@ impl I2pTransport {
         }
         let result = parse_kv(&reply, "RESULT").unwrap_or_default();
         if result != "OK" {
-            return Err(I2pError::ConnectFailed(format!(
-                "RESULT={result}: {reply}"
-            )));
+            return Err(I2pError::ConnectFailed(format!("RESULT={result}: {reply}")));
         }
 
         // Remove timeouts — the stream is now live data.
@@ -341,28 +332,22 @@ impl I2pTransport {
         let transport = Arc::clone(&self);
         thread::Builder::new()
             .name(format!("i2p-accept-{}", self.session_id))
-            .spawn(move || {
-                loop {
-                    match transport.accept_one() {
-                        Ok(stream) => {
-                            tracing::debug!(
-                                session_id = %transport.session_id,
-                                "I2P inbound stream accepted"
-                            );
-                            transport
-                                .inbound
-                                .lock()
-                                .unwrap()
-                                .push(stream);
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                session_id = %transport.session_id,
-                                error = %e,
-                                "I2P accept error; retrying in 5s"
-                            );
-                            thread::sleep(Duration::from_secs(5));
-                        }
+            .spawn(move || loop {
+                match transport.accept_one() {
+                    Ok(stream) => {
+                        tracing::debug!(
+                            session_id = %transport.session_id,
+                            "I2P inbound stream accepted"
+                        );
+                        transport.inbound.lock().unwrap().push(stream);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            session_id = %transport.session_id,
+                            error = %e,
+                            "I2P accept error; retrying in 5s"
+                        );
+                        thread::sleep(Duration::from_secs(5));
                     }
                 }
             })
@@ -387,9 +372,7 @@ impl I2pTransport {
         sam_hello(&mut stream)?;
 
         let cmd = format!("STREAM ACCEPT ID={}\n", self.session_id);
-        stream
-            .write_all(cmd.as_bytes())
-            .map_err(I2pError::Io)?;
+        stream.write_all(cmd.as_bytes()).map_err(I2pError::Io)?;
         stream.flush().map_err(I2pError::Io)?;
 
         // The SAM bridge sends `STREAM STATUS RESULT=OK\n` immediately to
@@ -645,7 +628,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener); // Now nothing is listening.
-        // Give the OS a moment to clean up.
+                        // Give the OS a moment to clean up.
         thread::sleep(Duration::from_millis(50));
         assert!(!I2pTransport::is_available(addr));
     }
@@ -736,10 +719,7 @@ mod tests {
                 cmd.contains("SESSION CREATE"),
                 "expected SESSION CREATE, got: {cmd}"
             );
-            let reply = format!(
-                "SESSION STATUS RESULT=OK DESTINATION={}\n",
-                FAKE_DEST
-            );
+            let reply = format!("SESSION STATUS RESULT=OK DESTINATION={}\n", FAKE_DEST);
             MockSam::write(&mut stream, &reply);
             // Keep the stream alive (SAM session socket must stay open).
             // We just block-read forever; the test will drop the socket.
@@ -750,10 +730,7 @@ mod tests {
         let transport = I2pTransport::connect(addr).expect("connect should succeed");
         assert_eq!(transport.destination, FAKE_DEST);
         assert_eq!(transport.session_id.len(), 8);
-        assert!(transport
-            .session_id
-            .chars()
-            .all(|c| c.is_ascii_hexdigit()));
+        assert!(transport.session_id.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -779,10 +756,7 @@ mod tests {
         mock.accept_one(|mut stream| {
             MockSam::server_hello(&mut stream);
             let _cmd = MockSam::read_line(&mut stream);
-            MockSam::write(
-                &mut stream,
-                "SESSION STATUS RESULT=DUPLICATED_ID\n",
-            );
+            MockSam::write(&mut stream, "SESSION STATUS RESULT=DUPLICATED_ID\n");
         });
 
         let result = I2pTransport::connect(addr);
@@ -835,10 +809,7 @@ mod tests {
                 cmd.contains("STREAM CONNECT"),
                 "expected STREAM CONNECT, got: {cmd}"
             );
-            assert!(
-                cmd.contains("SILENT=false"),
-                "SILENT=false must be present"
-            );
+            assert!(cmd.contains("SILENT=false"), "SILENT=false must be present");
             MockSam::write(&mut stream, "STREAM STATUS RESULT=OK\n");
             // Keep alive so the client's stream stays readable.
             let mut buf = [0u8; 1];
@@ -1020,8 +991,7 @@ mod tests {
 
     #[test]
     fn error_from_io() {
-        let io_err =
-            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe");
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe");
         let e: I2pError = io_err.into();
         assert!(matches!(e, I2pError::Io(_)));
     }

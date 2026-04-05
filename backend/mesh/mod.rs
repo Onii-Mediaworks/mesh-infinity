@@ -30,9 +30,9 @@
 //! carries a unique `packet_id`; if we see the same ID twice we discard it.
 
 pub mod coordinator;
-pub mod packet;
 pub mod forwarder;
+pub mod packet;
 
 pub use coordinator::MeshCoordinator;
-pub use packet::{MeshPacket, PacketKind};
 pub use forwarder::ForwardDecision;
+pub use packet::{MeshPacket, PacketKind};

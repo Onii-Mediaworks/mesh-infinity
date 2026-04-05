@@ -34,8 +34,8 @@
 //! timeout, the transport is marked Dead and the peer is attempted
 //! via the next available transport.
 
-use serde::{Deserialize, Serialize};
 use crate::network::transport_hint::{BandwidthClass, TransportType};
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Constants

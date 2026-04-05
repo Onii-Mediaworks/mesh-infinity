@@ -147,9 +147,9 @@ impl MeshPacket {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         use rand_core::RngCore;
         // Unique identifier for lookup and deduplication.

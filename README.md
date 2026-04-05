@@ -115,6 +115,16 @@ These contribution rules are project policy. `SPEC.md` remains the technical sou
 2. Expose via `backend/ffi/lib.rs` and mirror in `frontend/lib/backend/backend_bridge.dart`
 3. Add UI under `frontend/lib/features/{feature}/`
 
+### Product framing
+
+Use mature systems as capability baselines, not as product identity:
+
+- Chat aims for Signal-class security and UX clarity, but it is Mesh Infinity Chat.
+- Garden aims for Discord-class community structure and usability, but it is Mesh Infinity Garden.
+- Infinet aims for Tailscale-class networking convenience and control-surface depth, but it is Mesh Infinity's own fully decentralized network layer.
+
+External Tailscale and ZeroTier integrations exist for interoperability with existing tailnets and zeronets. They are not the core architecture and must not become dependencies for Mesh Infinity's native networking model.
+
 ### Cargo feature flags
 
 | Flag | Description |
@@ -135,6 +145,11 @@ Every committed file must pass all of these. Violation of any standard requires 
 6. Are errors on security-critical paths propagated or explicitly handled? Silent discards are not permitted.
 7. Can any code path panic through the FFI boundary? `.unwrap()` / `.expect()` are not permitted in FFI-reachable or concurrent paths.
 8. Does the code follow project conventions? This project uses `snake_case` throughout.
+   - Keep names concise. Most local identifiers should stay within 2-4 words.
+   - Use longer names only at boundaries where precision matters: FFI, protocol fields, persisted config, storage keys, and security-sensitive code.
+   - Avoid filler words like `data`, `info`, `value`, `current`, and `actual` unless they resolve a real ambiguity.
+   - Prefer noun names for state and verb names for actions.
+   - In UI code, split large widgets/functions instead of relying on overlong identifiers to explain complexity.
 9. Are errors typed and propagated with `?`? Swallowed errors are not compliant.
 10. Is the implementation simple and readable without external context?
 11. Does every line of code have ~2 lines of comments explaining intent and reasoning?

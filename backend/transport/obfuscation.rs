@@ -202,7 +202,8 @@ impl ObfuscationLayer {
 fn derive_obfs_key(session_key: &[u8; 32], mode_info: &[u8]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(None, session_key);
     let mut out = [0u8; 32];
-    hk.expand(mode_info, &mut out).expect("32-byte HKDF output is always valid");
+    hk.expand(mode_info, &mut out)
+        .expect("32-byte HKDF output is always valid");
     out
 }
 
@@ -243,7 +244,11 @@ fn scramble_unwrap(key: &[u8; 32], _conn_id: u32, obfuscated: &[u8]) -> Option<V
     let recv_conn_id = u32::from_le_bytes(obfuscated[8..12].try_into().ok()?);
     let payload = &obfuscated[12..];
     let stream = keystream(key, seq, recv_conn_id, payload.len());
-    let plaintext: Vec<u8> = payload.iter().zip(stream.iter()).map(|(b, k)| b ^ k).collect();
+    let plaintext: Vec<u8> = payload
+        .iter()
+        .zip(stream.iter())
+        .map(|(b, k)| b ^ k)
+        .collect();
     Some(plaintext)
 }
 
@@ -359,9 +364,7 @@ fn http_unwrap(obfuscated: &[u8]) -> Option<Vec<u8>> {
     // Search for \r\n\r\n in raw bytes so binary payloads are handled correctly:
     // only the header portion needs to be valid UTF-8.
     const CRLF2: &[u8] = b"\r\n\r\n";
-    let header_end = obfuscated
-        .windows(CRLF2.len())
-        .position(|w| w == CRLF2)?;
+    let header_end = obfuscated.windows(CRLF2.len()).position(|w| w == CRLF2)?;
     let header_bytes = &obfuscated[..header_end];
     let body_start = header_end + 4;
 
@@ -369,16 +372,14 @@ fn http_unwrap(obfuscated: &[u8]) -> Option<Vec<u8>> {
     let header_section = std::str::from_utf8(header_bytes).ok()?;
 
     // Find Content-Length header (case-insensitive scan)
-    let content_length = header_section
-        .lines()
-        .find_map(|line| {
-            let lower = line.to_ascii_lowercase();
-            if lower.starts_with("content-length:") {
-                line["content-length:".len()..].trim().parse::<usize>().ok()
-            } else {
-                None
-            }
-        })?;
+    let content_length = header_section.lines().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("content-length:") {
+            line["content-length:".len()..].trim().parse::<usize>().ok()
+        } else {
+            None
+        }
+    })?;
 
     let body_end = body_start + content_length;
     if body_end > obfuscated.len() {
@@ -414,7 +415,13 @@ fn tls_wrap(packet: &[u8]) -> Vec<u8> {
 
     if packet.is_empty() {
         // Single empty record
-        out.extend_from_slice(&[TLS_CONTENT_TYPE_APP_DATA, TLS_VERSION_HI, TLS_VERSION_LO, 0, 0]);
+        out.extend_from_slice(&[
+            TLS_CONTENT_TYPE_APP_DATA,
+            TLS_VERSION_HI,
+            TLS_VERSION_LO,
+            0,
+            0,
+        ]);
         return out;
     }
 
@@ -454,8 +461,7 @@ fn tls_unwrap(obfuscated: &[u8]) -> Option<Vec<u8>> {
         if obfuscated[pos + 1] != TLS_VERSION_HI || obfuscated[pos + 2] != TLS_VERSION_LO {
             return None;
         }
-        let record_len =
-            ((obfuscated[pos + 3] as usize) << 8) | (obfuscated[pos + 4] as usize);
+        let record_len = ((obfuscated[pos + 3] as usize) << 8) | (obfuscated[pos + 4] as usize);
         let data_start = pos + 5;
         let data_end = data_start + record_len;
         if data_end > obfuscated.len() {
@@ -577,7 +583,9 @@ fn dns_unwrap(key: &[u8; 32], obfuscated: &[u8]) -> Option<Vec<u8>> {
 /// Not cryptographically secure; used only for padding bytes.
 #[inline]
 fn lcg_next(state: u64) -> u64 {
-    state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407)
+    state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)
 }
 
 fn lcg_seed_from_key(key: &[u8; 32]) -> u64 {
@@ -784,10 +792,9 @@ mod tests {
 
     fn test_key() -> [u8; 32] {
         [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,
+            0x1D, 0x1E, 0x1F, 0x20,
         ]
     }
 
@@ -922,7 +929,11 @@ mod tests {
         let key = test_key();
         let payload = b"short";
         let wrapped = pad_wrap(&key, payload);
-        assert_eq!(wrapped.len() % PAD_BLOCK, 0, "padded length not a multiple of {PAD_BLOCK}");
+        assert_eq!(
+            wrapped.len() % PAD_BLOCK,
+            0,
+            "padded length not a multiple of {PAD_BLOCK}"
+        );
         let unwrapped = pad_unwrap(&wrapped).expect("pad_unwrap failed");
         assert_eq!(unwrapped, payload);
     }
@@ -969,7 +980,11 @@ mod tests {
         let layer = ObfuscationLayer::new(ObfuscationMode::Scramble, &key);
         let payload = b"scramble test payload 1234";
         let wrapped = layer.wrap(payload);
-        assert_ne!(wrapped[12..], *payload, "wrapped should differ from plaintext");
+        assert_ne!(
+            wrapped[12..],
+            *payload,
+            "wrapped should differ from plaintext"
+        );
         let unwrapped = layer.unwrap(&wrapped).expect("scramble unwrap failed");
         assert_eq!(unwrapped, payload);
     }
@@ -983,9 +998,14 @@ mod tests {
         let layer_recv = ObfuscationLayer::new(ObfuscationMode::Scramble, &key2);
         let payload = b"secret data";
         let wrapped = layer_send.wrap(payload);
-        let unwrapped = layer_recv.unwrap(&wrapped).expect("unwrap succeeds structurally");
+        let unwrapped = layer_recv
+            .unwrap(&wrapped)
+            .expect("unwrap succeeds structurally");
         // With a different key the XOR output will differ from plaintext.
-        assert_ne!(unwrapped, payload, "different keys should produce different plaintext");
+        assert_ne!(
+            unwrapped, payload,
+            "different keys should produce different plaintext"
+        );
     }
 
     #[test]
@@ -1155,8 +1175,7 @@ mod tests {
     fn jitter_polymorphic_changes_distribution() {
         // Run enough iterations that the Polymorphic engine must switch at
         // least once (switch interval is [100, 300]; run 400 samples).
-        let engine =
-            JitterEngine::new_with_distribution(0, 100, JitterDistribution::Polymorphic);
+        let engine = JitterEngine::new_with_distribution(0, 100, JitterDistribution::Polymorphic);
         let samples: Vec<u64> = (0..400).map(|_| engine.next_delay_ms()).collect();
         // All samples must be in [0, 200] (base=0, range=100, exponential cap is 2×range).
         for &s in &samples {

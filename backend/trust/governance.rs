@@ -305,9 +305,9 @@ impl GovernanceVote {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Execute the operation and bind the result.
         // Compute threshold for this protocol step.
@@ -464,7 +464,9 @@ mod tests {
         // 6 needed for a 51% quorum of 10.
         let eligible: Vec<PeerId> = (10u8..=16).map(pid).collect();
         let mut vote = GovernanceVote::new(
-            GovernanceAction::PromoteAdmin { candidate: pid(0x05) },
+            GovernanceAction::PromoteAdmin {
+                candidate: pid(0x05),
+            },
             pid(0x01),
             10, // 10 eligible voters
             eligible,
@@ -547,7 +549,10 @@ mod tests {
         // pid(0xFF) is NOT in the eligible list — must not count.
         vote.reject(pid(0xFF));
         assert_eq!(vote.rejections.len(), 0, "ineligible voter must not count");
-        assert!(vote.is_approved(), "ineligible rejections must not block the action");
+        assert!(
+            vote.is_approved(),
+            "ineligible rejections must not block the action"
+        );
 
         // Eligible voter still works.
         vote.reject(pid(0x10));
@@ -558,8 +563,9 @@ mod tests {
     fn test_actions_require_admin() {
         assert!(GovernanceAction::ForceRekey.requires_admin());
         assert!(GovernanceAction::ChangeSettings.requires_admin());
-        assert!(
-            GovernanceAction::PromoteAdmin { candidate: pid(0x01) }.requires_admin()
-        );
+        assert!(GovernanceAction::PromoteAdmin {
+            candidate: pid(0x01)
+        }
+        .requires_admin());
     }
 }

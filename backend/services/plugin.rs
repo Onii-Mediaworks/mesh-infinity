@@ -664,11 +664,7 @@ impl PluginRegistry {
     /// for the same (hook, plugin) pair are silently ignored (idempotent).
     // register_hook() — adds the plugin ID to the hook's subscriber list.
     // Idempotent: re-registering the same plugin for the same hook is a no-op.
-    pub fn register_hook(
-        &mut self,
-        hook_name: &str,
-        plugin_id: [u8; 16],
-    ) -> Result<(), MeshError> {
+    pub fn register_hook(&mut self, hook_name: &str, plugin_id: [u8; 16]) -> Result<(), MeshError> {
         // Verify the plugin exists before registering the hook.
         // This prevents orphaned hook entries for non-existent plugins.
         if !self.plugins.iter().any(|p| p.id == plugin_id) {
@@ -802,11 +798,7 @@ impl PluginRegistry {
     /// or lacks the permission.
     // has_permission() — permission gate for hook dispatch and API calls.
     // Called before any capability-gated operation.
-    pub fn has_permission(
-        &self,
-        plugin_id: &[u8; 16],
-        permission: &PluginPermission,
-    ) -> bool {
+    pub fn has_permission(&self, plugin_id: &[u8; 16], permission: &PluginPermission) -> bool {
         // Look up the plugin. If not found, the permission check fails.
         // This is a deliberate fail-closed design — unknown plugins have no permissions.
         match self.get(plugin_id) {
@@ -841,11 +833,7 @@ impl PluginRegistry {
             .map(|p| {
                 // Convert the plugin's permission list to string array.
                 // Uses permission_to_str() for wire-format consistency.
-                let perms: Vec<String> = p
-                    .permissions
-                    .iter()
-                    .map(permission_to_str)
-                    .collect();
+                let perms: Vec<String> = p.permissions.iter().map(permission_to_str).collect();
 
                 // Serialize the status to a human-readable string.
                 // Failed carries the error message in a nested object.
@@ -896,10 +884,9 @@ impl PluginRegistry {
 pub fn parse_manifest(json: &str) -> Result<RegistryManifest, MeshError> {
     // Parse the raw JSON into a generic Value first for field-level validation.
     // This gives better error messages than serde's struct deserialization.
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| MeshError::MalformedFrame(format!(
-            "plugin manifest JSON parse error: {}", e
-        )))?;
+    let value: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+        MeshError::MalformedFrame(format!("plugin manifest JSON parse error: {}", e))
+    })?;
 
     // Extract and validate the required "name" field.
     // Must be a non-empty string — plugins without names cannot be displayed.
@@ -1022,8 +1009,7 @@ mod tests {
         // serde_json::to_string is safe to unwrap in tests.
         let json = serde_json::to_string(&state).expect("serialize PluginState");
         // Deserialize and verify the round-trip is lossless.
-        let recovered: PluginState =
-            serde_json::from_str(&json).expect("deserialize PluginState");
+        let recovered: PluginState = serde_json::from_str(&json).expect("deserialize PluginState");
         assert_eq!(recovered, PluginState::Running);
     }
 
@@ -1065,7 +1051,9 @@ mod tests {
         assert_eq!(id.len(), 16);
 
         // The plugin should be retrievable by its ID.
-        let plugin = registry.get(&id).expect("plugin should exist after install");
+        let plugin = registry
+            .get(&id)
+            .expect("plugin should exist after install");
 
         // Verify the manifest fields were copied correctly.
         assert_eq!(plugin.name, "Test Plugin");
@@ -1227,15 +1215,9 @@ mod tests {
     fn test_list_active_filters() {
         // Install three plugins: activate one, suspend one, leave one installed.
         let mut registry = PluginRegistry::new();
-        let id1 = registry
-            .install(test_manifest(), None)
-            .expect("install 1");
-        let id2 = registry
-            .install(test_manifest(), None)
-            .expect("install 2");
-        let _id3 = registry
-            .install(test_manifest(), None)
-            .expect("install 3");
+        let id1 = registry.install(test_manifest(), None).expect("install 1");
+        let id2 = registry.install(test_manifest(), None).expect("install 2");
+        let _id3 = registry.install(test_manifest(), None).expect("install 3");
 
         // Activate plugin 1, suspend plugin 2, leave plugin 3 as Installed.
         registry.activate(&id1).expect("activate 1");
@@ -1334,9 +1316,7 @@ mod tests {
     fn test_invoke_hook_records_timing() {
         // Install and activate a plugin, register it for a hook, then invoke.
         let mut registry = PluginRegistry::new();
-        let id = registry
-            .install(test_manifest(), None)
-            .expect("install");
+        let id = registry.install(test_manifest(), None).expect("install");
         registry.activate(&id).expect("activate");
         registry
             .register_hook("on_data", id)
@@ -1370,9 +1350,7 @@ mod tests {
     fn test_has_permission_granted() {
         // Install a plugin with ReadMessages and NetworkAccess permissions.
         let mut registry = PluginRegistry::new();
-        let id = registry
-            .install(test_manifest(), None)
-            .expect("install");
+        let id = registry.install(test_manifest(), None).expect("install");
 
         // The test manifest grants ReadMessages and NetworkAccess.
         assert!(registry.has_permission(&id, &PluginPermission::ReadMessages));
@@ -1384,9 +1362,7 @@ mod tests {
     fn test_has_permission_denied() {
         // Install a plugin with only ReadMessages and NetworkAccess.
         let mut registry = PluginRegistry::new();
-        let id = registry
-            .install(test_manifest(), None)
-            .expect("install");
+        let id = registry.install(test_manifest(), None).expect("install");
 
         // FileAccess was NOT granted — should return false.
         assert!(!registry.has_permission(&id, &PluginPermission::FileAccess));
@@ -1425,10 +1401,9 @@ mod tests {
         ));
 
         // A different custom permission should NOT be found.
-        assert!(!registry.has_permission(
-            &id,
-            &PluginPermission::Custom("other_feature".to_string()),
-        ));
+        assert!(
+            !registry.has_permission(&id, &PluginPermission::Custom("other_feature".to_string()),)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1462,9 +1437,7 @@ mod tests {
         manifest.version = version.to_string();
         manifest.author = author.to_string();
 
-        let id = registry
-            .install(manifest, Some(sig))
-            .expect("install");
+        let id = registry.install(manifest, Some(sig)).expect("install");
         let plugin = registry.get(&id).expect("plugin should exist");
 
         // Verification should succeed with the correct public key.
@@ -1509,9 +1482,7 @@ mod tests {
     fn test_verify_signature_none() {
         // Install a plugin WITHOUT a signature.
         let mut registry = PluginRegistry::new();
-        let id = registry
-            .install(test_manifest(), None)
-            .expect("install");
+        let id = registry.install(test_manifest(), None).expect("install");
         let plugin = registry.get(&id).expect("plugin should exist");
 
         // Any key should fail because there's no signature to verify.
@@ -1629,9 +1600,7 @@ mod tests {
     fn test_to_json_structure() {
         // Install and activate a plugin, then export as JSON.
         let mut registry = PluginRegistry::new();
-        let id = registry
-            .install(test_manifest(), None)
-            .expect("install");
+        let id = registry.install(test_manifest(), None).expect("install");
         registry.activate(&id).expect("activate");
         registry
             .register_hook("on_message", id)
@@ -1665,9 +1634,7 @@ mod tests {
             Some("active"),
         );
         assert_eq!(
-            plugin_json
-                .get("has_signature")
-                .and_then(|v| v.as_bool()),
+            plugin_json.get("has_signature").and_then(|v| v.as_bool()),
             Some(false),
         );
     }
@@ -1703,7 +1670,10 @@ mod tests {
             .register_hook("on_message_received", id)
             .expect("register hook");
         let results = registry.invoke_hook("on_message_received", serde_json::json!({}));
-        assert!(results.is_empty(), "Installed plugins should not receive hooks");
+        assert!(
+            results.is_empty(),
+            "Installed plugins should not receive hooks"
+        );
 
         // Activate the plugin — now it should receive hooks.
         registry.activate(&id).expect("activate");

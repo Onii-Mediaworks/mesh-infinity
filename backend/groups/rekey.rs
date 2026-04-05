@@ -46,8 +46,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::peer_id::PeerId;
 use super::membership::RekeyReason;
+use crate::identity::peer_id::PeerId;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -306,9 +306,9 @@ impl RekeyManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> RekeyAction {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
@@ -451,9 +451,9 @@ impl RekeyManager {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> u64 {
         // Execute the operation and bind the result.
         // Compute new epoch for this protocol step.
@@ -727,8 +727,8 @@ pub struct ReInclusionRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::group::DEFAULT_REKEY_INTERVAL_SECS;
+    use super::*;
 
     fn pid(b: u8) -> PeerId {
         PeerId([b; 32])
@@ -761,18 +761,10 @@ mod tests {
         let mut mgr = RekeyManager::new(DEFAULT_REKEY_INTERVAL_SECS, 1000);
 
         // First removal.
-        mgr.on_member_removed(
-            pid(0x03),
-            vec![pid(0x01), pid(0x02)],
-            2000,
-        );
+        mgr.on_member_removed(pid(0x03), vec![pid(0x01), pid(0x02)], 2000);
 
         // Second removal before rekey — forces immediate rekey.
-        let action = mgr.on_member_removed(
-            pid(0x02),
-            vec![pid(0x01)],
-            2001,
-        );
+        let action = mgr.on_member_removed(pid(0x02), vec![pid(0x01)], 2001);
 
         match action {
             RekeyAction::ForceRekey { new_epoch } => {
@@ -794,7 +786,11 @@ mod tests {
         assert!(mgr.is_scheduled_rekey_due(1000 + DEFAULT_REKEY_INTERVAL_SECS));
 
         // Start the rekey.
-        let new_epoch = mgr.start_rekey(RekeyReason::Scheduled, 3, 1000 + DEFAULT_REKEY_INTERVAL_SECS);
+        let new_epoch = mgr.start_rekey(
+            RekeyReason::Scheduled,
+            3,
+            1000 + DEFAULT_REKEY_INTERVAL_SECS,
+        );
         assert_eq!(new_epoch, 2);
         assert!(mgr.state.is_rekeying());
     }
@@ -834,11 +830,7 @@ mod tests {
     fn test_superset_timeout() {
         let mut mgr = RekeyManager::new(DEFAULT_REKEY_INTERVAL_SECS, 1000);
 
-        mgr.on_member_removed(
-            pid(0x03),
-            vec![pid(0x01), pid(0x02)],
-            2000,
-        );
+        mgr.on_member_removed(pid(0x03), vec![pid(0x01), pid(0x02)], 2000);
 
         // Not timed out yet.
         assert!(!mgr.is_superset_timed_out(2000 + 1000));

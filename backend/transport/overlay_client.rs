@@ -56,10 +56,10 @@ impl OverlayClientStatus {
     pub fn label(&self) -> &'static str {
         match self {
             Self::NotConfigured => "Not configured",
-            Self::Connecting    => "Connecting",
-            Self::Connected     => "Connected",
-            Self::Disconnected  => "Disconnected",
-            Self::Error         => "Error",
+            Self::Connecting => "Connecting",
+            Self::Connected => "Connected",
+            Self::Disconnected => "Disconnected",
+            Self::Error => "Error",
         }
     }
 }
@@ -107,6 +107,9 @@ pub struct TailscaleDeviceInfo {
     pub tailnet_name: String,
     /// Whether this device can act as an exit node.
     pub can_be_exit_node: bool,
+    /// OS identifier string reported by the control plane when available.
+    #[serde(default)]
+    pub os: String,
 }
 
 /// A peer device on the tailnet.
@@ -140,7 +143,7 @@ pub struct TailscaleCredentials {
 }
 
 /// State of the Mesh Infinity Tailscale client.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TailscaleClient {
     /// Current connection status.
     pub status: OverlayClientStatus,
@@ -152,11 +155,16 @@ pub struct TailscaleClient {
     pub peers: Vec<TailscalePeer>,
     /// Active exit node (peer name), if clearnet is routing via Tailscale.
     pub active_exit_node: Option<String>,
+    /// Current relay posture for the overlay path.
+    #[serde(default)]
+    pub relay_mode: String,
+    /// Key expiry timestamp in Unix milliseconds, 0 when not available.
+    #[serde(default)]
+    pub key_expiry_ms: u64,
     /// Whether to prefer mesh relay over Tailscale DERP relay (§5.30.4).
     /// Default: true (mesh relay preferred).
     pub prefer_mesh_relay: bool,
 }
-
 
 impl TailscaleClient {
     pub fn new() -> Self {
@@ -180,10 +188,14 @@ impl TailscaleClient {
     /// anonymity of Tor (1.0) or I2P (0.9), but both provide better
     /// reachability behind corporate firewalls.
     pub fn anonymization_score(&self) -> f32 {
-        match self.credentials.as_ref().map(|c| c.controller.is_self_hosted()) {
-            Some(true)  => 0.5,
+        match self
+            .credentials
+            .as_ref()
+            .map(|c| c.controller.is_self_hosted())
+        {
+            Some(true) => 0.5,
             Some(false) => 0.3,
-            None        => 0.0,
+            None => 0.0,
         }
     }
 
@@ -212,7 +224,7 @@ pub enum ZeroTierController {
 impl ZeroTierController {
     pub fn api_base_url(&self) -> &str {
         match self {
-            Self::Central                 => "https://api.zerotier.com/api/v1",
+            Self::Central => "https://api.zerotier.com/api/v1",
             Self::SelfHosted { url } => url.as_str(),
         }
     }
@@ -251,6 +263,9 @@ pub struct ZeroTierNetwork {
 /// A member of a ZeroTier network.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ZeroTierMember {
+    /// Network ID this member belongs to.
+    #[serde(default)]
+    pub network_id: String,
     /// ZeroTier Node ID (10-char hex).
     pub node_id: String,
     /// Display name (if set in controller).
@@ -275,7 +290,7 @@ pub struct ZeroTierCredentials {
 }
 
 /// State of the Mesh Infinity ZeroTier client.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ZeroTierClient {
     /// Current connection status.
     pub status: OverlayClientStatus,
@@ -285,6 +300,11 @@ pub struct ZeroTierClient {
     pub node_id: Option<String>,
     /// Networks this device has joined.
     pub networks: Vec<ZeroTierNetwork>,
+    /// Members visible from the configured ZeroTier networks.
+    pub members: Vec<ZeroTierMember>,
+    /// Current relay posture for the overlay path.
+    #[serde(default)]
+    pub relay_mode: String,
     /// Whether to prefer mesh relay over ZeroTier PLANET/MOON relay (§5.30.4).
     /// Default: true.
     pub prefer_mesh_relay: bool,
@@ -304,16 +324,21 @@ impl ZeroTierClient {
 
     /// Anonymization score. 0.3 vendor; 0.5 self-hosted.
     pub fn anonymization_score(&self) -> f32 {
-        match self.credentials.as_ref().map(|c| c.controller.is_self_hosted()) {
-            Some(true)  => 0.5,
+        match self
+            .credentials
+            .as_ref()
+            .map(|c| c.controller.is_self_hosted())
+        {
+            Some(true) => 0.5,
             Some(false) => 0.3,
-            None        => 0.0,
+            None => 0.0,
         }
     }
 
     /// Networks awaiting admin authorization.
     pub fn awaiting_auth_networks(&self) -> Vec<&ZeroTierNetwork> {
-        self.networks.iter()
+        self.networks
+            .iter()
             .filter(|n| n.auth_status == ZeroTierNetworkAuthStatus::AwaitingAuthorization)
             .collect()
     }
@@ -325,7 +350,7 @@ impl ZeroTierClient {
 
 /// Owns both overlay clients and provides unified status to the FFI and
 /// transport solver.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OverlayManager {
     pub tailscale: TailscaleClient,
     pub zerotier: ZeroTierClient,
@@ -375,10 +400,7 @@ pub enum ExitNodeOption {
     },
     /// Tailscale exit node — routes through tailnet peer.
     /// Amber indicator (§5.30.5): coordination server visible.
-    Tailscale {
-        peer_name: String,
-        ip: String,
-    },
+    Tailscale { peer_name: String, ip: String },
 }
 
 impl ExitNodeOption {
@@ -391,10 +413,8 @@ impl ExitNodeOption {
     /// Short label for UI display.
     pub fn display_label(&self) -> String {
         match self {
-            Self::Mesh { display_name, .. } =>
-                format!("Mesh: {display_name}"),
-            Self::Tailscale { peer_name, .. } =>
-                format!("Tailscale: {peer_name}"),
+            Self::Mesh { display_name, .. } => format!("Mesh: {display_name}"),
+            Self::Tailscale { peer_name, .. } => format!("Tailscale: {peer_name}"),
         }
     }
 
@@ -402,11 +422,12 @@ impl ExitNodeOption {
     pub fn security_warning(&self) -> Option<&'static str> {
         match self {
             Self::Mesh { .. } => None,
-            Self::Tailscale { .. } =>
-                Some("Internet traffic exits through a Tailscale node. \
+            Self::Tailscale { .. } => Some(
+                "Internet traffic exits through a Tailscale node. \
                       The exit node operator and Tailscale's coordination \
                       server can observe your clearnet traffic. \
-                      Mesh traffic is unaffected."),
+                      Mesh traffic is unaffected.",
+            ),
         }
     }
 }

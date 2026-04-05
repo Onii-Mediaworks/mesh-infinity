@@ -38,9 +38,9 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use super::methods::PairingPayload;
 use crate::error::MeshError;
 use crate::identity::peer_id::PeerId;
-use super::methods::PairingPayload;
 
 // ---------------------------------------------------------------------------
 // Size & rate-limiting constants
@@ -489,12 +489,12 @@ impl HandshakeSession {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> ChallengeMessage {
         // Update the state to reflect the new state.
         // Advance state state.
@@ -583,12 +583,12 @@ impl HandshakeSession {
         // Execute this protocol step.
         // Execute this protocol step.
         verify_fn: F,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<(), HandshakeError>
     where
         // Process the current step in the protocol.
@@ -694,7 +694,7 @@ impl HandshakeSession {
             // Execute this protocol step.
             // Execute this protocol step.
             &proof.signature,
-        // Begin the block scope.
+            // Begin the block scope.
         ) {
             // Update the state to reflect the new state.
             // Advance state state.
@@ -911,11 +911,11 @@ impl HandshakeSession {
         // Execute this protocol step.
         // Execute this protocol step.
         sign_fn: F,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Process the current step in the protocol.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> ProofMessage
     where
         // Process the current step in the protocol.
@@ -1320,10 +1320,7 @@ mod tests {
         session.process_proof(&proof, always_verify).unwrap();
 
         // Should be in ProofSent state (needs to respond).
-        assert!(matches!(
-            session.state,
-            HandshakeState::ProofSent { .. }
-        ));
+        assert!(matches!(session.state, HandshakeState::ProofSent { .. }));
     }
 
     #[test]
@@ -1335,11 +1332,7 @@ mod tests {
         let our_peer_id = PeerId([0x01; 32]);
         let peer_challenge = [0xDD; 32];
 
-        let proof = session.generate_proof(
-            peer_challenge,
-            our_peer_id,
-            mock_sign,
-        );
+        let proof = session.generate_proof(peer_challenge, our_peer_id, mock_sign);
 
         assert_eq!(proof.challenge, peer_challenge);
         assert_eq!(proof.sender_peer_id, our_peer_id);
@@ -1379,7 +1372,10 @@ mod tests {
     }
 
     /// Build a PairingPayload for a given Ed25519 signing key.
-    fn payload_for_key(signing_key: &ed25519_dalek::SigningKey, now: u64) -> super::super::methods::PairingPayload {
+    fn payload_for_key(
+        signing_key: &ed25519_dalek::SigningKey,
+        now: u64,
+    ) -> super::super::methods::PairingPayload {
         use super::super::methods::PairingPayload;
         let pub_bytes = signing_key.verifying_key().to_bytes();
         let peer_id = PeerId::from_ed25519_pub(&pub_bytes);
@@ -1432,8 +1428,14 @@ mod tests {
 
         // Alice verifies with real Ed25519.
         let result = alice_session.process_proof(&proof, real_verify);
-        assert!(result.is_ok(), "real proof from legitimate key must succeed");
-        assert!(alice_session.is_complete(), "session must complete after valid proof");
+        assert!(
+            result.is_ok(),
+            "real proof from legitimate key must succeed"
+        );
+        assert!(
+            alice_session.is_complete(),
+            "session must complete after valid proof"
+        );
     }
 
     /// Wrong key: attacker signs with a different key — verification must fail.
@@ -1468,8 +1470,11 @@ mod tests {
         };
 
         let result = session.process_proof(&proof, real_verify);
-        assert_eq!(result, Err(HandshakeError::ProofVerificationFailed),
-            "attacker's forged proof must be rejected");
+        assert_eq!(
+            result,
+            Err(HandshakeError::ProofVerificationFailed),
+            "attacker's forged proof must be rejected"
+        );
     }
 
     /// Replay: a valid proof from an earlier session is rejected because
@@ -1498,7 +1503,7 @@ mod tests {
         let sig = peer_sk.sign(&signed_msg);
 
         let proof = ProofMessage {
-            challenge: challenge_b,    // doesn't match our_challenge (challenge_a)
+            challenge: challenge_b, // doesn't match our_challenge (challenge_a)
             signature: sig.to_bytes().to_vec(),
             sender_peer_id: peer_id,
             counter_challenge: None,
@@ -1506,7 +1511,10 @@ mod tests {
 
         // process_proof checks proof.challenge == our_challenge.
         let result = session.process_proof(&proof, real_verify);
-        assert!(result.is_err(), "proof for wrong challenge must be rejected");
+        assert!(
+            result.is_err(),
+            "proof for wrong challenge must be rejected"
+        );
     }
 
     /// generate_proof + process_proof full round-trip with real Ed25519.
@@ -1524,10 +1532,7 @@ mod tests {
         session.initiate(challenge, PeerId([0x01; 32]), now);
 
         // Use generate_proof with a real signing closure.
-        let mut scratch_session = HandshakeSession::new(
-            payload_for_key(&peer_sk, now),
-            now,
-        );
+        let mut scratch_session = HandshakeSession::new(payload_for_key(&peer_sk, now), now);
         let proof = scratch_session.generate_proof(
             challenge,
             peer_id,
@@ -1535,7 +1540,10 @@ mod tests {
         );
 
         let result = session.process_proof(&proof, real_verify);
-        assert!(result.is_ok(), "generate_proof output must verify with real crypto");
+        assert!(
+            result.is_ok(),
+            "generate_proof output must verify with real crypto"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1600,7 +1608,8 @@ mod tests {
         for i in 0..MAX_PAIRING_ATTEMPTS_PER_IP {
             assert!(
                 limiter.check_rate_limit(ip).is_ok(),
-                "attempt {} should be allowed", i + 1
+                "attempt {} should be allowed",
+                i + 1
             );
         }
 
@@ -1625,10 +1634,16 @@ mod tests {
             limiter.check_rate_limit(ip_a).expect("A should be allowed");
         }
         // IP A is now blocked.
-        assert!(limiter.check_rate_limit(ip_a).is_err(), "A should be blocked");
+        assert!(
+            limiter.check_rate_limit(ip_a).is_err(),
+            "A should be blocked"
+        );
 
         // IP B should still be allowed — independent counter.
-        assert!(limiter.check_rate_limit(ip_b).is_ok(), "B should be allowed");
+        assert!(
+            limiter.check_rate_limit(ip_b).is_ok(),
+            "B should be allowed"
+        );
     }
 
     /// Cleanup should remove stale entries without affecting active ones.
@@ -1643,6 +1658,10 @@ mod tests {
 
         // Cleanup should not remove an entry within the window.
         limiter.cleanup_stale_entries();
-        assert_eq!(limiter.entries.len(), 1, "fresh entry should survive cleanup");
+        assert_eq!(
+            limiter.entries.len(),
+            1,
+            "fresh entry should survive cleanup"
+        );
     }
 }

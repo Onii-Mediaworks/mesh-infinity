@@ -39,9 +39,10 @@ use chacha20poly1305::{
     // AEAD cipher for authenticated encryption.
     // Execute this protocol step.
     // Execute this protocol step.
-    ChaCha20Poly1305, Nonce,
+    ChaCha20Poly1305,
+    Nonce,
 };
-use ed25519_dalek::{Signature as Ed25519Signature, VerifyingKey as Ed25519VerifyingKey, Verifier};
+use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey as Ed25519VerifyingKey};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use kem::Encapsulate;
@@ -349,9 +350,9 @@ pub fn x3dh_initiate(
     // Execute this protocol step.
     // Execute this protocol step.
     bob_bundle: &PreauthBundle,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<X3dhSessionOutput, X3dhError> {
     // Generate fresh ephemeral keypair
     // Compute ek a secret for this protocol step.
@@ -460,7 +461,7 @@ pub fn x3dh_initiate(
             if let Some(ref sig_bytes) = bob_bundle.kem_sig {
                 // Build the signed message: domain || kem_pub_bytes.
                 let mut kem_msg = Vec::with_capacity(
-                    crate::crypto::signing::DOMAIN_PQXDH_KEM.len() + kem_pub_bytes.len()
+                    crate::crypto::signing::DOMAIN_PQXDH_KEM.len() + kem_pub_bytes.len(),
                 );
                 kem_msg.extend_from_slice(crate::crypto::signing::DOMAIN_PQXDH_KEM);
                 kem_msg.extend_from_slice(kem_pub_bytes);
@@ -548,7 +549,8 @@ pub fn x3dh_initiate(
         // Key material — must be zeroized when no longer needed.
         // Compute encrypted ik pub for this protocol step.
         // Compute encrypted ik pub for this protocol step.
-        let encrypted_ik_pub = encrypt_ik_pub(ik_a_pub, &ek_a_secret, &bob_bundle.preauth_x25519_pub)?;
+        let encrypted_ik_pub =
+            encrypt_ik_pub(ik_a_pub, &ek_a_secret, &bob_bundle.preauth_x25519_pub)?;
         // Wrap the found value for the caller.
         // Wrap the found value.
         // Wrap the found value.
@@ -606,9 +608,9 @@ pub fn x3dh_respond(
     // Execute this protocol step.
     // Execute this protocol step.
     header: &X3dhInitHeader,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<X3dhSessionOutput, X3dhError> {
     // Validate encrypted IK size
     // Guard: validate the condition before proceeding.
@@ -745,9 +747,9 @@ fn encrypt_ik_pub(
     // Execute this protocol step.
     // Execute this protocol step.
     preauth_pub: &X25519Public,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<[u8; ENCRYPTED_IK_SIZE], X3dhError> {
     // Key material — must be zeroized when no longer needed.
     // Compute shared for this protocol step.
@@ -845,9 +847,9 @@ fn decrypt_ik_pub(
     // Execute this protocol step.
     // Execute this protocol step.
     ek_pub: &X25519Public,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<[u8; 32], X3dhError> {
     // Key material — must be zeroized when no longer needed.
     // Compute shared for this protocol step.
@@ -992,14 +994,16 @@ fn try_pqxdh_encapsulate(
     // Execute this protocol step.
     // Execute this protocol step.
     ikm: &mut Zeroizing<Vec<u8>>,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Option<PqxdhInitHeader> {
     // Validate the input length to prevent out-of-bounds access.
     // Guard: validate the condition before proceeding.
     // Guard: validate the condition before proceeding.
-    if kem_pub_bytes.len() != KEM_EK_SIZE { return None; }
+    if kem_pub_bytes.len() != KEM_EK_SIZE {
+        return None;
+    }
 
     // Deserialize encapsulation key.
     // Compute ek encoded for this protocol step.
@@ -1093,20 +1097,24 @@ pub fn pqxdh_decapsulate(
     // Execute this protocol step.
     // Execute this protocol step.
     dh3_shared: &[u8],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<[u8; KEM_SS_SIZE], X3dhError> {
     use kem::Decapsulate;
 
     // Validate the input length to prevent out-of-bounds access.
     // Guard: validate the condition before proceeding.
     // Guard: validate the condition before proceeding.
-    if dk_bytes.len() != KEM_DK_SIZE { return Err(X3dhError::KemBindingMismatch); }
+    if dk_bytes.len() != KEM_DK_SIZE {
+        return Err(X3dhError::KemBindingMismatch);
+    }
     // Validate the input length to prevent out-of-bounds access.
     // Guard: validate the condition before proceeding.
     // Guard: validate the condition before proceeding.
-    if kem_ct_bytes.len() != KEM_CT_SIZE { return Err(X3dhError::KemBindingMismatch); }
+    if kem_ct_bytes.len() != KEM_CT_SIZE {
+        return Err(X3dhError::KemBindingMismatch);
+    }
 
     // Verify KEM binding first (fail fast on substitution).
     // Propagate errors via ?.
@@ -1138,7 +1146,9 @@ pub fn pqxdh_decapsulate(
     // Decapsulate.
     // Compute pq ss for this protocol step.
     // Compute pq ss for this protocol step.
-    let pq_ss = dk.decapsulate(&ct_encoded).map_err(|_| X3dhError::KemBindingMismatch)?;
+    let pq_ss = dk
+        .decapsulate(&ct_encoded)
+        .map_err(|_| X3dhError::KemBindingMismatch)?;
     // Track the count for threshold and bounds checking.
     // Compute ss for this protocol step.
     // Compute ss for this protocol step.
@@ -1177,9 +1187,9 @@ fn compute_kem_binding(
     // Execute this protocol step.
     // Execute this protocol step.
     kem_ciphertext: &[u8],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<[u8; 32], X3dhError> {
     // Initialize the MAC for authentication tag computation.
     // Compute mac for this protocol step.
@@ -1241,9 +1251,9 @@ fn verify_kem_binding(
     // Execute this protocol step.
     // Execute this protocol step.
     expected_binding: &[u8; 32],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<(), X3dhError> {
     // Initialize the AEAD cipher with the derived key material.
     // Compute computed for this protocol step.
@@ -1393,7 +1403,7 @@ mod tests {
     // --- Preauth bundle identity binding tests (§7.0.1) ---
 
     fn make_bob_bundle_signed() -> (PreauthBundle, X25519Secret) {
-        use ed25519_dalek::{SigningKey as Ed25519SigningKey, Signer};
+        use ed25519_dalek::{Signer, SigningKey as Ed25519SigningKey};
 
         let bob_ed25519_sk = Ed25519SigningKey::generate(&mut rand_core::OsRng);
         let bob_ed25519_pk = bob_ed25519_sk.verifying_key();
@@ -1497,7 +1507,7 @@ mod tests {
 
     /// Helper: create a bundle with a signed KEM key.
     fn make_bob_bundle_with_kem_sig() -> (PreauthBundle, X25519Secret) {
-        use ed25519_dalek::{SigningKey as Ed25519SigningKey, Signer};
+        use ed25519_dalek::{Signer, SigningKey as Ed25519SigningKey};
 
         let bob_ed25519_sk = Ed25519SigningKey::generate(&mut rand_core::OsRng);
         let bob_ed25519_pk = bob_ed25519_sk.verifying_key();
@@ -1512,9 +1522,8 @@ mod tests {
 
         // Generate a KEM key and sign it.
         let kem_pub = vec![0x42u8; 1184]; // ML-KEM-768 encapsulation key size
-        let mut kem_msg = Vec::with_capacity(
-            crate::crypto::signing::DOMAIN_PQXDH_KEM.len() + kem_pub.len()
-        );
+        let mut kem_msg =
+            Vec::with_capacity(crate::crypto::signing::DOMAIN_PQXDH_KEM.len() + kem_pub.len());
         kem_msg.extend_from_slice(crate::crypto::signing::DOMAIN_PQXDH_KEM);
         kem_msg.extend_from_slice(&kem_pub);
         let kem_sig = bob_ed25519_sk.sign(&kem_msg);
@@ -1553,7 +1562,7 @@ mod tests {
     #[test]
     fn test_kem_sig_wrong_signature_skips_pqxdh() {
         // A bundle with a KEM key and a wrong KEM signature should be rejected.
-        use ed25519_dalek::{SigningKey as Ed25519SigningKey, Signer};
+        use ed25519_dalek::{Signer, SigningKey as Ed25519SigningKey};
         let ik_a_secret = X25519Secret::random_from_rng(rand_core::OsRng);
         let ik_a_pub = *X25519Public::from(&ik_a_secret).as_bytes();
 

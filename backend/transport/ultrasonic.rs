@@ -324,10 +324,7 @@ impl UltrasonicModem {
     pub fn new_with_params(sample_rate: u32, baud_rate: u32) -> Self {
         assert!(sample_rate > 0, "sample_rate must be > 0");
         assert!(baud_rate > 0, "baud_rate must be > 0");
-        assert!(
-            sample_rate / baud_rate >= 2,
-            "symbol_samples must be >= 2"
-        );
+        assert!(sample_rate / baud_rate >= 2, "symbol_samples must be >= 2");
         Self {
             sample_rate,
             baud_rate,
@@ -362,8 +359,7 @@ impl UltrasonicModem {
     /// This is intentionally conservative to avoid false positives from
     /// environmental ultrasonic noise.
     pub fn detect_pilot(&self, samples: &[f32]) -> bool {
-        let min_window =
-            ((self.sample_rate as f64) * 0.030).ceil() as usize; // 30 ms
+        let min_window = ((self.sample_rate as f64) * 0.030).ceil() as usize; // 30 ms
         if samples.len() < min_window {
             return false;
         }
@@ -442,10 +438,9 @@ impl UltrasonicModem {
         wire_bytes.push((crc & 0xFF) as u8);
 
         // Estimate output capacity: pilot + 10 symbols/byte × sym samples
-        let pilot_samples = ((self.sample_rate as f64) * (PILOT_DURATION_MS as f64) / 1000.0)
-            .round() as usize;
-        let mut out: Vec<f32> =
-            Vec::with_capacity(pilot_samples + wire_bytes.len() * 10 * sym);
+        let pilot_samples =
+            ((self.sample_rate as f64) * (PILOT_DURATION_MS as f64) / 1000.0).round() as usize;
+        let mut out: Vec<f32> = Vec::with_capacity(pilot_samples + wire_bytes.len() * 10 * sym);
 
         // 1. Pilot burst
         out.extend_from_slice(&self.generate_pilot(PILOT_DURATION_MS));
@@ -508,8 +503,7 @@ impl UltrasonicModem {
         let sym = self.symbol_samples();
         // Phase 1: scan forward (at symbol resolution) to find pilot start.
         let pilot_min_samples =
-            ((self.sample_rate as f64) * (PILOT_DURATION_MS as f64) / 1000.0 * 0.6)
-                .ceil() as usize;
+            ((self.sample_rate as f64) * (PILOT_DURATION_MS as f64) / 1000.0 * 0.6).ceil() as usize;
         let min_consecutive = (pilot_min_samples / sym).max(1);
 
         let mut consecutive: usize = 0;
@@ -767,10 +761,9 @@ impl UltrasonicTransport {
         // `max_frame_samples * 4` samples when nothing has decoded yet.
         let sym = self.modem.symbol_samples();
         // Worst-case frame: pilot + (6 + MAX_PAYLOAD_BYTES) * 10 symbols
-        let max_frame_samples =
-            ((self.modem.sample_rate as f64) * (PILOT_DURATION_MS as f64) / 1000.0)
-                as usize
-                + (6 + MAX_PAYLOAD_BYTES) * 10 * sym;
+        let max_frame_samples = ((self.modem.sample_rate as f64) * (PILOT_DURATION_MS as f64)
+            / 1000.0) as usize
+            + (6 + MAX_PAYLOAD_BYTES) * 10 * sym;
         let cap = max_frame_samples * 4;
         if acc.len() > cap {
             let trim = acc.len() - cap;
@@ -801,7 +794,11 @@ mod tests {
     fn crc16_known_value() {
         // CRC-16/CCITT-FALSE of the ASCII string "123456789" must be 0x29B1.
         let data = b"123456789";
-        assert_eq!(crc16(data), 0x29B1, "CRC-16/CCITT-FALSE known vector failed");
+        assert_eq!(
+            crc16(data),
+            0x29B1,
+            "CRC-16/CCITT-FALSE known vector failed"
+        );
     }
 
     #[test]
@@ -816,7 +813,11 @@ mod tests {
         let good_crc = crc16(data);
         let mut corrupted = data.to_vec();
         corrupted[5] ^= 0x80;
-        assert_ne!(crc16(&corrupted), good_crc, "bit flip was not detected by CRC");
+        assert_ne!(
+            crc16(&corrupted),
+            good_crc,
+            "bit flip was not detected by CRC"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -951,7 +952,9 @@ mod tests {
     fn encode_decode_empty_payload() {
         let modem = UltrasonicModem::new();
         let samples = modem.encode(b"");
-        let decoded = modem.decode(&samples).expect("decode of empty payload failed");
+        let decoded = modem
+            .decode(&samples)
+            .expect("decode of empty payload failed");
         assert!(decoded.is_empty());
     }
 
@@ -972,7 +975,9 @@ mod tests {
         let modem = UltrasonicModem::new();
         let message = vec![0xA5u8; MAX_PAYLOAD_BYTES];
         let samples = modem.encode(&message);
-        let decoded = modem.decode(&samples).expect("decode of max-length payload failed");
+        let decoded = modem
+            .decode(&samples)
+            .expect("decode of max-length payload failed");
         assert_eq!(decoded, message);
     }
 
@@ -980,9 +985,13 @@ mod tests {
     fn encode_decode_binary_pattern() {
         let modem = UltrasonicModem::new();
         // Alternating 0x00 and 0xFF — stress-tests start/stop bit detection
-        let message: Vec<u8> = (0..32).map(|i| if i % 2 == 0 { 0x00 } else { 0xFF }).collect();
+        let message: Vec<u8> = (0..32)
+            .map(|i| if i % 2 == 0 { 0x00 } else { 0xFF })
+            .collect();
         let samples = modem.encode(&message);
-        let decoded = modem.decode(&samples).expect("decode of binary pattern failed");
+        let decoded = modem
+            .decode(&samples)
+            .expect("decode of binary pattern failed");
         assert_eq!(decoded, message);
     }
 
@@ -1024,8 +1033,7 @@ mod tests {
         let crc_start = data_start + (4 + payload_len) * 10 * sym;
         // Splice in the corrupted CRC region.
         if crc_start + 20 * sym <= samples.len() {
-            samples[crc_start..crc_start + 20 * sym]
-                .copy_from_slice(&mark_burst);
+            samples[crc_start..crc_start + 20 * sym].copy_from_slice(&mark_burst);
         }
 
         // The decode_stream must return None (CRC catches the corruption) or
@@ -1034,7 +1042,8 @@ mod tests {
         let result = modem.decode_stream(&samples);
         if let Some((decoded, _)) = result {
             assert_ne!(
-                decoded, b"Corrupt me".to_vec(),
+                decoded,
+                b"Corrupt me".to_vec(),
                 "corrupt CRC should not decode to original message"
             );
         }
@@ -1077,9 +1086,15 @@ mod tests {
         let (decoded, consumed) = result.unwrap();
         assert_eq!(decoded, message);
         // consumed must be <= total buffer length
-        assert!(consumed <= buffer.len(), "consumed cannot exceed buffer length");
+        assert!(
+            consumed <= buffer.len(),
+            "consumed cannot exceed buffer length"
+        );
         // consumed must cover at least the frame itself
-        assert!(consumed >= frame.len(), "consumed should cover at least the frame");
+        assert!(
+            consumed >= frame.len(),
+            "consumed should cover at least the frame"
+        );
     }
 
     #[test]
@@ -1105,9 +1120,7 @@ mod tests {
         let payload = b"transport roundtrip";
         tx.send(payload);
 
-        let audio = tx
-            .next_audio_frame()
-            .expect("should have an encoded frame");
+        let audio = tx.next_audio_frame().expect("should have an encoded frame");
         assert!(rx.recv().is_none(), "nothing received before feed");
 
         rx.feed_audio(&audio);

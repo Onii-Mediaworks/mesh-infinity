@@ -231,7 +231,8 @@ impl TorTransport {
 
         let mut hs_cfg_builder = tor_hsservice::config::OnionServiceConfigBuilder::default();
         hs_cfg_builder.nickname(nickname);
-        let hs_config = hs_cfg_builder.build()
+        let hs_config = hs_cfg_builder
+            .build()
             .map_err(|e| anyhow::anyhow!("OnionServiceConfig: {e}"))?;
 
         let (inbound_tx, inbound_rx) = std::sync::mpsc::channel::<TcpStream>();
@@ -288,9 +289,11 @@ impl TorTransport {
                 _ => 0,
             };
             if port != listen_port {
-                let _ = req.reject(tor_cell::relaycell::msg::End::new_with_reason(
-                    tor_cell::relaycell::msg::EndReason::DONE,
-                )).await;
+                let _ = req
+                    .reject(tor_cell::relaycell::msg::End::new_with_reason(
+                        tor_cell::relaycell::msg::EndReason::DONE,
+                    ))
+                    .await;
                 continue;
             }
 
@@ -303,25 +306,37 @@ impl TorTransport {
         req: tor_hsservice::StreamRequest,
         tx: std::sync::mpsc::Sender<TcpStream>,
     ) {
-
-        let tor_stream = match req.accept(
-            tor_cell::relaycell::msg::Connected::new_empty()
-        ).await {
+        let tor_stream = match req
+            .accept(tor_cell::relaycell::msg::Connected::new_empty())
+            .await
+        {
             Ok(s) => s,
-            Err(e) => { tracing::debug!("Tor HS accept: {e}"); return; }
+            Err(e) => {
+                tracing::debug!("Tor HS accept: {e}");
+                return;
+            }
         };
 
         // Create loopback bridge for the sync layer.
         let local_listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
             Ok(l) => l,
-            Err(e) => { tracing::warn!("Tor HS bridge bind: {e}"); return; }
+            Err(e) => {
+                tracing::warn!("Tor HS bridge bind: {e}");
+                return;
+            }
         };
         let local_addr = local_listener.local_addr().unwrap();
 
         // Connect sync side first so the upper layer can start processing.
         let sync_stream = match std::net::TcpStream::connect(local_addr) {
-            Ok(s) => { let _ = s.set_nonblocking(true); s }
-            Err(e) => { tracing::warn!("Tor HS bridge connect: {e}"); return; }
+            Ok(s) => {
+                let _ = s.set_nonblocking(true);
+                s
+            }
+            Err(e) => {
+                tracing::warn!("Tor HS bridge connect: {e}");
+                return;
+            }
         };
 
         if tx.send(sync_stream).is_err() {
@@ -330,7 +345,10 @@ impl TorTransport {
 
         let (local_stream, _) = match local_listener.accept().await {
             Ok(v) => v,
-            Err(e) => { tracing::warn!("Tor HS bridge accept: {e}"); return; }
+            Err(e) => {
+                tracing::warn!("Tor HS bridge accept: {e}");
+                return;
+            }
         };
 
         let (mut local_r, mut local_w) = tokio::io::split(local_stream);
@@ -361,7 +379,9 @@ impl TorTransport {
     ) -> anyhow::Result<TcpStream> {
         let isolation = {
             let mut stats = self.circuit_stats.lock().unwrap_or_else(|e| e.into_inner());
-            let entry = stats.entry(peer_id_hex.to_string()).or_insert_with(CircuitStats::new);
+            let entry = stats
+                .entry(peer_id_hex.to_string())
+                .or_insert_with(CircuitStats::new);
             if entry.should_rotate() {
                 entry.rotate();
                 tracing::debug!(peer=%peer_id_hex, "Tor: rotating circuit");
@@ -370,8 +390,8 @@ impl TorTransport {
         };
 
         // Loopback bridge.
-        let local_listener = TcpListener::bind("127.0.0.1:0")
-            .context("bind Tor loopback bridge")?;
+        let local_listener =
+            TcpListener::bind("127.0.0.1:0").context("bind Tor loopback bridge")?;
         let local_addr: SocketAddr = local_listener.local_addr()?;
 
         let client = Arc::clone(&self.client);
@@ -381,7 +401,10 @@ impl TorTransport {
             let async_listener = tokio::net::TcpListener::from_std(local_listener).unwrap();
             let (local_stream, _) = match async_listener.accept().await {
                 Ok(v) => v,
-                Err(e) => { tracing::warn!("Tor bridge accept: {e}"); return; }
+                Err(e) => {
+                    tracing::warn!("Tor bridge accept: {e}");
+                    return;
+                }
             };
 
             let mut prefs = arti_client::StreamPrefs::new();
@@ -389,7 +412,10 @@ impl TorTransport {
 
             let tor_stream = match client.connect_with_prefs(&target as &str, &prefs).await {
                 Ok(s) => s,
-                Err(e) => { tracing::warn!("Tor connect to {target}: {e}"); return; }
+                Err(e) => {
+                    tracing::warn!("Tor connect to {target}: {e}");
+                    return;
+                }
             };
 
             let (mut local_r, mut local_w) = tokio::io::split(local_stream);
@@ -402,7 +428,9 @@ impl TorTransport {
         });
 
         let stream = TcpStream::connect(local_addr).context("Tor bridge connect")?;
-        stream.set_nonblocking(true).context("Tor bridge nonblocking")?;
+        stream
+            .set_nonblocking(true)
+            .context("Tor bridge nonblocking")?;
         Ok(stream)
     }
 
@@ -441,6 +469,9 @@ impl TorTransport {
 
     /// Remove circuit stats for a peer on disconnect.
     pub fn remove_peer(&self, peer_id_hex: &str) {
-        self.circuit_stats.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id_hex);
+        self.circuit_stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id_hex);
     }
 }

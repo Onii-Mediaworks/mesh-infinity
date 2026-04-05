@@ -6,9 +6,13 @@
 //!
 //! ## Native protocol client (§5.22.1)
 //!
-//! Mesh Infinity implements the ZeroTier protocol directly — no external
-//! ZeroTier daemon.  This is mandatory on mobile (single VPN slot) and
-//! preferred on desktop.
+//! Mesh Infinity implements the ZeroTier client-side protocol directly — no
+//! external ZeroTier daemon. This is mandatory on mobile (single VPN slot)
+//! and preferred on desktop.
+//!
+//! Important boundary: Mesh Infinity does not implement or host the ZeroTier
+//! network controller. It interoperates with an existing ZeroTier network
+//! administered by ZeroTier Central or by an external self-hosted controller.
 //!
 //! ### ZeroTier identity
 //!
@@ -43,9 +47,9 @@
 //! encapsulated in ZeroTier UDP datagrams.  The virtual interface appears
 //! as a TAP device (`zt*`) to the OS.
 
+use sha2::{Digest, Sha512};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
-use sha2::{Digest, Sha512};
 
 // ────────────────────────────────────────────────────────────────────────────
 // ZeroTier constants
@@ -252,10 +256,7 @@ impl ZtControllerClient {
     }
 
     /// Get network configuration.
-    pub async fn get_network(
-        &self,
-        network_id: &str,
-    ) -> Result<ZtNetworkConfig, reqwest::Error> {
+    pub async fn get_network(&self, network_id: &str) -> Result<ZtNetworkConfig, reqwest::Error> {
         let url = format!("{}/network/{}", self.base_url, network_id);
         let resp: serde_json::Value = self
             .client
@@ -294,20 +295,33 @@ impl ZtControllerClient {
         Ok(resp)
     }
 
+    /// Set a member's authorization state.
+    pub async fn set_member_authorized(
+        &self,
+        network_id: &str,
+        node_id: &str,
+        authorized: bool,
+    ) -> Result<(), reqwest::Error> {
+        let url = format!(
+            "{}/network/{}/member/{}",
+            self.base_url, network_id, node_id
+        );
+        self.client
+            .post(&url)
+            .header("Authorization", format!("token {}", self.api_key))
+            .json(&serde_json::json!({ "config": { "authorized": authorized } }))
+            .send()
+            .await?;
+        Ok(())
+    }
+
     /// Authorize a member.
     pub async fn authorize_member(
         &self,
         network_id: &str,
         node_id: &str,
     ) -> Result<(), reqwest::Error> {
-        let url = format!("{}/network/{}/member/{}", self.base_url, network_id, node_id);
-        self.client
-            .post(&url)
-            .header("Authorization", format!("token {}", self.api_key))
-            .json(&serde_json::json!({ "config": { "authorized": true } }))
-            .send()
-            .await?;
-        Ok(())
+        self.set_member_authorized(network_id, node_id, true).await
     }
 }
 
@@ -374,7 +388,10 @@ impl ZeroTierTransport {
     /// via the controller API).
     pub fn join_network(&self, network_id: &str) {
         // Mutex recovery: network list is still valid after a poisoned lock.
-        self.networks.lock().unwrap_or_else(|e| e.into_inner()).push(network_id.to_owned());
+        self.networks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(network_id.to_owned());
         tracing::info!(node = %self.node_id, network = network_id, "Joining ZeroTier network");
     }
 
@@ -396,7 +413,11 @@ impl ZeroTierTransport {
                                 // Extract Ethernet frame from payload.
                                 let frame = pkt[35..].to_vec();
                                 // Mutex recovery: inbound queue is valid after poison.
-                                transport.inbound.lock().unwrap_or_else(|e| e.into_inner()).push(frame);
+                                transport
+                                    .inbound
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(frame);
                             }
                         }
                     }

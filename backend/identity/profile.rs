@@ -328,9 +328,9 @@ pub fn resolve_display_name(
     // Execute this protocol step.
     // Execute this protocol step.
     public_profile: Option<&GlobalPublicProfile>,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> String {
     // 1. Garden profile.
     // Guard: validate the condition before proceeding.
@@ -611,13 +611,7 @@ mod tests {
             signature: vec![],
         };
 
-        let name = resolve_display_name(
-            &test_peer(),
-            Some(&gp),
-            None,
-            None,
-            None,
-        );
+        let name = resolve_display_name(&test_peer(), Some(&gp), None, None, None);
         assert_eq!(name, "GardenAlice");
     }
 
@@ -641,25 +635,13 @@ mod tests {
             signature: vec![],
         };
 
-        let name = resolve_display_name(
-            &test_peer(),
-            None,
-            Some(&private),
-            Some(&paired),
-            None,
-        );
+        let name = resolve_display_name(&test_peer(), None, Some(&private), Some(&paired), None);
         assert_eq!(name, "RealAlice");
     }
 
     #[test]
     fn test_resolve_fallback_to_peer_id() {
-        let name = resolve_display_name(
-            &test_peer(),
-            None,
-            None,
-            None,
-            None,
-        );
+        let name = resolve_display_name(&test_peer(), None, None, None, None);
         // Should be the short hex of the peer ID.
         assert_eq!(name.len(), 8); // 4 bytes = 8 hex chars.
     }

@@ -17,7 +17,7 @@
 //! - **storage** — distributed object storage, manifests, and chunking
 //! - **hosted** — public file hosting and group file repositories
 
-pub mod transfer;
-pub mod storage;
-pub mod hosted;
 pub mod backend_adapter;
+pub mod hosted;
+pub mod storage;
+pub mod transfer;

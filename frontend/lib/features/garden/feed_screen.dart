@@ -59,6 +59,7 @@ class _PostTile extends StatelessWidget {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final authorName = post['authorName'] as String? ?? 'Unknown';
+    final gardenName  = post['gardenName'] as String? ?? '';
     final content    = post['content']    as String? ?? '';
     final reactions  = (post['reactionCount'] as num?)?.toInt() ?? 0;
     final ts         = post['timestamp']  as int?;
@@ -85,8 +86,8 @@ class _PostTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(authorName, style: theme.textTheme.titleSmall),
-                if (ts != null)
-                  Text(_formatTs(ts),
+                if (gardenName.isNotEmpty || ts != null)
+                  Text(_formatTs(ts ?? 0),
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: cs.onSurfaceVariant)),
               ],
@@ -106,12 +107,22 @@ class _PostTile extends StatelessWidget {
   }
 
   String _formatTs(int epochSeconds) {
+    final gardenName = post['gardenName'] as String? ?? '';
     final dt = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000);
     final diff = DateTime.now().difference(dt);
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inHours < 1)   return '${diff.inMinutes}m ago';
-    if (diff.inDays < 1)    return '${diff.inHours}h ago';
-    if (diff.inDays < 7)    return '${diff.inDays}d ago';
-    return '${dt.day}/${dt.month}/${dt.year}';
+    late final String timeLabel;
+    if (diff.inMinutes < 1) {
+      timeLabel = 'Just now';
+    } else if (diff.inHours < 1) {
+      timeLabel = '${diff.inMinutes}m ago';
+    } else if (diff.inDays < 1) {
+      timeLabel = '${diff.inHours}h ago';
+    } else if (diff.inDays < 7) {
+      timeLabel = '${diff.inDays}d ago';
+    } else {
+      timeLabel = '${dt.day}/${dt.month}/${dt.year}';
+    }
+    if (gardenName.isEmpty) return timeLabel;
+    return '$gardenName · $timeLabel';
   }
 }

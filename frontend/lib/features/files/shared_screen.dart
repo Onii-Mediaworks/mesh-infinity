@@ -15,6 +15,7 @@ class _FilesSharedScreenState extends State<FilesSharedScreen> {
   Map<String, dynamic>? _stats;
   List<Map<String, dynamic>> _files = const [];
   bool _loading = true;
+  bool _publishing = false;
 
   @override
   void initState() {
@@ -46,17 +47,68 @@ class _FilesSharedScreenState extends State<FilesSharedScreen> {
     }
   }
 
+  Future<void> _promptPublishFile() async {
+    final controller = TextEditingController();
+    final path = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Publish file'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'File path',
+              hintText: '/path/to/file',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(controller.text.trim()),
+              child: const Text('Publish'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+
+    if (!mounted || path == null || path.isEmpty) return;
+
+    setState(() => _publishing = true);
+    final bridge = context.read<BackendBridge>();
+    final ok = bridge.publishFile(path);
+    await _load();
+    if (mounted) {
+      setState(() => _publishing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ok ? 'File published' : 'Failed to publish file',
+          ),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loading || _publishing) {
+      return const Center(child: CircularProgressIndicator());
+    }
 
     if (_files.isEmpty) {
       return EmptyState(
         icon: Icons.cloud_outlined,
         title: 'No published files',
-        body: 'Publish files to the distributed mesh storage network.',
+        body: 'Publish a local file so this device can offer it over the mesh.',
         action: OutlinedButton.icon(
-          onPressed: () {}, // TODO: file picker → bridge.publishFile(path)
+          onPressed: _promptPublishFile,
           icon: const Icon(Icons.publish_outlined),
           label: const Text('Publish a file'),
         ),
@@ -70,6 +122,15 @@ class _FilesSharedScreenState extends State<FilesSharedScreen> {
         children: [
           if (_stats != null) _StorageCard(stats: _stats!),
           const SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _promptPublishFile,
+              icon: const Icon(Icons.publish_outlined),
+              label: const Text('Publish another file'),
+            ),
+          ),
+          const SizedBox(height: 12),
           for (final f in _files)
             _PublishedFileTile(
               file: f,
@@ -92,7 +153,8 @@ class _StorageCard extends StatelessWidget {
     final used  = (stats['usedBytes']  as num?)?.toInt() ?? 0;
     final total = (stats['totalBytes'] as num?)?.toInt() ?? 0;
     final published = (stats['publishedFiles'] as num?)?.toInt() ?? 0;
-    final progress = total > 0 ? used / total : 0.0;
+    final hasCapacity = total > 0;
+    final progress = hasCapacity ? used / total : 0.0;
 
     return Card(
       child: Padding(
@@ -102,24 +164,38 @@ class _StorageCard extends StatelessWidget {
           children: [
             Text('Storage', style: theme.textTheme.titleSmall),
             const SizedBox(height: 12),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: progress,
-                minHeight: 8,
-                backgroundColor: cs.surfaceContainerHighest,
-                color: MeshTheme.brand,
+            if (hasCapacity) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 8,
+                  backgroundColor: cs.surfaceContainerHighest,
+                  color: MeshTheme.brand,
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
+              const SizedBox(height: 8),
+            ],
             Row(children: [
-              Text(_formatBytes(used),
-                style: theme.textTheme.bodySmall),
+              Text(
+                hasCapacity ? '${_formatBytes(used)} of ${_formatBytes(total)} used' : _formatBytes(used),
+                style: theme.textTheme.bodySmall,
+              ),
               const Spacer(),
-              Text('$published file${published == 1 ? '' : 's'} published',
+              Text(
+                '$published file${published == 1 ? '' : 's'} published',
                 style: theme.textTheme.bodySmall
-                    ?.copyWith(color: cs.onSurfaceVariant)),
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
             ]),
+            if (!hasCapacity) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Capacity reporting is not available yet on this device.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+            ],
           ],
         ),
       ),

@@ -55,8 +55,8 @@
 //! If an adversary demands the PIN, the user enters the duress PIN instead.
 //! The adversary sees the phone unlock. The data is already gone.
 
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -228,7 +228,9 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
             // Execute the operation and bind the result.
             // Execute this protocol step.
             // Execute this protocol step.
-            eprintln!("[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}");
+            eprintln!(
+                "[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}"
+            );
         }
     }
 
@@ -356,12 +358,13 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
                 // Check the operation outcome without consuming the error.
                 // Execute this protocol step.
                 // Execute this protocol step.
-                && fs::remove_file(&path).is_ok() {
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    files_deleted += 1;
-                }
+                && fs::remove_file(&path).is_ok()
+            {
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                // Execute this protocol step.
+                files_deleted += 1;
+            }
         }
     }
 
@@ -452,7 +455,9 @@ pub fn duress_erase(data_dir: &Path) -> EraseResult {
         if let Err(e) = fs::write(&identity_key_path, random_data) {
             // Execute the operation and bind the result.
             // Execute this protocol step.
-            eprintln!("[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}");
+            eprintln!(
+                "[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}"
+            );
         }
     }
 
@@ -544,11 +549,12 @@ pub fn duress_erase(data_dir: &Path) -> EraseResult {
             if path.extension().map(|e| e == "tmp").unwrap_or(false)
                 // Check the operation outcome without consuming the error.
                 // Execute this protocol step.
-                && fs::remove_file(&path).is_ok() {
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    files_deleted += 1;
-                }
+                && fs::remove_file(&path).is_ok()
+            {
+                // Process the current step in the protocol.
+                // Execute this protocol step.
+                files_deleted += 1;
+            }
         }
     }
 

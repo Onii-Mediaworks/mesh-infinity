@@ -189,7 +189,6 @@ pub enum Priority {
     Critical = 3,
 }
 
-
 // ---------------------------------------------------------------------------
 // Release Condition
 // ---------------------------------------------------------------------------
@@ -751,10 +750,10 @@ impl StoreForwardServer {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> DepositResult {
         // -------------------------------------------------------------------
         // Check 1: Payload size limit.
@@ -854,7 +853,7 @@ impl StoreForwardServer {
                 // Execute this protocol step.
                 // Execute this protocol step.
                 &request.expiry_sig,
-            // Begin the block scope.
+                // Begin the block scope.
             ) {
                 // Return the result to the caller.
                 // Return to the caller.
@@ -1040,10 +1039,10 @@ impl StoreForwardServer {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Vec<StoreAndForwardRequest> {
         // Dispatch based on the variant to apply type-specific logic.
         // Compute queue for this protocol step.
@@ -1328,10 +1327,10 @@ impl StoreForwardServer {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> CancellationResult {
         use crate::crypto::signing;
 
@@ -1433,7 +1432,8 @@ impl StoreForwardServer {
                 // Guard: validate the condition before proceeding.
                 // Guard: validate the condition before proceeding.
                 // Guard: validate the condition before proceeding.
-                if signal.issued_at <= *last_cancellation && *last_cancellation != msg.deposited_at {
+                if signal.issued_at <= *last_cancellation && *last_cancellation != msg.deposited_at
+                {
                     // Return the result to the caller.
                     // Return to the caller.
                     // Return to the caller.
@@ -1543,10 +1543,10 @@ impl StoreForwardServer {
                 // Execute this protocol step.
                 // Execute this protocol step.
                 max_lifetime,
-            // Begin the block scope.
-            // Handle }.
-            // Handle }.
-            // Handle }.
+                // Begin the block scope.
+                // Handle }.
+                // Handle }.
+                // Handle }.
             } => {
                 // Enforce the absolute upper bound: once max_lifetime has
                 // elapsed since the deposit, the message MUST be released even
@@ -1646,12 +1646,6 @@ impl StoreForwardServer {
 mod tests {
     use super::*;
 
-    /// Helper: create a DeviceAddress from a single byte (raw bytes, for
-    /// general routing tests that don't require a valid Ed25519 pubkey).
-    fn addr(b: u8) -> DeviceAddress {
-        DeviceAddress([b; 32])
-    }
-
     /// Helper: return the DeviceAddress that make_request(b, ...) uses as
     /// the destination — i.e. the Ed25519 verifying key for secret seed b.
     fn dest_of(b: u8) -> DeviceAddress {
@@ -1715,11 +1709,7 @@ mod tests {
         let mut server = StoreForwardServer::new(100_000_000);
         let now = 1000;
 
-        let result = server.deposit(
-            make_request(0xAA, MAX_PAYLOAD_SIZE + 1, now + 3600),
-            1,
-            now,
-        );
+        let result = server.deposit(make_request(0xAA, MAX_PAYLOAD_SIZE + 1, now + 3600), 1, now);
         assert_eq!(result, DepositResult::PayloadTooLarge);
     }
 
@@ -1746,7 +1736,12 @@ mod tests {
                 (i as u64) % 50, // Spread across tunnels to avoid rate limit.
                 now,
             );
-            assert_eq!(result, DepositResult::Accepted, "Message {} should be accepted", i);
+            assert_eq!(
+                result,
+                DepositResult::Accepted,
+                "Message {} should be accepted",
+                i
+            );
         }
 
         // One more should be rejected.
@@ -1998,7 +1993,11 @@ mod tests {
 
         // Window resets to now+10, so we must wait another 60s.
         let msgs2 = server.retrieve(&dest_of(0xAA), now + 30);
-        assert_eq!(msgs2.len(), 0, "DMS message must not release while cancelled");
+        assert_eq!(
+            msgs2.len(),
+            0,
+            "DMS message must not release while cancelled"
+        );
     }
 
     #[test]
@@ -2012,7 +2011,11 @@ mod tests {
 
         // 61 seconds later with no cancellation — must release.
         let msgs = server.retrieve(&dest_of(0xAA), now + 61);
-        assert_eq!(msgs.len(), 1, "DMS message must release after window elapses");
+        assert_eq!(
+            msgs.len(),
+            1,
+            "DMS message must release after window elapses"
+        );
     }
 
     #[test]
@@ -2068,7 +2071,7 @@ mod tests {
         req.release_condition = ReleaseCondition::CancellationBased {
             cancellation_window_secs: 86400, // 24-hour window — would normally block for a day
             last_cancellation: now,
-            max_lifetime: 30,               // but absolute cap is only 30 seconds
+            max_lifetime: 30, // but absolute cap is only 30 seconds
         };
         req.cancellation_pubkey = Some(cancel_pub);
         let result = server.deposit(req, 1, now);
@@ -2080,7 +2083,11 @@ mod tests {
 
         // 31 seconds in: max_lifetime exceeded — must release regardless of window.
         let msgs2 = server.retrieve(&dest_of(0xAA), now + 31);
-        assert_eq!(msgs2.len(), 1, "must release after max_lifetime even with long cancellation window");
+        assert_eq!(
+            msgs2.len(),
+            1,
+            "must release after max_lifetime even with long cancellation window"
+        );
     }
 
     /// Cancellation keeps the message held when still within max_lifetime.
@@ -2094,12 +2101,19 @@ mod tests {
 
         // Apply cancellation at now+10 (message was deposited at now, max_lifetime=86400).
         let sig = make_cancellation(&secret, mid, now + 10, now + 70);
-        assert_eq!(server.apply_cancellation(&sig, now + 10), CancellationResult::Applied);
+        assert_eq!(
+            server.apply_cancellation(&sig, now + 10),
+            CancellationResult::Applied
+        );
 
         // At now+50 (within the new cancellation window of [now+10, now+10+60]):
         // max_lifetime (86400s) is far away — must still be held.
         let msgs = server.retrieve(&dest_of(0xAA), now + 50);
-        assert_eq!(msgs.len(), 0, "must remain held within cancellation window and within max_lifetime");
+        assert_eq!(
+            msgs.len(),
+            0,
+            "must remain held within cancellation window and within max_lifetime"
+        );
     }
 
     #[test]

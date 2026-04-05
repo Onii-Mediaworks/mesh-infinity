@@ -19,10 +19,383 @@ use crate::crypto::double_ratchet::{DoubleRatchetSession, RatchetHeader};
 use crate::crypto::message_encrypt::{decrypt_message, MessageContext};
 use crate::identity::peer_id::PeerId;
 use crate::messaging::room::Room;
-use crate::service::runtime::{MeshRuntime, bootstrap_ratchet_session};
+use crate::service::runtime::{bootstrap_ratchet_session, MeshRuntime};
+use ed25519_dalek::{Signature, Signer, Verifier};
 use x25519_dalek::StaticSecret as X25519Secret;
 
+const GROUP_MESSAGE_RING_SIG_DOMAIN: &[u8] = b"meshinfinity-group-ring-message-v1";
+const GROUP_MESSAGE_INNER_SIG_DOMAIN: &[u8] = b"meshinfinity-group-inner-sender-v1";
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct GroupSenderKeySeedWire {
+    chain_key: String,
+    iteration: u32,
+    verifying_key: String,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct GroupMessageSkWire {
+    iteration: u32,
+    ciphertext: String,
+    signature: String,
+    sender_key_seed: GroupSenderKeySeedWire,
+    sender: String,
+    room_id: String,
+    msg_id: String,
+    text: String,
+    timestamp: u64,
+    sender_sig: String,
+}
+
+fn build_group_inner_signature_message(
+    group_id: &[u8; 32],
+    room_id: &str,
+    msg_id: &str,
+    text: &str,
+    timestamp: u64,
+    sender: &[u8; 32],
+) -> Vec<u8> {
+    let mut message = Vec::with_capacity(
+        GROUP_MESSAGE_INNER_SIG_DOMAIN.len()
+            + group_id.len()
+            + sender.len()
+            + room_id.len()
+            + msg_id.len()
+            + text.len()
+            + 64,
+    );
+    message.extend_from_slice(GROUP_MESSAGE_INNER_SIG_DOMAIN);
+    message.extend_from_slice(group_id);
+    message.extend_from_slice(&(room_id.len() as u64).to_le_bytes());
+    message.extend_from_slice(room_id.as_bytes());
+    message.extend_from_slice(&(msg_id.len() as u64).to_le_bytes());
+    message.extend_from_slice(msg_id.as_bytes());
+    message.extend_from_slice(&(text.len() as u64).to_le_bytes());
+    message.extend_from_slice(text.as_bytes());
+    message.extend_from_slice(&timestamp.to_le_bytes());
+    message.extend_from_slice(sender);
+    message
+}
+
+fn build_group_ring_signature_message(
+    group_id: &[u8; 32],
+    epoch: u64,
+    nonce: &[u8; 12],
+    wrapped: &[u8],
+) -> Vec<u8> {
+    let mut message = Vec::with_capacity(
+        GROUP_MESSAGE_RING_SIG_DOMAIN.len() + group_id.len() + nonce.len() + wrapped.len() + 16,
+    );
+    message.extend_from_slice(GROUP_MESSAGE_RING_SIG_DOMAIN);
+    message.extend_from_slice(group_id);
+    message.extend_from_slice(&epoch.to_le_bytes());
+    message.extend_from_slice(nonce);
+    message.extend_from_slice(&(wrapped.len() as u64).to_le_bytes());
+    message.extend_from_slice(wrapped);
+    message
+}
+
+fn room_preview_text(text: &str) -> String {
+    if text.len() > 80 {
+        format!("{}…", &text[..80])
+    } else {
+        text.to_string()
+    }
+}
+
 impl MeshRuntime {
+    fn group_for_room(&self, room_id_hex: &str) -> Option<(crate::groups::group::Group, Room)> {
+        use crate::messaging::message::ConversationType;
+
+        let room = {
+            let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            rooms
+                .iter()
+                .find(|room| {
+                    room.conversation_type == ConversationType::Group
+                        && hex::encode(room.id) == room_id_hex
+                })
+                .cloned()?
+        };
+
+        let groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+        groups
+            .iter()
+            .find(|group| {
+                group.profile.display_name == room.name
+                    && group.members.len() == room.participants.len()
+                    && group
+                        .members
+                        .iter()
+                        .all(|member| room.participants.contains(member))
+            })
+            .cloned()
+            .map(|group| (group, room))
+    }
+
+    fn ring_public_keys_for_group(
+        &self,
+        group: &crate::groups::group::Group,
+    ) -> Option<Vec<[u8; 32]>> {
+        let our_peer_id = self
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|identity| (identity.peer_id(), identity.ed25519_pub))?;
+        let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ring = Vec::with_capacity(group.members.len());
+        for member in &group.members {
+            if *member == our_peer_id.0 {
+                ring.push(our_peer_id.1);
+                continue;
+            }
+            ring.push(contacts.get(member)?.ed25519_public);
+        }
+        Some(ring)
+    }
+
+    fn persist_room_message(
+        &self,
+        room_id_hex: &str,
+        sender_hex: &str,
+        text: &str,
+        timestamp: u64,
+        msg_id_hex: &str,
+        is_outgoing: bool,
+        auth_status: Option<&str>,
+    ) {
+        let mut message = serde_json::json!({
+            "id":         msg_id_hex,
+            "roomId":     room_id_hex,
+            "sender":     sender_hex,
+            "text":       text,
+            "timestamp":  timestamp,
+            "isOutgoing": is_outgoing,
+        });
+        if let Some(status) = auth_status {
+            message["authStatus"] = serde_json::Value::String(status.to_string());
+        }
+
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(room_id_hex.to_string())
+            .or_default()
+            .push(message.clone());
+
+        {
+            let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(room) = rooms
+                .iter_mut()
+                .find(|room| hex::encode(room.id) == room_id_hex)
+            {
+                room.last_message_preview = Some(room_preview_text(text));
+                room.last_message_at = Some(timestamp);
+                if is_outgoing {
+                    room.next_sequence += 1;
+                } else if !room.is_muted {
+                    room.unread_count += 1;
+                }
+            }
+        }
+
+        self.push_event("MessageAdded", message);
+        let room_summary = {
+            let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+            rooms
+                .iter()
+                .find(|room| hex::encode(room.id) == room_id_hex)
+                .map(|room| {
+                    serde_json::json!({
+                        "id":          hex::encode(room.id),
+                        "name":        room.name,
+                        "lastMessage": room.last_message_preview,
+                        "unreadCount": room.unread_count,
+                        "timestamp":   room.last_message_at,
+                    })
+                })
+        };
+        if let Some(summary) = room_summary {
+            self.push_event("RoomUpdated", summary);
+        }
+    }
+
+    fn send_ring_group_message(&mut self, room_id_hex: &str, text: &str) -> bool {
+        use crate::crypto::ring_sig::ring_sign;
+        use crate::crypto::sender_keys::SenderKey;
+        use crate::service::runtime::try_random_fill;
+
+        if !self.identity_unlocked || text.is_empty() {
+            return false;
+        }
+
+        let (mut group, room) = match self.group_for_room(room_id_hex) {
+            Some(value) => value,
+            None => return false,
+        };
+        if !group.profile.network_type.uses_ring_signatures() {
+            return false;
+        }
+
+        let (our_peer_id, identity_signing_key) = {
+            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(identity) => (identity.peer_id(), identity.ed25519_signing.clone()),
+                None => return false,
+            }
+        };
+
+        let mut msg_id_bytes = [0u8; 16];
+        let mut nonce_bytes = [0u8; 12];
+        if !try_random_fill(&mut msg_id_bytes) || !try_random_fill(&mut nonce_bytes) {
+            return false;
+        }
+        let msg_id_hex = hex::encode(msg_id_bytes);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+
+        let sender_chain_key = match group.my_sender_chain_key {
+            Some(value) => value,
+            None => return false,
+        };
+        let sender_signing_key = match group.my_sender_signing_key {
+            Some(value) => value,
+            None => return false,
+        };
+        let sender_iteration = group.my_sender_iteration;
+
+        let mut sender_key =
+            match SenderKey::from_parts(sender_chain_key, sender_iteration, &sender_signing_key) {
+                Ok(value) => value,
+                Err(_) => return false,
+            };
+        let sender_key_seed = GroupSenderKeySeedWire {
+            chain_key: hex::encode(sender_chain_key),
+            iteration: sender_iteration,
+            verifying_key: hex::encode(sender_key.verifying_key().to_bytes()),
+        };
+
+        let sender_sig_message = build_group_inner_signature_message(
+            &group.group_id,
+            room_id_hex,
+            &msg_id_hex,
+            text,
+            timestamp,
+            &our_peer_id.0,
+        );
+        let sender_sig = identity_signing_key.sign(&sender_sig_message);
+
+        let sk_plaintext = GroupMessageSkWire {
+            iteration: sender_iteration,
+            ciphertext: String::new(),
+            signature: String::new(),
+            sender_key_seed,
+            sender: our_peer_id.to_hex(),
+            room_id: room_id_hex.to_string(),
+            msg_id: msg_id_hex.clone(),
+            text: text.to_string(),
+            timestamp,
+            sender_sig: hex::encode(sender_sig.to_bytes()),
+        };
+        let sk_plaintext_bytes = match serde_json::to_vec(&sk_plaintext) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let sk_message = match sender_key.encrypt(&sk_plaintext_bytes) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+
+        let wrapped_inner = serde_json::json!({
+            "iteration":       sk_message.iteration,
+            "ciphertext":      hex::encode(&sk_message.ciphertext),
+            "signature":       hex::encode(&sk_message.signature),
+            "sender_key_seed": {
+                "chain_key":     sk_plaintext.sender_key_seed.chain_key,
+                "iteration":     sk_plaintext.sender_key_seed.iteration,
+                "verifying_key": sk_plaintext.sender_key_seed.verifying_key,
+            }
+        });
+        let wrapped_inner_bytes = match serde_json::to_vec(&wrapped_inner) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+
+        use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+        let symmetric_cipher = match ChaCha20Poly1305::new_from_slice(&group.symmetric_key) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let wrapped = match symmetric_cipher.encrypt(
+            chacha20poly1305::Nonce::from_slice(&nonce_bytes),
+            wrapped_inner_bytes.as_ref(),
+        ) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+
+        let ring = match self.ring_public_keys_for_group(&group) {
+            Some(value) => value,
+            None => return false,
+        };
+        let ring_message = build_group_ring_signature_message(
+            &group.group_id,
+            group.sender_key_epoch,
+            &nonce_bytes,
+            &wrapped,
+        );
+        let ring_sig = match ring_sign(&identity_signing_key.to_bytes(), &ring, &ring_message) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+
+        let frame = serde_json::json!({
+            "type":      "group_message_sk",
+            "groupId":   hex::encode(group.group_id),
+            "epoch":     group.sender_key_epoch,
+            "nonce":     hex::encode(nonce_bytes),
+            "wrapped":   hex::encode(&wrapped),
+            "ring_sig":  ring_sig,
+        });
+
+        for participant in &room.participants {
+            if *participant == our_peer_id {
+                continue;
+            }
+            self.send_raw_frame(&participant.to_hex(), &frame);
+        }
+
+        group.my_sender_chain_key = Some(*sender_key.chain_key_bytes());
+        group.my_sender_iteration = sender_key.iteration;
+        if let Some(group_mut) = self
+            .groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter_mut()
+            .find(|candidate| candidate.group_id == group.group_id)
+        {
+            group_mut.my_sender_chain_key = group.my_sender_chain_key;
+            group_mut.my_sender_iteration = group.my_sender_iteration;
+        }
+
+        self.persist_room_message(
+            room_id_hex,
+            &our_peer_id.to_hex(),
+            text,
+            timestamp,
+            &msg_id_hex,
+            true,
+            None,
+        );
+        self.save_groups();
+        self.save_messages();
+        self.save_rooms();
+        true
+    }
+
     // -----------------------------------------------------------------------
     // Inbound frame dispatcher
     // -----------------------------------------------------------------------
@@ -53,58 +426,113 @@ impl MeshRuntime {
         let frame_type = envelope.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
         // LoSec negotiation — carry their own Ed25519 signatures.
-        if frame_type == "losec_request"  { return self.process_losec_request_frame(envelope); }
-        if frame_type == "losec_response" { return self.process_losec_response_frame(envelope); }
+        if frame_type == "losec_request" {
+            return self.process_losec_request_frame(envelope);
+        }
+        if frame_type == "losec_response" {
+            return self.process_losec_response_frame(envelope);
+        }
 
         // Gossip map entry.
-        if frame_type == "gossip_map_entry" { return self.process_gossip_map_entry_frame(envelope); }
+        if frame_type == "gossip_map_entry" {
+            return self.process_gossip_map_entry_frame(envelope);
+        }
+        if frame_type == "service_record" {
+            return self.process_service_record_frame(envelope);
+        }
 
         // Call signalling.
-        if frame_type == "call_offer"   { return self.process_call_offer_frame(envelope); }
-        if frame_type == "call_answer"  { return self.process_call_answer_frame(envelope); }
-        if frame_type == "call_hangup"  { return self.process_call_hangup_frame(envelope); }
+        if frame_type == "call_offer" {
+            return self.process_call_offer_frame(envelope);
+        }
+        if frame_type == "call_answer" {
+            return self.process_call_answer_frame(envelope);
+        }
+        if frame_type == "call_hangup" {
+            return self.process_call_hangup_frame(envelope);
+        }
 
         // WireGuard handshake.
-        if frame_type == "wg_init"      { return self.process_wg_init_frame(envelope); }
-        if frame_type == "wg_response"  { return self.process_wg_response_frame(envelope); }
+        if frame_type == "wg_init" {
+            return self.process_wg_init_frame(envelope);
+        }
+        if frame_type == "wg_response" {
+            return self.process_wg_response_frame(envelope);
+        }
 
         // Routing.
-        if frame_type == "route_announcement" { return self.process_route_announcement_frame(envelope); }
-        if frame_type == "mesh_packet"        { return self.process_mesh_packet_frame(envelope); }
+        if frame_type == "route_announcement" {
+            return self.process_route_announcement_frame(envelope);
+        }
+        if frame_type == "mesh_packet" {
+            return self.process_mesh_packet_frame(envelope);
+        }
 
         // File transfers.
-        if frame_type == "file_offer"    { return self.process_file_offer_frame(envelope); }
-        if frame_type == "file_chunk"    { return self.process_file_chunk_frame(envelope); }
-        if frame_type == "file_complete" { return self.process_file_complete_frame(envelope); }
+        if frame_type == "file_offer" {
+            return self.process_file_offer_frame(envelope);
+        }
+        if frame_type == "file_chunk" {
+            return self.process_file_chunk_frame(envelope);
+        }
+        if frame_type == "file_complete" {
+            return self.process_file_complete_frame(envelope);
+        }
 
         // Group messaging.
-        if frame_type == "group_rekey"                  { return self.process_group_rekey_frame(envelope); }
-        if frame_type == "group_invite"                 { return self.process_group_invite_frame(envelope); }
-        if frame_type == "group_message"                { return self.process_group_message_frame(envelope); }
-        if frame_type == "group_message_sk"             { return self.process_group_message_sk_frame(envelope); }
-        if frame_type == "group_reinclusion_request"    { return self.process_group_reinclusion_request_frame(envelope); }
+        if frame_type == "group_rekey" {
+            return self.process_group_rekey_frame(envelope);
+        }
+        if frame_type == "group_invite" {
+            return self.process_group_invite_frame(envelope);
+        }
+        if frame_type == "group_message" {
+            return self.process_group_message_frame(envelope);
+        }
+        if frame_type == "group_message_sk" {
+            return self.process_group_message_sk_frame(envelope);
+        }
+        if frame_type == "group_reinclusion_request" {
+            return self.process_group_reinclusion_request_frame(envelope);
+        }
 
         // Store-and-forward.
-        if frame_type == "sf_deposit"   { return self.process_sf_deposit_frame(envelope); }
-        if frame_type == "sf_deliver"   { return self.process_sf_deliver_frame(envelope); }
+        if frame_type == "sf_deposit" {
+            return self.process_sf_deposit_frame(envelope);
+        }
+        if frame_type == "sf_deliver" {
+            return self.process_sf_deliver_frame(envelope);
+        }
 
         // Delivery receipt.
-        if frame_type == "delivery_receipt" { return self.process_delivery_receipt_frame(envelope); }
+        if frame_type == "delivery_receipt" {
+            return self.process_delivery_receipt_frame(envelope);
+        }
 
         // Keepalive probes.
         if frame_type == "keepalive" {
-            let our_hex = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-                .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_default();
+            let our_hex = self
+                .identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|id| id.peer_id().to_hex())
+                .unwrap_or_default();
             if let Some(peer_hex) = envelope.get("sender").and_then(|v| v.as_str()) {
-                self.send_raw_frame(peer_hex, &serde_json::json!({
-                    "type": "keepalive_ack",
-                    "sender": our_hex,
-                }));
+                self.send_raw_frame(
+                    peer_hex,
+                    &serde_json::json!({
+                        "type": "keepalive_ack",
+                        "sender": our_hex,
+                    }),
+                );
             }
             return true;
         }
         // Keepalive ack — no action needed; last_rx already updated.
-        if frame_type == "keepalive_ack" { return true; }
+        if frame_type == "keepalive_ack" {
+            return true;
+        }
 
         // Typing indicator.
         if frame_type == "typing_indicator" {
@@ -112,12 +540,18 @@ impl MeshRuntime {
                 envelope.get("sender").and_then(|v| v.as_str()),
                 envelope.get("roomId").and_then(|v| v.as_str()),
             ) {
-                let is_active = envelope.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-                self.push_event("TypingIndicator", serde_json::json!({
-                    "roomId": room_id,
-                    "peerId": sender,
-                    "active": is_active,
-                }));
+                let is_active = envelope
+                    .get("active")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                self.push_event(
+                    "TypingIndicator",
+                    serde_json::json!({
+                        "roomId": room_id,
+                        "peerId": sender,
+                        "active": is_active,
+                    }),
+                );
             }
             return true;
         }
@@ -131,12 +565,15 @@ impl MeshRuntime {
                 envelope.get("emoji").and_then(|v| v.as_str()),
             ) {
                 if !emoji.is_empty() {
-                    self.push_event("ReactionAdded", serde_json::json!({
-                        "roomId": room_id,
-                        "msgId":  msg_id,
-                        "peerId": sender,
-                        "emoji":  emoji,
-                    }));
+                    self.push_event(
+                        "ReactionAdded",
+                        serde_json::json!({
+                            "roomId": room_id,
+                            "msgId":  msg_id,
+                            "peerId": sender,
+                            "emoji":  emoji,
+                        }),
+                    );
                 }
             }
             return true;
@@ -156,11 +593,11 @@ impl MeshRuntime {
             };
         }
 
-        let sender_hex      = field_str!("sender");
-        let room_id_hex     = field_str!("room");
-        let msg_id          = field_str!("msg_id");
-        let ts              = envelope.get("ts").and_then(|v| v.as_u64()).unwrap_or(0);
-        let ciphertext_hex  = field_str!("ciphertext");
+        let sender_hex = field_str!("sender");
+        let room_id_hex = field_str!("room");
+        let msg_id = field_str!("msg_id");
+        let ts = envelope.get("ts").and_then(|v| v.as_u64()).unwrap_or(0);
+        let ciphertext_hex = field_str!("ciphertext");
 
         // SECURITY (HIGH-4): Check the deduplication cache BEFORE any
         // expensive cryptographic work.  If the message ID has already been
@@ -169,10 +606,16 @@ impl MeshRuntime {
         // message, potentially causing duplicate notifications or state
         // corruption after session reload.
         {
-            let mut dedup = self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut dedup = self
+                .dedup_msg_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if dedup.is_duplicate(&room_id_hex, &msg_id) {
                 // Duplicate detected — silently discard the frame.
-                eprintln!("[messaging] DEBUG: duplicate message {} in room {} — dropped", msg_id, room_id_hex);
+                eprintln!(
+                    "[messaging] DEBUG: duplicate message {} in room {} — dropped",
+                    msg_id, room_id_hex
+                );
                 return false;
             }
         }
@@ -187,8 +630,14 @@ impl MeshRuntime {
 
         // Legacy fallback: read plaintext header fields if enc_header absent.
         let legacy_ratchet_pub_hex = envelope.get("ratchet_pub").and_then(|v| v.as_str());
-        let legacy_prev_chain_len = envelope.get("prev_chain_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let legacy_msg_num = envelope.get("msg_num").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let legacy_prev_chain_len = envelope
+            .get("prev_chain_len")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let legacy_msg_num = envelope
+            .get("msg_num")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
 
         // Decode binary fields.
         let ciphertext = match hex::decode(&ciphertext_hex) {
@@ -202,35 +651,60 @@ impl MeshRuntime {
         let legacy_ratchet_pub_bytes: Option<[u8; 32]> = legacy_ratchet_pub_hex
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            });
 
         let sender_id_bytes: [u8; 32] = match hex::decode(&sender_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let sender_peer_id = PeerId(sender_id_bytes);
 
         // Reject frames from unknown senders.
-        let contact = match self.contacts.lock().unwrap_or_else(|e| e.into_inner())
-            .get(&sender_peer_id).cloned()
+        let contact = match self
+            .contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&sender_peer_id)
+            .cloned()
         {
             Some(c) => c,
             None => return false,
         };
 
         // Bootstrap a ratchet session if we don't have one for this sender yet.
-        if !self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+        if !self
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .contains_key(&sender_peer_id)
         {
-            if let Some(session) = self.bootstrap_session_from_frame(envelope, &contact, sender_peer_id) {
-                self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+            if let Some(session) =
+                self.bootstrap_session_from_frame(envelope, &contact, sender_peer_id)
+            {
+                self.ratchet_sessions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .insert(sender_peer_id, session);
             }
         } else {
             // Existing session — clear any pending X3DH/PQXDH headers for this peer
             // (receipt of a reply means Bob has established his matching session).
-            self.x3dh_pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&sender_peer_id);
-            self.pqxdh_pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&sender_peer_id);
+            self.x3dh_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&sender_peer_id);
+            self.pqxdh_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&sender_peer_id);
         }
 
         // SECURITY (CRIT-2): Decrypt the ratchet header from enc_header, or
@@ -256,10 +730,11 @@ impl MeshRuntime {
             };
             let their_x25519_pub_for_hdr = x25519_dalek::PublicKey::from(contact.x25519_public);
             let dh_shared = our_x25519_for_hdr.diffie_hellman(&their_x25519_pub_for_hdr);
-            let hdr_key = match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
-                Ok(k) => k,
-                Err(_) => return false,
-            };
+            let hdr_key =
+                match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
+                    Ok(k) => k,
+                    Err(_) => return false,
+                };
             match DoubleRatchetSession::decrypt_header_with_key(&enc_bytes, &hdr_key) {
                 Ok(h) => h,
                 Err(_) => return false,
@@ -278,7 +753,10 @@ impl MeshRuntime {
 
         // Advance the ratchet and derive message keys.
         let (cipher_key, session_nonce, ratchet_msg_key) = {
-            let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sessions = self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let session = match sessions.get_mut(&sender_peer_id) {
                 Some(s) => s,
                 None => return false,
@@ -301,10 +779,11 @@ impl MeshRuntime {
                 None => return false,
             }
         };
-        let sender_verifying_key = match ed25519_dalek::VerifyingKey::from_bytes(&contact.ed25519_public) {
-            Ok(k) => k,
-            Err(_) => return false,
-        };
+        let sender_verifying_key =
+            match ed25519_dalek::VerifyingKey::from_bytes(&contact.ed25519_public) {
+                Ok(k) => k,
+                Err(_) => return false,
+            };
 
         // Decrypt via the four-layer scheme (§7.1).
         let plaintext = match decrypt_message(
@@ -331,9 +810,18 @@ impl MeshRuntime {
             if let Some(inner_hdr) = inner.get("hdr") {
                 // Verify the inner header matches the envelope header to
                 // detect substitution attacks on the encrypted outer header.
-                let inner_rp = inner_hdr.get("ratchet_pub").and_then(|v| v.as_str()).unwrap_or("");
-                let inner_pcl = inner_hdr.get("prev_chain_len").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                let inner_mn = inner_hdr.get("msg_num").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let inner_rp = inner_hdr
+                    .get("ratchet_pub")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let inner_pcl = inner_hdr
+                    .get("prev_chain_len")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let inner_mn = inner_hdr
+                    .get("msg_num")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
                 // Verify the outer (encrypted) header matches the inner
                 // (AEAD-authenticated) header — a mismatch indicates the
                 // encrypted header blob was swapped by an attacker.
@@ -358,12 +846,23 @@ impl MeshRuntime {
         };
 
         // Auto-create a DM room if one doesn't exist for this conversation.
-        let room_exists = self.rooms.lock().unwrap_or_else(|e| e.into_inner())
-            .iter().any(|r| hex::encode(r.id) == room_id_hex);
+        let room_exists = self
+            .rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|r| hex::encode(r.id) == room_id_hex);
         if !room_exists {
-            let our_peer_id = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-                .as_ref().map(|id| id.peer_id()).unwrap_or(PeerId([0u8; 32]));
-            let peer_name = contact.display_name.as_deref()
+            let our_peer_id = self
+                .identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|id| id.peer_id())
+                .unwrap_or(PeerId([0u8; 32]));
+            let peer_name = contact
+                .display_name
+                .as_deref()
                 .or(contact.local_nickname.as_deref())
                 .unwrap_or(&contact.peer_id.short_hex())
                 .to_string();
@@ -374,7 +873,10 @@ impl MeshRuntime {
                     room.id.copy_from_slice(&id_bytes);
                 }
             }
-            self.rooms.lock().unwrap_or_else(|e| e.into_inner()).push(room);
+            self.rooms
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(room);
             self.save_rooms();
         }
 
@@ -388,7 +890,9 @@ impl MeshRuntime {
             "isOutgoing": false,
             "authStatus": "authenticated",
         });
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(room_id_hex.clone())
             .or_default()
             .push(msg.clone());
@@ -413,13 +917,18 @@ impl MeshRuntime {
         self.push_event("MessageAdded", msg);
         let room_summary = {
             let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-            rooms.iter().find(|r| hex::encode(r.id) == room_id_hex).map(|r| serde_json::json!({
-                "id":           hex::encode(r.id),
-                "name":         r.name,
-                "lastMessage":  r.last_message_preview,
-                "unreadCount":  r.unread_count,
-                "timestamp":    r.last_message_at,
-            }))
+            rooms
+                .iter()
+                .find(|r| hex::encode(r.id) == room_id_hex)
+                .map(|r| {
+                    serde_json::json!({
+                        "id":           hex::encode(r.id),
+                        "name":         r.name,
+                        "lastMessage":  r.last_message_preview,
+                        "unreadCount":  r.unread_count,
+                        "timestamp":    r.last_message_at,
+                    })
+                })
         };
         if let Some(summary) = room_summary {
             self.push_event("RoomUpdated", summary);
@@ -427,22 +936,37 @@ impl MeshRuntime {
 
         // Send a delivery receipt to the sender (§7.3).
         {
-            let our_hex = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-                .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_default();
+            let our_hex = self
+                .identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|id| id.peer_id().to_hex())
+                .unwrap_or_default();
             let ts_now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs()).unwrap_or(0);
-            self.send_raw_frame(&sender_hex, &serde_json::json!({
-                "type":   "delivery_receipt",
-                "sender": our_hex,
-                "msg_id": msg_id,
-                "room":   room_id_hex,
-                "ts":     ts_now,
-            }));
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            self.send_raw_frame(
+                &sender_hex,
+                &serde_json::json!({
+                    "type":   "delivery_receipt",
+                    "sender": our_hex,
+                    "msg_id": msg_id,
+                    "room":   room_id_hex,
+                    "ts":     ts_now,
+                }),
+            );
         }
 
         // Submit notification (§14) — dispatcher applies jitter/suppression.
-        if self.module_config.lock().unwrap_or_else(|e| e.into_inner()).social.notifications {
+        if self
+            .module_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .social
+            .notifications
+        {
             let conv_id_padded: Option<[u8; 32]> = hex::decode(&room_id_hex)
                 .ok()
                 .filter(|b| b.len() == 16)
@@ -451,25 +975,38 @@ impl MeshRuntime {
                     a[..16].copy_from_slice(&b);
                     a
                 });
-            let sender_name = self.contacts.lock().unwrap_or_else(|e| e.into_inner())
+            let sender_name = self
+                .contacts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .get(&sender_peer_id)
                 .and_then(|c| c.display_name.clone())
                 .unwrap_or_else(|| sender_peer_id.short_hex());
             let notif_event = crate::notifications::NotificationEvent {
-                priority:        crate::notifications::NotificationPriority::Normal,
-                title:           format!("New message from {}", sender_name),
-                body:            Some(if text.len() > 60 { format!("{}…", &text[..60]) } else { text.clone() }),
-                sender_id:       Some(sender_peer_id.0),
+                priority: crate::notifications::NotificationPriority::Normal,
+                title: format!("New message from {}", sender_name),
+                body: Some(if text.len() > 60 {
+                    format!("{}…", &text[..60])
+                } else {
+                    text.clone()
+                }),
+                sender_id: Some(sender_peer_id.0),
                 conversation_id: conv_id_padded,
-                created_at:      ts,
+                created_at: ts,
             };
-            self.notifications.lock().unwrap_or_else(|e| e.into_inner()).submit(notif_event);
+            self.notifications
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .submit(notif_event);
         }
 
         // SECURITY (HIGH-4): Record this message ID in the deduplication cache
         // so any future replay of the same message will be silently dropped.
         {
-            let mut dedup = self.dedup_msg_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut dedup = self
+                .dedup_msg_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             dedup.mark_delivered(&room_id_hex, &msg_id);
         }
 
@@ -491,61 +1028,81 @@ impl MeshRuntime {
         contact: &crate::pairing::contact::ContactRecord,
         _sender_peer_id: PeerId,
     ) -> Option<DoubleRatchetSession> {
-        let eph_pub_opt: Option<[u8; 32]> = envelope.get("x3dh_eph_pub")
+        let eph_pub_opt: Option<[u8; 32]> = envelope
+            .get("x3dh_eph_pub")
             .and_then(|v| v.as_str())
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            });
 
-        let enc_ik_opt = envelope.get("x3dh_encrypted_ik")
+        let enc_ik_opt = envelope
+            .get("x3dh_encrypted_ik")
             .and_then(|v| v.as_str())
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
-            .map(|b| { let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE]; a.copy_from_slice(&b); a });
+            .map(|b| {
+                let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
+                a.copy_from_slice(&b);
+                a
+            });
 
-        let pqxdh_kem_ct = envelope.get("pqxdh_kem_ct")
+        let pqxdh_kem_ct = envelope
+            .get("pqxdh_kem_ct")
             .and_then(|v| v.as_str())
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == crate::crypto::x3dh::KEM_CT_SIZE);
 
-        let pqxdh_kem_binding: Option<[u8; 32]> = envelope.get("pqxdh_kem_binding")
+        let pqxdh_kem_binding: Option<[u8; 32]> = envelope
+            .get("pqxdh_kem_binding")
             .and_then(|v| v.as_str())
             .and_then(|h| hex::decode(h).ok())
             .filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            });
 
         if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
             // X3DH/PQXDH response path: we are Bob receiving Alice's init header.
-            use crate::crypto::x3dh::{x3dh_respond, pqxdh_decapsulate, X3dhInitHeader};
+            use crate::crypto::x3dh::{pqxdh_decapsulate, x3dh_respond, X3dhInitHeader};
             use hkdf::Hkdf;
             use zeroize::Zeroizing;
 
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             let id = guard.as_ref()?;
 
-            let header = X3dhInitHeader { eph_pub, encrypted_ik_pub: enc_ik };
-            let mut output = x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header).ok()?;
+            let header = X3dhInitHeader {
+                eph_pub,
+                encrypted_ik_pub: enc_ik,
+            };
+            let mut output =
+                x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header).ok()?;
 
             // PQXDH: mix in post-quantum shared secret if both fields are present.
             if let (Some(ref kem_ct), Some(ref kem_binding)) = (&pqxdh_kem_ct, &pqxdh_kem_binding) {
-                let dh3 = id.preauth_x25519_secret.diffie_hellman(
-                    &x25519_dalek::PublicKey::from(eph_pub),
-                );
+                let dh3 = id
+                    .preauth_x25519_secret
+                    .diffie_hellman(&x25519_dalek::PublicKey::from(eph_pub));
                 if let Ok(pq_ss) = pqxdh_decapsulate(
                     &id.kem_decapsulation_key,
                     kem_ct,
                     kem_binding,
                     dh3.as_bytes(),
                 ) {
-                    let dh1 = id.preauth_x25519_secret.diffie_hellman(
-                        &x25519_dalek::PublicKey::from(contact.x25519_public),
-                    );
-                    let dh2 = id.x25519_secret.diffie_hellman(
-                        &x25519_dalek::PublicKey::from(eph_pub),
-                    );
-                    let dh3_inner = id.preauth_x25519_secret.diffie_hellman(
-                        &x25519_dalek::PublicKey::from(eph_pub),
-                    );
+                    let dh1 = id
+                        .preauth_x25519_secret
+                        .diffie_hellman(&x25519_dalek::PublicKey::from(contact.x25519_public));
+                    let dh2 = id
+                        .x25519_secret
+                        .diffie_hellman(&x25519_dalek::PublicKey::from(eph_pub));
+                    let dh3_inner = id
+                        .preauth_x25519_secret
+                        .diffie_hellman(&x25519_dalek::PublicKey::from(eph_pub));
                     let mut ikm = Zeroizing::new(Vec::with_capacity(32 + 32 * 4));
                     ikm.extend_from_slice(&[0xFF; 32]);
                     ikm.extend_from_slice(dh1.as_bytes());
@@ -568,13 +1125,19 @@ impl MeshRuntime {
             let master = output.master_secret.as_bytes();
             // Bob is the DR receiver; initial ratchet key = his own preauth keypair.
             let preauth_secret = X25519Secret::from(id.preauth_x25519_secret.to_bytes());
-            let preauth_pub    = *id.preauth_x25519_pub.as_bytes();
-            Some(DoubleRatchetSession::init_receiver(master, preauth_secret, &preauth_pub))
+            let preauth_pub = *id.preauth_x25519_pub.as_bytes();
+            Some(DoubleRatchetSession::init_receiver(
+                master,
+                preauth_secret,
+                &preauth_pub,
+            ))
         } else {
             // Static DH fallback.
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             guard.as_ref().and_then(|id| {
-                bootstrap_ratchet_session(id, contact).ok().map(|(s, _, _)| s)
+                bootstrap_ratchet_session(id, contact)
+                    .ok()
+                    .map(|(s, _, _)| s)
             })
         }
     }
@@ -592,11 +1155,15 @@ impl MeshRuntime {
     /// Returns `true` on success, `false` if identity is not unlocked or the
     /// room does not exist.
     pub fn send_text_message(&self, room_id_hex: &str, text: &str) -> bool {
-        use crate::service::runtime::try_random_fill;
         use crate::crypto::message_encrypt::encrypt_message;
+        use crate::service::runtime::try_random_fill;
 
-        if !self.identity_unlocked { return false; }
-        if text.is_empty() { return false; }
+        if !self.identity_unlocked {
+            return false;
+        }
+        if text.is_empty() {
+            return false;
+        }
 
         // Resolve the room and its participants.
         let (_room_id, participants) = {
@@ -611,37 +1178,46 @@ impl MeshRuntime {
         let (our_peer_id, our_ed25519) = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_ref() {
-                Some(id) => (
-                    id.peer_id(),
-                    id.ed25519_signing.clone(),
-                ),
+                Some(id) => (id.peer_id(), id.ed25519_signing.clone()),
                 None => return false,
             }
         };
 
         // Generate a unique message ID.
         let mut msg_id_bytes = [0u8; 16];
-        if !try_random_fill(&mut msg_id_bytes) { return false; }
+        if !try_random_fill(&mut msg_id_bytes) {
+            return false;
+        }
         let msg_id_hex = hex::encode(msg_id_bytes);
 
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         // Send to each non-self participant.
         for peer_id in &participants {
-            if *peer_id == our_peer_id { continue; }
+            if *peer_id == our_peer_id {
+                continue;
+            }
 
             let peer_hex = peer_id.to_hex();
-            let contact = match self.contacts.lock().unwrap_or_else(|e| e.into_inner())
-                .get(peer_id).cloned()
+            let contact = match self
+                .contacts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(peer_id)
+                .cloned()
             {
                 Some(c) => c,
                 None => continue,
             };
 
             // Ensure a ratchet session exists for this peer.
-            if !self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+            if !self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .contains_key(peer_id)
             {
                 let id_guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
@@ -649,14 +1225,20 @@ impl MeshRuntime {
                     match bootstrap_ratchet_session(id, &contact) {
                         Ok((session, x3dh_hdr, pq_ext)) => {
                             if let Some(h) = x3dh_hdr {
-                                self.x3dh_pending.lock().unwrap_or_else(|e| e.into_inner())
+                                self.x3dh_pending
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
                                     .insert(*peer_id, h);
                             }
                             if let Some(e) = pq_ext {
-                                self.pqxdh_pending.lock().unwrap_or_else(|e| e.into_inner())
+                                self.pqxdh_pending
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
                                     .insert(*peer_id, e);
                             }
-                            self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+                            self.ratchet_sessions
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
                                 .insert(*peer_id, session);
                         }
                         Err(_) => continue,
@@ -666,7 +1248,10 @@ impl MeshRuntime {
 
             // Advance ratchet for the next send message key.
             let (ratchet_header, msg_key) = {
-                let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+                let mut sessions = self
+                    .ratchet_sessions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 match sessions.get_mut(peer_id) {
                     Some(s) => match s.next_send_msg_key() {
                         Ok(k) => k,
@@ -690,14 +1275,16 @@ impl MeshRuntime {
             };
             let their_x25519_pub_for_hdr = x25519_dalek::PublicKey::from(contact.x25519_public);
             let dh_shared = our_x25519_for_hdr.diffie_hellman(&their_x25519_pub_for_hdr);
-            let hdr_key = match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
-                Ok(k) => k,
-                Err(_) => continue,
-            };
-            let enc_header = match DoubleRatchetSession::encrypt_header_with_key(&ratchet_header, &hdr_key) {
-                Ok(h) => h,
-                Err(_) => continue,
-            };
+            let hdr_key =
+                match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                };
+            let enc_header =
+                match DoubleRatchetSession::encrypt_header_with_key(&ratchet_header, &hdr_key) {
+                    Ok(h) => h,
+                    Err(_) => continue,
+                };
             let (cipher_key, session_nonce, ratchet_msg_key) =
                 match DoubleRatchetSession::expand_msg_key(&msg_key) {
                     Ok(k) => k,
@@ -757,21 +1344,41 @@ impl MeshRuntime {
             });
 
             // Attach X3DH init header if this is our first message to this peer.
-            if let Some((eph, ik)) = self.x3dh_pending.lock().unwrap_or_else(|e| e.into_inner())
-                .get(peer_id).copied()
+            if let Some((eph, ik)) = self
+                .x3dh_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(peer_id)
+                .copied()
             {
                 if let Some(obj) = frame.as_object_mut() {
-                    obj.insert("x3dh_eph_pub".into(), serde_json::Value::String(hex::encode(eph)));
-                    obj.insert("x3dh_encrypted_ik".into(), serde_json::Value::String(hex::encode(ik)));
+                    obj.insert(
+                        "x3dh_eph_pub".into(),
+                        serde_json::Value::String(hex::encode(eph)),
+                    );
+                    obj.insert(
+                        "x3dh_encrypted_ik".into(),
+                        serde_json::Value::String(hex::encode(ik)),
+                    );
                 }
             }
             // Attach PQXDH extension if present.
-            if let Some((kem_ct, kem_binding)) = self.pqxdh_pending.lock().unwrap_or_else(|e| e.into_inner())
-                .get(peer_id).cloned()
+            if let Some((kem_ct, kem_binding)) = self
+                .pqxdh_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(peer_id)
+                .cloned()
             {
                 if let Some(obj) = frame.as_object_mut() {
-                    obj.insert("pqxdh_kem_ct".into(), serde_json::Value::String(hex::encode(&kem_ct)));
-                    obj.insert("pqxdh_kem_binding".into(), serde_json::Value::String(hex::encode(kem_binding)));
+                    obj.insert(
+                        "pqxdh_kem_ct".into(),
+                        serde_json::Value::String(hex::encode(&kem_ct)),
+                    );
+                    obj.insert(
+                        "pqxdh_kem_binding".into(),
+                        serde_json::Value::String(hex::encode(kem_binding)),
+                    );
                 }
             }
 
@@ -787,7 +1394,9 @@ impl MeshRuntime {
             "timestamp": ts,
             "isOutgoing": true,
         });
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(room_id_hex.to_string())
             .or_default()
             .push(msg.clone());
@@ -802,20 +1411,25 @@ impl MeshRuntime {
                     text.to_string()
                 });
                 room.last_message_at = Some(ts);
-                room.next_sequence   += 1;
+                room.next_sequence += 1;
             }
         }
 
         self.push_event("MessageAdded", msg);
         let room_summary = {
             let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-            rooms.iter().find(|r| hex::encode(r.id) == room_id_hex).map(|r| serde_json::json!({
-                "id":          hex::encode(r.id),
-                "name":        r.name,
-                "lastMessage": r.last_message_preview,
-                "unreadCount": r.unread_count,
-                "timestamp":   r.last_message_at,
-            }))
+            rooms
+                .iter()
+                .find(|r| hex::encode(r.id) == room_id_hex)
+                .map(|r| {
+                    serde_json::json!({
+                        "id":          hex::encode(r.id),
+                        "name":        r.name,
+                        "lastMessage": r.last_message_preview,
+                        "unreadCount": r.unread_count,
+                        "timestamp":   r.last_message_at,
+                    })
+                })
         };
         if let Some(summary) = room_summary {
             self.push_event("RoomUpdated", summary);
@@ -861,7 +1475,10 @@ impl MeshRuntime {
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&peer_bytes);
                 let peer_id = PeerId(arr);
-                let mut wg = self.wireguard_sessions.lock().unwrap_or_else(|e| e.into_inner());
+                let mut wg = self
+                    .wireguard_sessions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if let Some(session) = wg.get_mut(&peer_id) {
                     match session.encrypt(&frame_bytes) {
                         Ok(ct) => {
@@ -881,10 +1498,14 @@ impl MeshRuntime {
         };
 
         // Write to the established TCP connection.
-        let mut conns = self.clearnet_connections.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conns = self
+            .clearnet_connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(stream) = conns.get_mut(peer_id_hex) {
             let len = payload.len() as u32;
-            if let Err(e) = stream.write_all(&len.to_be_bytes())
+            if let Err(e) = stream
+                .write_all(&len.to_be_bytes())
                 .and_then(|_| stream.write_all(&payload))
             {
                 eprintln!("[transport] WARNING: failed to write frame to peer {peer_id_hex}: {e}");
@@ -917,12 +1538,15 @@ impl MeshRuntime {
         {
             let mut messages = self.messages.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(room_msgs) = messages.get_mut(&room_id) {
-                if let Some(msg) = room_msgs.iter_mut()
+                if let Some(msg) = room_msgs
+                    .iter_mut()
                     .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(&msg_id))
                 {
                     // Only promote forward: sent → delivered.
-                    let current = msg.get("deliveryStatus")
-                        .and_then(|v| v.as_str()).unwrap_or("sent");
+                    let current = msg
+                        .get("deliveryStatus")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("sent");
                     if current == "sent" {
                         msg["deliveryStatus"] = serde_json::json!("delivered");
                     }
@@ -931,11 +1555,14 @@ impl MeshRuntime {
         }
 
         // Emit event so the UI can update the message's delivery indicator.
-        self.push_event("MessageStatusUpdated", serde_json::json!({
-            "msgId":          msg_id,
-            "roomId":         room_id,
-            "deliveryStatus": "delivered",
-        }));
+        self.push_event(
+            "MessageStatusUpdated",
+            serde_json::json!({
+                "msgId":          msg_id,
+                "roomId":         room_id,
+                "deliveryStatus": "delivered",
+            }),
+        );
 
         true
     }
@@ -961,7 +1588,11 @@ impl MeshRuntime {
         };
 
         let sender_bytes: [u8; 32] = match hex::decode(&sender_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let sender_peer_id = crate::identity::peer_id::PeerId(sender_bytes);
@@ -978,45 +1609,67 @@ impl MeshRuntime {
 
         // Bootstrap ratchet session from X3DH header if the session is missing.
         {
-            let contact = self.contacts.lock().unwrap_or_else(|e| e.into_inner())
-                .get(&sender_peer_id).cloned();
+            let contact = self
+                .contacts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&sender_peer_id)
+                .cloned();
             if let Some(ref contact) = contact {
-                if !self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+                if !self
+                    .ratchet_sessions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .contains_key(&sender_peer_id)
                 {
-                    let eph_pub_opt = envelope.get("x3dh_eph_pub")
+                    let eph_pub_opt = envelope
+                        .get("x3dh_eph_pub")
                         .and_then(|v| v.as_str())
                         .and_then(|s| hex::decode(s).ok())
                         .filter(|b| b.len() == 32)
-                        .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
-                    let enc_ik_opt = envelope.get("x3dh_encrypted_ik")
+                        .map(|b| {
+                            let mut a = [0u8; 32];
+                            a.copy_from_slice(&b);
+                            a
+                        });
+                    let enc_ik_opt = envelope
+                        .get("x3dh_encrypted_ik")
                         .and_then(|v| v.as_str())
                         .and_then(|s| hex::decode(s).ok())
                         .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
                         .map(|b| {
                             let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
-                            a.copy_from_slice(&b); a
+                            a.copy_from_slice(&b);
+                            a
                         });
                     if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
                         use crate::crypto::x3dh::{x3dh_respond, X3dhInitHeader};
                         let session_result: Option<DoubleRatchetSession> = {
                             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
                             guard.as_ref().and_then(|id| {
-                                let header = X3dhInitHeader { eph_pub, encrypted_ik_pub: enc_ik };
+                                let header = X3dhInitHeader {
+                                    eph_pub,
+                                    encrypted_ik_pub: enc_ik,
+                                };
                                 x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header)
                                     .ok()
                                     .map(|out| {
                                         let master = out.master_secret.as_bytes();
                                         let preauth_secret = x25519_dalek::StaticSecret::from(
-                                            id.preauth_x25519_secret.to_bytes());
+                                            id.preauth_x25519_secret.to_bytes(),
+                                        );
                                         let preauth_pub = *id.preauth_x25519_pub.as_bytes();
                                         DoubleRatchetSession::init_receiver(
-                                            master, preauth_secret, &preauth_pub)
+                                            master,
+                                            preauth_secret,
+                                            &preauth_pub,
+                                        )
                                     })
                             })
                         };
                         if let Some(session) = session_result {
-                            self.ratchet_sessions.lock()
+                            self.ratchet_sessions
+                                .lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .insert(sender_peer_id, session);
                         }
@@ -1028,7 +1681,10 @@ impl MeshRuntime {
 
         // Decrypt the rekey payload using the ratchet message key.
         let plaintext = {
-            let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sessions = self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let session = match sessions.get_mut(&sender_peer_id) {
                 Some(s) => s,
                 None => return false,
@@ -1038,7 +1694,10 @@ impl MeshRuntime {
                 Err(_) => return false,
             };
             // Decrypt using ChaCha20-Poly1305; nonce = all-zero 12 bytes.
-            use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::{Aead, Nonce}};
+            use chacha20poly1305::{
+                aead::{Aead, Nonce},
+                ChaCha20Poly1305, Key, KeyInit,
+            };
             let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
             let nonce = Nonce::<ChaCha20Poly1305>::default();
             match cipher.decrypt(&nonce, ct.as_ref()) {
@@ -1065,11 +1724,19 @@ impl MeshRuntime {
             None => return false,
         };
         let new_key_bytes = match hex::decode(&new_key_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let gid_bytes = match hex::decode(&group_id_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
 
@@ -1081,7 +1748,8 @@ impl MeshRuntime {
                 group.sender_key_epoch = new_epoch;
                 group.last_rekey_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs()).unwrap_or(0);
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
                 drop(groups);
                 self.save_groups();
                 return true;
@@ -1110,7 +1778,11 @@ impl MeshRuntime {
             Err(_) => return false,
         };
         let sender_bytes: [u8; 32] = match hex::decode(&sender_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let sender_peer_id = crate::identity::peer_id::PeerId(sender_bytes);
@@ -1124,27 +1796,41 @@ impl MeshRuntime {
         // bootstrap_session_from_frame, but inlined because group frames carry
         // the ratchet header in a different JSON location.
         {
-            let contact = self.contacts.lock().unwrap_or_else(|e| e.into_inner())
-                .get(&sender_peer_id).cloned();
+            let contact = self
+                .contacts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&sender_peer_id)
+                .cloned();
             if let Some(ref _contact) = contact {
-                if !self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+                if !self
+                    .ratchet_sessions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .contains_key(&sender_peer_id)
                 {
                     // Extract Alice's ephemeral X25519 public key (32 bytes).
-                    let eph_pub_opt = envelope.get("x3dh_eph_pub")
+                    let eph_pub_opt = envelope
+                        .get("x3dh_eph_pub")
                         .and_then(|v| v.as_str())
                         .and_then(|s| hex::decode(s).ok())
                         .filter(|b| b.len() == 32)
-                        .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
+                        .map(|b| {
+                            let mut a = [0u8; 32];
+                            a.copy_from_slice(&b);
+                            a
+                        });
                     // Extract Alice's encrypted identity key (48 bytes: 32-byte
                     // IK + 16-byte AES-GCM tag).
-                    let enc_ik_opt = envelope.get("x3dh_encrypted_ik")
+                    let enc_ik_opt = envelope
+                        .get("x3dh_encrypted_ik")
                         .and_then(|v| v.as_str())
                         .and_then(|s| hex::decode(s).ok())
                         .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
                         .map(|b| {
                             let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
-                            a.copy_from_slice(&b); a
+                            a.copy_from_slice(&b);
+                            a
                         });
                     if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
                         use crate::crypto::x3dh::{x3dh_respond, X3dhInitHeader};
@@ -1153,7 +1839,10 @@ impl MeshRuntime {
                         let session_result: Option<DoubleRatchetSession> = {
                             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
                             guard.as_ref().and_then(|id| {
-                                let header = X3dhInitHeader { eph_pub, encrypted_ik_pub: enc_ik };
+                                let header = X3dhInitHeader {
+                                    eph_pub,
+                                    encrypted_ik_pub: enc_ik,
+                                };
                                 x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header)
                                     .ok()
                                     .map(|out| {
@@ -1162,15 +1851,20 @@ impl MeshRuntime {
                                         // use our preauth keypair as the initial
                                         // ratchet key pair.
                                         let preauth_secret = x25519_dalek::StaticSecret::from(
-                                            id.preauth_x25519_secret.to_bytes());
+                                            id.preauth_x25519_secret.to_bytes(),
+                                        );
                                         let preauth_pub = *id.preauth_x25519_pub.as_bytes();
                                         DoubleRatchetSession::init_receiver(
-                                            master, preauth_secret, &preauth_pub)
+                                            master,
+                                            preauth_secret,
+                                            &preauth_pub,
+                                        )
                                     })
                             })
                         };
                         if let Some(session) = session_result {
-                            self.ratchet_sessions.lock()
+                            self.ratchet_sessions
+                                .lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .insert(sender_peer_id, session);
                         }
@@ -1191,7 +1885,10 @@ impl MeshRuntime {
             Err(_) => return false,
         };
         let plaintext = {
-            let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sessions = self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let session = match sessions.get_mut(&sender_peer_id) {
                 Some(s) => s,
                 None => return false,
@@ -1200,7 +1897,10 @@ impl MeshRuntime {
                 Ok(k) => k,
                 Err(_) => return false,
             };
-            use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::{Aead, Nonce}};
+            use chacha20poly1305::{
+                aead::{Aead, Nonce},
+                ChaCha20Poly1305, Key, KeyInit,
+            };
             let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
             let nonce = Nonce::<ChaCha20Poly1305>::default();
             match cipher.decrypt(&nonce, ct.as_ref()) {
@@ -1220,58 +1920,103 @@ impl MeshRuntime {
         };
 
         // Extract group credentials from the invite.
-        let group_id_hex    = match inv.get("groupId").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+        let group_id_hex = match inv.get("groupId").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return false,
         };
         let ed25519_pub_hex = match inv.get("ed25519Pub").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+            Some(s) => s.to_string(),
+            None => return false,
         };
-        let x25519_pub_hex  = match inv.get("x25519Pub").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+        let x25519_pub_hex = match inv.get("x25519Pub").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return false,
         };
-        let sym_key_hex     = match inv.get("symmetricKey").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+        let sym_key_hex = match inv.get("symmetricKey").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return false,
         };
-        let sender_key_epoch = inv.get("senderKeyEpoch").and_then(|v| v.as_u64()).unwrap_or(1);
-        let name = inv.get("name").and_then(|v| v.as_str()).unwrap_or("Group").to_string();
+        let sender_key_epoch = inv
+            .get("senderKeyEpoch")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1);
+        let name = inv
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Group")
+            .to_string();
 
         let gid_bytes = match hex::decode(&group_id_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let ed25519_pub_bytes = match hex::decode(&ed25519_pub_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let x25519_pub_bytes = match hex::decode(&x25519_pub_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let sym_key_bytes = match hex::decode(&sym_key_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
-        let members: Vec<crate::identity::peer_id::PeerId> = inv.get("members")
+        let members: Vec<crate::identity::peer_id::PeerId> = inv
+            .get("members")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|m| m.as_str())
-                .filter_map(|s| hex::decode(s).ok())
-                .filter(|b| b.len() == 32)
-                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b);
-                    crate::identity::peer_id::PeerId(a) })
-                .collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.as_str())
+                    .filter_map(|s| hex::decode(s).ok())
+                    .filter(|b| b.len() == 32)
+                    .map(|b| {
+                        let mut a = [0u8; 32];
+                        a.copy_from_slice(&b);
+                        crate::identity::peer_id::PeerId(a)
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
-        let admins: Vec<crate::identity::peer_id::PeerId> = inv.get("admins")
+        let admins: Vec<crate::identity::peer_id::PeerId> = inv
+            .get("admins")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|m| m.as_str())
-                .filter_map(|s| hex::decode(s).ok())
-                .filter(|b| b.len() == 32)
-                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b);
-                    crate::identity::peer_id::PeerId(a) })
-                .collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.as_str())
+                    .filter_map(|s| hex::decode(s).ok())
+                    .filter(|b| b.len() == 32)
+                    .map(|b| {
+                        let mut a = [0u8; 32];
+                        a.copy_from_slice(&b);
+                        crate::identity::peer_id::PeerId(a)
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let our_peer_id = match self.identity.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map(|id| id.peer_id())
+        let our_peer_id = match self
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|id| id.peer_id())
         {
             Some(p) => p,
             None => return false,
@@ -1279,45 +2024,56 @@ impl MeshRuntime {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs()).unwrap_or(0);
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         // Skip if we are already a member of this group (idempotent).
-        let already_member = self.groups.lock().unwrap_or_else(|e| e.into_inner())
-            .iter().any(|g| g.group_id == gid_bytes);
+        let already_member = self
+            .groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|g| g.group_id == gid_bytes);
         if already_member {
             return true;
         }
 
         // Build and store the Group record.
         use crate::groups::group::{Group, GroupPublicProfile, NetworkType};
-        let description_str = inv.get("description").and_then(|v| v.as_str())
-            .unwrap_or("").to_string();
+        let description_str = inv
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let profile = GroupPublicProfile {
-            group_id:     gid_bytes,
+            group_id: gid_bytes,
             display_name: name.clone(),
-            description:  description_str,
-            avatar_hash:  None,
+            description: description_str,
+            avatar_hash: None,
             network_type: NetworkType::Private,
             member_count: None,
-            created_at:   now,
-            signed_by:    sender_bytes,
-            signature:    vec![],
+            created_at: now,
+            signed_by: sender_bytes,
+            signature: vec![],
         };
         let group = Group::new_as_member(
             gid_bytes,
             profile,
             crate::groups::group::GroupKeys {
-                ed25519_public:  ed25519_pub_bytes,
+                ed25519_public: ed25519_pub_bytes,
                 ed25519_private: None,
-                x25519_public:   x25519_pub_bytes,
-                symmetric_key:   sym_key_bytes,
+                x25519_public: x25519_pub_bytes,
+                symmetric_key: sym_key_bytes,
             },
             our_peer_id,
             (members.clone(), admins),
             sender_key_epoch,
             now,
         );
-        self.groups.lock().unwrap_or_else(|e| e.into_inner()).push(group);
+        self.groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(group);
         self.save_groups();
 
         // Create a conversation room for this group so the UI shows it immediately.
@@ -1332,7 +2088,10 @@ impl MeshRuntime {
             "unreadCount": 0,
             "timestamp":   now,
         });
-        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).push(room);
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(room);
         self.save_rooms();
 
         self.push_event("RoomUpdated", room_summary);
@@ -1352,8 +2111,10 @@ impl MeshRuntime {
             None => return false,
         };
         // groupId is carried unencrypted so we can request re-inclusion on failure.
-        let outer_group_id_hex = envelope.get("groupId")
-            .and_then(|v| v.as_str()).map(|s| s.to_string());
+        let outer_group_id_hex = envelope
+            .get("groupId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let ciphertext_hex = match envelope.get("ciphertext").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return false,
@@ -1363,49 +2124,71 @@ impl MeshRuntime {
             Err(_) => return false,
         };
         let sender_bytes: [u8; 32] = match hex::decode(&sender_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let sender_peer_id = crate::identity::peer_id::PeerId(sender_bytes);
 
         // Bootstrap ratchet from X3DH header if the session is missing.
         {
-            if !self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner())
+            if !self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .contains_key(&sender_peer_id)
             {
-                let eph_pub_opt = envelope.get("x3dh_eph_pub")
+                let eph_pub_opt = envelope
+                    .get("x3dh_eph_pub")
                     .and_then(|v| v.as_str())
                     .and_then(|s| hex::decode(s).ok())
                     .filter(|b| b.len() == 32)
-                    .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a });
-                let enc_ik_opt = envelope.get("x3dh_encrypted_ik")
+                    .map(|b| {
+                        let mut a = [0u8; 32];
+                        a.copy_from_slice(&b);
+                        a
+                    });
+                let enc_ik_opt = envelope
+                    .get("x3dh_encrypted_ik")
                     .and_then(|v| v.as_str())
                     .and_then(|s| hex::decode(s).ok())
                     .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
                     .map(|b| {
                         let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
-                        a.copy_from_slice(&b); a
+                        a.copy_from_slice(&b);
+                        a
                     });
                 if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
                     use crate::crypto::x3dh::{x3dh_respond, X3dhInitHeader};
                     let session_result: Option<DoubleRatchetSession> = {
                         let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
                         guard.as_ref().and_then(|id| {
-                            let header = X3dhInitHeader { eph_pub, encrypted_ik_pub: enc_ik };
+                            let header = X3dhInitHeader {
+                                eph_pub,
+                                encrypted_ik_pub: enc_ik,
+                            };
                             x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header)
                                 .ok()
                                 .map(|out| {
                                     let master = out.master_secret.as_bytes();
                                     let preauth_secret = x25519_dalek::StaticSecret::from(
-                                        id.preauth_x25519_secret.to_bytes());
+                                        id.preauth_x25519_secret.to_bytes(),
+                                    );
                                     let preauth_pub = *id.preauth_x25519_pub.as_bytes();
                                     DoubleRatchetSession::init_receiver(
-                                        master, preauth_secret, &preauth_pub)
+                                        master,
+                                        preauth_secret,
+                                        &preauth_pub,
+                                    )
                                 })
                         })
                     };
                     if let Some(session) = session_result {
-                        self.ratchet_sessions.lock()
+                        self.ratchet_sessions
+                            .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .insert(sender_peer_id, session);
                     }
@@ -1423,7 +2206,10 @@ impl MeshRuntime {
             Err(_) => return false,
         };
         let plaintext = {
-            let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sessions = self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let session = match sessions.get_mut(&sender_peer_id) {
                 Some(s) => s,
                 None => {
@@ -1446,7 +2232,10 @@ impl MeshRuntime {
                     return false;
                 }
             };
-            use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::{Aead, Nonce}};
+            use chacha20poly1305::{
+                aead::{Aead, Nonce},
+                ChaCha20Poly1305, Key, KeyInit,
+            };
             let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
             let nonce = Nonce::<ChaCha20Poly1305>::default();
             match cipher.decrypt(&nonce, ct.as_ref()) {
@@ -1466,17 +2255,27 @@ impl MeshRuntime {
             Err(_) => return false,
         };
         let room_id_hex = match inner.get("roomId").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+            Some(s) => s.to_string(),
+            None => return false,
         };
         let text = match inner.get("text").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+            Some(s) => s.to_string(),
+            None => return false,
         };
-        let msg_id = inner.get("msgId").and_then(|v| v.as_str())
-            .unwrap_or("").to_string();
-        let ts = inner.get("timestamp").and_then(|v| v.as_u64())
-            .unwrap_or_else(|| std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs()).unwrap_or(0));
+        let msg_id = inner
+            .get("msgId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let ts = inner
+            .get("timestamp")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            });
 
         let msg = serde_json::json!({
             "id":         msg_id,
@@ -1488,16 +2287,16 @@ impl MeshRuntime {
             "authStatus": "authenticated",
         });
 
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(room_id_hex.clone())
             .or_default()
             .push(msg.clone());
 
         {
             let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(room) = rooms.iter_mut()
-                .find(|r| hex::encode(r.id) == room_id_hex)
-            {
+            if let Some(room) = rooms.iter_mut().find(|r| hex::encode(r.id) == room_id_hex) {
                 room.last_message_preview = Some(if text.len() > 80 {
                     format!("{}…", &text[..80])
                 } else {
@@ -1505,7 +2304,8 @@ impl MeshRuntime {
                 });
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs()).unwrap_or(0);
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
                 room.last_message_at = Some(now);
                 if !room.is_muted {
                     room.unread_count += 1;
@@ -1517,14 +2317,18 @@ impl MeshRuntime {
 
         let room_summary = {
             let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-            rooms.iter().find(|r| hex::encode(r.id) == room_id_hex)
-                .map(|r| serde_json::json!({
-                    "id":          hex::encode(r.id),
-                    "name":        r.name,
-                    "lastMessage": r.last_message_preview,
-                    "unreadCount": r.unread_count,
-                    "timestamp":   r.last_message_at,
-                }))
+            rooms
+                .iter()
+                .find(|r| hex::encode(r.id) == room_id_hex)
+                .map(|r| {
+                    serde_json::json!({
+                        "id":          hex::encode(r.id),
+                        "name":        r.name,
+                        "lastMessage": r.last_message_preview,
+                        "unreadCount": r.unread_count,
+                        "timestamp":   r.last_message_at,
+                    })
+                })
         };
         if let Some(summary) = room_summary {
             self.push_event("RoomUpdated", summary);
@@ -1540,21 +2344,23 @@ impl MeshRuntime {
     ///
     /// Wire format:
     /// ```json
-    /// { "type": "group_message_sk", "groupId": "<hex>", "sender": "<hex>",
-    ///   "epoch": <u32>, "nonce": "<hex-12>", "wrapped": "<hex>" }
+    /// { "type": "group_message_sk", "groupId": "<hex>", "epoch": <u64>,
+    ///   "nonce": "<hex-12>", "wrapped": "<hex>", "ring_sig": { ... } }
     /// ```
     ///
-    /// The `wrapped` bytes are `ChaCha20Poly1305(symmetric_key, nonce)` over a
-    /// JSON blob `{"iteration":<u32>,"ciphertext":"<hex>","signature":"<hex>"}`.
-    /// That inner layer is a `SenderKeyMessage` encrypted with the sender's
-    /// per-group Sender Key and signed with their Sender Key Ed25519 key.
+    /// For private and closed groups the sender is not carried in plaintext.
+    /// Instead:
+    /// - `wrapped` is authenticated by an AOS ring signature over the current
+    ///   member identity key set
+    /// - the sender identity and its attributable Ed25519 signature live only
+    ///   inside the encrypted Sender Key plaintext
     fn process_group_message_sk_frame(&self, envelope: &serde_json::Value) -> bool {
-        let sender_hex = match envelope.get("sender").and_then(|v| v.as_str()) {
+        let outer_group_id_hex = match envelope.get("groupId").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => return false,
         };
-        let outer_group_id_hex = match envelope.get("groupId").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(),
+        let epoch = match envelope.get("epoch").and_then(|value| value.as_u64()) {
+            Some(value) => value,
             None => return false,
         };
         let nonce_hex = match envelope.get("nonce").and_then(|v| v.as_str()) {
@@ -1565,193 +2371,234 @@ impl MeshRuntime {
             Some(s) => s,
             None => return false,
         };
+        let ring_sig: crate::crypto::ring_sig::RingSignature =
+            match envelope.get("ring_sig").cloned() {
+                Some(value) => match serde_json::from_value(value) {
+                    Ok(value) => value,
+                    Err(_) => return false,
+                },
+                None => return false,
+            };
 
         let nonce_bytes: [u8; 12] = match hex::decode(nonce_hex) {
-            Ok(b) if b.len() == 12 => { let mut a = [0u8; 12]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 12 => {
+                let mut a = [0u8; 12];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let wrapped = match hex::decode(wrapped_hex) {
             Ok(b) => b,
             Err(_) => return false,
         };
-        let sender_bytes: [u8; 32] = match hex::decode(&sender_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return false,
-        };
         let gid_bytes: [u8; 32] = match hex::decode(&outer_group_id_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
 
-        // Step 1: Find the group and extract symmetric_key + peer_sender_keys.
-        let (symmetric_key, peer_state_opt) = {
+        let (group_snapshot, ring_public_keys) = {
             let groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
-            let g = match groups.iter().find(|g| g.group_id == gid_bytes) {
-                Some(g) => g,
+            let group = match groups
+                .iter()
+                .find(|candidate| candidate.group_id == gid_bytes)
+            {
+                Some(value) => value.clone(),
                 None => return false,
             };
-            let psk = g.peer_sender_keys.get(&sender_bytes).cloned();
-            (g.symmetric_key, psk)
+            let ring = match self.ring_public_keys_for_group(&group) {
+                Some(value) => value,
+                None => return false,
+            };
+            (group, ring)
         };
+        let ring_message =
+            build_group_ring_signature_message(&gid_bytes, epoch, &nonce_bytes, &wrapped);
+        if !crate::crypto::ring_sig::ring_verify(&ring_public_keys, &ring_message, &ring_sig) {
+            return false;
+        }
 
-        // Step 2: Unwrap the outer ChaCha20-Poly1305 layer (group symmetric key).
-        use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
-        let sym_cipher = ChaCha20Poly1305::new_from_slice(&symmetric_key)
+        // Step 1: Unwrap the outer ChaCha20-Poly1305 layer (group symmetric key).
+        use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+        let sym_cipher = ChaCha20Poly1305::new_from_slice(&group_snapshot.symmetric_key)
             .expect("symmetric_key is always 32 bytes");
         let sk_wire_bytes = match sym_cipher.decrypt(
             chacha20poly1305::Nonce::from_slice(&nonce_bytes),
             wrapped.as_ref(),
         ) {
-            Ok(b) => b,
-            Err(_) => {
-                // Group symmetric key mismatch — request re-inclusion.
-                self.send_group_reinclusion_request(&sender_hex, &outer_group_id_hex);
-                return false;
-            }
-        };
-
-        // Step 3: Parse the inner SenderKeyMessage wire blob.
-        let sk_wire: serde_json::Value = match serde_json::from_slice(&sk_wire_bytes) {
-            Ok(v) => v,
+            Ok(value) => value,
             Err(_) => return false,
         };
-        let iteration = match sk_wire.get("iteration").and_then(|v| v.as_u64()) {
-            Some(n) => n as u32,
+
+        // Step 2: Parse the inner Sender Key wrapper and recover the sender key seed.
+        let sk_wire: serde_json::Value = match serde_json::from_slice(&sk_wire_bytes) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        let iteration = match sk_wire.get("iteration").and_then(|value| value.as_u64()) {
+            Some(value) => value as u32,
             None => return false,
         };
-        let inner_ct = match sk_wire.get("ciphertext").and_then(|v| v.as_str())
-            .and_then(|s| hex::decode(s).ok()) {
-            Some(b) => b,
+        let inner_ct = match sk_wire
+            .get("ciphertext")
+            .and_then(|value| value.as_str())
+            .and_then(|value| hex::decode(value).ok())
+        {
+            Some(value) => value,
             None => return false,
         };
-        let sig_bytes = match sk_wire.get("signature").and_then(|v| v.as_str())
-            .and_then(|s| hex::decode(s).ok()) {
-            Some(b) => b,
+        let sig_bytes = match sk_wire
+            .get("signature")
+            .and_then(|value| value.as_str())
+            .and_then(|value| hex::decode(value).ok())
+        {
+            Some(value) => value,
             None => return false,
+        };
+        let sender_key_seed: GroupSenderKeySeedWire = match sk_wire.get("sender_key_seed").cloned()
+        {
+            Some(value) => match serde_json::from_value(value) {
+                Ok(value) => value,
+                Err(_) => return false,
+            },
+            None => return false,
+        };
+        let seed_chain_key: [u8; 32] = match hex::decode(&sender_key_seed.chain_key) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut value = [0u8; 32];
+                value.copy_from_slice(&bytes);
+                value
+            }
+            _ => return false,
+        };
+        let seed_verifying_key: [u8; 32] = match hex::decode(&sender_key_seed.verifying_key) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut value = [0u8; 32];
+                value.copy_from_slice(&bytes);
+                value
+            }
+            _ => return false,
         };
 
         use crate::crypto::sender_keys::{SenderKeyMessage, SenderKeyReceiver};
         use ed25519_dalek::VerifyingKey as Ed25519VerifyingKey;
 
-        // Step 4: Reconstruct SenderKeyReceiver from persisted state (if any).
-        let peer_state = match peer_state_opt {
-            Some(s) => s,
-            None => {
-                // No Sender Key for this peer — request re-inclusion.
-                self.send_group_reinclusion_request(&sender_hex, &outer_group_id_hex);
-                return false;
-            }
-        };
-
-        let verifying_key = match Ed25519VerifyingKey::from_bytes(&peer_state.verifying_key) {
-            Ok(vk) => vk,
+        let verifying_key = match Ed25519VerifyingKey::from_bytes(&seed_verifying_key) {
+            Ok(value) => value,
             Err(_) => return false,
         };
-
-        let mut receiver = SenderKeyReceiver::from_state(
-            peer_state.chain_key,
-            peer_state.next_iteration,
-            verifying_key,
-        );
-
+        let mut receiver =
+            SenderKeyReceiver::from_state(seed_chain_key, sender_key_seed.iteration, verifying_key);
         let sk_msg = SenderKeyMessage {
             iteration,
             ciphertext: inner_ct,
-            signature:  sig_bytes,
+            signature: sig_bytes,
         };
 
-        // Step 5: Decrypt using Sender Key (verifies signature + decrypts).
+        // Step 3: Decrypt the Sender Key payload and validate the claimed sender.
         let plaintext_bytes = match receiver.decrypt(&sk_msg) {
-            Ok(pt) => pt,
-            Err(_) => {
-                self.send_group_reinclusion_request(&sender_hex, &outer_group_id_hex);
-                return false;
-            }
-        };
-
-        // Step 6: Persist the advanced receiver state back to the group.
-        {
-            let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(g) = groups.iter_mut().find(|g| g.group_id == gid_bytes) {
-                use crate::groups::group::PeerSenderKeyState;
-                g.peer_sender_keys.insert(sender_bytes, PeerSenderKeyState {
-                    chain_key:      *receiver.chain_key_bytes(),
-                    next_iteration: receiver.next_iter(),
-                    verifying_key:  peer_state.verifying_key,
-                });
-            }
-        }
-
-        // Step 7: Parse the inner plaintext message JSON.
-        let inner: serde_json::Value = match serde_json::from_slice(&plaintext_bytes) {
-            Ok(v) => v,
+            Ok(value) => value,
             Err(_) => return false,
         };
-        let room_id_hex = match inner.get("roomId").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+        let inner: GroupMessageSkWire = match serde_json::from_slice(&plaintext_bytes) {
+            Ok(value) => value,
+            Err(_) => return false,
         };
-        let text = match inner.get("text").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(), None => return false,
+        let sender_bytes: [u8; 32] = match hex::decode(&inner.sender) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut value = [0u8; 32];
+                value.copy_from_slice(&bytes);
+                value
+            }
+            _ => return false,
         };
-        let msg_id = inner.get("msgId").and_then(|v| v.as_str())
-            .unwrap_or("").to_string();
-        let ts = inner.get("timestamp").and_then(|v| v.as_u64())
-            .unwrap_or_else(|| std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs()).unwrap_or(0));
+        let sender_peer_id = PeerId(sender_bytes);
+        if !group_snapshot.members.contains(&sender_peer_id) {
+            return false;
+        }
 
-        let msg = serde_json::json!({
-            "id":         msg_id,
-            "roomId":     room_id_hex,
-            "sender":     sender_hex,
-            "text":       text,
-            "timestamp":  ts,
-            "isOutgoing": false,
-            "authStatus": "authenticated",
-        });
-
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
-            .entry(room_id_hex.clone())
-            .or_default()
-            .push(msg.clone());
-
-        {
-            let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(room) = rooms.iter_mut()
-                .find(|r| hex::encode(r.id) == room_id_hex)
-            {
-                room.last_message_preview = Some(if text.len() > 80 {
-                    format!("{}…", &text[..80])
+        let sender_identity_pub = {
+            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(identity) = guard.as_ref() {
+                if identity.peer_id() == sender_peer_id {
+                    Some(identity.ed25519_pub)
                 } else {
-                    text.clone()
-                });
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs()).unwrap_or(0);
-                room.last_message_at = Some(now);
-                if !room.is_muted {
-                    room.unread_count += 1;
+                    None
                 }
+            } else {
+                None
+            }
+        }
+        .or_else(|| {
+            self.contacts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&sender_peer_id)
+                .map(|contact| contact.ed25519_public)
+        });
+        let sender_identity_pub = match sender_identity_pub {
+            Some(value) => value,
+            None => return false,
+        };
+        let sender_sig = match hex::decode(&inner.sender_sig) {
+            Ok(bytes) if bytes.len() == 64 => {
+                let mut value = [0u8; 64];
+                value.copy_from_slice(&bytes);
+                Signature::from_bytes(&value)
+            }
+            _ => return false,
+        };
+        let sender_sig_message = build_group_inner_signature_message(
+            &gid_bytes,
+            &inner.room_id,
+            &inner.msg_id,
+            &inner.text,
+            inner.timestamp,
+            &sender_bytes,
+        );
+        let sender_identity_key = match Ed25519VerifyingKey::from_bytes(&sender_identity_pub) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
+        if sender_identity_key
+            .verify(&sender_sig_message, &sender_sig)
+            .is_err()
+        {
+            return false;
+        }
+
+        // Step 4: Persist the advanced Sender Key receiver state under the recovered sender.
+        {
+            let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(group) = groups
+                .iter_mut()
+                .find(|candidate| candidate.group_id == gid_bytes)
+            {
+                use crate::groups::group::PeerSenderKeyState;
+                group.peer_sender_keys.insert(
+                    sender_bytes,
+                    PeerSenderKeyState {
+                        chain_key: *receiver.chain_key_bytes(),
+                        next_iteration: receiver.next_iter(),
+                        verifying_key: seed_verifying_key,
+                    },
+                );
             }
         }
 
-        self.push_event("MessageAdded", msg);
-
-        let room_summary = {
-            let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-            rooms.iter().find(|r| hex::encode(r.id) == room_id_hex)
-                .map(|r| serde_json::json!({
-                    "id":          hex::encode(r.id),
-                    "name":        r.name,
-                    "lastMessage": r.last_message_preview,
-                    "unreadCount": r.unread_count,
-                    "timestamp":   r.last_message_at,
-                }))
-        };
-        if let Some(summary) = room_summary {
-            self.push_event("RoomUpdated", summary);
-        }
-
+        self.persist_room_message(
+            &inner.room_id,
+            &inner.sender,
+            &inner.text,
+            inner.timestamp,
+            &inner.msg_id,
+            false,
+            Some("authenticated"),
+        );
         self.save_messages();
         self.save_rooms();
         self.save_groups();
@@ -1798,18 +2645,29 @@ impl MeshRuntime {
             None => return false,
         };
         let gid_bytes: [u8; 32] = match hex::decode(&group_id_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let requester_bytes: [u8; 32] = match hex::decode(&requester_hex) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return false,
         };
         let requester_peer_id = crate::identity::peer_id::PeerId(requester_bytes);
 
         let our_peer_id = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref() { Some(id) => id.peer_id(), None => return false }
+            match guard.as_ref() {
+                Some(id) => id.peer_id(),
+                None => return false,
+            }
         };
 
         // Build the invite payload only if we are an admin and the requester is
@@ -1821,9 +2679,13 @@ impl MeshRuntime {
                 None => return false,
             };
             // We must be an admin.
-            if !group.admins.contains(&our_peer_id) { return false; }
+            if !group.admins.contains(&our_peer_id) {
+                return false;
+            }
             // Requester must already be a member.
-            if !group.members.contains(&requester_peer_id) { return false; }
+            if !group.members.contains(&requester_peer_id) {
+                return false;
+            }
 
             let snap = serde_json::json!({
                 "groupId":        hex::encode(group.group_id),
@@ -1850,36 +2712,56 @@ impl MeshRuntime {
         // Encrypt with the requester's ratchet session.
         // If the ratchet session is missing we cannot help — the admin would
         // need to trigger a full re-pair out-of-band.
-        use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, aead::{Aead, Nonce}};
+        use chacha20poly1305::{
+            aead::{Aead, Nonce},
+            ChaCha20Poly1305, Key, KeyInit,
+        };
         let frame_opt = {
-            let mut sessions = self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sessions = self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(session) = sessions.get_mut(&requester_peer_id) {
                 if let Ok((header, msg_key)) = session.next_send_msg_key() {
                     let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
                     let nonce = Nonce::<ChaCha20Poly1305>::default();
-                    cipher.encrypt(&nonce, invite_payload_bytes.as_ref()).ok().map(|ct| {
-                        let x3dh_fields = self.x3dh_pending.lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .get(&requester_peer_id).copied();
-                        let mut f = serde_json::json!({
-                            "type":           "group_invite",
-                            "sender":         hex::encode(our_peer_id.0),
-                            "ratchet_header": serde_json::to_value(&header)
-                                .unwrap_or(serde_json::Value::Null),
-                            "ciphertext":     hex::encode(&ct),
-                        });
-                        if let Some((eph, ik)) = x3dh_fields {
-                            if let Some(obj) = f.as_object_mut() {
-                                obj.insert("x3dh_eph_pub".into(),
-                                    serde_json::Value::String(hex::encode(eph)));
-                                obj.insert("x3dh_encrypted_ik".into(),
-                                    serde_json::Value::String(hex::encode(ik)));
+                    cipher
+                        .encrypt(&nonce, invite_payload_bytes.as_ref())
+                        .ok()
+                        .map(|ct| {
+                            let x3dh_fields = self
+                                .x3dh_pending
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .get(&requester_peer_id)
+                                .copied();
+                            let mut f = serde_json::json!({
+                                "type":           "group_invite",
+                                "sender":         hex::encode(our_peer_id.0),
+                                "ratchet_header": serde_json::to_value(&header)
+                                    .unwrap_or(serde_json::Value::Null),
+                                "ciphertext":     hex::encode(&ct),
+                            });
+                            if let Some((eph, ik)) = x3dh_fields {
+                                if let Some(obj) = f.as_object_mut() {
+                                    obj.insert(
+                                        "x3dh_eph_pub".into(),
+                                        serde_json::Value::String(hex::encode(eph)),
+                                    );
+                                    obj.insert(
+                                        "x3dh_encrypted_ik".into(),
+                                        serde_json::Value::String(hex::encode(ik)),
+                                    );
+                                }
                             }
-                        }
-                        f
-                    })
-                } else { None }
-            } else { None }
+                            f
+                        })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         };
 
         if let Some(frame) = frame_opt {
@@ -1887,6 +2769,200 @@ impl MeshRuntime {
             self.save_ratchet_sessions();
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::ring_sig::ring_sign;
+    use crate::crypto::sender_keys::SenderKey;
+    use crate::groups::group::{Group, GroupKeys, GroupPublicProfile, NetworkType};
+    use crate::pairing::contact::{ContactRecord, ContactStore};
+    use crate::pairing::methods::PairingMethod;
+    use crate::service::runtime::MeshRuntime;
+    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_private_group_message_sk_hides_sender_in_outer_frame() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut runtime = MeshRuntime::new(temp_dir.path().to_string_lossy().into_owned());
+        {
+            let mut flags = runtime
+                .transport_flags
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            flags.clearnet = false;
+            flags.mesh_discovery = false;
+        }
+        runtime
+            .create_identity(Some("Recipient".to_string()))
+            .unwrap();
+
+        let (recipient_peer_id, recipient_ed25519_pub) = {
+            let guard = runtime
+                .identity
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let identity = guard.as_ref().unwrap();
+            (identity.peer_id(), identity.ed25519_pub)
+        };
+        let sender_identity =
+            crate::identity::self_identity::SelfIdentity::generate(Some("Sender".to_string()));
+
+        let mut contacts = ContactStore::new();
+        contacts.upsert(ContactRecord::new(
+            sender_identity.peer_id(),
+            sender_identity.ed25519_pub,
+            sender_identity.x25519_pub.to_bytes(),
+            PairingMethod::QrCode,
+            1,
+        ));
+        *runtime
+            .contacts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = contacts;
+
+        let group_id = [0x33; 32];
+        let symmetric_key = [0x44; 32];
+        let members = vec![sender_identity.peer_id(), recipient_peer_id];
+        let group = Group::new_as_member(
+            group_id,
+            GroupPublicProfile {
+                group_id,
+                display_name: "Secret Group".to_string(),
+                description: String::new(),
+                avatar_hash: None,
+                network_type: NetworkType::Private,
+                member_count: None,
+                created_at: 1,
+                signed_by: sender_identity.peer_id().0,
+                signature: vec![],
+            },
+            GroupKeys {
+                ed25519_public: [0x55; 32],
+                ed25519_private: None,
+                x25519_public: [0x66; 32],
+                symmetric_key,
+            },
+            recipient_peer_id,
+            (members.clone(), vec![sender_identity.peer_id()]),
+            1,
+            1,
+        );
+        runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(group);
+
+        let room = Room::new_group("Secret Group", members.clone());
+        let room_id_hex = hex::encode(room.id);
+        runtime
+            .rooms
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(room);
+
+        let sender_key = SenderKey::generate();
+        let sender_key_chain = *sender_key.chain_key_bytes();
+        let sender_key_signing_key = sender_key.signing_key_bytes();
+        let sender_key_seed = GroupSenderKeySeedWire {
+            chain_key: hex::encode(sender_key_chain),
+            iteration: sender_key.iteration,
+            verifying_key: hex::encode(sender_key.verifying_key().to_bytes()),
+        };
+        let sender_sig_message = build_group_inner_signature_message(
+            &group_id,
+            &room_id_hex,
+            "msg-1",
+            "hidden sender message",
+            100,
+            &sender_identity.peer_id().0,
+        );
+        let sender_sig = sender_identity.ed25519_signing.sign(&sender_sig_message);
+        let plaintext = GroupMessageSkWire {
+            iteration: 0,
+            ciphertext: String::new(),
+            signature: String::new(),
+            sender_key_seed: sender_key_seed.clone(),
+            sender: sender_identity.peer_id().to_hex(),
+            room_id: room_id_hex.clone(),
+            msg_id: "msg-1".to_string(),
+            text: "hidden sender message".to_string(),
+            timestamp: 100,
+            sender_sig: hex::encode(sender_sig.to_bytes()),
+        };
+        let plaintext_bytes = serde_json::to_vec(&plaintext).unwrap();
+        let mut sender_key = SenderKey::from_parts(
+            sender_key_chain,
+            sender_key_seed.iteration,
+            &sender_key_signing_key,
+        )
+        .unwrap();
+        let sender_key_message = sender_key.encrypt(&plaintext_bytes).unwrap();
+
+        let wrapped_inner = serde_json::json!({
+            "iteration": sender_key_message.iteration,
+            "ciphertext": hex::encode(&sender_key_message.ciphertext),
+            "signature": hex::encode(&sender_key_message.signature),
+            "sender_key_seed": sender_key_seed,
+        });
+        let wrapped_inner_bytes = serde_json::to_vec(&wrapped_inner).unwrap();
+        let nonce_bytes = [0x77; 12];
+        let symmetric_cipher = ChaCha20Poly1305::new_from_slice(&symmetric_key).unwrap();
+        let wrapped = symmetric_cipher
+            .encrypt(
+                chacha20poly1305::Nonce::from_slice(&nonce_bytes),
+                wrapped_inner_bytes.as_ref(),
+            )
+            .unwrap();
+        let ring = vec![sender_identity.ed25519_pub, recipient_ed25519_pub];
+        let ring_message = build_group_ring_signature_message(&group_id, 1, &nonce_bytes, &wrapped);
+        let ring_sig = ring_sign(
+            &sender_identity.ed25519_signing.to_bytes(),
+            &ring,
+            &ring_message,
+        )
+        .unwrap();
+
+        let frame = serde_json::json!({
+            "type": "group_message_sk",
+            "groupId": hex::encode(group_id),
+            "epoch": 1,
+            "nonce": hex::encode(nonce_bytes),
+            "wrapped": hex::encode(&wrapped),
+            "ring_sig": ring_sig,
+        });
+
+        assert!(frame.get("sender").is_none());
+        assert!(runtime.process_group_message_sk_frame(&frame));
+
+        let stored_messages = runtime
+            .messages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let room_messages = stored_messages.get(&room_id_hex).unwrap();
+        assert_eq!(room_messages.len(), 1);
+        assert_eq!(
+            room_messages[0]["sender"],
+            sender_identity.peer_id().to_hex()
+        );
+        assert_eq!(room_messages[0]["authStatus"], "authenticated");
+        drop(stored_messages);
+
+        let groups = runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let stored_group = groups
+            .iter()
+            .find(|group| group.group_id == group_id)
+            .unwrap();
+        assert!(stored_group
+            .peer_sender_keys
+            .contains_key(&sender_identity.peer_id().0));
     }
 }
 
@@ -1913,7 +2989,12 @@ impl MeshRuntime {
         let groups_guard = self.groups.lock().unwrap_or_else(|e| e.into_inner());
         let group_lookup: std::collections::HashMap<PeerId, String> = groups_guard
             .iter()
-            .map(|g| (PeerId::from_ed25519_pub(&g.ed25519_public), hex::encode(g.group_id)))
+            .map(|g| {
+                (
+                    PeerId::from_ed25519_pub(&g.ed25519_public),
+                    hex::encode(g.group_id),
+                )
+            })
             .collect();
         drop(groups_guard);
 
@@ -1961,11 +3042,7 @@ impl MeshRuntime {
     /// If `peer_id_hex` is `None`, creates a standalone group room.
     ///
     /// Returns `Ok(room_id_hex)` on success, `Err(reason)` on failure.
-    pub fn create_room(
-        &mut self,
-        name: &str,
-        peer_id_hex: Option<&str>,
-    ) -> Result<String, String> {
+    pub fn create_room(&mut self, name: &str, peer_id_hex: Option<&str>) -> Result<String, String> {
         use crate::identity::peer_id::PeerId;
 
         let room = if let Some(pid_hex) = peer_id_hex {
@@ -1973,7 +3050,11 @@ impl MeshRuntime {
             let peer_bytes: [u8; 32] = hex::decode(pid_hex)
                 .ok()
                 .filter(|b| b.len() == 32)
-                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+                .map(|b| {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    a
+                })
                 .ok_or("invalid peer_id_hex")?;
             let peer_id = PeerId(peer_bytes);
 
@@ -2000,18 +3081,28 @@ impl MeshRuntime {
             crate::messaging::room::Room::new_dm(our_peer_id, peer_id, &room_name)
         } else {
             // Standalone group room.
-            let room_name = if name.is_empty() { "New Chat".to_string() } else { name.to_string() };
+            let room_name = if name.is_empty() {
+                "New Chat".to_string()
+            } else {
+                name.to_string()
+            };
             crate::messaging::room::Room::new_group(&room_name, vec![])
         };
 
         let id_hex = hex::encode(room.id);
-        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).push(room.clone());
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(room.clone());
         self.save_rooms();
 
-        self.push_event("RoomCreated", serde_json::json!({
-            "id":   id_hex,
-            "name": room.name,
-        }));
+        self.push_event(
+            "RoomCreated",
+            serde_json::json!({
+                "id":   id_hex,
+                "name": room.name,
+            }),
+        );
 
         Ok(id_hex)
     }
@@ -2021,9 +3112,13 @@ impl MeshRuntime {
     /// Returns `true` if the room was found and removed.
     pub fn delete_room(&self, room_id_hex: &str) -> bool {
         let before = self.rooms.lock().unwrap_or_else(|e| e.into_inner()).len();
-        self.rooms.lock().unwrap_or_else(|e| e.into_inner())
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .retain(|r| hex::encode(r.id) != room_id_hex);
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .remove(room_id_hex);
         let after = self.rooms.lock().unwrap_or_else(|e| e.into_inner()).len();
 
@@ -2048,7 +3143,10 @@ impl MeshRuntime {
 
     /// Return the active conversation room ID as a JSON string (`"null"` if none).
     pub fn active_room_id(&self) -> String {
-        let active = self.active_conversation.lock().unwrap_or_else(|e| e.into_inner());
+        let active = self
+            .active_conversation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         match *active {
             Some(id) => format!("\"{}\"", hex::encode(id)),
             None => "null".into(),
@@ -2057,7 +3155,10 @@ impl MeshRuntime {
 
     /// Return the current file transfers as a JSON array string.
     pub fn get_file_transfers(&self) -> String {
-        let transfers = self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+        let transfers = self
+            .file_transfers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         serde_json::to_string(&*transfers).unwrap_or_else(|_| "[]".into())
     }
 
@@ -2077,28 +3178,46 @@ impl MeshRuntime {
     ///
     /// Emits `ReactionAdded` and sends a `reaction` frame to each connected peer.
     pub fn send_reaction(&self, room_id_hex: &str, msg_id: &str, emoji: &str) -> bool {
-        if emoji.is_empty() { return false; }
+        if emoji.is_empty() {
+            return false;
+        }
 
-        self.push_event("ReactionAdded", serde_json::json!({
-            "roomId": room_id_hex,
-            "msgId":  msg_id,
-            "emoji":  emoji,
-        }));
+        self.push_event(
+            "ReactionAdded",
+            serde_json::json!({
+                "roomId": room_id_hex,
+                "msgId":  msg_id,
+                "emoji":  emoji,
+            }),
+        );
 
         let (recipients, our_hex) = {
             let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
             let room_id_bytes = match hex::decode(room_id_hex) {
-                Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+                Ok(b) if b.len() == 16 => {
+                    let mut a = [0u8; 16];
+                    a.copy_from_slice(&b);
+                    a
+                }
                 _ => return true, // event emitted; wire-send best-effort
             };
             let room = match rooms.iter().find(|r| r.id == room_id_bytes) {
                 Some(r) => r,
                 None => return true,
             };
-            let our = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-                .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_default();
-            let peers: Vec<String> = room.participants.iter()
-                .map(|p| hex::encode(p.0)).filter(|h| *h != our).collect();
+            let our = self
+                .identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|id| id.peer_id().to_hex())
+                .unwrap_or_default();
+            let peers: Vec<String> = room
+                .participants
+                .iter()
+                .map(|p| hex::encode(p.0))
+                .filter(|h| *h != our)
+                .collect();
             (peers, our)
         };
 
@@ -2123,31 +3242,50 @@ impl MeshRuntime {
                 room.mark_read();
             }
         }
-        self.push_event("ReadReceipt", serde_json::json!({"roomId": room_id_hex, "msgId": msg_id}));
+        self.push_event(
+            "ReadReceipt",
+            serde_json::json!({"roomId": room_id_hex, "msgId": msg_id}),
+        );
         self.save_rooms();
     }
 
     /// Emit a typing indicator event and broadcast to room participants.
     pub fn send_typing_indicator(&self, room_id_hex: &str, active: bool) {
-        self.push_event("TypingIndicator", serde_json::json!({
-            "roomId": room_id_hex,
-            "active": active,
-        }));
+        self.push_event(
+            "TypingIndicator",
+            serde_json::json!({
+                "roomId": room_id_hex,
+                "active": active,
+            }),
+        );
 
         let (recipients, our_hex) = {
             let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
             let room_id_bytes = match hex::decode(room_id_hex) {
-                Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+                Ok(b) if b.len() == 16 => {
+                    let mut a = [0u8; 16];
+                    a.copy_from_slice(&b);
+                    a
+                }
                 _ => return,
             };
             let room = match rooms.iter().find(|r| r.id == room_id_bytes) {
                 Some(r) => r,
                 None => return,
             };
-            let our = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-                .as_ref().map(|id| hex::encode(id.peer_id().0)).unwrap_or_default();
-            let peers: Vec<String> = room.participants.iter()
-                .map(|p| hex::encode(p.0)).filter(|h| *h != our).collect();
+            let our = self
+                .identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(|id| hex::encode(id.peer_id().0))
+                .unwrap_or_default();
+            let peers: Vec<String> = room
+                .participants
+                .iter()
+                .map(|p| hex::encode(p.0))
+                .filter(|h| *h != our)
+                .collect();
             (peers, our)
         };
 
@@ -2165,22 +3303,28 @@ impl MeshRuntime {
     /// Send a reply message that quotes an earlier message.
     ///
     /// Returns `true` on success.
-    pub fn reply_to_message(
-        &mut self,
-        room_id_hex: &str,
-        reply_to_id: &str,
-        text: &str,
-    ) -> bool {
+    pub fn reply_to_message(&mut self, room_id_hex: &str, reply_to_id: &str, text: &str) -> bool {
         use crate::service::runtime::try_random_fill;
-        if text.is_empty() { return false; }
+        if text.is_empty() {
+            return false;
+        }
 
         let mut msg_id_bytes = [0u8; 16];
-        if !try_random_fill(&mut msg_id_bytes) { return false; }
+        if !try_random_fill(&mut msg_id_bytes) {
+            return false;
+        }
         let msg_id = hex::encode(msg_id_bytes);
         let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let sender = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_else(|| "local".into());
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let sender = self
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|id| id.peer_id().to_hex())
+            .unwrap_or_else(|| "local".into());
 
         let msg = serde_json::json!({
             "id":         msg_id,
@@ -2193,8 +3337,12 @@ impl MeshRuntime {
             "replyTo":    reply_to_id,
         });
 
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
-            .entry(room_id_hex.to_string()).or_default().push(msg.clone());
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(room_id_hex.to_string())
+            .or_default()
+            .push(msg.clone());
         {
             let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(room) = rooms.iter_mut().find(|r| hex::encode(r.id) == room_id_hex) {
@@ -2217,9 +3365,13 @@ impl MeshRuntime {
     ///
     /// Returns `true` if the message was found and updated.
     pub fn edit_message(&self, msg_id: &str, new_text: &str) -> bool {
-        if new_text.is_empty() { return false; }
+        if new_text.is_empty() {
+            return false;
+        }
         let edited_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let mut found = false;
         {
@@ -2237,16 +3389,21 @@ impl MeshRuntime {
                         break;
                     }
                 }
-                if found { break; }
+                if found {
+                    break;
+                }
             }
         }
 
         if found {
-            self.push_event("MessageEdited", serde_json::json!({
-                "msgId":    msg_id,
-                "newText":  new_text,
-                "editedAt": edited_at,
-            }));
+            self.push_event(
+                "MessageEdited",
+                serde_json::json!({
+                    "msgId":    msg_id,
+                    "newText":  new_text,
+                    "editedAt": edited_at,
+                }),
+            );
             self.save_messages();
         }
         found
@@ -2270,12 +3427,17 @@ impl MeshRuntime {
                         break;
                     }
                 }
-                if found_room.is_some() { break; }
+                if found_room.is_some() {
+                    break;
+                }
             }
         }
 
         if let Some(ref room_id) = found_room {
-            self.push_event("MessageDeleted", serde_json::json!({"msgId": msg_id, "roomId": room_id}));
+            self.push_event(
+                "MessageDeleted",
+                serde_json::json!({"msgId": msg_id, "roomId": room_id}),
+            );
             self.save_messages();
         }
         found_room
@@ -2289,20 +3451,38 @@ impl MeshRuntime {
 
         let original_text = {
             let all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
-            all_msgs.values().flat_map(|msgs| msgs.iter()).find(|msg| {
-                msg.get("id").and_then(|v| v.as_str()) == Some(msg_id)
-            }).and_then(|msg| msg.get("text").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            all_msgs
+                .values()
+                .flat_map(|msgs| msgs.iter())
+                .find(|msg| msg.get("id").and_then(|v| v.as_str()) == Some(msg_id))
+                .and_then(|msg| {
+                    msg.get("text")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
         };
 
-        let text = match original_text { Some(t) if !t.is_empty() => t, _ => return false };
+        let text = match original_text {
+            Some(t) if !t.is_empty() => t,
+            _ => return false,
+        };
 
         let mut new_id_bytes = [0u8; 16];
-        if !try_random_fill(&mut new_id_bytes) { return false; }
+        if !try_random_fill(&mut new_id_bytes) {
+            return false;
+        }
         let new_id = hex::encode(new_id_bytes);
         let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let sender = self.identity.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map(|id| id.peer_id().to_hex()).unwrap_or_else(|| "local".into());
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let sender = self
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|id| id.peer_id().to_hex())
+            .unwrap_or_else(|| "local".into());
 
         let fwd = serde_json::json!({
             "id":          new_id,
@@ -2315,8 +3495,12 @@ impl MeshRuntime {
             "isForwarded": true,
         });
 
-        self.messages.lock().unwrap_or_else(|e| e.into_inner())
-            .entry(target_room_hex.to_string()).or_default().push(fwd.clone());
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(target_room_hex.to_string())
+            .or_default()
+            .push(fwd.clone());
         self.push_event("MessageAdded", fwd);
         self.save_messages();
         true
@@ -2351,12 +3535,18 @@ impl MeshRuntime {
                         break;
                     }
                 }
-                if found { break; }
+                if found {
+                    break;
+                }
             }
         }
 
         if found {
-            let event = if pinned { "MessagePinned" } else { "MessageUnpinned" };
+            let event = if pinned {
+                "MessagePinned"
+            } else {
+                "MessageUnpinned"
+            };
             self.push_event(event, serde_json::json!({"msgId": msg_id}));
             self.save_messages();
         }
@@ -2377,10 +3567,13 @@ impl MeshRuntime {
         }
 
         if found {
-            self.push_event("DisappearingTimerChanged", serde_json::json!({
-                "roomId": room_id_hex,
-                "secs":   secs,
-            }));
+            self.push_event(
+                "DisappearingTimerChanged",
+                serde_json::json!({
+                    "roomId": room_id_hex,
+                    "secs":   secs,
+                }),
+            );
             self.save_rooms();
         }
         found
@@ -2390,7 +3583,9 @@ impl MeshRuntime {
     ///
     /// Returns a JSON array of matching message objects.
     pub fn search_messages(&self, query: &str) -> String {
-        if query.is_empty() { return "[]".into(); }
+        if query.is_empty() {
+            return "[]".into();
+        }
         let lower = query.to_lowercase();
         let all_msgs = self.messages.lock().unwrap_or_else(|e| e.into_inner());
         let results: Vec<&serde_json::Value> = all_msgs
@@ -2412,7 +3607,9 @@ impl MeshRuntime {
     /// Emits `MessagesExpired` if any were pruned.
     pub fn prune_expired_messages(&self) -> usize {
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         let mut pruned = 0usize;
         {
@@ -2437,7 +3634,6 @@ impl MeshRuntime {
         pruned
     }
 }
-
 
 impl crate::service::runtime::MeshRuntime {
     // -----------------------------------------------------------------------
@@ -2474,7 +3670,11 @@ impl crate::service::runtime::MeshRuntime {
             let bytes: [u8; 32] = hex::decode(hex_str)
                 .ok()
                 .filter(|b| b.len() == 32)
-                .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
+                .map(|b| {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    a
+                })
                 .ok_or_else(|| format!("invalid peer_id_hex: {hex_str}"))?;
             members.push(PeerId(bytes));
         }
@@ -2483,13 +3683,19 @@ impl crate::service::runtime::MeshRuntime {
         let room = crate::messaging::room::Room::new_group(group_name, members);
         let id_hex = hex::encode(room.id);
 
-        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).push(room.clone());
+        self.rooms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(room.clone());
         self.save_rooms();
 
-        self.push_event("GroupCreated", serde_json::json!({
-            "id":   id_hex,
-            "name": room.name,
-        }));
+        self.push_event(
+            "GroupCreated",
+            serde_json::json!({
+                "id":   id_hex,
+                "name": room.name,
+            }),
+        );
 
         Ok(id_hex)
     }
@@ -2501,14 +3707,16 @@ impl crate::service::runtime::MeshRuntime {
         let groups: Vec<serde_json::Value> = rooms
             .iter()
             .filter(|r| r.conversation_type == ConversationType::Group)
-            .map(|r| serde_json::json!({
-                "id":           hex::encode(r.id),
-                "name":         r.name,
-                "memberCount":  r.participants.len(),
-                "unreadCount":  r.unread_count,
-                "lastMessage":  r.last_message_preview,
-                "timestamp":    r.last_message_at,
-            }))
+            .map(|r| {
+                serde_json::json!({
+                    "id":           hex::encode(r.id),
+                    "name":         r.name,
+                    "memberCount":  r.participants.len(),
+                    "unreadCount":  r.unread_count,
+                    "lastMessage":  r.last_message_preview,
+                    "timestamp":    r.last_message_at,
+                })
+            })
             .collect();
         serde_json::to_string(&groups).unwrap_or_else(|_| "[]".into())
     }
@@ -2541,8 +3749,9 @@ impl crate::service::runtime::MeshRuntime {
         let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
         let room = rooms
             .iter_mut()
-            .find(|r| hex::encode(r.id) == group_id_hex
-                && r.conversation_type == ConversationType::Group)
+            .find(|r| {
+                hex::encode(r.id) == group_id_hex && r.conversation_type == ConversationType::Group
+            })
             .ok_or_else(|| format!("group not found: {group_id_hex}"))?;
 
         // Remove self from participant list.
@@ -2558,7 +3767,11 @@ impl crate::service::runtime::MeshRuntime {
     ///
     /// Returns `true` if the message was queued successfully.
     pub fn group_send_message(&mut self, group_id_hex: &str, text: &str) -> bool {
-        // Groups are ordinary rooms — delegate to send_text_message.
+        if let Some((group, _room)) = self.group_for_room(group_id_hex) {
+            if group.profile.network_type.uses_ring_signatures() {
+                return self.send_ring_group_message(group_id_hex, text);
+            }
+        }
         self.send_text_message(group_id_hex, text)
     }
 
@@ -2571,8 +3784,11 @@ impl crate::service::runtime::MeshRuntime {
         let peer_bytes: [u8; 32] = match hex::decode(peer_id_hex)
             .ok()
             .filter(|b| b.len() == 32)
-            .map(|b| { let mut a = [0u8; 32]; a.copy_from_slice(&b); a })
-        {
+            .map(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }) {
             Some(arr) => arr,
             None => return false,
         };
@@ -2587,10 +3803,13 @@ impl crate::service::runtime::MeshRuntime {
             room.participants.push(new_member);
             drop(rooms);
             self.save_rooms();
-            self.push_event("GroupMemberAdded", serde_json::json!({
-                "groupId": group_id_hex,
-                "peerId":  peer_id_hex,
-            }));
+            self.push_event(
+                "GroupMemberAdded",
+                serde_json::json!({
+                    "groupId": group_id_hex,
+                    "peerId":  peer_id_hex,
+                }),
+            );
             true
         } else {
             false

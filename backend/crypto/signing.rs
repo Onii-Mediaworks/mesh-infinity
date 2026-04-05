@@ -323,10 +323,10 @@ pub fn verify(
     // Execute this protocol step.
     // Execute this protocol step.
     signature_bytes: &[u8],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> bool {
     // Parse the public key. Return false if invalid.
     // Compute verifying key for this protocol step.
@@ -427,10 +427,10 @@ pub fn verify_raw(
     // Execute this protocol step.
     // Execute this protocol step.
     signature_bytes: &[u8],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> bool {
     // Key material — must be zeroized when no longer needed.
     // Compute verifying key for this protocol step.

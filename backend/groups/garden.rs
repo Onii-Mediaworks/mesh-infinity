@@ -213,29 +213,44 @@ pub enum GardenContentType {
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Image { view_once: bool },
+    Image {
+        view_once: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Video { view_once: bool },
+    Video {
+        view_once: bool,
+    },
     Audio,
     File,
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Gif { url: String, embed_inline: bool },
+    Gif {
+        url: String,
+        embed_inline: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Sticker { sticker_id: [u8; 16] },
+    Sticker {
+        sticker_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Reaction { target_id: [u8; 16], emoji: String },
+    Reaction {
+        target_id: [u8; 16],
+        emoji: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    ReactionRemove { target_id: [u8; 16], emoji: String },
+    ReactionRemove {
+        target_id: [u8; 16],
+        emoji: String,
+    },
     // Begin the block scope.
     Poll {
         // Process the current step in the protocol.
@@ -262,70 +277,110 @@ pub enum GardenContentType {
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    PollVote { poll_id: [u8; 16], option_indices: Vec<u8> },
+    PollVote {
+        poll_id: [u8; 16],
+        option_indices: Vec<u8>,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    PollClose { poll_id: [u8; 16] },
+    PollClose {
+        poll_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Edit { original_id: [u8; 16] },
+    Edit {
+        original_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Deletion { original_id: [u8; 16], for_everyone: bool },
+    Deletion {
+        original_id: [u8; 16],
+        for_everyone: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Pin { original_id: [u8; 16] },
+    Pin {
+        original_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Unpin { original_id: [u8; 16] },
+    Unpin {
+        original_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    ThreadCreate { title: String, is_forum_post: bool },
+    ThreadCreate {
+        title: String,
+        is_forum_post: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    ThreadClose { thread_id: [u8; 16] },
+    ThreadClose {
+        thread_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    ThreadLock { thread_id: [u8; 16] },
+    ThreadLock {
+        thread_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    ThreadUnlock { thread_id: [u8; 16] },
+    ThreadUnlock {
+        thread_id: [u8; 16],
+    },
     // Execute this protocol step.
     // Execute this protocol step.
     Announcement,
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Embed { url: String, embed_data: Vec<u8> },
+    Embed {
+        url: String,
+        embed_data: Vec<u8>,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    ScheduledEventRef { event_id: [u8; 16] },
+    ScheduledEventRef {
+        event_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    SlashCommand { command: String, args: Vec<String> },
+    SlashCommand {
+        command: String,
+        args: Vec<String>,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    BotResponse { command_id: [u8; 16] },
+    BotResponse {
+        command_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    SystemEvent { event_type: SystemEventType, subject_id: Option<[u8; 32]>, detail: Option<String> },
+    SystemEvent {
+        event_type: SystemEventType,
+        subject_id: Option<[u8; 32]>,
+        detail: Option<String>,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    CallSignal { signal_type: String, session_id: [u8; 32] },
+    CallSignal {
+        signal_type: String,
+        session_id: [u8; 32],
+    },
 }
 
 /// System events in a Garden.
@@ -826,17 +881,14 @@ pub fn create_garden(
     // saturating_sub(0) is a no-op; the real protection is the map_err.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| {
-            crate::error::MeshError::Internal(format!("system clock error: {}", e))
-        })?
+        .map_err(|e| crate::error::MeshError::Internal(format!("system clock error: {}", e)))?
         .as_secs();
 
     // Generate a random room ID for the default "general" channel.
     // Every Garden starts with at least one room so it's immediately usable.
     let mut general_room_id = [0u8; 16];
-    getrandom::fill(&mut general_room_id).map_err(|e| {
-        crate::error::MeshError::Internal(format!("RNG failed for room ID: {}", e))
-    })?;
+    getrandom::fill(&mut general_room_id)
+        .map_err(|e| crate::error::MeshError::Internal(format!("RNG failed for room ID: {}", e)))?;
 
     // Build the default "general" text room accessible to all roles.
     // An empty access_roles list means every member can see this room.
@@ -893,9 +945,8 @@ pub fn add_room(
     // Generate a random 16-byte room ID using the system CSPRNG.
     // Uniqueness is probabilistically guaranteed by 128 bits of randomness.
     let mut room_id = [0u8; 16];
-    getrandom::fill(&mut room_id).map_err(|e| {
-        crate::error::MeshError::Internal(format!("RNG failed for room ID: {}", e))
-    })?;
+    getrandom::fill(&mut room_id)
+        .map_err(|e| crate::error::MeshError::Internal(format!("RNG failed for room ID: {}", e)))?;
 
     // Construct the new room with the caller-supplied parameters.
     // The room is immediately usable once added to the Garden.
@@ -924,10 +975,7 @@ pub fn add_room(
 ///
 /// Returns `MeshError::NotFound` if no room with the given ID exists
 /// in this Garden.
-pub fn remove_room(
-    garden: &mut Garden,
-    room_id: &[u8; 16],
-) -> Result<(), crate::error::MeshError> {
+pub fn remove_room(garden: &mut Garden, room_id: &[u8; 16]) -> Result<(), crate::error::MeshError> {
     // Find the position of the room with the matching ID.
     // Linear scan is fine: Gardens typically have fewer than 100 rooms.
     let pos = garden
@@ -988,9 +1036,7 @@ pub fn invite_member(
     // Get the current Unix timestamp for the join time.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| {
-            crate::error::MeshError::Internal(format!("system clock error: {}", e))
-        })?
+        .map_err(|e| crate::error::MeshError::Internal(format!("system clock error: {}", e)))?
         .as_secs();
 
     // Create the new member entry with the specified role and current timestamp.
@@ -1144,10 +1190,7 @@ pub fn list_accessible_rooms<'a>(
 /// This is a simple membership check — it does not consider role or
 /// permissions. Use `list_accessible_rooms` or direct role checks
 /// for permission-gated operations.
-pub fn is_member(
-    garden: &Garden,
-    peer_id: &crate::identity::peer_id::PeerId,
-) -> bool {
+pub fn is_member(garden: &Garden, peer_id: &crate::identity::peer_id::PeerId) -> bool {
     // Linear scan through the member list. For Gardens with very large
     // memberships, a HashSet index could be maintained separately.
     garden.members.iter().any(|m| m.peer_id == *peer_id)
@@ -1315,20 +1358,17 @@ mod tests {
         // The returned ID should match the last room's ID.
         assert_eq!(garden.rooms.last().unwrap().room_id, room_id);
         assert_eq!(garden.rooms.last().unwrap().name, "voice-lobby");
-        assert_eq!(garden.rooms.last().unwrap().room_type, GardenRoomType::Voice);
+        assert_eq!(
+            garden.rooms.last().unwrap().room_type,
+            GardenRoomType::Voice
+        );
     }
 
     #[test]
     fn test_remove_room_success() {
         // Removing an existing room should decrease the room count.
         let (mut garden, _) = make_test_garden();
-        let room_id = add_room(
-            &mut garden,
-            "temp",
-            GardenRoomType::Text,
-            Vec::new(),
-        )
-        .unwrap();
+        let room_id = add_room(&mut garden, "temp", GardenRoomType::Text, Vec::new()).unwrap();
         let count_before = garden.rooms.len();
         // Remove the room we just added.
         remove_room(&mut garden, &room_id).unwrap();

@@ -22,10 +22,10 @@
 // - `TrustLevel` and `RoutingEntry` for routing table updates.
 use crate::identity::peer_id::PeerId;
 use crate::routing::table::DeviceAddress;
-use crate::service::runtime::{MeshRuntime, FileDirection, CHUNKS_PER_TICK, FILE_CHUNK_SIZE};
-use crate::service::runtime::{write_tcp_frame, try_read_frame, extract_frame_sender};
-use crate::trust::levels::TrustLevel;
 use crate::routing::table::RoutingEntry;
+use crate::service::runtime::{extract_frame_sender, try_read_frame, write_tcp_frame};
+use crate::service::runtime::{FileDirection, MeshRuntime, CHUNKS_PER_TICK, FILE_CHUNK_SIZE};
+use crate::trust::levels::TrustLevel;
 
 impl MeshRuntime {
     // -----------------------------------------------------------------------
@@ -77,6 +77,7 @@ impl MeshRuntime {
         self.advance_notifications();
         self.advance_gossip_cleanup();
         self.advance_keepalives();
+        self.advance_layer1_participation();
     }
 
     // -----------------------------------------------------------------------
@@ -118,7 +119,10 @@ impl MeshRuntime {
         for peer_hex in &peer_ids {
             // Read the last-received timestamp (None = never received data yet).
             let last_rx = {
-                let map = self.clearnet_last_rx.lock().unwrap_or_else(|e| e.into_inner());
+                let map = self
+                    .clearnet_last_rx
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 map.get(peer_hex).copied()
             };
             let idle_secs = last_rx
@@ -192,20 +196,26 @@ impl MeshRuntime {
 
             // Resolve display name and trust level for the event payload.
             let (display_name, trust_val) = {
-                let peer_bytes_opt = hex::decode(&peer_hex)
-                    .ok()
-                    .filter(|b| b.len() == 32)
-                    .map(|b| {
-                        let mut a = [0u8; 32];
-                        a.copy_from_slice(&b);
-                        a
-                    });
+                let peer_bytes_opt =
+                    hex::decode(&peer_hex)
+                        .ok()
+                        .filter(|b| b.len() == 32)
+                        .map(|b| {
+                            let mut a = [0u8; 32];
+                            a.copy_from_slice(&b);
+                            a
+                        });
                 if let Some(pb) = peer_bytes_opt {
                     let pid = PeerId(pb);
                     let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
                     contacts
                         .get(&pid)
-                        .map(|c| (c.display_name.clone().unwrap_or_default(), c.trust_level as u8))
+                        .map(|c| {
+                            (
+                                c.display_name.clone().unwrap_or_default(),
+                                c.trust_level as u8,
+                            )
+                        })
                         .unwrap_or_default()
                 } else {
                     (String::new(), 0u8)
@@ -281,13 +291,13 @@ impl MeshRuntime {
 
         let our_addr = DeviceAddress(peer_id_bytes);
         let announcement = ReachabilityAnnouncement {
-            destination:     our_addr,
-            hop_count:       0,
-            latency_ms:      0,
-            next_hop_trust:  TrustLevel::InnerCircle,
+            destination: our_addr,
+            hop_count: 0,
+            latency_ms: 0,
+            next_hop_trust: TrustLevel::InnerCircle,
             announcement_id,
-            timestamp:       now,
-            scope:           AnnouncementScope::Public,
+            timestamp: now,
+            scope: AnnouncementScope::Public,
             signature,
         };
 
@@ -328,7 +338,7 @@ impl MeshRuntime {
             }
             _ => return,
         };
-        let addr    = DeviceAddress(peer_bytes);
+        let addr = DeviceAddress(peer_bytes);
         let peer_id = PeerId(peer_bytes);
 
         let trust = {
@@ -348,12 +358,12 @@ impl MeshRuntime {
         // not received via gossip.  This distinguishes them from gossip-propagated
         // routes so the routing table can apply different expiry policies.
         let entry = RoutingEntry {
-            destination:     addr,
-            next_hop:        addr,
-            hop_count:       1,
-            latency_ms:      0,
-            next_hop_trust:  trust,
-            last_updated:    now,
+            destination: addr,
+            next_hop: addr,
+            hop_count: 1,
+            latency_ms: 0,
+            next_hop_trust: trust,
+            last_updated: now,
             announcement_id: [0u8; 32],
         };
         self.routing_table
@@ -376,6 +386,23 @@ impl MeshRuntime {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .cleanup(now);
+    }
+
+    /// Reconcile Layer 1 participation state on every poll cycle.
+    ///
+    /// This keeps the exported startup/runtime posture current as threat
+    /// context, conversation activity, transport availability, and tunnel
+    /// gossip knowledge change over time.
+    pub fn advance_layer1_participation(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.tunnel_gossip
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .gc(now);
+        self.refresh_layer1_participation_state();
     }
 
     /// Drain coalesced notifications whose jitter window has closed (§14).
@@ -436,8 +463,11 @@ impl MeshRuntime {
     ///    individual Double Ratchet sessions.
     /// 4. Persist updated group state to vault.
     pub fn advance_group_rekeys(&self) {
-        use chacha20poly1305::{aead::{Aead, Nonce}, ChaCha20Poly1305, Key, KeyInit};
         use crate::service::runtime::try_random_fill;
+        use chacha20poly1305::{
+            aead::{Aead, Nonce},
+            ChaCha20Poly1305, Key, KeyInit,
+        };
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -476,17 +506,17 @@ impl MeshRuntime {
                 let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
                 match groups.get_mut(idx) {
                     Some(group) => {
-                        group.symmetric_key    = new_symmetric_key;
+                        group.symmetric_key = new_symmetric_key;
                         group.sender_key_epoch += 1;
-                        group.last_rekey_at    = now;
+                        group.last_rekey_at = now;
                         group.sender_key_epoch
                     }
                     None => continue,
                 }
             };
 
-            let group_id_hex  = hex::encode(group_id);
-            let new_key_hex   = hex::encode(new_symmetric_key);
+            let group_id_hex = hex::encode(group_id);
+            let new_key_hex = hex::encode(new_symmetric_key);
 
             // Our own peer ID — skip when iterating members.
             let our_peer_id = self
@@ -497,7 +527,7 @@ impl MeshRuntime {
                 .map(|id| id.peer_id());
 
             for member_bytes in &member_ids {
-                let member_id  = PeerId(*member_bytes);
+                let member_id = PeerId(*member_bytes);
                 let member_hex = hex::encode(member_bytes);
 
                 // Never send to ourselves.
@@ -519,8 +549,10 @@ impl MeshRuntime {
 
                 // Encrypt using this member's ratchet session.
                 let encrypted_envelope: Option<serde_json::Value> = {
-                    let mut sessions =
-                        self.ratchet_sessions.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut sessions = self
+                        .ratchet_sessions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     if let Some(session) = sessions.get_mut(&member_id) {
                         match session.next_send_msg_key() {
                             Ok((header, msg_key)) => {
@@ -607,10 +639,17 @@ impl MeshRuntime {
         for tid in transfer_ids {
             // Snapshot direction and metadata without holding the lock over I/O.
             let (direction, peer_id, file_id, total_bytes) = {
-                let map = self.active_file_io.lock().unwrap_or_else(|e| e.into_inner());
+                let map = self
+                    .active_file_io
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 match map.get(&tid) {
                     Some(s) => (
-                        if s.direction == FileDirection::Send { "send" } else { "recv" },
+                        if s.direction == FileDirection::Send {
+                            "send"
+                        } else {
+                            "recv"
+                        },
                         s.peer_id.clone(),
                         s.file_id,
                         s.total_bytes,
@@ -626,7 +665,10 @@ impl MeshRuntime {
             for _ in 0..CHUNKS_PER_TICK {
                 // Read the next chunk while holding the lock only for I/O.
                 let chunk_data = {
-                    let mut map = self.active_file_io.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut map = self
+                        .active_file_io
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     let state = match map.get_mut(&tid) {
                         Some(s) => s,
                         None => break,
@@ -661,12 +703,17 @@ impl MeshRuntime {
 
                 // Update the in-memory transfer record with new progress.
                 let transferred = {
-                    let map = self.active_file_io.lock().unwrap_or_else(|e| e.into_inner());
+                    let map = self
+                        .active_file_io
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     map.get(&tid).map(|s| s.transferred_bytes).unwrap_or(0)
                 };
                 {
-                    let mut transfers =
-                        self.file_transfers.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut transfers = self
+                        .file_transfers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     for t in transfers.iter_mut() {
                         if t.get("id").and_then(|v| v.as_str()) == Some(&tid) {
                             if let Some(obj) = t.as_object_mut() {
@@ -719,7 +766,10 @@ impl MeshRuntime {
     /// where they await identification (their first frame tells us the peer ID).
     pub fn clearnet_accept_new_connections(&self) {
         let new_streams: Vec<std::net::TcpStream> = {
-            let guard = self.clearnet_listener.lock().unwrap_or_else(|e| e.into_inner());
+            let guard = self
+                .clearnet_listener
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let mut accepted = Vec::new();
             if let Some(ref listener) = *guard {
                 loop {
@@ -737,8 +787,10 @@ impl MeshRuntime {
             accepted
         };
         if !new_streams.is_empty() {
-            let mut pending =
-                self.clearnet_pending_incoming.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .clearnet_pending_incoming
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             for stream in new_streams {
                 pending.push((stream, Vec::new()));
             }
@@ -758,8 +810,10 @@ impl MeshRuntime {
             }
         };
         if !new_streams.is_empty() {
-            let mut pending =
-                self.clearnet_pending_incoming.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .clearnet_pending_incoming
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             for stream in new_streams {
                 pending.push((stream, Vec::new()));
             }
@@ -783,8 +837,10 @@ impl MeshRuntime {
         // immediately.  This allows new connections to be accepted during the
         // (potentially slow) identification loop below.
         let pending_conns: Vec<(std::net::TcpStream, Vec<u8>)> = {
-            let mut guard =
-                self.clearnet_pending_incoming.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = self
+                .clearnet_pending_incoming
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *guard)
         };
 
@@ -838,7 +894,8 @@ impl MeshRuntime {
             .extend(still_pending);
 
         // Enforce isolation mode (§3.4): Critical threat context → accept only known peers.
-        let in_critical_mode = self.threat_context == crate::network::threat_context::ThreatContext::Critical;
+        let in_critical_mode =
+            self.threat_context == crate::network::threat_context::ThreatContext::Critical;
 
         let mut newly_identified: Vec<String> = Vec::new();
         for (peer_id_hex, stream, buf) in identified {
@@ -895,30 +952,47 @@ impl MeshRuntime {
 
             // Emit PeerUpdated(online) so Flutter shows the connection immediately.
             {
-                let peer_bytes_opt = hex::decode(peer_id_hex)
-                    .ok()
-                    .filter(|b| b.len() == 32)
-                    .map(|b| {
-                        let mut a = [0u8; 32];
-                        a.copy_from_slice(&b);
-                        a
-                    });
+                let peer_bytes_opt =
+                    hex::decode(peer_id_hex)
+                        .ok()
+                        .filter(|b| b.len() == 32)
+                        .map(|b| {
+                            let mut a = [0u8; 32];
+                            a.copy_from_slice(&b);
+                            a
+                        });
                 if let Some(peer_bytes) = peer_bytes_opt {
                     let pid = PeerId(peer_bytes);
-                    let (display_name, trust_val, cap_exit, cap_wrapper, cap_sf, cap_endorse) = {
-                        let contacts =
-                            self.contacts.lock().unwrap_or_else(|e| e.into_inner());
+                    let (
+                        display_name,
+                        trust_val,
+                        pairing_method,
+                        cap_exit,
+                        cap_wrapper,
+                        cap_sf,
+                        cap_endorse,
+                    ) = {
+                        let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(c) = contacts.get(&pid) {
                             (
                                 c.display_name.clone().unwrap_or_default(),
                                 c.trust_level as u8,
+                                format!("{:?}", c.pairing_method),
                                 c.can_be_exit_node,
                                 c.can_be_wrapper_node,
                                 c.can_be_store_forward,
                                 c.can_endorse_peers,
                             )
                         } else {
-                            (String::new(), 0u8, false, false, false, false)
+                            (
+                                String::new(),
+                                0u8,
+                                "Unspecified".to_string(),
+                                false,
+                                false,
+                                false,
+                                false,
+                            )
                         }
                     };
                     self.push_event(
@@ -927,6 +1001,7 @@ impl MeshRuntime {
                             "id":               peer_id_hex,
                             "name":             display_name,
                             "trustLevel":       trust_val,
+                            "pairingMethod":    pairing_method,
                             "status":           "online",
                             "canBeExitNode":    cap_exit,
                             "canBeWrapperNode": cap_wrapper,
@@ -986,7 +1061,10 @@ impl MeshRuntime {
             // Read available bytes into the peer's receive buffer.
             let closed = {
                 let mut tmp = [0u8; 4096];
-                let mut conns = self.clearnet_connections.lock().unwrap_or_else(|e| e.into_inner());
+                let mut conns = self
+                    .clearnet_connections
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 let stream = match conns.get_mut(&peer_hex) {
                     Some(s) => s,
                     None => continue,
@@ -995,8 +1073,13 @@ impl MeshRuntime {
                     match stream.read(&mut tmp) {
                         Ok(0) => break true,
                         Ok(n) => {
-                            let mut bufs = self.clearnet_recv_buffers.lock().unwrap_or_else(|e| e.into_inner());
-                            bufs.entry(peer_hex.clone()).or_default().extend_from_slice(&tmp[..n]);
+                            let mut bufs = self
+                                .clearnet_recv_buffers
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            bufs.entry(peer_hex.clone())
+                                .or_default()
+                                .extend_from_slice(&tmp[..n]);
                         }
                         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break false,
                         Err(_) => break true,
@@ -1020,8 +1103,10 @@ impl MeshRuntime {
             // Drain complete frames from the receive buffer.
             loop {
                 let frame = {
-                    let mut bufs =
-                        self.clearnet_recv_buffers.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut bufs = self
+                        .clearnet_recv_buffers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     match bufs.get_mut(&peer_hex) {
                         Some(buf) => try_read_frame(buf),
                         None => None,
@@ -1080,8 +1165,10 @@ impl MeshRuntime {
         for (peer_hex, endpoint, frame) in outbox.drain(..) {
             // Try existing identified connection first.
             let sent = {
-                let mut conns =
-                    self.clearnet_connections.lock().unwrap_or_else(|e| e.into_inner());
+                let mut conns = self
+                    .clearnet_connections
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if let Some(stream) = conns.get_mut(&peer_hex) {
                     write_tcp_frame(stream, &frame).is_ok()
                 } else {
@@ -1093,88 +1180,85 @@ impl MeshRuntime {
             }
 
             // Try clearnet TCP.
-            let clearnet_ok = flags.clearnet
-                && {
-                    if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
-                        if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
-                            &addr,
-                            std::time::Duration::from_secs(3),
-                        ) {
-                            let ok = write_tcp_frame(&mut stream, &frame).is_ok();
-                            if ok {
-                                let _ = stream.set_nonblocking(true);
-                                self.clearnet_connections
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .insert(peer_hex.clone(), stream);
-                            }
-                            ok
-                        } else {
-                            false
+            let clearnet_ok = flags.clearnet && {
+                if let Ok(addr) = endpoint.parse::<std::net::SocketAddr>() {
+                    if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+                        &addr,
+                        std::time::Duration::from_secs(3),
+                    ) {
+                        let ok = write_tcp_frame(&mut stream, &frame).is_ok();
+                        if ok {
+                            let _ = stream.set_nonblocking(true);
+                            self.clearnet_connections
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(peer_hex.clone(), stream);
                         }
+                        ok
                     } else {
                         false
                     }
-                };
+                } else {
+                    false
+                }
+            };
             if clearnet_ok {
                 continue;
             }
 
             // Try Tor if enabled and the peer has a known onion address.
-            let tor_ok = flags.tor
-                && {
-                    let tor_endpoint = {
-                        let peer_bytes = hex::decode(&peer_hex)
-                            .ok()
-                            .and_then(|b| {
-                                if b.len() == 32 {
-                                    let mut a = [0u8; 32];
-                                    a.copy_from_slice(&b);
-                                    Some(a)
-                                } else {
-                                    None
-                                }
-                            });
-                        peer_bytes.and_then(|b| {
-                            let contacts =
-                                self.contacts.lock().unwrap_or_else(|e| e.into_inner());
-                            contacts.get(&PeerId(b)).and_then(|c| c.tor_endpoint.clone())
-                        })
+            let tor_ok = flags.tor && {
+                let tor_endpoint = {
+                    let peer_bytes = hex::decode(&peer_hex).ok().and_then(|b| {
+                        if b.len() == 32 {
+                            let mut a = [0u8; 32];
+                            a.copy_from_slice(&b);
+                            Some(a)
+                        } else {
+                            None
+                        }
+                    });
+                    peer_bytes.and_then(|b| {
+                        let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
+                        contacts
+                            .get(&PeerId(b))
+                            .and_then(|c| c.tor_endpoint.clone())
+                    })
+                };
+                if let Some(ref tor_ep) = tor_endpoint {
+                    let (onion_addr, port) = if let Some(colon) = tor_ep.rfind(':') {
+                        let addr = &tor_ep[..colon];
+                        let port: u16 = tor_ep[colon + 1..].parse().unwrap_or(DEFAULT_HS_PORT);
+                        (addr.to_string(), port)
+                    } else {
+                        (tor_ep.clone(), DEFAULT_HS_PORT)
                     };
-                    if let Some(ref tor_ep) = tor_endpoint {
-                        let (onion_addr, port) = if let Some(colon) = tor_ep.rfind(':') {
-                            let addr = &tor_ep[..colon];
-                            let port: u16 = tor_ep[colon + 1..].parse().unwrap_or(DEFAULT_HS_PORT);
-                            (addr.to_string(), port)
-                        } else {
-                            (tor_ep.clone(), DEFAULT_HS_PORT)
-                        };
-                        let guard = self.tor_transport.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(ref tor) = *guard {
-                            match tor.connect(&peer_hex, &onion_addr, port) {
-                                Ok(mut stream) => {
-                                    let ok = write_tcp_frame(&mut stream, &frame).is_ok();
-                                    if ok {
-                                        self.clearnet_connections
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner())
-                                            .insert(peer_hex.clone(), stream);
-                                        tor.record_message(&peer_hex);
-                                    }
-                                    ok
+                    let guard = self.tor_transport.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(ref tor) = *guard {
+                        match tor.connect(&peer_hex, &onion_addr, port) {
+                            Ok(mut stream) => {
+                                let ok = write_tcp_frame(&mut stream, &frame).is_ok();
+                                if ok {
+                                    self.clearnet_connections
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(peer_hex.clone(), stream);
+                                    tor.record_message(&peer_hex);
                                 }
-                                Err(e) => {
-                                    tracing::debug!(peer=%peer_hex, "Tor outbound connect failed: {e}");
-                                    false
-                                }
+                                ok
                             }
-                        } else {
-                            false
+                            Err(e) => {
+                                tracing::debug!(peer=%peer_hex, "Tor outbound connect failed: {e}");
+                                false
+                            }
                         }
                     } else {
                         false
                     }
-                };
+                } else {
+                    false
+                }
+            };
 
             if !clearnet_ok && !tor_ok {
                 remaining.push((peer_hex, endpoint, frame));
@@ -1183,4 +1267,3 @@ impl MeshRuntime {
         *outbox = remaining;
     }
 }
-

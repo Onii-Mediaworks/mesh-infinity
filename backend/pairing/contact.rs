@@ -29,9 +29,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::methods::PairingMethod;
 use crate::identity::peer_id::PeerId;
 use crate::trust::levels::TrustLevel;
-use super::methods::PairingMethod;
 
 // ---------------------------------------------------------------------------
 // Contact Record
@@ -63,6 +63,13 @@ pub struct ContactRecord {
     // Execute this protocol step.
     // Execute this protocol step.
     pub x25519_public: [u8; 32],
+
+    /// The peer's mesh-identity WireGuard public key (transport identity).
+    ///
+    /// Older contact records may not include this yet, so callers should fall
+    /// back to `x25519_public` when it is absent.
+    #[serde(default)]
+    pub mesh_x25519_public: Option<[u8; 32]>,
 
     /// Display name (human-readable, optional).
     /// Set by the peer during pairing, verified by signature.
@@ -264,9 +271,9 @@ impl ContactRecord {
         // Execute this protocol step.
         // Execute this protocol step.
         now: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Assemble the instance from the computed fields.
         // Construct the instance from computed fields.
@@ -279,6 +286,7 @@ impl ContactRecord {
             // Execute this protocol step.
             // Execute this protocol step.
             x25519_public,
+            mesh_x25519_public: None,
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
@@ -728,13 +736,7 @@ mod tests {
         let ed_pub = [id_byte; 32];
         let peer_id = PeerId::from_ed25519_pub(&ed_pub);
 
-        ContactRecord::new(
-            peer_id,
-            ed_pub,
-            [id_byte + 1; 32],
-            method,
-            1000,
-        )
+        ContactRecord::new(peer_id, ed_pub, [id_byte + 1; 32], method, 1000)
     }
 
     #[test]
@@ -773,7 +775,9 @@ mod tests {
     fn test_safety_number_verification() {
         let mut contact = test_contact(0x01, PairingMethod::Nfc);
 
-        contact.set_safety_number("123456789012345678901234567890123456789012345678901234567890".to_string());
+        contact.set_safety_number(
+            "123456789012345678901234567890123456789012345678901234567890".to_string(),
+        );
         assert!(!contact.safety_number_verified);
 
         contact.verify_safety_number();

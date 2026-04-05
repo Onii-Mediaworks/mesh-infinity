@@ -188,7 +188,6 @@ struct Segment {
     data: Vec<u8>,
 
     // --- Retransmission state (used only for segments in snd_buf) ---
-
     /// Absolute timestamp (ms) when the next retransmission is due.
     resendts: u32,
     /// Per-segment RTO, initialised from the global `rx_rto` and then
@@ -548,8 +547,7 @@ impl KcpState {
                 self.probe_wait = PROBE_INIT_MS;
                 self.ts_probe = current + self.probe_wait;
             } else if current >= self.ts_probe {
-                self.probe_wait =
-                    (self.probe_wait * 3 / 2).clamp(PROBE_INIT_MS, PROBE_LIMIT_MS);
+                self.probe_wait = (self.probe_wait * 3 / 2).clamp(PROBE_INIT_MS, PROBE_LIMIT_MS);
                 self.ts_probe = current + self.probe_wait;
                 self.probe |= ASK_SEND;
             }
@@ -837,22 +835,6 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn loopback_pair() -> (KcpState, KcpState) {
-        let a_out: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-        let b_out: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-        let a_out2 = Arc::clone(&a_out);
-        let b_out2 = Arc::clone(&b_out);
-
-        let kcp_a = KcpState::new(1, move |data: &[u8]| {
-            a_out.lock().unwrap().push(data.to_vec());
-        });
-        let kcp_b = KcpState::new(1, move |data: &[u8]| {
-            b_out.lock().unwrap().push(data.to_vec());
-        });
-        let _ = (a_out2, b_out2);
-        (kcp_a, kcp_b)
-    }
-
     #[test]
     fn conv_from_wg_key() {
         let key = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06];
@@ -932,7 +914,10 @@ mod tests {
                 break;
             }
         }
-        assert!(kcp.dead, "KCP should declare dead_link after enough retransmits");
+        assert!(
+            kcp.dead,
+            "KCP should declare dead_link after enough retransmits"
+        );
     }
 
     #[test]

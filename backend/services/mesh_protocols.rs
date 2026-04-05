@@ -262,7 +262,9 @@ pub enum MnrdpAppSpec {
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    AppId { id: String },
+    AppId {
+        id: String,
+    },
     // Begin the block scope.
     // Execute this protocol step.
     // Execute this protocol step.
@@ -470,39 +472,72 @@ pub enum MnrdpInputEvent {
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    MouseMove { x: u16, y: u16 },
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    MouseButton { button: u8, pressed: bool, x: u16, y: u16 },
+    MouseButton {
+        button: u8,
+        pressed: bool,
+        x: u16,
+        y: u16,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    MouseScroll { delta_x: i16, delta_y: i16 },
+    MouseScroll {
+        delta_x: i16,
+        delta_y: i16,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    KeyEvent { keycode: u32, pressed: bool, modifiers: u16 },
+    KeyEvent {
+        keycode: u32,
+        pressed: bool,
+        modifiers: u16,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    TouchBegin { id: u8, x: f32, y: f32 },
+    TouchBegin {
+        id: u8,
+        x: f32,
+        y: f32,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    TouchMove { id: u8, x: f32, y: f32 },
+    TouchMove {
+        id: u8,
+        x: f32,
+        y: f32,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    TouchEnd { id: u8 },
+    TouchEnd {
+        id: u8,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    DragStart { window_id: u32, mime_type: String, payload: Vec<u8> },
+    DragStart {
+        window_id: u32,
+        mime_type: String,
+        payload: Vec<u8>,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Drop { target_window_id: u32, x: u16, y: u16 },
+    Drop {
+        target_window_id: u32,
+        x: u16,
+        y: u16,
+    },
 }
 
 /// Application list entry.
@@ -798,39 +833,64 @@ pub enum MnfpOp {
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    List { path: String },
+    List {
+        path: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Stat { path: String },
+    Stat {
+        path: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Read { path: String, offset: u64, length: u32 },
+    Read {
+        path: String,
+        offset: u64,
+        length: u32,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Write { path: String, offset: u64, payload: Vec<u8>, create_if_missing: bool },
+    Write {
+        path: String,
+        offset: u64,
+        payload: Vec<u8>,
+        create_if_missing: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Truncate { path: String, length: u64 },
+    Truncate {
+        path: String,
+        length: u64,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Delete { path: String },
+    Delete {
+        path: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Rename { from: String, to: String },
+    Rename {
+        from: String,
+        to: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Mkdir { path: String },
+    Mkdir {
+        path: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
-    Rmdir { path: String },
+    Rmdir {
+        path: String,
+    },
 }
 
 /// MNFP request.
@@ -1181,10 +1241,7 @@ fn generate_session_id() -> Result<[u8; 16], MeshError> {
 ///
 /// Returns `MeshError::Internal` if the OS CSPRNG fails to produce
 /// random bytes for the session ID.
-pub fn create_session(
-    protocol: MeshProtocol,
-    peer: PeerId,
-) -> Result<ProtocolSession, MeshError> {
+pub fn create_session(protocol: MeshProtocol, peer: PeerId) -> Result<ProtocolSession, MeshError> {
     // Generate a cryptographically random session ID to prevent collisions.
     // This is critical for multiplexing multiple sessions on the same link.
     let id = generate_session_id()?;
@@ -1502,10 +1559,7 @@ pub fn create_content_session(
 ///
 /// - `MeshError::OutOfRange` if `chunk_index` exceeds the number of chunks.
 /// - `MeshError::NotFound` if the chunk has not been received yet.
-pub fn request_chunk(
-    session: &ContentSession,
-    chunk_index: u32,
-) -> Result<Vec<u8>, MeshError> {
+pub fn request_chunk(session: &ContentSession, chunk_index: u32) -> Result<Vec<u8>, MeshError> {
     // Convert the index to usize for bounds checking against the bitmap.
     let idx = chunk_index as usize;
 
@@ -1751,10 +1805,10 @@ mod tests {
     fn test_create_session_unique_ids() {
         // Each session must get a unique random ID to prevent collisions
         // when multiplexing sessions on the same peer link.
-        let s1 = create_session(MeshProtocol::MeshDns, test_peer(0x01))
-            .expect("session 1 creation");
-        let s2 = create_session(MeshProtocol::MeshDns, test_peer(0x01))
-            .expect("session 2 creation");
+        let s1 =
+            create_session(MeshProtocol::MeshDns, test_peer(0x01)).expect("session 1 creation");
+        let s2 =
+            create_session(MeshProtocol::MeshDns, test_peer(0x01)).expect("session 2 creation");
 
         // Two sessions should have different IDs (probability of collision: ~2^-128).
         assert_ne!(s1.id, s2.id);
@@ -1780,8 +1834,8 @@ mod tests {
     fn test_close_session_from_active() {
         // Closing an Active session must transition through Closing to Closed.
         // After close, no more data should flow.
-        let mut session = create_session(MeshProtocol::MeshStream, test_peer(0xBB))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshStream, test_peer(0xBB)).expect("session creation");
         // Manually transition to Active (simulating completed handshake).
         session.state = SessionState::Active;
 
@@ -1793,8 +1847,8 @@ mod tests {
     #[test]
     fn test_close_session_from_paused() {
         // Paused sessions should also close cleanly — same path as Active.
-        let mut session = create_session(MeshProtocol::MeshFileShare, test_peer(0xCC))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshFileShare, test_peer(0xCC)).expect("session creation");
         session.state = SessionState::Paused;
 
         close_session(&mut session).expect("close from paused should succeed");
@@ -1805,8 +1859,8 @@ mod tests {
     fn test_close_session_from_initiating() {
         // Initiating sessions skip Closing and go directly to Closed,
         // since there's no handshake data to flush.
-        let mut session = create_session(MeshProtocol::MeshDns, test_peer(0xDD))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshDns, test_peer(0xDD)).expect("session creation");
 
         // State should be Initiating right after creation.
         assert_eq!(session.state, SessionState::Initiating);
@@ -1818,8 +1872,8 @@ mod tests {
     fn test_close_session_idempotent() {
         // Closing an already-Closed session must be a no-op — idempotent.
         // Callers should not need to check state before calling close.
-        let mut session = create_session(MeshProtocol::MeshDns, test_peer(0xEE))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshDns, test_peer(0xEE)).expect("session creation");
         session.state = SessionState::Closed;
 
         // Second close should succeed silently without error.
@@ -1831,8 +1885,8 @@ mod tests {
     fn test_process_frame_requires_active_state() {
         // Frames can only be processed in Active state. All other states
         // must return an error.
-        let mut session = create_session(MeshProtocol::MeshDns, test_peer(0x11))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshDns, test_peer(0x11)).expect("session creation");
 
         // Initiating — should reject frames.
         let result = process_protocol_frame(&mut session, b"hello");
@@ -1847,8 +1901,8 @@ mod tests {
     #[test]
     fn test_process_frame_rejects_empty() {
         // Empty frames are invalid — every protocol frame needs at least one byte.
-        let mut session = create_session(MeshProtocol::MeshDns, test_peer(0x22))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshDns, test_peer(0x22)).expect("session creation");
         session.state = SessionState::Active;
 
         let result = process_protocol_frame(&mut session, b"");
@@ -1859,19 +1913,22 @@ mod tests {
     fn test_process_frame_updates_counters() {
         // Processing a frame must update bytes_exchanged and last_activity.
         // Both inbound and outbound bytes are counted.
-        let mut session = create_session(MeshProtocol::MeshDns, test_peer(0x33))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshDns, test_peer(0x33)).expect("session creation");
         session.state = SessionState::Active;
         // Reset bytes to verify increment.
         session.bytes_exchanged = 0;
 
         let frame = b"test-dns-query";
-        let response = process_protocol_frame(&mut session, frame)
-            .expect("frame processing should succeed");
+        let response =
+            process_protocol_frame(&mut session, frame).expect("frame processing should succeed");
 
         // bytes_exchanged should include both inbound frame and outbound response.
         // Inbound: 14 bytes, outbound: 15 bytes (1 status + 14 echo).
-        assert_eq!(session.bytes_exchanged, frame.len() as u64 + response.len() as u64);
+        assert_eq!(
+            session.bytes_exchanged,
+            frame.len() as u64 + response.len() as u64
+        );
         // Response should be non-empty.
         assert!(!response.is_empty());
     }
@@ -1879,12 +1936,12 @@ mod tests {
     #[test]
     fn test_process_frame_dns_protocol() {
         // MeshDns frames get a 0x00 status prefix in the response.
-        let mut session = create_session(MeshProtocol::MeshDns, test_peer(0x44))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshDns, test_peer(0x44)).expect("session creation");
         session.state = SessionState::Active;
 
-        let response = process_protocol_frame(&mut session, b"query")
-            .expect("dns frame should succeed");
+        let response =
+            process_protocol_frame(&mut session, b"query").expect("dns frame should succeed");
         // First byte should be 0x00 (OK status).
         assert_eq!(response[0], 0x00);
         // Remaining bytes should echo the original frame.
@@ -1894,8 +1951,8 @@ mod tests {
     #[test]
     fn test_process_frame_fileshare_protocol() {
         // MeshFileShare frames get a 0x01 status prefix.
-        let mut session = create_session(MeshProtocol::MeshFileShare, test_peer(0x55))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshFileShare, test_peer(0x55)).expect("session creation");
         session.state = SessionState::Active;
 
         let response = process_protocol_frame(&mut session, b"chunk-req")
@@ -1908,12 +1965,12 @@ mod tests {
     #[test]
     fn test_process_frame_stream_protocol() {
         // MeshStream frames get a 0x02 status prefix.
-        let mut session = create_session(MeshProtocol::MeshStream, test_peer(0x66))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshStream, test_peer(0x66)).expect("session creation");
         session.state = SessionState::Active;
 
-        let response = process_protocol_frame(&mut session, b"media")
-            .expect("stream frame should succeed");
+        let response =
+            process_protocol_frame(&mut session, b"media").expect("stream frame should succeed");
         assert_eq!(response[0], 0x02);
         assert_eq!(&response[1..], b"media");
     }
@@ -1924,7 +1981,8 @@ mod tests {
         let mut session = create_session(
             MeshProtocol::Custom("com.test/v1".to_string()),
             test_peer(0x77),
-        ).expect("session creation");
+        )
+        .expect("session creation");
         session.state = SessionState::Active;
 
         let response = process_protocol_frame(&mut session, b"custom-data")
@@ -1971,7 +2029,11 @@ mod tests {
 
         // Verify the service record contains the expected fields.
         match &response.answers[0] {
-            MeshDnsAnswer::ServiceRecord { port, protocol, metadata } => {
+            MeshDnsAnswer::ServiceRecord {
+                port,
+                protocol,
+                metadata,
+            } => {
                 assert_eq!(*port, 75000);
                 assert_eq!(protocol, SVC_FILE_ACCESS);
                 assert!(metadata.contains("fileserver.mesh.local"));
@@ -2163,18 +2225,33 @@ mod tests {
     #[test]
     fn test_session_status_json_fields() {
         // The JSON output must contain all required fields with correct types.
-        let session = create_session(MeshProtocol::MeshDns, test_peer(0xAB))
-            .expect("session creation");
+        let session =
+            create_session(MeshProtocol::MeshDns, test_peer(0xAB)).expect("session creation");
 
         let json = session_status_json(&session);
         // Verify all expected fields are present in the JSON object.
         assert!(json.get("id").is_some(), "JSON must have 'id' field");
-        assert!(json.get("protocol").is_some(), "JSON must have 'protocol' field");
-        assert!(json.get("peer_id").is_some(), "JSON must have 'peer_id' field");
+        assert!(
+            json.get("protocol").is_some(),
+            "JSON must have 'protocol' field"
+        );
+        assert!(
+            json.get("peer_id").is_some(),
+            "JSON must have 'peer_id' field"
+        );
         assert!(json.get("state").is_some(), "JSON must have 'state' field");
-        assert!(json.get("created_at").is_some(), "JSON must have 'created_at' field");
-        assert!(json.get("last_activity").is_some(), "JSON must have 'last_activity' field");
-        assert!(json.get("bytes_exchanged").is_some(), "JSON must have 'bytes_exchanged' field");
+        assert!(
+            json.get("created_at").is_some(),
+            "JSON must have 'created_at' field"
+        );
+        assert!(
+            json.get("last_activity").is_some(),
+            "JSON must have 'last_activity' field"
+        );
+        assert!(
+            json.get("bytes_exchanged").is_some(),
+            "JSON must have 'bytes_exchanged' field"
+        );
 
         // Verify protocol is correctly mapped to its string representation.
         assert_eq!(json["protocol"], "mesh_dns");
@@ -2190,7 +2267,8 @@ mod tests {
         let session = create_session(
             MeshProtocol::Custom("org.example/chat/v2".to_string()),
             test_peer(0xCD),
-        ).expect("session creation");
+        )
+        .expect("session creation");
 
         let json = session_status_json(&session);
         // Custom protocol string should be "custom:<name>".
@@ -2200,8 +2278,8 @@ mod tests {
     #[test]
     fn test_session_status_json_all_states() {
         // Verify that every SessionState variant maps to the correct JSON string.
-        let mut session = create_session(MeshProtocol::MeshStream, test_peer(0xEF))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshStream, test_peer(0xEF)).expect("session creation");
 
         // Test each state by mutating the session and checking JSON output.
         let state_mappings = [
@@ -2227,8 +2305,8 @@ mod tests {
     fn test_full_session_lifecycle() {
         // End-to-end test: create → activate → process frames → close.
         // Verifies the complete happy-path session lifecycle.
-        let mut session = create_session(MeshProtocol::MeshFileShare, test_peer(0x99))
-            .expect("session creation");
+        let mut session =
+            create_session(MeshProtocol::MeshFileShare, test_peer(0x99)).expect("session creation");
 
         // Step 1: session starts in Initiating.
         assert_eq!(session.state, SessionState::Initiating);

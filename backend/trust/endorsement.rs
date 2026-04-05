@@ -8,8 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::peer_id::PeerId;
 use super::levels::TrustLevel;
+use crate::identity::peer_id::PeerId;
 
 /// A trust endorsement record (§8.5.4).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -537,9 +537,8 @@ mod tests {
         let endorser = PeerId([0x01; 32]);
         let endorsed = PeerId([0x02; 32]);
 
-        let result = store.add_endorsement(make_endorsement(
-            endorser, endorsed, TrustLevel::Trusted, 1,
-        ));
+        let result =
+            store.add_endorsement(make_endorsement(endorser, endorsed, TrustLevel::Trusted, 1));
         assert_eq!(result, Some(TrustLevel::Vouched));
     }
 
@@ -603,13 +602,22 @@ mod tests {
         let target = PeerId([0x02; 32]);
 
         store.add_endorsement(make_endorsement(
-            PeerId([0x01; 32]), target, TrustLevel::Trusted, 1,
+            PeerId([0x01; 32]),
+            target,
+            TrustLevel::Trusted,
+            1,
         ));
         store.add_endorsement(make_endorsement(
-            PeerId([0x03; 32]), target, TrustLevel::InnerCircle, 1,
+            PeerId([0x03; 32]),
+            target,
+            TrustLevel::InnerCircle,
+            1,
         ));
         store.add_endorsement(make_endorsement(
-            PeerId([0x04; 32]), PeerId([0x05; 32]), TrustLevel::Trusted, 1,
+            PeerId([0x04; 32]),
+            PeerId([0x05; 32]),
+            TrustLevel::Trusted,
+            1,
         ));
 
         assert_eq!(store.endorsements_for(&target).len(), 2);
@@ -621,13 +629,22 @@ mod tests {
         let target = PeerId([0x02; 32]);
 
         store.add_endorsement(make_endorsement(
-            PeerId([0x01; 32]), target, TrustLevel::Trusted, 1,
+            PeerId([0x01; 32]),
+            target,
+            TrustLevel::Trusted,
+            1,
         ));
         store.add_endorsement(make_endorsement(
-            PeerId([0x03; 32]), target, TrustLevel::InnerCircle, 1,
+            PeerId([0x03; 32]),
+            target,
+            TrustLevel::InnerCircle,
+            1,
         ));
 
-        assert_eq!(store.highest_endorser_level(&target), Some(TrustLevel::InnerCircle));
+        assert_eq!(
+            store.highest_endorser_level(&target),
+            Some(TrustLevel::InnerCircle)
+        );
     }
 
     #[test]

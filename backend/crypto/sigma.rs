@@ -350,7 +350,9 @@ impl SigmaVerifier {
             // Execute this protocol step.
             // Execute this protocol step.
             // Execute this protocol step.
-            challenge: SigmaChallenge { challenge: challenge_bytes },
+            challenge: SigmaChallenge {
+                challenge: challenge_bytes,
+            },
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
@@ -513,10 +515,10 @@ pub fn sigma_prove_and_verify(
     // Execute this protocol step.
     // Execute this protocol step.
     prover_pub_key: &[u8; 32],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<(), SigmaError> {
     // Step 1: Prover generates commitment.
     // Compute prover for this protocol step.
@@ -628,7 +630,9 @@ mod tests {
         let prover1 = SigmaProver::new();
         let commitment1 = prover1.commitment.clone();
         let verifier1 = SigmaVerifier::new(commitment1.clone(), pub_key);
-        let challenge1 = SigmaChallenge { challenge: verifier1.challenge().challenge };
+        let challenge1 = SigmaChallenge {
+            challenge: verifier1.challenge().challenge,
+        };
         let response1 = prover1.respond(&challenge1, &signing_key);
 
         // Second run — use a different verifier (different challenge).
@@ -636,8 +640,10 @@ mod tests {
         let verifier2 = SigmaVerifier::new(commitment1, pub_key);
         let different_challenge = verifier2.challenge().challenge;
         // Ensure the challenges are different (overwhelmingly likely).
-        assert_ne!(challenge1.challenge, different_challenge,
-            "test assumption: fresh challenges must differ");
+        assert_ne!(
+            challenge1.challenge, different_challenge,
+            "test assumption: fresh challenges must differ"
+        );
 
         // Attempt to reuse response1 against the new challenge.
         let result = verifier2.verify(&response1);
@@ -657,7 +663,9 @@ mod tests {
         let commitment = prover.commitment.clone();
         let verifier = SigmaVerifier::new(commitment, pub_key);
 
-        let zero_response = SigmaResponse { response: [0u8; 64] };
+        let zero_response = SigmaResponse {
+            response: [0u8; 64],
+        };
         let result = verifier.verify(&zero_response);
         assert!(
             matches!(result, Err(SigmaError::VerificationFailed)),
@@ -677,7 +685,9 @@ mod tests {
 
         let mut random_response = [0u8; 64];
         OsRng.fill_bytes(&mut random_response);
-        let result = verifier.verify(&SigmaResponse { response: random_response });
+        let result = verifier.verify(&SigmaResponse {
+            response: random_response,
+        });
         assert!(
             matches!(result, Err(SigmaError::VerificationFailed)),
             "random response must be rejected"
@@ -695,12 +705,17 @@ mod tests {
         let bad_pub_key = [0xFF_u8; 32];
         let verifier = SigmaVerifier::new(commitment, bad_pub_key);
 
-        let challenge = SigmaChallenge { challenge: verifier.challenge().challenge };
+        let challenge = SigmaChallenge {
+            challenge: verifier.challenge().challenge,
+        };
         let response = prover.respond(&challenge, &signing_key);
 
         let result = verifier.verify(&response);
         assert!(
-            matches!(result, Err(SigmaError::InvalidPublicKey | SigmaError::VerificationFailed)),
+            matches!(
+                result,
+                Err(SigmaError::InvalidPublicKey | SigmaError::VerificationFailed)
+            ),
             "malformed public key must be rejected: {result:?}"
         );
     }
@@ -722,8 +737,12 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
 
         let nonce = [0x42u8; 32];
-        let c1 = SigmaChallenge { challenge: [0x01u8; 32] };
-        let c2 = SigmaChallenge { challenge: [0x02u8; 32] };
+        let c1 = SigmaChallenge {
+            challenge: [0x01u8; 32],
+        };
+        let c2 = SigmaChallenge {
+            challenge: [0x02u8; 32],
+        };
 
         let p1 = SigmaProver {
             commitment: SigmaCommitment { commitment: nonce },
@@ -734,8 +753,10 @@ mod tests {
 
         let r1 = p1.respond(&c1, &signing_key);
         let r2 = p2.respond(&c2, &signing_key);
-        assert_ne!(r1.response, r2.response,
-            "different challenges must produce different responses");
+        assert_ne!(
+            r1.response, r2.response,
+            "different challenges must produce different responses"
+        );
     }
 
     #[test]
@@ -744,14 +765,22 @@ mod tests {
         let sk2 = SigningKey::generate(&mut OsRng);
 
         let nonce = [0x11u8; 32];
-        let challenge = SigmaChallenge { challenge: [0x22u8; 32] };
+        let challenge = SigmaChallenge {
+            challenge: [0x22u8; 32],
+        };
 
-        let p1 = SigmaProver { commitment: SigmaCommitment { commitment: nonce } };
-        let p2 = SigmaProver { commitment: SigmaCommitment { commitment: nonce } };
+        let p1 = SigmaProver {
+            commitment: SigmaCommitment { commitment: nonce },
+        };
+        let p2 = SigmaProver {
+            commitment: SigmaCommitment { commitment: nonce },
+        };
 
         let r1 = p1.respond(&challenge, &sk1);
         let r2 = p2.respond(&challenge, &sk2);
-        assert_ne!(r1.response, r2.response,
-            "different signing keys must produce different responses");
+        assert_ne!(
+            r1.response, r2.response,
+            "different signing keys must produce different responses"
+        );
     }
 }

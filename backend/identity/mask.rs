@@ -240,10 +240,10 @@ impl Mask {
         // Execute this protocol step.
         // Execute this protocol step.
         is_public: bool,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Ed25519 mask key
         // Compute hk ed for this protocol step.
@@ -795,12 +795,20 @@ mod tests {
         let mask_id = MaskId([0x01u8; 16]);
 
         let m1 = Mask::derive_from_self(
-            &self_id.ed25519_signing, &self_id.x25519_secret,
-            mask_id, "Public".into(), 0, true,
+            &self_id.ed25519_signing,
+            &self_id.x25519_secret,
+            mask_id,
+            "Public".into(),
+            0,
+            true,
         );
         let m2 = Mask::derive_from_self(
-            &self_id.ed25519_signing, &self_id.x25519_secret,
-            mask_id, "Public".into(), 0, true,
+            &self_id.ed25519_signing,
+            &self_id.x25519_secret,
+            mask_id,
+            "Public".into(),
+            0,
+            true,
         );
         // Same self + same mask_id → same keypairs
         assert_eq!(m1.ed25519_pub, m2.ed25519_pub);
@@ -814,27 +822,43 @@ mod tests {
         let id_b = MaskId([0x02u8; 16]);
 
         let ma = Mask::derive_from_self(
-            &self_id.ed25519_signing, &self_id.x25519_secret,
-            id_a, "A".into(), 0, false,
+            &self_id.ed25519_signing,
+            &self_id.x25519_secret,
+            id_a,
+            "A".into(),
+            0,
+            false,
         );
         let mb = Mask::derive_from_self(
-            &self_id.ed25519_signing, &self_id.x25519_secret,
-            id_b, "B".into(), 0, false,
+            &self_id.ed25519_signing,
+            &self_id.x25519_secret,
+            id_b,
+            "B".into(),
+            0,
+            false,
         );
-        assert_ne!(ma.ed25519_pub, mb.ed25519_pub,
-            "Different mask_ids must produce different keypairs");
+        assert_ne!(
+            ma.ed25519_pub, mb.ed25519_pub,
+            "Different mask_ids must produce different keypairs"
+        );
     }
 
     #[test]
     fn test_derived_mask_differs_from_self() {
         let self_id = super::super::self_identity::SelfIdentity::generate(None);
         let mask = Mask::derive_from_self(
-            &self_id.ed25519_signing, &self_id.x25519_secret,
-            MaskId([0xAAu8; 16]), "Test".into(), 0, false,
+            &self_id.ed25519_signing,
+            &self_id.x25519_secret,
+            MaskId([0xAAu8; 16]),
+            "Test".into(),
+            0,
+            false,
         );
         // Mask key must differ from self key (HKDF is one-way but produces distinct output)
-        assert_ne!(mask.ed25519_pub, self_id.ed25519_pub,
-            "Mask keypair must differ from self keypair");
+        assert_ne!(
+            mask.ed25519_pub, self_id.ed25519_pub,
+            "Mask keypair must differ from self keypair"
+        );
         assert!(!mask.is_anonymous);
     }
 

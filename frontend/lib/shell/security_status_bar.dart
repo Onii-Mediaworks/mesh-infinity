@@ -6,6 +6,8 @@ import 'package:provider/provider.dart';
 import '../app/app_theme.dart';
 import '../backend/event_bus.dart';
 import '../backend/event_models.dart';
+import '../features/network/network_state.dart';
+import '../features/settings/settings_state.dart';
 
 // ---------------------------------------------------------------------------
 // SecurityState — tracks active security conditions that affect the status bar
@@ -13,16 +15,15 @@ import '../backend/event_models.dart';
 
 enum SecurityCondition {
   none,
-  loSec,       // LoSec mode active on at least one session
-  direct,      // Direct clearnet connection active (no mesh routing)
-  compromised, // Message from compromised peer
-  keyChange,   // Key change pending approval
+  exitExposure,
+  threat,
+  loSec,
 }
 
 /// Tracks the set of active security conditions and surfaces the
 /// highest-priority one to [SecurityStatusBar].
 ///
-/// Priority (highest first): direct > compromised > keyChange > loSec.
+/// Priority (highest first): exitExposure > threat > loSec.
 class SecurityState extends ChangeNotifier {
   SecurityState() {
     _sub = EventBus.instance.stream.listen(_onEvent);
@@ -34,33 +35,8 @@ class SecurityState extends ChangeNotifier {
   final Set<String> _loSecSessions = {};
   final Set<String> _dismissedLoSec = {};
 
-  // Direct connection flag
-  bool _directActive = false;
-
-  // Compromised peer name (if any)
-  String? _compromisedPeerName;
-  bool _compromisedDismissed = false;
-
-  // Key change peer name (if any)
-  String? _keyChangePeerName;
-
-  // ---------------------------------------------------------------------------
-  // Public getters
-  // ---------------------------------------------------------------------------
-
-  SecurityCondition get activeCondition {
-    if (_directActive) return SecurityCondition.direct;
-    if (_compromisedPeerName != null && !_compromisedDismissed) {
-      return SecurityCondition.compromised;
-    }
-    if (_keyChangePeerName != null) return SecurityCondition.keyChange;
-    final anyLoSec = _loSecSessions.any((s) => !_dismissedLoSec.contains(s));
-    if (anyLoSec) return SecurityCondition.loSec;
-    return SecurityCondition.none;
-  }
-
-  String? get compromisedPeerName => _compromisedPeerName;
-  String? get keyChangePeerName => _keyChangePeerName;
+  bool get hasActiveLoSec =>
+      _loSecSessions.any((sessionId) => !_dismissedLoSec.contains(sessionId));
 
   // ---------------------------------------------------------------------------
   // Dismissal
@@ -68,11 +44,6 @@ class SecurityState extends ChangeNotifier {
 
   void dismissLoSec(String sessionId) {
     _dismissedLoSec.add(sessionId);
-    notifyListeners();
-  }
-
-  void dismissCompromised() {
-    _compromisedDismissed = true;
     notifyListeners();
   }
 
@@ -95,29 +66,6 @@ class SecurityState extends ChangeNotifier {
       default:
         break;
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Backend-driven updates (called by network layer when implemented)
-  // ---------------------------------------------------------------------------
-
-  // TODO(backend/security): call these from the network state when the
-  // corresponding backend events are implemented.
-  void setDirectActive(bool active) {
-    if (_directActive == active) return;
-    _directActive = active;
-    notifyListeners();
-  }
-
-  void setCompromisedPeer(String? name) {
-    _compromisedDismissed = false;
-    _compromisedPeerName = name;
-    notifyListeners();
-  }
-
-  void setKeyChangePeer(String? name) {
-    _keyChangePeerName = name;
-    notifyListeners();
   }
 
   @override
@@ -143,23 +91,32 @@ class SecurityStatusBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final security = context.watch<SecurityState>();
-    final condition = security.activeCondition;
-    return _SecurityBanner(security: security, condition: condition);
+    final settings = context.watch<SettingsState>();
+    final network = context.watch<NetworkState>();
+    return _SecurityBanner(
+      security: security,
+      settings: settings,
+      network: network,
+    );
   }
 }
 
 class _SecurityBanner extends StatelessWidget {
   const _SecurityBanner({
     required this.security,
-    required this.condition,
+    required this.settings,
+    required this.network,
   });
 
   final SecurityState security;
-  final SecurityCondition condition;
+  final SettingsState settings;
+  final NetworkState network;
 
   @override
   Widget build(BuildContext context) {
-    final (height, color, icon, message, dismissible) = _props(security, condition);
+    final condition = _activeCondition(security, settings, network);
+    final (height, color, icon, message, dismissible) =
+        _props(security, settings, network, condition);
 
     return AnimatedContainer(
       height: height,
@@ -204,8 +161,27 @@ class _SecurityBanner extends StatelessWidget {
     );
   }
 
+  static SecurityCondition _activeCondition(
+    SecurityState security,
+    SettingsState settings,
+    NetworkState network,
+  ) {
+    if (network.vpnExitNodeSeesDestinations && network.isVpnActive) {
+      return SecurityCondition.exitExposure;
+    }
+    if ((settings.settings?.threatContext ?? 0) > 0) {
+      return SecurityCondition.threat;
+    }
+    if (security.hasActiveLoSec) {
+      return SecurityCondition.loSec;
+    }
+    return SecurityCondition.none;
+  }
+
   static (double, Color, IconData, String, bool) _props(
     SecurityState security,
+    SettingsState settings,
+    NetworkState network,
     SecurityCondition condition,
   ) {
     return switch (condition) {
@@ -216,34 +192,38 @@ class _SecurityBanner extends StatelessWidget {
           '',
           false,
         ),
+      SecurityCondition.exitExposure => (
+          36.0,
+          MeshTheme.secRed,
+          Icons.warning_rounded,
+          network.vpnChangesInternetIp
+              ? 'Traffic exits through another network. That operator can see destinations after traffic leaves the mesh.'
+              : 'This route exposes destinations beyond the mesh boundary.',
+          false,
+        ),
+      SecurityCondition.threat => (
+          32.0,
+          switch (settings.settings?.threatContext ?? 0) {
+            1 => MeshTheme.secAmber,
+            2 => MeshTheme.secRed,
+            3 => MeshTheme.secPurple,
+            _ => MeshTheme.brand,
+          },
+          Icons.shield_outlined,
+          switch (settings.settings?.threatContext ?? 0) {
+            1 => 'Elevated threat mode active — stricter transport and metadata controls are on.',
+            2 => 'High threat mode active — privacy-preserving transports are enforced.',
+            3 => 'Critical threat mode active — maximum isolation is enabled.',
+            _ => '',
+          },
+          false,
+        ),
       SecurityCondition.loSec => (
           32.0,
           MeshTheme.secAmber,
           Icons.warning_amber_rounded,
-          'LoSec mode active — fine for everyday use',
+          'LoSec mode active — faster path with reduced anonymity protections.',
           true,
-        ),
-      SecurityCondition.direct => (
-          36.0,
-          MeshTheme.secRed,
-          Icons.warning_rounded,
-          '⚠ DIRECT CONNECTION — no mesh routing',
-          false,
-        ),
-      SecurityCondition.compromised => (
-          32.0,
-          MeshTheme.secPurple,
-          Icons.shield_outlined,
-          'Message from compromised peer'
-              '${security.compromisedPeerName != null ? ' — ${security.compromisedPeerName}' : ''}',
-          true,
-        ),
-      SecurityCondition.keyChange => (
-          32.0,
-          MeshTheme.brand,
-          Icons.key_outlined,
-          '${security.keyChangePeerName ?? 'A contact'}\'s key changed — tap to review',
-          false,
         ),
     };
   }
@@ -255,8 +235,6 @@ class _SecurityBanner extends StatelessWidget {
         for (final s in List.of(security._loSecSessions)) {
           security.dismissLoSec(s);
         }
-      case SecurityCondition.compromised:
-        security.dismissCompromised();
       default:
         break;
     }

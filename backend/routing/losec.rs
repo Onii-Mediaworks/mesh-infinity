@@ -160,9 +160,9 @@ impl ConnectionMode {
             // Handle this match arm.
             Self::Standard => (1, 255), // Variable, routing decides.
             // Handle this match arm.
-            Self::LoSec => (1, 2),      // Fixed 1-2 hops.
+            Self::LoSec => (1, 2), // Fixed 1-2 hops.
             // Handle this match arm.
-            Self::Direct => (0, 0),     // No relay.
+            Self::Direct => (0, 0), // No relay.
         }
     }
 
@@ -209,8 +209,7 @@ impl ConnectionMode {
 ///
 /// Controls whether this node will accept LoSec connections.
 /// Both flags default to false (deny-by-default policy).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // ServiceLoSecConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -232,7 +231,6 @@ pub struct ServiceLoSecConfig {
     // Execute this protocol step.
     pub allow_direct: bool,
 }
-
 
 // ---------------------------------------------------------------------------
 // LoSec Request / Negotiation
@@ -514,9 +512,9 @@ impl SignedLoSecRequest {
         // Execute this protocol step.
         // Execute this protocol step.
         signing_key: &SigningKey,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Result<Self, LoSecError> {
         // Conditional branch based on the current state.
         // Guard: validate the condition before proceeding.
@@ -530,7 +528,12 @@ impl SignedLoSecRequest {
         // Track the count for threshold and bounds checking.
         // Compute request for this protocol step.
         // Compute request for this protocol step.
-        let request = LoSecRequest { session_id, mode, hop_count, reason: reason.into() };
+        let request = LoSecRequest {
+            session_id,
+            mode,
+            hop_count,
+            reason: reason.into(),
+        };
         // Prepare the data buffer for the next processing stage.
         // Compute payload for this protocol step.
         // Compute payload for this protocol step.
@@ -597,7 +600,8 @@ impl SignedLoSecRequest {
         // Verify the signature against the claimed public key.
         // Map the error to the local error type.
         // Map the error to the local error type.
-        vk.verify(&payload, &sig).map_err(|_| LoSecError::SignatureInvalid)
+        vk.verify(&payload, &sig)
+            .map_err(|_| LoSecError::SignatureInvalid)
     }
 }
 
@@ -614,7 +618,11 @@ impl SignedLoSecResponse {
         // Unique identifier for lookup and deduplication.
         // Compute response for this protocol step.
         // Compute response for this protocol step.
-        let response = LoSecResponse { session_id, accepted: true, rejection_reason: None };
+        let response = LoSecResponse {
+            session_id,
+            accepted: true,
+            rejection_reason: None,
+        };
         // Prepare the data buffer for the next processing stage.
         // Compute payload for this protocol step.
         // Compute payload for this protocol step.
@@ -731,7 +739,8 @@ impl SignedLoSecResponse {
         // Verify the signature against the claimed public key.
         // Map the error to the local error type.
         // Map the error to the local error type.
-        vk.verify(&payload, &sig).map_err(|_| LoSecError::SignatureInvalid)
+        vk.verify(&payload, &sig)
+            .map_err(|_| LoSecError::SignatureInvalid)
     }
 }
 
@@ -765,9 +774,9 @@ pub fn handle_losec_request(
     // Execute this protocol step.
     // Execute this protocol step.
     responder_signing_key: &SigningKey,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> SignedLoSecResponse {
     // 1. Verify signature.
     // Guard: validate the condition before proceeding.
@@ -776,7 +785,11 @@ pub fn handle_losec_request(
         // Return the result to the caller.
         // Return to the caller.
         // Return to the caller.
-        return SignedLoSecResponse::reject(signed.request.session_id, "invalid signature", responder_signing_key);
+        return SignedLoSecResponse::reject(
+            signed.request.session_id,
+            "invalid signature",
+            responder_signing_key,
+        );
     }
 
     // Execute the operation and bind the result.
@@ -791,7 +804,11 @@ pub fn handle_losec_request(
         // Return the result to the caller.
         // Return to the caller.
         // Return to the caller.
-        return SignedLoSecResponse::reject(req.session_id, "invalid hop count", responder_signing_key);
+        return SignedLoSecResponse::reject(
+            req.session_id,
+            "invalid hop count",
+            responder_signing_key,
+        );
     }
 
     // 3. Check policy.
@@ -809,7 +826,11 @@ pub fn handle_losec_request(
                 // Return the result to the caller.
                 // Return to the caller.
                 // Return to the caller.
-                return SignedLoSecResponse::reject(req.session_id, "losec not allowed", responder_signing_key);
+                return SignedLoSecResponse::reject(
+                    req.session_id,
+                    "losec not allowed",
+                    responder_signing_key,
+                );
             }
             // LoSec requires ambient traffic.
             // Guard: validate the condition before proceeding.
@@ -818,7 +839,11 @@ pub fn handle_losec_request(
                 // Return the result to the caller.
                 // Return to the caller.
                 // Return to the caller.
-                return SignedLoSecResponse::reject(req.session_id, "insufficient ambient traffic", responder_signing_key);
+                return SignedLoSecResponse::reject(
+                    req.session_id,
+                    "insufficient ambient traffic",
+                    responder_signing_key,
+                );
             }
         }
         // Begin the block scope.
@@ -832,7 +857,11 @@ pub fn handle_losec_request(
                 // Return the result to the caller.
                 // Return to the caller.
                 // Return to the caller.
-                return SignedLoSecResponse::reject(req.session_id, "direct mode not allowed", responder_signing_key);
+                return SignedLoSecResponse::reject(
+                    req.session_id,
+                    "direct mode not allowed",
+                    responder_signing_key,
+                );
             }
         }
         // Begin the block scope.
@@ -1084,8 +1113,7 @@ impl AmbientTrafficMonitor {
             // Process the current step in the protocol.
             // Execute this protocol step.
             // Execute this protocol step.
-            + (1.0 - alpha) * self.traffic_volume as f64)
-            as u64;
+            + (1.0 - alpha) * self.traffic_volume as f64) as u64;
 
         // Update variance using Welford's online algorithm (simplified).
         // Compute diff for this protocol step.
@@ -1196,9 +1224,9 @@ pub fn direct_mode_eligible(
     // Execute this protocol step.
     // Execute this protocol step.
     ambient_ok: bool,
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> DirectModeEligibility {
     // Path A: proximity transports are always eligible.
     // Guard: validate the condition before proceeding.
@@ -1289,7 +1317,9 @@ mod tests {
         let key = SigningKey::from_bytes(&[0x11u8; 32]);
         let session_id = [0x22u8; 32];
 
-        let signed = SignedLoSecRequest::new(session_id, ConnectionMode::LoSec, 1, "video call", &key).unwrap();
+        let signed =
+            SignedLoSecRequest::new(session_id, ConnectionMode::LoSec, 1, "video call", &key)
+                .unwrap();
         assert!(signed.verify().is_ok());
 
         // Tamper with hop count → verify fails.
@@ -1318,11 +1348,19 @@ mod tests {
         use ed25519_dalek::SigningKey;
         let initiator_key = SigningKey::from_bytes(&[0x55u8; 32]);
         let responder_key = SigningKey::from_bytes(&[0x66u8; 32]);
-        let config = ServiceLoSecConfig { allow_losec: true, allow_direct: false };
+        let config = ServiceLoSecConfig {
+            allow_losec: true,
+            allow_direct: false,
+        };
 
         let signed = SignedLoSecRequest::new(
-            [0x77u8; 32], ConnectionMode::LoSec, 1, "file transfer", &initiator_key,
-        ).unwrap();
+            [0x77u8; 32],
+            ConnectionMode::LoSec,
+            1,
+            "file transfer",
+            &initiator_key,
+        )
+        .unwrap();
 
         let resp = handle_losec_request(&signed, &config, true, &responder_key);
         assert!(resp.response.accepted);
@@ -1334,15 +1372,26 @@ mod tests {
         use ed25519_dalek::SigningKey;
         let initiator_key = SigningKey::from_bytes(&[0x55u8; 32]);
         let responder_key = SigningKey::from_bytes(&[0x66u8; 32]);
-        let config = ServiceLoSecConfig { allow_losec: false, allow_direct: false };
+        let config = ServiceLoSecConfig {
+            allow_losec: false,
+            allow_direct: false,
+        };
 
         let signed = SignedLoSecRequest::new(
-            [0x77u8; 32], ConnectionMode::LoSec, 1, "file transfer", &initiator_key,
-        ).unwrap();
+            [0x77u8; 32],
+            ConnectionMode::LoSec,
+            1,
+            "file transfer",
+            &initiator_key,
+        )
+        .unwrap();
 
         let resp = handle_losec_request(&signed, &config, true, &responder_key);
         assert!(!resp.response.accepted);
-        assert_eq!(resp.response.rejection_reason.as_deref(), Some("losec not allowed"));
+        assert_eq!(
+            resp.response.rejection_reason.as_deref(),
+            Some("losec not allowed")
+        );
     }
 
     #[test]
@@ -1350,13 +1399,26 @@ mod tests {
         use ed25519_dalek::SigningKey;
         let initiator_key = SigningKey::from_bytes(&[0x55u8; 32]);
         let responder_key = SigningKey::from_bytes(&[0x66u8; 32]);
-        let config = ServiceLoSecConfig { allow_losec: true, allow_direct: false };
+        let config = ServiceLoSecConfig {
+            allow_losec: true,
+            allow_direct: false,
+        };
 
         let signed = SignedLoSecRequest::new(
-            [0x77u8; 32], ConnectionMode::LoSec, 2, "file transfer", &initiator_key,
-        ).unwrap();
+            [0x77u8; 32],
+            ConnectionMode::LoSec,
+            2,
+            "file transfer",
+            &initiator_key,
+        )
+        .unwrap();
 
-        let resp = handle_losec_request(&signed, &config, false /* ambient insufficient */, &responder_key);
+        let resp = handle_losec_request(
+            &signed,
+            &config,
+            false, /* ambient insufficient */
+            &responder_key,
+        );
         assert!(!resp.response.accepted);
     }
 
@@ -1467,11 +1529,7 @@ mod tests {
     #[test]
     fn test_direct_mode_network_untrusted() {
         // Network transport without trust.
-        let result = direct_mode_eligible(
-            &TransportType::Clearnet,
-            TrustLevel::Unknown,
-            true,
-        );
+        let result = direct_mode_eligible(&TransportType::Clearnet, TrustLevel::Unknown, true);
 
         assert_eq!(result, DirectModeEligibility::IneligibleTrust);
     }
@@ -1479,11 +1537,7 @@ mod tests {
     #[test]
     fn test_direct_mode_no_ambient() {
         // Network transport with trust but insufficient ambient.
-        let result = direct_mode_eligible(
-            &TransportType::Clearnet,
-            TrustLevel::Trusted,
-            false,
-        );
+        let result = direct_mode_eligible(&TransportType::Clearnet, TrustLevel::Trusted, false);
 
         assert_eq!(result, DirectModeEligibility::IneligibleAmbient);
     }

@@ -34,6 +34,8 @@
 //
 // SPEC REFERENCE: §22.8.3
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 // HapticFeedback for success/failure vibrations on pairing result.
 import 'package:flutter/services.dart';
@@ -51,6 +53,8 @@ import '../../peers/peers_state.dart';
 // QrPairingWidget — the camera viewfinder that decodes QR codes.
 // Lives in peers/widgets/ as it may be reused by other pairing surfaces.
 import '../../peers/widgets/qr_pairing_widget.dart';
+import '../../../platform/android_proximity_bridge.dart';
+import '../../../platform/android_proximity_sync.dart';
 
 // ---------------------------------------------------------------------------
 // PairContactScreen (§22.8.3)
@@ -104,6 +108,7 @@ class _PairContactScreenState extends State<PairContactScreen>
   /// True while a pairing attempt is in progress — shows a full-screen
   /// CircularProgressIndicator so the user knows to wait.
   bool _pairing = false;
+  StreamSubscription<AndroidProximityEvent>? _androidProximitySub;
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -118,6 +123,51 @@ class _PairContactScreenState extends State<PairContactScreen>
     if (widget.prefillPeerId != null) {
       _codeController.text = widget.prefillPeerId!;
     }
+    final backendBridge = context.read<BackendBridge>();
+    _androidProximitySub = AndroidProximityBridge.instance.events.listen((event) async {
+      await AndroidProximitySync.syncCurrentState(backendBridge);
+      final payloadJson = switch (event) {
+        NfcPairingPayloadEvent(:final payloadJson) => payloadJson,
+        WifiDirectPairingPayloadEvent(:final payloadJson) => payloadJson,
+        _ => '',
+      };
+      if (payloadJson.isEmpty) {
+        return;
+      }
+      if (_pairing || !mounted) {
+        return;
+      }
+      final source = switch (event) {
+        NfcPairingPayloadEvent() => 'NFC',
+        WifiDirectPairingPayloadEvent() => 'WiFi Direct',
+        _ => 'nearby transport',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Pairing payload received over $source.')),
+      );
+      setState(() => _pairing = true);
+      final ok = backendBridge.ingestAndroidPairingPayload(
+        payloadJson,
+        source,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (ok) {
+        HapticFeedback.mediumImpact();
+        Navigator.pop(context, true);
+        return;
+      }
+      setState(() => _pairing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            backendBridge.getLastError() ??
+                'Pairing payload from $source could not be accepted.',
+          ),
+        ),
+      );
+    });
   }
 
   @override
@@ -128,6 +178,7 @@ class _PairContactScreenState extends State<PairContactScreen>
     _codeController.dispose();
     _linkImportController.dispose();
     _keyImportController.dispose();
+    _androidProximitySub?.cancel();
     super.dispose();
   }
 
@@ -253,6 +304,44 @@ class _PairContactScreenState extends State<PairContactScreen>
     await _pair(peerId);
   }
 
+  Future<void> _pairOverWifiDirect() async {
+    final bridge = context.read<BackendBridge>();
+    final payloadJson = bridge.getPairingPayload();
+    if (payloadJson == null || payloadJson.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pairing payload is not available yet.')),
+      );
+      return;
+    }
+    final queued = bridge.queueAndroidWifiDirectPairingPayload(payloadJson);
+    if (!queued) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            bridge.getLastError() ??
+                'WiFi Direct pairing payload could not be queued in the backend.',
+          ),
+        ),
+      );
+      return;
+    }
+    final ok = await AndroidProximitySync.flushWifiDirectPairingPayloads(bridge);
+    if (!mounted || ok) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('WiFi Direct pairing exchange could not be started.'),
+      ),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Build
   // ---------------------------------------------------------------------------
@@ -285,7 +374,10 @@ class _PairContactScreenState extends State<PairContactScreen>
               controller: _tabs,
               children: [
                 // Tab 0: QR scanner — uses the device camera.
-                _ScanTab(onScanned: _pair),
+                _ScanTab(
+                  onScanned: _pair,
+                  onWifiDirectPair: _pairOverWifiDirect,
+                ),
                 // Tab 1: Manual code entry or pre-filled from prefillPeerId.
                 _CodeTab(controller: _codeController, onPair: _pair),
                 // Tab 2: Share/import deep links.
@@ -313,10 +405,11 @@ class _PairContactScreenState extends State<PairContactScreen>
 /// When a QR code is successfully decoded, [onScanned] is called with the
 /// decoded string (the peer's pairing token or peer ID).
 class _ScanTab extends StatelessWidget {
-  const _ScanTab({required this.onScanned});
+  const _ScanTab({required this.onScanned, required this.onWifiDirectPair});
 
   /// Called with the decoded QR string when a code is scanned.
   final ValueChanged<String> onScanned;
+  final Future<void> Function() onWifiDirectPair;
 
   @override
   Widget build(BuildContext context) {
@@ -324,6 +417,10 @@ class _ScanTab extends StatelessWidget {
       padding: const EdgeInsets.all(24),
       child: Column(
         children: [
+          const _AndroidTapToPairHint(),
+          const SizedBox(height: 16),
+          _AndroidWifiDirectPairHint(onPair: onWifiDirectPair),
+          const SizedBox(height: 16),
           // QrPairingWidget wraps mobile_scanner with the correct permissions
           // handling and UI chrome (targeting reticle, etc.).
           Expanded(child: QrPairingWidget(onScanned: onScanned)),
@@ -337,6 +434,72 @@ class _ScanTab extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AndroidTapToPairHint extends StatelessWidget {
+  const _AndroidTapToPairHint();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<AndroidProximityCapabilities?>(
+      future: AndroidProximityBridge.instance.getCapabilities(),
+      builder: (context, snapshot) {
+        final caps = snapshot.data;
+        if (caps == null || !caps.nfcAvailable) {
+          return const SizedBox.shrink();
+        }
+        final body = caps.nfcEnabled
+            ? 'NFC tap-to-pair is ready. Hold another Mesh Infinity device or '
+                'tag near this phone while this screen is open.'
+            : 'This device supports NFC, but it is turned off at the system '
+                'level. Turn NFC on to receive tap-to-pair payloads.';
+        return Card(
+          child: ListTile(
+            leading: const Icon(Icons.nfc_outlined),
+            title: const Text('Tap to pair'),
+            subtitle: Text(body),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AndroidWifiDirectPairHint extends StatelessWidget {
+  const _AndroidWifiDirectPairHint({required this.onPair});
+
+  final Future<void> Function() onPair;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<AndroidProximityCapabilities?>(
+      future: AndroidProximityBridge.instance.getCapabilities(),
+      builder: (context, snapshot) {
+        final caps = snapshot.data;
+        if (caps == null || !caps.wifiDirectAvailable) {
+          return const SizedBox.shrink();
+        }
+        final isReady =
+            caps.wifiDirectConnected &&
+            (caps.wifiDirectConnectionRole == 'group_owner' ||
+                caps.wifiDirectConnectionRole == 'client');
+        final body = isReady
+            ? 'A WiFi Direct session is active. Exchange the pairing payload over this local link.'
+            : 'Connect to a nearby device from Network before using WiFi Direct pairing here.';
+        return Card(
+          child: ListTile(
+            leading: const Icon(Icons.wifi_tethering_outlined),
+            title: const Text('Pair over WiFi Direct'),
+            subtitle: Text(body),
+            trailing: FilledButton(
+              onPressed: isReady ? onPair : null,
+              child: const Text('Exchange'),
+            ),
+          ),
+        );
+      },
     );
   }
 }

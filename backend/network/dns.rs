@@ -395,10 +395,7 @@ mod tests {
             MeshDnsResolver::classify_namespace("server.private.meshinfinity"),
             Some("private")
         );
-        assert_eq!(
-            MeshDnsResolver::classify_namespace("example.com"),
-            None
-        );
+        assert_eq!(MeshDnsResolver::classify_namespace("example.com"), None);
     }
 
     #[test]

@@ -244,9 +244,13 @@ impl ThreatContext {
             // Handle this match arm.
             Self::Normal => "Standard security. All transports available.",
             // Handle this match arm.
-            Self::Elevated => "Elevated security. Direct connections disabled. Prefer anonymizing transports.",
+            Self::Elevated => {
+                "Elevated security. Direct connections disabled. Prefer anonymizing transports."
+            }
             // Handle this match arm.
-            Self::Critical => "Maximum security. Only anonymizing transports. Network isolation active.",
+            Self::Critical => {
+                "Maximum security. Only anonymizing transports. Network isolation active."
+            }
         }
     }
 }

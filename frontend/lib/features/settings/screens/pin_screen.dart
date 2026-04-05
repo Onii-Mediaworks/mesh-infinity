@@ -10,8 +10,6 @@
 //   change     — change existing PIN (3 steps: verify old → enter new → confirm new)
 //   remove     — remove PIN (1 step: verify then confirm)
 //   unlock     — re-authentication gate; no AppBar close button
-//   setupDuress — set up the duress PIN (same UI as setup, different backend call)
-//   testDuress  — verify duress PIN without triggering erase
 //
 // PIN DESIGN:
 // -----------
@@ -24,25 +22,13 @@
 // (used by iOS, Android, and countless banking apps).  Users are familiar
 // with it.
 //
-// WRONG PIN BEHAVIOUR:
-// --------------------
-// Shake animation (150ms, 3 cycles left-right oscillation) + red fill for 400ms.
-// After 5 failed attempts: 30-second lockout timer displayed.
-// The lockout is enforced here in UI; real enforcement is in the backend
-// (the backend doesn't need to trust the UI counter).
-//
-// DURESS PIN (§3.10):
-// --------------------
-// The duress PIN is entered identically to the normal PIN.  The backend
-// determines via bridge.unlockIdentity() return value whether it was a duress
-// unlock.  The UI never knows — it must look completely normal.
-
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import '../../../app/app_theme.dart';
+import '../../../backend/backend_bridge.dart';
+import '../settings_state.dart';
 import 'killswitch_screen.dart';
 
 // ---------------------------------------------------------------------------
@@ -59,10 +45,6 @@ enum PinScreenMode {
   remove,
   // Re-authentication gate — single entry, no close button, no back navigation.
   unlock,
-  // Set up a duress PIN — same two-step as setup but goes to different backend call.
-  setupDuress,
-  // Verify the duress PIN without triggering erase — used in EmergencyEraseScreen test flow.
-  testDuress,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,10 +53,15 @@ enum PinScreenMode {
 
 /// Universal PIN screen covering setup, change, removal, unlock, and duress flows.
 class PinScreen extends StatefulWidget {
-  const PinScreen({super.key, required this.mode});
+  const PinScreen({
+    super.key,
+    required this.mode,
+    this.onUnlocked,
+  });
 
   // Which flow this screen is running.
   final PinScreenMode mode;
+  final VoidCallback? onUnlocked;
 
   @override
   State<PinScreen> createState() => _PinScreenState();
@@ -90,8 +77,6 @@ class _PinScreenState extends State<PinScreen>
   // setup: 0=enter, 1=confirm
   // change: 0=old, 1=new, 2=confirm-new
   // remove/unlock: 0=verify
-  // setupDuress: 0=enter, 1=confirm
-  // testDuress: 0=enter
   int _step = 0;
 
   // The PIN typed so far in the current step.
@@ -99,18 +84,13 @@ class _PinScreenState extends State<PinScreen>
 
   // The PIN from step 1 of setup/setupDuress/change, stored for comparison.
   String _firstPin = '';
+  String _currentPin = '';
 
   // Whether this entry was wrong (triggers shake + red fill).
   bool _wrong = false;
 
-  // Number of consecutive failed attempts.  Lockout triggers at 5.
-  int _failCount = 0;
-
-  // Remaining lockout seconds after 5 failures.  0 = not locked out.
-  int _lockoutSeconds = 0;
-
-  // Timer used to tick down the lockout countdown.
-  Timer? _lockoutTimer;
+  // Whether unlock has failed at least once in this session.
+  bool _hasUnlockFailure = false;
 
   // Shake animation controller — oscillates the dot row on wrong PIN.
   late final AnimationController _shakeController;
@@ -139,7 +119,6 @@ class _PinScreenState extends State<PinScreen>
   void dispose() {
     _pinController.dispose();
     _shakeController.dispose();
-    _lockoutTimer?.cancel();
     _pinFocusNode.dispose();
     super.dispose();
   }
@@ -150,50 +129,43 @@ class _PinScreenState extends State<PinScreen>
 
   // Maximum step index for this mode (0-indexed).
   int get _maxStep => switch (widget.mode) {
-    PinScreenMode.setup       => 1,
-    PinScreenMode.setupDuress => 1,
-    PinScreenMode.change      => 2,
-    PinScreenMode.remove      => 0,
-    PinScreenMode.unlock      => 0,
-    PinScreenMode.testDuress  => 0,
+    PinScreenMode.setup => 1,
+    PinScreenMode.change => 2,
+    PinScreenMode.remove => 0,
+    PinScreenMode.unlock => 0,
   };
 
   // Label shown above the dots.
   String get _stepLabel => switch (widget.mode) {
     PinScreenMode.setup => _step == 0 ? 'Create a PIN' : 'Confirm your PIN',
-    PinScreenMode.setupDuress => _step == 0 ? 'Create a duress PIN' : 'Confirm your duress PIN',
     PinScreenMode.change => switch (_step) {
       0 => 'Enter your current PIN',
       1 => 'Enter new PIN',
       _ => 'Confirm new PIN',
     },
-    PinScreenMode.remove      => 'Enter your PIN to remove it',
-    PinScreenMode.unlock      => 'Enter your PIN',
-    PinScreenMode.testDuress  => 'Enter your duress PIN',
+    PinScreenMode.remove => 'Enter your PIN to remove it',
+    PinScreenMode.unlock => 'Enter your PIN',
   };
 
   // Subtitle below the step label.
   String get _stepSubtitle => switch (widget.mode) {
-    PinScreenMode.setup => _step == 0 ? '4 to 16 digits' : 'Enter the same PIN again',
-    PinScreenMode.setupDuress => _step == 0 ? '4 to 16 digits — different from your main PIN' : 'Enter the same duress PIN again',
+    PinScreenMode.setup =>
+      _step == 0 ? '4 to 16 digits' : 'Enter the same PIN again',
     PinScreenMode.change => switch (_step) {
       1 => '4 to 16 digits',
       2 => 'Enter the same PIN again',
       _ => '',
     },
-    PinScreenMode.remove      => '',
-    PinScreenMode.unlock      => '',
-    PinScreenMode.testDuress  => 'This will not erase anything — just verifies the PIN.',
+    PinScreenMode.remove => '',
+    PinScreenMode.unlock => '',
   };
 
   // AppBar title.
   String get _appBarTitle => switch (widget.mode) {
-    PinScreenMode.setup       => 'App PIN',
-    PinScreenMode.setupDuress => 'Duress PIN',
-    PinScreenMode.change      => 'Change PIN',
-    PinScreenMode.remove      => 'Remove PIN',
-    PinScreenMode.unlock      => 'Unlock',
-    PinScreenMode.testDuress  => 'Test Duress PIN',
+    PinScreenMode.setup => 'App PIN',
+    PinScreenMode.change => 'Change PIN',
+    PinScreenMode.remove => 'Remove PIN',
+    PinScreenMode.unlock => 'Unlock',
   };
 
   // ---------------------------------------------------------------------------
@@ -205,7 +177,7 @@ class _PinScreenState extends State<PinScreen>
     // Cap at 16 digits (max PIN length).
     if (value.length > 16) {
       _pinController.text = value.substring(0, 16);
-      _pinController.selection = TextSelection.collapsed(offset: 16);
+      _pinController.selection = const TextSelection.collapsed(offset: 16);
       return;
     }
 
@@ -226,12 +198,8 @@ class _PinScreenState extends State<PinScreen>
     // guard here in case of programmatic calls.
     if (pin.length < 4) return;
 
-    // Lockout guard.
-    if (_lockoutSeconds > 0) return;
-
     switch (widget.mode) {
       case PinScreenMode.setup:
-      case PinScreenMode.setupDuress:
         _handleSetupStep(pin);
 
       case PinScreenMode.change:
@@ -242,9 +210,6 @@ class _PinScreenState extends State<PinScreen>
 
       case PinScreenMode.unlock:
         _handleUnlock(pin);
-
-      case PinScreenMode.testDuress:
-        _handleTestDuress(pin);
     }
   }
 
@@ -261,21 +226,24 @@ class _PinScreenState extends State<PinScreen>
         _triggerWrong();
         return;
       }
-      // TODO(backend/security): call bridge.setupPin(pin) or bridge.setupDuressPin(pin).
-      final isMain = widget.mode == PinScreenMode.setup;
+      final bridge = context.read<BackendBridge>();
+      final ok = bridge.setPin(pin);
+      if (!ok) {
+        _triggerWrong();
+        return;
+      }
+      context.read<SettingsState>().loadAll();
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(isMain ? 'PIN set' : 'Duress PIN set')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('PIN set')));
     }
   }
 
   // Three-step change: 0 = verify old, 1 = enter new, 2 = confirm new.
   void _handleChangeStep(String pin) {
     if (_step == 0) {
-      // TODO(backend/security): verify current PIN via bridge.verifyPin(pin).
-      // Stub: always accept for now.
-      _firstPin = '';
+      _currentPin = pin;
       _pinController.clear();
       setState(() => _step = 1);
     } else if (_step == 1) {
@@ -287,49 +255,71 @@ class _PinScreenState extends State<PinScreen>
         _triggerWrong();
         return;
       }
-      // TODO(backend/security): call bridge.changePin(pin).
+      final bridge = context.read<BackendBridge>();
+      final ok = bridge.changePin(_currentPin, pin);
+      if (!ok) {
+        _step = 0;
+        _currentPin = '';
+        _firstPin = '';
+        _pinController.clear();
+        _triggerWrong();
+        return;
+      }
+      context.read<SettingsState>().loadAll();
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('PIN changed')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('PIN changed')));
     }
   }
 
   // Single-step removal.
   void _handleRemove(String pin) {
-    // TODO(backend/security): verify PIN and disable via bridge.removePin().
-    // Stub: always succeed.
+    final bridge = context.read<BackendBridge>();
+    final ok = bridge.removePin(pin);
+    if (!ok) {
+      _triggerWrong();
+      return;
+    }
+    context.read<SettingsState>().loadAll();
     Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('PIN removed')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('PIN removed')));
   }
 
   // Single-step unlock.
   void _handleUnlock(String pin) {
-    // TODO(backend/security): call bridge.unlockIdentity() and check return.
-    // Stub: always succeed.  The real backend will also detect duress PINs here.
-    Navigator.pop(context);
-  }
-
-  // Single-step duress PIN test — verifies without erasing.
-  void _handleTestDuress(String pin) {
-    // TODO(backend/security): call bridge.testDuressPin(pin).
-    // Stub: always succeed.
-    HapticFeedback.mediumImpact();
-    Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Duress PIN verified — it works.')),
-    );
+    final bridge = context.read<BackendBridge>();
+    final unlocked = bridge.unlockIdentity(pin: pin);
+    if (unlocked) {
+      context.read<SettingsState>().loadAll();
+      final onUnlocked = widget.onUnlocked;
+      if (onUnlocked != null) {
+        onUnlocked();
+      } else {
+        Navigator.pop(context);
+      }
+      return;
+    }
+    final message = bridge.getLastError();
+    if (message != null && mounted) {
+      context.read<SettingsState>().loadAll();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
+    _triggerWrong();
   }
 
   // Trigger the "wrong PIN" visual: shake + red fill + failure counter.
   void _triggerWrong() {
     HapticFeedback.vibrate();
     _pinController.clear();
-    _failCount++;
-
-    setState(() => _wrong = true);
+    setState(() {
+      _wrong = true;
+      _hasUnlockFailure = true;
+    });
 
     // Shake animation — plays once and stops.
     _shakeController.forward(from: 0);
@@ -338,22 +328,6 @@ class _PinScreenState extends State<PinScreen>
     Future.delayed(const Duration(milliseconds: 400), () {
       if (mounted) setState(() => _wrong = false);
     });
-
-    // Start 30-second lockout after 5 failures.
-    if (_failCount >= 5) {
-      _failCount = 0;
-      _lockoutSeconds = 30;
-      _lockoutTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-        if (!mounted) {
-          t.cancel();
-          return;
-        }
-        setState(() {
-          _lockoutSeconds--;
-          if (_lockoutSeconds <= 0) t.cancel();
-        });
-      });
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -373,7 +347,7 @@ class _PinScreenState extends State<PinScreen>
     return Scaffold(
       appBar: AppBar(
         title: Text(_appBarTitle),
-        // CloseButton for modal flows (setup, change, remove, setupDuress).
+        // CloseButton for modal flows (setup, change, remove).
         // No leading in unlock mode — prevents back-button dismissal.
         leading: canClose ? const CloseButton() : const SizedBox.shrink(),
         automaticallyImplyLeading: false,
@@ -415,7 +389,8 @@ class _PinScreenState extends State<PinScreen>
                         builder: (_, child) => Transform.translate(
                           // Sinusoidal shake: ±10px horizontal oscillation.
                           offset: Offset(
-                            10 * _shakeAnimation.value *
+                            10 *
+                                _shakeAnimation.value *
                                 ((_shakeController.value * 6).floor().isEven
                                     ? 1
                                     : -1),
@@ -423,10 +398,7 @@ class _PinScreenState extends State<PinScreen>
                           ),
                           child: child,
                         ),
-                        child: _PinDots(
-                          entered: pinLen,
-                          wrong: _wrong,
-                        ),
+                        child: _PinDots(entered: pinLen, wrong: _wrong),
                       ),
 
                       const SizedBox(height: 28),
@@ -455,21 +427,9 @@ class _PinScreenState extends State<PinScreen>
                         ),
                       ),
 
-                      // Lockout display — shown only during the 30-second cooldown.
-                      if (_lockoutSeconds > 0) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          'Too many attempts. Try again in $_lockoutSeconds seconds.',
-                          style: tt.bodySmall?.copyWith(
-                            color: cs.error,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-
                       // Forgot PIN link — shown in unlock mode after first failure.
                       if (widget.mode == PinScreenMode.unlock &&
-                          _failCount >= 1) ...[
+                          _hasUnlockFailure) ...[
                         const SizedBox(height: 16),
                         TextButton(
                           onPressed: () => _showForgotSheet(context),
@@ -489,9 +449,7 @@ class _PinScreenState extends State<PinScreen>
                 child: SizedBox(
                   width: double.infinity,
                   child: FilledButton(
-                    // Disabled below 4 digits or during lockout.
-                    onPressed:
-                        pinLen >= 4 && _lockoutSeconds == 0 ? _submit : null,
+                    onPressed: pinLen >= 4 ? _submit : null,
                     child: Text(
                       _step == _maxStep ? _finalButtonLabel : 'Continue',
                     ),
@@ -507,12 +465,10 @@ class _PinScreenState extends State<PinScreen>
 
   // The label on the final step's button (varies by mode).
   String get _finalButtonLabel => switch (widget.mode) {
-    PinScreenMode.setup       => 'Set PIN',
-    PinScreenMode.setupDuress => 'Set duress PIN',
-    PinScreenMode.change      => 'Change PIN',
-    PinScreenMode.remove      => 'Remove PIN',
-    PinScreenMode.unlock      => 'Unlock',
-    PinScreenMode.testDuress  => 'Verify',
+    PinScreenMode.setup => 'Set PIN',
+    PinScreenMode.change => 'Change PIN',
+    PinScreenMode.remove => 'Remove PIN',
+    PinScreenMode.unlock => 'Unlock',
   };
 
   // FocusNode for the hidden text field — allows re-focus on tap-outside.
@@ -540,35 +496,17 @@ class _PinScreenState extends State<PinScreen>
             child: Text(
               'Your PIN protects your identity and messages. Without it, '
               'there is no way to recover your existing data on this device.',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
             ),
           ),
-          // Restore path — erase then import from backup.
-          ListTile(
-            leading: Icon(Icons.restore_outlined, color: MeshTheme.brand),
-            title: const Text('Erase and restore from backup'),
-            subtitle: const Text(
-              'If you have a backup, erase this device and restore from it.',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              Navigator.pop(context);
-              // TODO(backend/security): trigger emergency erase then open backup import.
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Backup restore not yet available.'),
-                ),
-              );
-            },
-          ),
-          // Nuclear path — erase everything and start fresh.
+          // Recovery path — erase everything and start fresh.
           ListTile(
             leading: Icon(Icons.delete_forever_outlined, color: cs.error),
             title: const Text('Erase and start fresh'),
             subtitle: const Text(
-              'Permanently delete everything. Create a new identity.',
+              'Permanently delete everything on this device and create a new identity.',
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
@@ -584,7 +522,6 @@ class _PinScreenState extends State<PinScreen>
       ),
     );
   }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -629,10 +566,7 @@ class _PinDots extends StatelessWidget {
           margin: const EdgeInsets.symmetric(horizontal: 6),
           width: 14,
           height: 14,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         );
       }),
     );

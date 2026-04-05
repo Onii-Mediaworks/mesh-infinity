@@ -6,10 +6,15 @@
 //!
 //! ## First-class native client (§5.23.1)
 //!
-//! Mesh Infinity implements the Tailscale control protocol directly — no
-//! dependency on the `tailscale` CLI or daemon.  On mobile this is mandatory
+//! Mesh Infinity implements the Tailscale client-side protocol directly — no
+//! dependency on the `tailscale` CLI or daemon. On mobile this is mandatory
 //! (single VPN slot); on desktop Mesh Infinity manages its own interface
 //! independently of any installed Tailscale service.
+//!
+//! Important boundary: Mesh Infinity does not implement or host the Tailscale
+//! or Headscale coordination service. It interoperates with an existing
+//! tailnet that is administered by Tailscale or by an external Headscale
+//! deployment.
 //!
 //! ## Double-layer encryption
 //!
@@ -34,11 +39,11 @@
 //! relayed via DERP (Designated Encrypted Relay for Packets) servers.  DERP
 //! is a WebSocket-based relay that encrypts payloads end-to-end.
 
+use base64::Engine as _;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Mutex;
-use base64::Engine as _;
-use serde::{Deserialize, Serialize};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Tailscale addressing
@@ -253,10 +258,7 @@ impl TailscaleClient {
     ///
     /// Returns `RegisterResponse` which may contain an `auth_url` if the user
     /// needs to complete browser-based authentication.
-    pub async fn register(
-        &self,
-        auth: TailscaleAuth,
-    ) -> Result<RegisterResponse, reqwest::Error> {
+    pub async fn register(&self, auth: TailscaleAuth) -> Result<RegisterResponse, reqwest::Error> {
         let auth_str = match auth {
             TailscaleAuth::AuthKey(k) => k,
             TailscaleAuth::AuthUrl(_) => String::new(),
@@ -322,11 +324,39 @@ impl TailscaleClient {
         state.peers = map.peers.clone();
         state.derp_map = map.derp_map.clone();
         if let Some(ref s) = map.self_node {
-            state.assigned_ips = s
-                .addresses
-                .iter()
-                .filter_map(|a| a.parse().ok())
-                .collect();
+            state.assigned_ips = s.addresses.iter().filter_map(|a| a.parse().ok()).collect();
+        }
+        state.key_expiry_ms = map.key_expiry;
+
+        Ok(map)
+    }
+
+    /// Fetch one non-streaming network map snapshot.
+    ///
+    /// This is suitable for synchronous management/status refresh where we
+    /// need the current peer list but do not want a long-polling request that
+    /// holds the connection open indefinitely.
+    pub async fn poll_map_once(&self) -> Result<MapResponse, reqwest::Error> {
+        let url = format!("{}/machine/map", self.control_url);
+        let map: MapResponse = self
+            .client
+            .post(&url)
+            .json(&serde_json::json!({
+                "NodeKey": base64::engine::general_purpose::STANDARD.encode(self.wg_pubkey),
+                "DiscoKey": "",
+                "IncludeIPv6": true,
+                "Stream": false,
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.peers = map.peers.clone();
+        state.derp_map = map.derp_map.clone();
+        if let Some(ref s) = map.self_node {
+            state.assigned_ips = s.addresses.iter().filter_map(|a| a.parse().ok()).collect();
         }
         state.key_expiry_ms = map.key_expiry;
 
@@ -351,7 +381,11 @@ impl TailscaleClient {
             for node in &region.nodes {
                 if let Some(ref ip) = node.ipv4 {
                     if let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() {
-                        let port = if node.derp_port > 0 { node.derp_port } else { DERP_PORT };
+                        let port = if node.derp_port > 0 {
+                            node.derp_port
+                        } else {
+                            DERP_PORT
+                        };
                         return Some(SocketAddr::new(IpAddr::V4(addr), port));
                     }
                 }
@@ -362,7 +396,11 @@ impl TailscaleClient {
 
     /// Return all currently known peers.
     pub fn peers(&self) -> Vec<TailscalePeer> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).peers.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .peers
+            .clone()
     }
 
     /// Return all peers that have advertised exit-node capability.
@@ -425,11 +463,8 @@ mod tests {
 
     #[test]
     fn client_headscale_url() {
-        let c = TailscaleClient::new_headscale(
-            "https://headscale.example.com/",
-            test_key(),
-            "my-node",
-        );
+        let c =
+            TailscaleClient::new_headscale("https://headscale.example.com/", test_key(), "my-node");
         // Trailing slash should be stripped.
         assert_eq!(c.control_url, "https://headscale.example.com");
     }

@@ -36,8 +36,21 @@ import 'identity_masks_screen.dart';
 // ---------------------------------------------------------------------------
 
 /// Screen showing advanced security features with explicit risk disclosures.
-class PotentialExtremesScreen extends StatelessWidget {
+class PotentialExtremesScreen extends StatefulWidget {
   const PotentialExtremesScreen({super.key});
+
+  @override
+  State<PotentialExtremesScreen> createState() => _PotentialExtremesScreenState();
+}
+
+class _PotentialExtremesScreenState extends State<PotentialExtremesScreen> {
+  Future<void> _updateConfig(Map<String, dynamic> config) async {
+    final ok = await context.read<SettingsState>().updateSecurityConfig(config);
+    if (!mounted || ok) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Failed to update security setting.')),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -116,11 +129,11 @@ class PotentialExtremesScreen extends StatelessWidget {
                           ],
                         ),
                       ),
-                      // Toggle changes state optimistically; backend stub returns false.
-                      // TODO(backend/security): wire to real distress message API.
                       Switch(
                         value: settings.distressMessageEnabled,
-                        onChanged: (_) => _stubNotImplemented(context),
+                        onChanged: (value) => _updateConfig({
+                          'distressMessageEnabled': value,
+                        }),
                       ),
                     ],
                   ),
@@ -141,16 +154,6 @@ class PotentialExtremesScreen extends StatelessWidget {
                       color: cs.onSurfaceVariant,
                     ),
                   ),
-
-                  // Configure button shown only when enabled.
-                  if (settings.distressMessageEnabled) ...[
-                    const SizedBox(height: 16),
-                    OutlinedButton(
-                      // TODO(backend/security): open distress message config flow.
-                      onPressed: () => _stubNotImplemented(context),
-                      child: const Text('Configure'),
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -191,7 +194,9 @@ class PotentialExtremesScreen extends StatelessWidget {
                       ),
                       Switch(
                         value: settings.livenessSignalEnabled,
-                        onChanged: (_) => _stubNotImplemented(context),
+                        onChanged: (value) => _updateConfig({
+                          'livenessSignalEnabled': value,
+                        }),
                       ),
                     ],
                   ),
@@ -244,14 +249,4 @@ class PotentialExtremesScreen extends StatelessWidget {
     );
   }
 
-  // Show a SnackBar when a feature isn't wired to the backend yet.
-  // Better than silently toggling state that has no effect.
-  void _stubNotImplemented(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Feature not yet available — backend implementation pending.'),
-        duration: Duration(seconds: 3),
-      ),
-    );
-  }
 }

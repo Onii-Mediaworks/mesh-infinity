@@ -355,9 +355,9 @@ fn rs_generator(gf: &Gf) -> Vec<u8> {
     let mut g = vec![1u8];
     for i in 1..=(t as u8) {
         let root = gf.pow(2, i as usize); // α^i, α = 2
-        // Multiply g by (x + root) in GF(2^8).
-        // new_g[j]   += g[j] * root   (multiply by constant 'root')
-        // new_g[j+1] += g[j]          (multiply by x)
+                                          // Multiply g by (x + root) in GF(2^8).
+                                          // new_g[j]   += g[j] * root   (multiply by constant 'root')
+                                          // new_g[j+1] += g[j]          (multiply by x)
         let mut new_g = vec![0u8; g.len() + 1];
         for (j, &gj) in g.iter().enumerate() {
             new_g[j] ^= gf.mul(gj, root);
@@ -572,7 +572,10 @@ fn berlekamp_massey(gf: &Gf, syndromes: &[u8]) -> Result<Vec<u8>, &'static str> 
         // b_scalar is initialised to 1 and only updated to d when d != 0
         // (see assignment below), so it is always nonzero here.  The
         // Option unwrap is the safety net if that invariant ever breaks.
-        let coeff = gf.mul(d, gf.inv(b_scalar).ok_or("b_scalar is zero in BM algorithm")?);
+        let coeff = gf.mul(
+            d,
+            gf.inv(b_scalar).ok_or("b_scalar is zero in BM algorithm")?,
+        );
         for j in x..=n {
             c[j] ^= gf.mul(coeff, b[j - x]);
         }
@@ -641,7 +644,10 @@ impl TelephoneSubchannel {
     /// Queue `data` for FSK transmission on the next audio callback.
     pub fn send(&self, data: &[u8]) {
         let samples = encode(data);
-        self.send_buf.lock().unwrap_or_else(|e| e.into_inner()).extend(samples);
+        self.send_buf
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(samples);
     }
 
     /// Pull the next batch of outgoing audio samples (called by platform

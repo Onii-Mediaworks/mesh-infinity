@@ -19,6 +19,14 @@
 - Cloud services are prohibited for all platforms (no Google Play services, Apple cloud services, or Microsoft cloud services).
 - **No stubs, shims, placeholders, or non-functional code.** When a feature requires backend support that does not yet exist, implement it. Do not add fake or no-op implementations unless the user explicitly permits it for a specific case.
 
+## Product Baselines
+- Use established products as capability baselines, not as product identity.
+- Chat is informed by Signal-class security and clarity, but must be specified and implemented as Mesh Infinity Chat.
+- Garden is informed by Discord-class community structure and usability, but must be specified and implemented as Mesh Infinity Garden.
+- Infinet is informed by Tailscale-class networking ergonomics and control-surface capabilities, but must be specified and implemented as Mesh Infinity's own fully decentralized network control surface.
+- External Tailscale and ZeroTier support are interoperability features for existing external networks. They must not become architectural dependencies for core Mesh Infinity behavior.
+- Do not describe features as "`X`, but for Mesh Infinity" in code, comments, specs, or contributor guidance. Use the external system only as a reference point for capability comparison and implementation quality.
+
 
 ## Security Audit Protocol
 
@@ -57,6 +65,7 @@ These are the minimum standards code must meet to be considered **compliant**. C
 Apply these as the **standard code-review set** on every review pass:
 
 1. **Are any warnings or errors being suppressed?** This is an illegal operation — warnings and errors need to be treated as valid and fixed without being hidden.
+   The single permitted exception is Dart/Flutter's `non_constant_identifier_names` diagnostic in `frontend/analysis_options.yaml`, because this repo's naming standard is `snake_case` and that override is required to keep Flutter tooling from forcing a conflicting convention. No other diagnostic suppression carve-out is permitted.
 
 2. **Are any tests failing to represent the threat model?** If so, those tests need to be improved.
 
@@ -71,6 +80,15 @@ Apply these as the **standard code-review set** on every review pass:
 7. **Are there any potential vulnerabilities in the code or the spec?** Vulnerabilities must be evaluated from two distinct threat perspectives: (a) a **malicious attacker** following our threat model, and (b) **the stupidest user we can imagine** — someone who will click the wrong button, send the wrong input, or use the app in ways no sane person would. Both perspectives are equally important for producing a secure and robust application. Any found vulnerabilities must be raised to the appropriate party. AI Agents raise findings and proposed solutions to the user, who determines how to proceed, but must also provide one or more proposed solutions or references to reinforce the finding.
 
 8. **Does code follow the project conventions?** This project uses snake_case.
+   For Dart/Flutter, enforce `snake_case` by project policy and review rather than Dart's default lowerCamelCase style diagnostic. Backend/native/FFI/protocol/data-contract names must continue to use `snake_case`.
+   Readability is part of compliance, not a trade-off against naming consistency:
+   - Prefer short, precise snake_case names over long descriptive phrases.
+   - Most local identifiers should stay within 2-4 words.
+   - Long names are acceptable at boundaries where precision matters: FFI, JSON, storage, protocol, and security-sensitive code.
+   - Avoid redundant fillers such as `data`, `info`, `value`, `current`, `actual`, or `selected` unless they disambiguate a real ambiguity.
+   - Use noun names for state and verb names for actions.
+   - In dense UI code, split large widgets/functions instead of compensating with overlong identifiers.
+   - Prefer spec vocabulary over ad hoc synonyms so names stay predictable across modules.
 
 9. **Does the code properly error-handle?** It needs to.
 

@@ -2,8 +2,8 @@
 //!
 //! Common message envelope and Chat-specific message format.
 
-use serde::{Deserialize, Serialize};
 use crate::identity::peer_id::PeerId;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Notification Priority (§10.0.1)
@@ -76,7 +76,6 @@ pub enum MessageSecurityMode {
     Direct = 4,
 }
 
-
 // Begin the block scope.
 // MessageSecurityMode implementation — core protocol logic.
 // MessageSecurityMode implementation — core protocol logic.
@@ -130,53 +129,76 @@ pub enum ChatContentType {
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Image { view_once: bool },
+    Image {
+        view_once: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Video { view_once: bool },
+    Video {
+        view_once: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Audio { playback_speeds: bool },
+    Audio {
+        playback_speeds: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    VoiceMessage { duration_ms: u32 },
+    VoiceMessage {
+        duration_ms: u32,
+    },
     File,
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Reaction { target_id: [u8; 16], emoji: String },
+    Reaction {
+        target_id: [u8; 16],
+        emoji: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    ReactionRemove { target_id: [u8; 16], emoji: String },
+    ReactionRemove {
+        target_id: [u8; 16],
+        emoji: String,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Edit { original_id: [u8; 16] },
+    Edit {
+        original_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Deletion { original_id: [u8; 16], for_everyone: bool },
+    Deletion {
+        original_id: [u8; 16],
+        for_everyone: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Pin { target_id: [u8; 16] },
+    Pin {
+        target_id: [u8; 16],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Unpin { target_id: [u8; 16] },
+    Unpin {
+        target_id: [u8; 16],
+    },
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
@@ -185,32 +207,48 @@ pub enum ChatContentType {
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Read { message_ids: Vec<[u8; 16]> },
+    Read {
+        message_ids: Vec<[u8; 16]>,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Typing { active: bool },
+    Typing {
+        active: bool,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    LinkPreview { url: String, title: Option<String>, description: Option<String> },
+    LinkPreview {
+        url: String,
+        title: Option<String>,
+        description: Option<String>,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    CallSignal { signal_type: CallSignalType, session_id: [u8; 32] },
+    CallSignal {
+        signal_type: CallSignalType,
+        session_id: [u8; 32],
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    CallEnd { session_id: [u8; 32], duration_secs: u32 },
+    CallEnd {
+        session_id: [u8; 32],
+        duration_secs: u32,
+    },
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    SystemEvent { event: ChatSystemEvent },
+    SystemEvent {
+        event: ChatSystemEvent,
+    },
 }
 
 /// Call signal types.
@@ -437,9 +475,9 @@ impl ChatMessage {
         // Execute this protocol step.
         // Execute this protocol step.
         text: &str,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Self {
         // Unique identifier for lookup and deduplication.
         // Compute id for this protocol step.
@@ -566,7 +604,9 @@ impl ChatMessage {
             // Handle this match arm.
             // Handle ChatContentType::Delivered | ChatContentType::Typing { .. }.
             // Handle ChatContentType::Delivered | ChatContentType::Typing { .. }.
-            ChatContentType::Delivered | ChatContentType::Typing { .. } => NotificationPriority::Silent,
+            ChatContentType::Delivered | ChatContentType::Typing { .. } => {
+                NotificationPriority::Silent
+            }
             // Handle this match arm.
             // Handle ChatContentType::Read { .. }.
             // Handle ChatContentType::Read { .. }.
@@ -594,7 +634,13 @@ mod tests {
     #[test]
     fn test_create_text_message() {
         let pid = PeerId([0x01; 32]);
-        let msg = ChatMessage::new_text([0x02; 16], ConversationType::DirectMessage, pid, 1, "Hello!");
+        let msg = ChatMessage::new_text(
+            [0x02; 16],
+            ConversationType::DirectMessage,
+            pid,
+            1,
+            "Hello!",
+        );
         assert_eq!(msg.text(), Some("Hello!"));
         assert_eq!(msg.sequence_number, 1);
         assert!(matches!(msg.content_type, ChatContentType::Text));
@@ -617,13 +663,22 @@ mod tests {
 
     #[test]
     fn test_security_mode_default() {
-        assert_eq!(MessageSecurityMode::default(), MessageSecurityMode::Standard);
+        assert_eq!(
+            MessageSecurityMode::default(),
+            MessageSecurityMode::Standard
+        );
     }
 
     #[test]
     fn test_security_mode_from_u8() {
-        assert_eq!(MessageSecurityMode::from_u8(0), Some(MessageSecurityMode::MaxSecurity));
-        assert_eq!(MessageSecurityMode::from_u8(4), Some(MessageSecurityMode::Direct));
+        assert_eq!(
+            MessageSecurityMode::from_u8(0),
+            Some(MessageSecurityMode::MaxSecurity)
+        );
+        assert_eq!(
+            MessageSecurityMode::from_u8(4),
+            Some(MessageSecurityMode::Direct)
+        );
         assert_eq!(MessageSecurityMode::from_u8(5), None);
     }
 

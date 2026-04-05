@@ -569,7 +569,8 @@ impl UsbSerialTransport {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if name_str.starts_with("tty.usb") || name_str.starts_with("tty.SLAB")
+                if name_str.starts_with("tty.usb")
+                    || name_str.starts_with("tty.SLAB")
                     || name_str.starts_with("tty.wchusbserial")
                 {
                     ports.push(format!("/dev/{name_str}"));
@@ -660,18 +661,15 @@ impl UsbSerialTransport {
         use libc::{O_NOCTTY, O_NONBLOCK, O_RDWR};
         use std::ffi::CString;
 
-        let cpath = CString::new(port_name).map_err(|_| {
-            UsbSerialError::NotFound(format!("invalid port name: {port_name}"))
-        })?;
+        let cpath = CString::new(port_name)
+            .map_err(|_| UsbSerialError::NotFound(format!("invalid port name: {port_name}")))?;
 
         // SAFETY: open(2) with a valid NUL-terminated path.
         let fd = unsafe { libc::open(cpath.as_ptr(), O_RDWR | O_NOCTTY | O_NONBLOCK) };
         if fd < 0 {
             let err = std::io::Error::last_os_error();
             return Err(match err.kind() {
-                std::io::ErrorKind::NotFound => {
-                    UsbSerialError::NotFound(port_name.to_owned())
-                }
+                std::io::ErrorKind::NotFound => UsbSerialError::NotFound(port_name.to_owned()),
                 std::io::ErrorKind::PermissionDenied => {
                     UsbSerialError::PermissionDenied(port_name.to_owned())
                 }
@@ -1059,10 +1057,7 @@ mod tests {
     #[test]
     fn slip_decoder_multiple_frames_in_one_feed() {
         let payloads: &[&[u8]] = &[b"alpha", b"beta", b"gamma", b"delta"];
-        let combined: Vec<u8> = payloads
-            .iter()
-            .flat_map(|p| slip_encode(p))
-            .collect();
+        let combined: Vec<u8> = payloads.iter().flat_map(|p| slip_encode(p)).collect();
 
         let mut dec = SlipDecoder::new();
         let frames = dec.feed(&combined);
@@ -1170,7 +1165,10 @@ mod tests {
         let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
         let e = UsbSerialError::IoError(io);
         let s = e.to_string();
-        assert!(s.contains("I/O") || s.contains("error"), "display must describe I/O error");
+        assert!(
+            s.contains("I/O") || s.contains("error"),
+            "display must describe I/O error"
+        );
     }
 
     #[test]

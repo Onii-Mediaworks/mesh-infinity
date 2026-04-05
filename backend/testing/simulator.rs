@@ -352,9 +352,10 @@ impl NetworkSimulator {
             // Read link conditions into local variables to avoid holding
             // an immutable borrow on `self.links` while we need mutable
             // access to `self.rng_state` for the loss-rate check.
-            let link_conditions = self.links.get(&link_key).map(|link| {
-                (link.loss_rate, link.bandwidth_bps, link.latency_ms)
-            });
+            let link_conditions = self
+                .links
+                .get(&link_key)
+                .map(|link| (link.loss_rate, link.bandwidth_bps, link.latency_ms));
 
             if let Some((loss_rate, bandwidth_bps, latency_ms)) = link_conditions {
                 // Check for packet loss using deterministic PRNG.
@@ -460,7 +461,8 @@ impl NetworkSimulator {
     fn next_random_f64(&mut self) -> f64 {
         // LCG: state = state * a + c (mod 2^64)
         // Constants from Numerical Recipes (Knuth's recommendation).
-        self.rng_state = self.rng_state
+        self.rng_state = self
+            .rng_state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         // Convert to f64 in [0.0, 1.0) by dividing by 2^64.
@@ -651,11 +653,11 @@ mod tests {
         sim.run(5);
 
         let b = sim.node("b").expect("b must exist");
-        assert!(
-            b.inbox.is_empty(),
-            "100% loss rate should drop all packets"
+        assert!(b.inbox.is_empty(), "100% loss rate should drop all packets");
+        assert_eq!(
+            sim.dropped_packets, 10,
+            "all 10 packets should be counted as dropped"
         );
-        assert_eq!(sim.dropped_packets, 10, "all 10 packets should be counted as dropped");
     }
 
     /// 0% loss rate delivers all packets.
@@ -716,7 +718,8 @@ mod tests {
         sim.tick();
         // The "during" packet should be dropped.
         assert_eq!(
-            sim.node("b").expect("b").inbox.len(), 1,
+            sim.node("b").expect("b").inbox.len(),
+            1,
             "partitioned link should not deliver"
         );
 
@@ -725,7 +728,8 @@ mod tests {
         sim.send("a", "b", b"after".to_vec());
         sim.tick();
         assert_eq!(
-            sim.node("b").expect("b").inbox.len(), 2,
+            sim.node("b").expect("b").inbox.len(),
+            2,
             "restored link should deliver"
         );
     }
@@ -778,7 +782,11 @@ mod tests {
         sim.run(10);
 
         let b = sim.node("b").expect("b must exist");
-        assert_eq!(b.inbox.len(), 1, "packet must arrive after run(10) with 5-tick latency");
+        assert_eq!(
+            b.inbox.len(),
+            1,
+            "packet must arrive after run(10) with 5-tick latency"
+        );
         assert_eq!(sim.current_tick(), 10);
     }
 

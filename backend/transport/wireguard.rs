@@ -36,11 +36,11 @@
 //! - **Replay protection**: 64-bit nonce with anti-replay window.
 //! - **PSK mixing**: channel_key PSK provides extra layer.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadInPlace};
 use chacha20poly1305::aead::generic_array::GenericArray;
+use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
 use hkdf::Hkdf;
 use rand_core::RngCore;
 use sha2::Sha256;
@@ -151,7 +151,8 @@ impl WireGuardSession {
         nonce_bytes[4..].copy_from_slice(&nonce_val.to_le_bytes());
         let nonce = GenericArray::from_slice(&nonce_bytes);
         let mut buf = plaintext.to_vec();
-        let tag = cipher.encrypt_in_place_detached(nonce, b"", &mut buf)
+        let tag = cipher
+            .encrypt_in_place_detached(nonce, b"", &mut buf)
             .map_err(|_| WireGuardError::DecryptionFailed)?;
         let mut out = Vec::with_capacity(8 + buf.len() + 16);
         out.extend_from_slice(&nonce_val.to_le_bytes());
@@ -201,7 +202,8 @@ impl WireGuardSession {
         let ct_len = ciphertext_with_tag.len() - 16;
         let mut plaintext = ciphertext_with_tag[..ct_len].to_vec();
         let tag = GenericArray::from_slice(&ciphertext_with_tag[ct_len..]);
-        cipher.decrypt_in_place_detached(nonce, b"", &mut plaintext, tag)
+        cipher
+            .decrypt_in_place_detached(nonce, b"", &mut plaintext, tag)
             .map_err(|_| WireGuardError::DecryptionFailed)?;
         Ok(plaintext)
     }
@@ -280,7 +282,12 @@ impl PendingInitiatorHandshake {
             enc_static,
         };
 
-        let state = Self { eph, static_secret: our_static_secret, responder_static_pub, channel_psk };
+        let state = Self {
+            eph,
+            static_secret: our_static_secret,
+            responder_static_pub,
+            channel_psk,
+        };
         (state, init)
     }
 
@@ -294,7 +301,9 @@ impl PendingInitiatorHandshake {
         let eph_r_pub = X25519Public::from(response.eph_r_pub);
 
         // DH(static_i, static_r) — mutual authentication.
-        let dh_ss = self.static_secret.diffie_hellman(&self.responder_static_pub);
+        let dh_ss = self
+            .static_secret
+            .diffie_hellman(&self.responder_static_pub);
         // DH(eph_i, eph_r) — forward secrecy.
         let dh_ee = self.eph.secret.diffie_hellman(&eph_r_pub);
 
@@ -351,9 +360,12 @@ pub fn respond_to_handshake(
 
     let session = WireGuardSession::new(keys, initiator_peer_id, false);
 
-    Ok((session, HandshakeResponse {
-        eph_r_pub: eph_r.public.to_bytes(),
-    }))
+    Ok((
+        session,
+        HandshakeResponse {
+            eph_r_pub: eph_r.public.to_bytes(),
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -399,8 +411,10 @@ fn derive_session_keys(
     let mut r_to_i = Zeroizing::new([0u8; 32]);
 
     // The direction labels must NOT include peer IDs (they're in the HKDF info).
-    hk.expand(b"i_to_r", &mut *i_to_r).map_err(|_| WireGuardError::KeyDerivation)?;
-    hk.expand(b"r_to_i", &mut *r_to_i).map_err(|_| WireGuardError::KeyDerivation)?;
+    hk.expand(b"i_to_r", &mut *i_to_r)
+        .map_err(|_| WireGuardError::KeyDerivation)?;
+    hk.expand(b"r_to_i", &mut *r_to_i)
+        .map_err(|_| WireGuardError::KeyDerivation)?;
 
     Ok(SessionKeys { i_to_r, r_to_i })
 }
@@ -422,7 +436,9 @@ fn encrypt_static_key(static_pub: &[u8; 32], dh_key: &[u8]) -> [u8; 48] {
     let cipher = ChaCha20Poly1305::new(GenericArray::from_slice(&key));
     let nonce = GenericArray::from_slice(&[0u8; 12]);
     let mut buf = static_pub.to_vec();
-    let tag = cipher.encrypt_in_place_detached(nonce, b"static-key", &mut buf).unwrap();
+    let tag = cipher
+        .encrypt_in_place_detached(nonce, b"static-key", &mut buf)
+        .unwrap();
     let mut out = [0u8; 48];
     out[..32].copy_from_slice(&buf);
     out[32..].copy_from_slice(tag.as_slice());
@@ -436,7 +452,9 @@ fn decrypt_static_key(enc: &[u8; 48], dh_key: &[u8]) -> Option<[u8; 32]> {
     let nonce = GenericArray::from_slice(&[0u8; 12]);
     let mut buf = enc[..32].to_vec();
     let tag = GenericArray::from_slice(&enc[32..]);
-    cipher.decrypt_in_place_detached(nonce, b"static-key", &mut buf, tag).ok()?;
+    cipher
+        .decrypt_in_place_detached(nonce, b"static-key", &mut buf, tag)
+        .ok()?;
     let mut out = [0u8; 32];
     out.copy_from_slice(&buf);
     Some(out)
@@ -524,21 +542,15 @@ mod tests {
         let resp_static = gen_static();
         let resp_static_pub = X25519Public::from(&resp_static);
 
-        let (init_state, init_msg) = PendingInitiatorHandshake::new(
-            init_static,
-            resp_static_pub,
-            psk(),
-        );
+        let (init_state, init_msg) =
+            PendingInitiatorHandshake::new(init_static, resp_static_pub, psk());
 
-        let (resp_session, resp_msg) = respond_to_handshake(
-            &init_msg,
-            &resp_static,
-            &psk(),
-            peer(0x02),
-            peer(0x01),
-        ).unwrap();
+        let (resp_session, resp_msg) =
+            respond_to_handshake(&init_msg, &resp_static, &psk(), peer(0x02), peer(0x01)).unwrap();
 
-        let init_session = init_state.complete(&resp_msg, peer(0x01), peer(0x02)).unwrap();
+        let init_session = init_state
+            .complete(&resp_msg, peer(0x01), peer(0x02))
+            .unwrap();
 
         (init_session, resp_session)
     }

@@ -140,8 +140,7 @@ pub enum DdnsConfig {
 }
 
 /// Direct IP exposure configuration (§13.17).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 // Begin the block scope.
 // DirectIpConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -170,7 +169,6 @@ pub struct DirectIpConfig {
     // Execute this protocol step.
     pub accepted_risk: bool,
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests

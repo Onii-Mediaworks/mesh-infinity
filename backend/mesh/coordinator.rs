@@ -132,7 +132,10 @@ pub enum SendResult {
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    Queued { transport: TransportType, next_hop: DeviceAddress },
+    Queued {
+        transport: TransportType,
+        next_hop: DeviceAddress,
+    },
     /// No route to destination.
     NoRoute,
     /// No matching transport is available.
@@ -226,12 +229,12 @@ impl MeshCoordinator {
         // Execute this protocol step.
         // Execute this protocol step.
         prefer_high_privacy: bool,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> TransportPreference {
         // Conditional branch based on the current state.
         // Guard: validate the condition before proceeding.
@@ -311,12 +314,12 @@ impl MeshCoordinator {
         // Execute this protocol step.
         // Execute this protocol step.
         available: &[TransportType],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> Option<TransportType> {
         // Dispatch based on the variant to apply type-specific logic.
         // Compute preferred for this protocol step.
@@ -328,11 +331,11 @@ impl MeshCoordinator {
             // Handle this match arm.
             TransportPreference::Clearnet => TransportType::Clearnet,
             // Handle this match arm.
-            TransportPreference::Tor      => TransportType::Tor,
+            TransportPreference::Tor => TransportType::Tor,
             // Handle this match arm.
-            TransportPreference::Ble      => TransportType::BLE,
+            TransportPreference::Ble => TransportType::BLE,
             // Handle this match arm.
-            TransportPreference::Rf       => TransportType::RF,
+            TransportPreference::Rf => TransportType::RF,
             // Begin the block scope.
             // Handle TransportPreference::Mesh | TransportPreference::Any.
             // Handle TransportPreference::Mesh | TransportPreference::Any.
@@ -346,14 +349,20 @@ impl MeshCoordinator {
                 // Iterate over each element.
                 // Iterate over each element.
                 // Iterate over each element.
-                for t in &[TransportType::Clearnet, TransportType::BLE, TransportType::RF] {
+                for t in &[
+                    TransportType::Clearnet,
+                    TransportType::BLE,
+                    TransportType::RF,
+                ] {
                     // Conditional branch based on the current state.
                     // Guard: validate the condition before proceeding.
                     // Guard: validate the condition before proceeding.
                     // Guard: validate the condition before proceeding.
                     // Guard: validate the condition before proceeding.
                     // Guard: validate the condition before proceeding.
-                    if available.contains(t) { return Some(t.clone()); }
+                    if available.contains(t) {
+                        return Some(t.clone());
+                    }
                 }
                 // No result available — signal absence to the caller.
                 // Return to the caller.
@@ -407,7 +416,9 @@ impl MeshCoordinator {
                 // Guard: validate the condition before proceeding.
                 // Guard: validate the condition before proceeding.
                 // Guard: validate the condition before proceeding.
-                if available.contains(t) { return Some(t.clone()); }
+                if available.contains(t) {
+                    return Some(t.clone());
+                }
             }
             // No result available — signal absence to the caller.
             // Return to the caller.
@@ -424,14 +435,21 @@ impl MeshCoordinator {
         // Iterate over each element.
         // Iterate over each element.
         // Iterate over each element.
-        for t in &[TransportType::Clearnet, TransportType::BLE, TransportType::RF, TransportType::Tor] {
+        for t in &[
+            TransportType::Clearnet,
+            TransportType::BLE,
+            TransportType::RF,
+            TransportType::Tor,
+        ] {
             // Conditional branch based on the current state.
             // Guard: validate the condition before proceeding.
             // Guard: validate the condition before proceeding.
             // Guard: validate the condition before proceeding.
             // Guard: validate the condition before proceeding.
             // Guard: validate the condition before proceeding.
-            if available.contains(t) { return Some(t.clone()); }
+            if available.contains(t) {
+                return Some(t.clone());
+            }
         }
 
         // No value available.
@@ -480,12 +498,12 @@ impl MeshCoordinator {
         // Execute this protocol step.
         // Execute this protocol step.
         available_transports: &[TransportType],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> SendResult {
         // Dispatch based on the variant to apply type-specific logic.
         // Compute entry for this protocol step.
@@ -770,7 +788,10 @@ mod tests {
         };
         let result = coord.route(&req, Some(&entry), &[TransportType::Clearnet]);
         match result {
-            SendResult::Queued { transport, next_hop } => {
+            SendResult::Queued {
+                transport,
+                next_hop,
+            } => {
                 assert_eq!(transport, TransportType::Clearnet);
                 assert_eq!(next_hop, addr(0x03));
             }

@@ -39,9 +39,9 @@
 //! should be queued for store-and-forward delivery or returned as
 //! a failure to the application.
 
+use super::health::{HealthState, TransportStatus};
 use crate::network::threat_context::ThreatContext;
 use crate::network::transport_hint::{BandwidthClass, TransportType};
-use super::health::{HealthState, TransportStatus};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -280,9 +280,7 @@ pub fn solve(input: &SolverInput) -> SolverOutput {
 
             // Check 2: Peer must support this transport
             // (proximity transports are exempt — discovered via scan, not map)
-            if !t.transport.is_proximity()
-                && !input.peer_transports.contains(&t.transport)
-            {
+            if !t.transport.is_proximity() && !input.peer_transports.contains(&t.transport) {
                 return false;
             }
 
@@ -461,7 +459,10 @@ mod tests {
         };
 
         let result = solve(&input);
-        assert!(matches!(result, SolverOutput::Single(TransportType::Clearnet)));
+        assert!(matches!(
+            result,
+            SolverOutput::Single(TransportType::Clearnet)
+        ));
     }
 
     #[test]

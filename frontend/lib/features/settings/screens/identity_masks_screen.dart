@@ -1,6 +1,7 @@
 // identity_masks_screen.dart
 //
-// IdentityMasksScreen — manage Layer-1 identity and Layer-3 contextual masks (§22.10.2).
+// IdentityMasksScreen — manage the self-rooted identity model and additional
+// contextual masks (§22.10.2).
 //
 // WHAT IS A MASK?
 // ---------------
@@ -10,19 +11,18 @@
 //   - "A" for anonymous public Garden participation
 //   - Your real name for close friends
 //
-// Masks all derive from your one root identity (Layer 1 — the cryptographic
-// key pair).  Switching masks doesn't create a new identity or break existing
-// sessions — it changes what name/profile people see in new interactions.
+// Masks derive from your self identity (Layer 2 in the identity model), while
+// the transport-facing mesh identity is separate. Switching masks doesn't
+// create a new transport identity or break existing sessions — it changes what
+// name/profile people see in new interactions.
 //
-// The root identity is NEVER directly exposed on the mesh.  Only masks are.
+// The self root is NEVER directly exposed on the mesh. Only masks are.
 //
 // BACKEND STATUS:
 // ---------------
-// Masks are not yet implemented in the backend.  The screen shows:
-//   - The root identity peer ID (read from SettingsState.identity)
-//   - An empty masks list with a "New mask" button (stub)
-// When the backend wires up (§8.3, §9.1), replace the empty list with
-// real mask data from `bridge.fetchMasks()`.
+// Masks are loaded from the backend and persisted with the unlocked identity.
+// The screen shows the root peer ID plus the current mask list, and it can
+// create additional masks through the backend bridge.
 //
 // Reached from: Settings → Identity & Masks.
 
@@ -31,15 +31,39 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../../../backend/backend_bridge.dart';
 import '../settings_state.dart';
 
 // ---------------------------------------------------------------------------
 // IdentityMasksScreen
 // ---------------------------------------------------------------------------
 
-/// Shows the root identity summary and the list of configured masks.
-class IdentityMasksScreen extends StatelessWidget {
+/// Shows the self-root summary and the list of additional configured masks.
+class IdentityMasksScreen extends StatefulWidget {
   const IdentityMasksScreen({super.key});
+
+  @override
+  State<IdentityMasksScreen> createState() => _IdentityMasksScreenState();
+}
+
+class _IdentityMasksScreenState extends State<IdentityMasksScreen> {
+  List<Map<String, dynamic>> _masks = const [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMasks();
+  }
+
+  Future<void> _loadMasks() async {
+    final masks = context.read<BackendBridge>().fetchMasks();
+    if (!mounted) return;
+    setState(() {
+      _masks = masks;
+      _loading = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -53,64 +77,123 @@ class IdentityMasksScreen extends StatelessWidget {
         actions: [
           // Global "New mask" button in the AppBar for easy access.
           TextButton.icon(
-            onPressed: () => _createMask(context),
+            onPressed: () => _createMask(),
             icon: const Icon(Icons.add, size: 18),
             label: const Text('New mask'),
           ),
         ],
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // ---------------------------------------------------------------------------
-          // Root identity card
-          // ---------------------------------------------------------------------------
-          // Shows the root cryptographic peer ID.  This ID is the anchor of all masks
-          // and is the identifier other users paired with you through.
-          _IdentityCard(
-            peerId: identity?.peerId ?? '',
-            displayName: identity?.name ?? 'Unnamed',
-          ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                // ---------------------------------------------------------------------------
+                // Root identity card
+                // ---------------------------------------------------------------------------
+                // Shows the root cryptographic peer ID.  This ID is the anchor of all masks
+                // and is the identifier other users paired with you through.
+                _IdentityCard(
+                  peerId: identity?.peerId ?? '',
+                  displayName: identity?.name ?? 'Unnamed',
+                ),
 
-          const SizedBox(height: 20),
+                const SizedBox(height: 20),
 
-          // ---------------------------------------------------------------------------
-          // Masks section header with count
-          // ---------------------------------------------------------------------------
-          Row(
-            children: [
-              Text('Masks', style: tt.titleSmall),
-              const Spacer(),
-              // Secondary "New mask" link — matches spec layout exactly.
-              TextButton.icon(
-                onPressed: () => _createMask(context),
-                icon: const Icon(Icons.add, size: 16),
-                label: const Text('New mask'),
-              ),
-            ],
-          ),
+                // ---------------------------------------------------------------------------
+                // Masks section header with count
+                // ---------------------------------------------------------------------------
+                Row(
+                  children: [
+                    Text('Masks', style: tt.titleSmall),
+                    const Spacer(),
+                    // Secondary "New mask" link — matches spec layout exactly.
+                    TextButton.icon(
+                      onPressed: () => _createMask(),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('New mask'),
+                    ),
+                  ],
+                ),
 
-          const SizedBox(height: 8),
+                const SizedBox(height: 8),
 
-          // ---------------------------------------------------------------------------
-          // Masks list — empty state while backend is pending
-          // ---------------------------------------------------------------------------
-          // When the backend implements masks, replace this with:
-          //   for (final mask in identity.masks) _MaskTile(mask: mask)
-          _MasksEmptyState(onAddMask: () => _createMask(context)),
+                // ---------------------------------------------------------------------------
+                if (_masks.isEmpty)
+                  _MasksEmptyState(onAddMask: _createMask)
+                else
+                  for (final mask in _masks) _MaskTile(mask: mask),
 
-          const SizedBox(height: 24),
-        ],
-      ),
+                const SizedBox(height: 24),
+              ],
+            ),
     );
   }
 
-  // Opens the new-mask creation flow (stub until backend implements masks).
-  void _createMask(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Mask creation coming in a future update.'),
-        duration: Duration(seconds: 3),
+  Future<void> _createMask() async {
+    final nameController = TextEditingController();
+    bool isAnonymous = false;
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: const Text('New mask'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Mask name',
+                      hintText: 'Work, Public, Anonymous...',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Anonymous mask'),
+                    subtitle: const Text(
+                      'Generate independent keys instead of deriving from your self identity.',
+                    ),
+                    value: isAnonymous,
+                    onChanged: (value) =>
+                        setDialogState(() => isAnonymous = value),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final ok = context.read<BackendBridge>().createMask(
+                      name: nameController.text.trim(),
+                      isAnonymous: isAnonymous,
+                    );
+                    Navigator.of(dialogContext).pop(ok);
+                  },
+                  child: const Text('Create'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    nameController.dispose();
+
+    if (!mounted || created == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    await _loadMasks();
+    if (!mounted) return;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(created ? 'Mask created' : 'Failed to create mask'),
       ),
     );
   }
@@ -122,9 +205,8 @@ class IdentityMasksScreen extends StatelessWidget {
 
 /// Shows the root peer ID as selectable monospace text with copy and QR buttons.
 ///
-/// The peer ID is the user's Layer-1 cryptographic fingerprint.  Users may
-/// need to share it for out-of-band verification or for adding this identity
-/// to another Mesh Infinity installation.
+/// The peer ID shown here is an identity-facing fingerprint, not the transport
+/// mesh identity. Users may still need it for out-of-band verification.
 class _IdentityCard extends StatelessWidget {
   const _IdentityCard({required this.peerId, required this.displayName});
 
@@ -156,7 +238,7 @@ class _IdentityCard extends StatelessWidget {
             ),
             const SizedBox(height: 8),
 
-            // Clarification: the root ID is never directly on-mesh.
+            // Clarification: the self root is never directly on-mesh.
             Text(
               'The root of all your masks. Never exposed on the mesh directly.',
               style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
@@ -171,7 +253,10 @@ class _IdentityCard extends StatelessWidget {
                 Expanded(
                   child: SelectableText(
                     shortId,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
                   ),
                 ),
                 // One-tap copy.
@@ -191,9 +276,7 @@ class _IdentityCard extends StatelessWidget {
                 IconButton(
                   icon: const Icon(Icons.qr_code_outlined, size: 18),
                   tooltip: 'Show QR code',
-                  onPressed: peerId.isNotEmpty
-                      ? () => _showQr(context)
-                      : null,
+                  onPressed: peerId.isNotEmpty ? () => _showQr(context) : null,
                 ),
               ],
             ),
@@ -215,9 +298,9 @@ class _IdentityCard extends StatelessWidget {
           children: [
             Text(
               displayName,
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 16),
             Container(
@@ -260,11 +343,7 @@ class _MasksEmptyState extends StatelessWidget {
         padding: const EdgeInsets.all(24),
         child: Column(
           children: [
-            Icon(
-              Icons.masks_outlined,
-              size: 40,
-              color: cs.outline,
-            ),
+            Icon(Icons.masks_outlined, size: 40, color: cs.outline),
             const SizedBox(height: 12),
             Text('No masks', style: tt.titleSmall),
             const SizedBox(height: 6),
@@ -285,4 +364,44 @@ class _MasksEmptyState extends StatelessWidget {
       ),
     );
   }
+}
+
+class _MaskTile extends StatelessWidget {
+  const _MaskTile({required this.mask});
+
+  final Map<String, dynamic> mask;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    final name = mask['name'] as String? ?? 'Unnamed mask';
+    final peerId = mask['peerId'] as String? ?? '';
+    final isPublic = mask['isPublic'] == true;
+    final isAnonymous = mask['isAnonymous'] == true;
+    final badge = isPublic
+        ? 'Public'
+        : (isAnonymous ? 'Anonymous' : 'Contextual');
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: cs.primary.withValues(alpha: 0.12),
+          child: Icon(
+            isAnonymous ? Icons.visibility_off_outlined : Icons.person_outline,
+            color: cs.primary,
+          ),
+        ),
+        title: Text(name, style: tt.titleSmall),
+        subtitle: Text(
+          '$badge · ${peerId.isNotEmpty ? _short(peerId) : 'No peer ID'}',
+          style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+        ),
+      ),
+    );
+  }
+
+  String _short(String value) =>
+      value.length > 16 ? '${value.substring(0, 16)}…' : value;
 }

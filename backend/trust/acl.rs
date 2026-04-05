@@ -142,10 +142,10 @@ impl AclSubject {
         // Execute this protocol step.
         // Execute this protocol step.
         peer_groups: &[[u8; 32]],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> bool {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
@@ -444,10 +444,10 @@ impl AclEngine {
         // Execute this protocol step.
         // Execute this protocol step.
         service_name: &str,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> AclPermission {
         // Iterate over each element in the collection.
         // Iterate over each element.
@@ -529,10 +529,10 @@ impl AclEngine {
         // Execute this protocol step.
         // Execute this protocol step.
         port: u32,
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+        // Begin the block scope.
+        // Execute this protocol step.
+        // Execute this protocol step.
+        // Execute this protocol step.
     ) -> AclPermission {
         // Iterate over each element in the collection.
         // Iterate over each element.
@@ -683,12 +683,7 @@ mod tests {
     #[test]
     fn test_empty_engine_denies() {
         let engine = AclEngine::empty();
-        let result = engine.check_service(
-            &pid(0x01),
-            TrustLevel::InnerCircle,
-            &[],
-            "any-service",
-        );
+        let result = engine.check_service(&pid(0x01), TrustLevel::InnerCircle, &[], "any-service");
         assert_eq!(result, AclPermission::Deny);
     }
 

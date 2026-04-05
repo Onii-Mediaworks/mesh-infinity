@@ -9,7 +9,7 @@
 //! - Backoff: attempts 1-5 no delay, 6=30s, 7=2m, 8=10m, 9=1h, 10=24h, 11+=72h
 //! - Key clearing uses atomic once-flag (§3.6.4 race condition fix)
 
-use argon2::{Argon2, Algorithm, Params, Version};
+use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
     // Process the current step in the protocol.
     // Execute this protocol step.
@@ -20,7 +20,8 @@ use chacha20poly1305::{
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    ChaCha20Poly1305, Nonce,
+    ChaCha20Poly1305,
+    Nonce,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -39,13 +40,13 @@ use zeroize::Zeroizing;
 // ARGON2_M_COST — protocol constant.
 // Defined by the spec; must not change without a version bump.
 const ARGON2_M_COST: u32 = 65536; // 64 MB
-// Protocol constant.
-// ARGON2_T_COST — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// ARGON2_T_COST — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// ARGON2_T_COST — protocol constant.
-// Defined by the spec; must not change without a version bump.
+                                  // Protocol constant.
+                                  // ARGON2_T_COST — protocol constant.
+                                  // Defined by the spec; must not change without a version bump.
+                                  // ARGON2_T_COST — protocol constant.
+                                  // Defined by the spec; must not change without a version bump.
+                                  // ARGON2_T_COST — protocol constant.
+                                  // Defined by the spec; must not change without a version bump.
 const ARGON2_T_COST: u32 = 3;
 // Protocol constant.
 // ARGON2_P_COST — protocol constant.
@@ -68,37 +69,37 @@ const BACKOFF_SECS: [u64; 11] = [
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    0, 0, 0, 0, 0,     // attempts 1-5: no delay
+    0, 0, 0, 0, 0, // attempts 1-5: no delay
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    30,                  // attempt 6
+    30, // attempt 6
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    120,                 // attempt 7: 2 minutes
+    120, // attempt 7: 2 minutes
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    600,                 // attempt 8: 10 minutes
+    600, // attempt 8: 10 minutes
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    3600,                // attempt 9: 1 hour
+    3600, // attempt 9: 1 hour
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    86400,               // attempt 10: 24 hours
+    86400, // attempt 10: 24 hours
     // Process the current step in the protocol.
     // Execute this protocol step.
     // Execute this protocol step.
     // Execute this protocol step.
-    259200,              // attempt 11+: 72 hours
+    259200, // attempt 11+: 72 hours
 ];
 
 // ---------------------------------------------------------------------------
@@ -189,8 +190,7 @@ pub struct PinWrappedKey {
 }
 
 /// PIN attempt tracking state.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[derive(Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 // Begin the block scope.
 // PinAttemptState — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -215,7 +215,6 @@ pub struct PinAttemptState {
     // Execute this protocol step.
     pub wipe_threshold: Option<u32>,
 }
-
 
 // ---------------------------------------------------------------------------
 // PIN operations
@@ -325,10 +324,10 @@ pub fn wrap_key_with_pin(
     // Execute this protocol step.
     // Execute this protocol step.
     pin: &[u8],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<PinWrappedKey, PinError> {
     // Propagate errors via the ? operator — callers handle failures.
     // Propagate errors via ?.
@@ -448,9 +447,9 @@ pub fn unwrap_key_with_pin(
     // Execute this protocol step.
     // Execute this protocol step.
     pin: &[u8],
-// Begin the block scope.
-// Execute this protocol step.
-// Execute this protocol step.
+    // Begin the block scope.
+    // Execute this protocol step.
+    // Execute this protocol step.
 ) -> Result<Zeroizing<[u8; 32]>, PinError> {
     // Always run Argon2id regardless of PIN validity (timing normalization)
     // Compute wrapping key for this protocol step.

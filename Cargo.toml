@@ -101,7 +101,7 @@ default = []
 # "dep:btleplug" is Cargo syntax meaning "activate the btleplug dependency when
 # this feature is selected".  Without this feature the Bluetooth code path
 # compiles to stubs that report the transport as unavailable.
-transport-bluetooth-native = ["dep:btleplug"]
+transport-bluetooth-native = ["dep:btleplug", "dep:uuid"]
 
 # Enables LoRa/RF mesh transport via Meshtastic-compatible radios.
 # Requires a connected Meshtastic device (e.g. a TTGO T-Beam board).
@@ -323,6 +323,13 @@ socket2 = "0.6"
 # Linux (BlueZ), and Android.  Used for direct peer discovery and data transfer
 # over BLE without requiring an internet connection.
 btleplug = { version = "0.12", optional = true }
+
+# uuid — typed UUID support for BLE service/characteristic identifiers.
+#
+# Optional because the crate is only needed when native Bluetooth transport is
+# compiled in. The Bluetooth layer uses UUID constants for advertisement and
+# GATT characteristic matching.
+uuid = { version = "1.12", optional = true }
 
 # meshtastic — LoRa/RF mesh radio protocol client.
 #
