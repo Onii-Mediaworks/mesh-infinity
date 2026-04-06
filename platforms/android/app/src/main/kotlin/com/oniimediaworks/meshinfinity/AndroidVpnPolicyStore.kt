@@ -11,6 +11,8 @@ object AndroidVpnPolicyStore {
     private const val KEY_LAST_ERROR = "last_error"
     private const val KEY_ALLOWED_COUNT = "allowed_count"
     private const val KEY_DISALLOWED_COUNT = "disallowed_count"
+    private const val KEY_IP_ROUTE_COUNT = "ip_route_count"
+    private const val KEY_UNRESOLVED_SELECTOR_COUNT = "unresolved_selector_count"
 
     fun savePolicy(context: Context, policyJson: String) {
         prefs(context)
@@ -27,6 +29,8 @@ object AndroidVpnPolicyStore {
         lastError: String?,
         allowedCount: Int,
         disallowedCount: Int,
+        ipRouteCount: Int = 0,
+        unresolvedSelectorCount: Int = 0,
     ) {
         prefs(context)
             .edit()
@@ -34,6 +38,8 @@ object AndroidVpnPolicyStore {
             .putString(KEY_LAST_ERROR, lastError)
             .putInt(KEY_ALLOWED_COUNT, allowedCount)
             .putInt(KEY_DISALLOWED_COUNT, disallowedCount)
+            .putInt(KEY_IP_ROUTE_COUNT, ipRouteCount)
+            .putInt(KEY_UNRESOLVED_SELECTOR_COUNT, unresolvedSelectorCount)
             .apply()
     }
 
@@ -48,7 +54,8 @@ object AndroidVpnPolicyStore {
             "disallowed_app_count" to prefs.getInt(KEY_DISALLOWED_COUNT, 0),
             "enabled" to policy.optBoolean("enabled", false),
             "mode" to policy.optString("mode", "off"),
-            "unresolved_selector_rule_count" to policy.optInt("unresolvedSelectorRuleCount", 0),
+            "ip_route_count" to prefs.getInt(KEY_IP_ROUTE_COUNT, 0),
+            "unresolved_selector_count" to prefs.getInt(KEY_UNRESOLVED_SELECTOR_COUNT, 0),
             "allowed_apps" to jsonArrayToList(policy.optJSONArray("allowedApps")),
             "disallowed_apps" to jsonArrayToList(policy.optJSONArray("disallowedApps")),
         )

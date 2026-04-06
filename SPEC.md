@@ -193,7 +193,7 @@
   - [16.10 Real-Time Stream Performance](#1610-real-time-stream-performance)
 - [17. Platform and Backend Architecture](#17-platform-and-backend-architecture)
   - [17.0 Rust-Authoritative Principle](#170-rust-authoritative-principle)
-  - [17.1 Single-Process Architecture](#171-single-process-architecture)
+  - [17.1 Single-Bundle, Separable-Subsystem Architecture](#171-single-bundle-separable-subsystem-architecture)
   - [17.2 Self/Mask Identity Model](#172-selfmask-identity-model)
   - [17.3 Rust Backend Module Structure](#173-rust-backend-module-structure)
   - [17.4 Runtime Modes](#174-runtime-modes)
@@ -371,7 +371,7 @@ Enabling or disabling a tier changes what appears in the app's navigation. It do
 
 The Rust backend is the trusted security boundary. The Flutter UI is a thin rendering layer that issues intent-based commands and renders backend state. Keys, cryptography, transport, and storage never leave Rust. A compromised or buggy UI cannot compromise security — all security decisions are made and enforced by the backend.
 
-The application runs as a single process. There is no IPC between components, which eliminates an entire class of privilege escalation attack.
+The Rust backend remains the trusted authority, but risky subsystems may be isolated behind narrow internal interfaces where the platform supports it. On restrictive platforms, those same subsystems may run co-located without changing the security model.
 
 #### 1.2.7 Intended Use
 
@@ -10215,13 +10215,13 @@ All wire formats, vault collections, and configuration structures follow a **for
 
 #### 17.0.2 Portable Implementation Rules
 
-The architecture must be implementable **consistently across all supported platforms** without relying on platform-specific process models, preinstalled companion software, or environment-specific assumptions. The following rules are normative:
+The architecture must be implementable **consistently across all supported platforms** without relying on preinstalled companion software or environment-specific assumptions. The following rules are normative:
 
-1. **Single-process is mandatory.** The Mesh Infinity app is one process containing the Rust backend and Flutter UI. No feature may require a helper daemon, privileged sidecar, local IPC service, command-line wrapper, browser extension, or second long-running companion process.
+1. **Single-bundle is mandatory for core Mesh Infinity behavior.** Core messaging, identity, transport, routing, storage, and service behavior must ship as part of Mesh Infinity itself. Core behavior must not require a third-party helper daemon, privileged sidecar, local control service, browser extension, command-line wrapper, or separate companion app to exist.
 
 2. **Platform-specific code is adapter code only.** Native platform code may exist only for OS integration boundaries: keystore access, VPN APIs, notifications, permission prompts, background execution hooks, and hardware adapters exposed by the OS. Application logic, trust logic, cryptography, protocol handling, routing, and storage policy remain in shared Rust.
 
-3. **No required out-of-process dependencies.** The implementation must not assume the presence of third-party apps, background services, system daemons, package-manager binaries, or developer tools that must run as separate processes. In particular, it must not require an installed Tor daemon, Tailscale daemon, ZeroTier service, UnifiedPush distributor, Bluetooth helper, shell utility, or external CLI in order for core functionality to exist. Separately installed shared libraries, frameworks, drivers, and kernel interfaces are permitted **only if Mesh Infinity uses them in-process** through direct linking or dynamic loading.
+3. **No required out-of-process dependencies.** The implementation must not assume the presence of third-party apps, background services, system daemons, package-manager binaries, or developer tools that must run as separate processes. In particular, it must not require an installed Tor daemon, Tailscale daemon, ZeroTier service, UnifiedPush distributor, Bluetooth helper, shell utility, or external CLI in order for core functionality to exist. Separately installed shared libraries, frameworks, drivers, and kernel interfaces are permitted when Mesh Infinity uses them directly through documented OS or library interfaces.
 
 4. **OS facilities may be assumed; in-process loadable dependencies are acceptable; external orchestration is not.** It is valid to rely on documented operating-system APIs that are part of the platform contract (for example Android VPN APIs, iOS Network Extension, platform keystore APIs, BLE frameworks, kernel networking interfaces such as `nl80211`, or equivalent system libraries). It is also valid to rely on separately installed libraries or frameworks when they can be loaded and used entirely in-process. It is not valid to require separately installed userland software that must be launched, supervised, or controlled as an external process.
 
@@ -10230,7 +10230,7 @@ The architecture must be implementable **consistently across all supported platf
    - If the capability does not exist, is not granted, or is restricted by the platform, the feature is disabled or degraded explicitly.
    - Missing capability must never silently redirect the system into a weaker mode that changes the security model without disclosure.
 
-6. **In-process integration beats external orchestration.** If Mesh Infinity supports a transport, overlay, or protocol, it should implement that support directly in Rust, through the platform's native API surface, or through in-process loaded libraries. "Call an external daemon" is not an acceptable default architecture.
+6. **Direct integration beats external orchestration.** If Mesh Infinity supports a transport, overlay, or protocol, it should implement that support directly in Rust, through the platform's native API surface, or through directly linked or loaded libraries. "Call an external daemon" is not an acceptable default architecture.
 
 7. **One behavioral spec, many adapters.** The spec defines logical behavior once. Platform sections define how a platform satisfies that behavior, not alternate product behavior. If a platform cannot support a feature, the implementation must:
    - disable the feature honestly,
@@ -10242,13 +10242,23 @@ The architecture must be implementable **consistently across all supported platf
 
 9. **Feature availability is state, not a compile-time fiction.** The UI and FFI must model unavailable, unsupported, permission-denied, and temporarily-unhealthy states distinctly. Returning success from a no-op implementation is prohibited. If a feature is unavailable on the current platform or device, that must be represented explicitly in backend state and surfaced honestly.
 
+10. **Platform restrictions are allowed to reduce capability, never to weaken security.** If a platform's execution, signing, backgrounding, or store-policy model makes a feature unsafe or non-compliant, Mesh Infinity must reduce or remove that feature on that platform rather than simulate it with a weaker substitute. In particular, the inability to support safe third-party executable plugins on iOS is an accepted platform limitation, not a reason to weaken the plugin trust model or introduce disguised companion-app execution paths.
+
+11. **Separable subsystem boundaries are mandatory; process isolation is preferred where supported.** Risky, untrusted, or externally-facing subsystems must be designed behind narrow capability boundaries so they can run either:
+   - **isolated**, in a lower-privilege worker process on platforms that support it, or
+   - **co-located**, in the main process on platforms that do not.
+
+   The same logical ABI, capability checks, and authority limits must apply in both modes. A subsystem must not gain broader access merely because it is co-located. Process isolation is therefore a hardening layer, not the thing that makes the design safe.
+
+12. **Isolated workers are optional hardening, not a core dependency.** When a supported platform offers safe process isolation, Mesh Infinity may use isolated workers for risky subsystems. When a platform does not, the same subsystem must still operate securely in-process behind the same narrow boundary. Loss of the worker must fail closed or reduce optional capability, never weaken core guarantees.
+
 **FFI model:** Rust exposes a defined FFI surface. Flutter calls into Rust for all operations. Rust calls into Flutter only to deliver display-safe data for rendering. The FFI surface is the security boundary.
 
 **One codebase:** Flutter is cross-platform. There is no Swift code, no Kotlin code, no platform-specific native code for application logic. FFI goes Rust to Flutter on all platforms. Platform-specific native code exists only for platform integration (VPN APIs, keystore access, notification registration). Rust is authoritative on all platforms.
 
 **Section overview:**
 
-- **§17.1 Single-Process Architecture** -- single process; IPC eliminated; rationale
+- **§17.1 Single-Bundle, Separable-Subsystem Architecture** -- core-bundle rule; isolation strategy; rationale
 - **§17.2 Self/Mask Identity Model** -- three-layer model; self vs masks; backend data model
 - **§17.3 Rust Backend Module Structure** -- full module tree
 - **§17.4 Runtime Modes** -- Client / Dual / Server; startup conditions
@@ -10260,15 +10270,15 @@ The architecture must be implementable **consistently across all supported platf
 - **§17.10 Mesh-Delivered Updates** -- signed releases over mesh; manifest, verification, rollback rules
 - **§17.11 Mesh DNS System** -- four namespaces; resolver architecture; clearnet accessibility
 
-### 17.1 Single-Process Architecture
+### 17.1 Single-Bundle, Separable-Subsystem Architecture
 
-Mesh Infinity runs as a single process. The Rust backend and Flutter UI coexist in one process space.
+Mesh Infinity is one application bundle with one authoritative Rust backend and one canonical Flutter UI, but its internal subsystems must be designed so they can be separated where the platform supports stronger isolation.
 
-**Rationale:** IPC is an attack surface. IPC is impossible on some platforms (iOS). Single process eliminates privilege escalation between components and the trust decisions IPC requires.
+**Rationale:** iOS process restrictions should not dictate the maximum security posture of Android, Linux, macOS, or Windows. The design must therefore remain secure when co-located, while also allowing defense-in-depth through isolated workers on platforms that support them.
 
-**Normative consequence:** Any architecture that requires a persistent helper process, localhost control socket, sidecar daemon, companion app, or external CLI to provide core Mesh Infinity behavior is non-compliant. Platform adapters may call into OS frameworks, but Mesh Infinity itself remains a single-process application.
+**Normative consequence:** Any architecture that requires a persistent third-party helper, localhost control socket, sidecar daemon, companion app, or external CLI to provide core Mesh Infinity behavior is non-compliant. Internal subsystems may communicate across a narrow internal ABI when Mesh Infinity itself launches and controls both sides. That ABI must be capability-minimal, fail closed, and preserve the same authority limits in both isolated and co-located deployment.
 
-**Tradeoff:** A crash in any component crashes everything. Accepted -- a crashed app reveals less than a compromised IPC channel.
+**Deployment modes:** On restrictive platforms such as iOS, subsystems may be co-located in one process. On platforms with better isolation facilities, risky subsystems should prefer isolated worker processes. The security model must not change between those modes; only the amount of hardening changes.
 
 ### 17.2 Self/Mask Identity Model
 
@@ -11454,6 +11464,13 @@ Plugins declare which API version they target. The runtime supports multiple API
 
 #### 18.0.1 Plugin Registration API
 
+**Platform availability:**
+
+- **Android / Linux / macOS / Windows:** full Tier 2 executable plugin runtime is in scope, subject to the sandbox, permission, and resource rules in this section. On these platforms, the runtime should prefer the general isolated-worker model from §17.1 rather than unconditional in-process execution.
+- **iOS / iPadOS:** third-party executable Tier 2 plugins are **not supported**. The platform's code-signing and App Store policy model make post-install executable plugin distribution and loading non-compliant. On Apple mobile platforms, the Plugins UI may expose only built-in, reviewed functionality that ships inside the app bundle, and it must clearly indicate that user-installed executable plugins are unavailable on this platform.
+
+**Rationale:** Mesh Infinity's plugin model assumes signed WASM modules can be installed, enabled, disabled, updated, and removed by the user after app install. That is compatible with Android and desktop distribution models. On those platforms, process isolation is preferable because plugin code is untrusted. It is not compatible with iOS as a general third-party executable extension model. Mesh Infinity therefore treats iOS as a limited endpoint platform for plugins rather than attempting a weaker companion-app or disguised external-execution architecture.
+
 **Plugin manifest:**
 
 Every plugin ships a `manifest.toml` alongside its WASM binary:
@@ -11497,6 +11514,7 @@ max_open_handles = 256               # max concurrent open file/network handles
 - **Shutdown timeout:** The `shutdown()` entrypoint has a hard **5-second deadline**. If it doesn't return, the WASM instance is destroyed without waiting. No data loss — the plugin's vault state was last persisted at the previous successful API call.
 - **Storage:** Writes exceeding `max_storage_mb` fail with `StorageQuotaExceeded` error. No data loss — existing data is preserved; only the new write is rejected.
 - **Handles:** Open file/network handles beyond `max_open_handles` are rejected with `HandleLimitExceeded`.
+- **Process isolation (supported platforms):** On Android and desktop platforms, Tier 2 plugins should run inside an isolated worker following the general subsystem-isolation rules from §17.1. The host communicates through a narrow message ABI carrying hook input, hook output, permission checks, and quota events only. A worker compromise must not expose backend internals, identity keys, or raw transport authority. On iOS / iPadOS, this worker model is unavailable because third-party executable plugins are unavailable.
 
 **Plugin lifecycle:**
 
@@ -11534,11 +11552,11 @@ Uninstall:
 
 Plugins are distributed through three channels:
 
-1. **Mesh distribution** (preferred) — plugins published to a mesh-hosted service index (§12.5, same gossip-propagated infrastructure as Garden discovery §10.2.13). Index entries are signed by the plugin author. Users browse and install from within the app (Settings → Plugins → Browse).
+1. **Mesh distribution** (preferred) — plugins published to a mesh-hosted service index (§12.5, same gossip-propagated infrastructure as Garden discovery §10.2.13). Index entries are signed by the plugin author. Users browse and install from within the app (Settings → Plugins → Browse). **Not available on iOS / iPadOS.**
 
-2. **File import** — `.miplugin` file (ZIP containing manifest.toml + WASM binary + signature). Can be shared via mesh file transfer, USB, or any other channel. Treated as untrusted until signature verified.
+2. **File import** — `.miplugin` file (ZIP containing manifest.toml + WASM binary + signature). Can be shared via mesh file transfer, USB, or any other channel. Treated as untrusted until signature verified. **Not available on iOS / iPadOS for third-party executable plugins.**
 
-3. **Developer sideload** — direct path to WASM binary for development. Requires "Developer mode" enabled in settings. Sideloaded plugins show a persistent warning badge.
+3. **Developer sideload** — direct path to WASM binary for development. Requires "Developer mode" enabled in settings. Sideloaded plugins show a persistent warning badge. **Not available on iOS / iPadOS.**
 
 **Plugin updates:**
 
@@ -11578,7 +11596,14 @@ Constraints:
 - Cannot access the crypto layer, private keys, or raw transport.
 - Plugin identity is a keypair -- the plugin has its own mesh identity, distinct from the user's masks.
 - Plugin permissions are granted explicitly by the user at install time and adjustable at any time after install.
-- Plugins run in a **WebAssembly (WASM) sandbox** via `wasmtime`. WASM provides memory-safe-by-construction isolation: plugins cannot access the host filesystem, other plugins' data, or Rust backend internals. All I/O is mediated through explicit WASI capability imports granted per the permission framework (§18.2). The WASM sandbox is enforced identically on all platforms — no per-OS sandbox implementation required. Performance overhead is ~2-5x native, acceptable for Tier 2 plugins which are not on the hot path.
+- Plugins run in a **WebAssembly (WASM) sandbox** via `wasmtime` on platforms where third-party executable plugins are supported. WASM provides memory-safe-by-construction isolation: plugins cannot access the host filesystem, other plugins' data, or Rust backend internals. All I/O is mediated through explicit WASI capability imports granted per the permission framework (§18.2). On Android and desktop platforms, this runtime should normally be hosted behind the isolated-worker model defined in §17.1. On restrictive platforms, the same plugin ABI may be co-located only if the exact same capability boundaries are preserved. It is **not** available for third-party plugins on iOS / iPadOS; Apple mobile platforms expose only built-in reviewed functionality that ships with the app.
+
+**Platform note — iOS / iPadOS:**
+
+- iOS remains a supported Mesh Infinity endpoint platform.
+- iOS is **not** a full Tier 2 hosting/extensibility platform.
+- iPhones and iPads may participate as clients, identity holders, routing endpoints, and limited service consumers, but they must not claim support for user-installed executable plugins.
+- Server-style and operator-style roles that depend on executable plugins are therefore primarily Android and desktop concerns.
 
 **Tier 3 -- Native Applications:**
 

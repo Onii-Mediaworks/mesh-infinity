@@ -836,9 +836,105 @@ impl NfcTransport {
         queue_android_outbound_frame(data.to_vec());
     }
 
-    /// Start the NFC poll loop — immediately exits on non-Linux platforms.
+    /// Start the NFC poll loop for Android.
+    ///
+    /// On Android, physical NFC I/O is owned by the native bridge
+    /// (`AndroidProximityBridge.kt`).  This loop is responsible for:
+    ///
+    /// 1. **Transport liveness monitoring** — exits cleanly when NFC hardware
+    ///    goes away so callers can observe loop termination via the `JoinHandle`.
+    ///
+    /// 2. **Stale-exchange timeout** — if outbound frames queued by Rust remain
+    ///    unacknowledged for longer than `EXCHANGE_TIMEOUT_MS` (2 s), the
+    ///    session has stalled (tag moved out of range, bridge crashed, etc.).
+    ///    The outbound queue is purged so the transport can accept a fresh
+    ///    exchange without manual intervention.
+    ///
+    /// The native bridge is responsible for:
+    /// - Calling `mi_android_nfc_ingest_inbound_frame()` for each received
+    ///   NFC frame (NDEF tag read, peer-to-peer NFC-DEP receive, etc.).
+    /// - Periodically calling `mi_android_nfc_dequeue_outbound_frame()` to
+    ///   pick up frames Rust has authored for NFC transmission.
+    ///
+    /// Inbound frames accumulate in the module-level `AndroidNfcAdapterState`
+    /// queue and are consumed by callers via `recv()` / `read_ndef_tag()`.
     pub fn start_poll_loop(self: Arc<Self>) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(|| {})
+        // Spawn the Android NFC transport poll loop.
+        // `Arc<Self>` is held so the transport struct stays alive as long as
+        // the loop is running — the loop exits when NFC goes away.
+        std::thread::spawn(move || {
+            // Poll interval: 20 ms gives ~50 ticks per second.  This is fast
+            // enough to detect stale sessions and state transitions without
+            // burning measurable CPU on a modern mobile SoC.
+            const POLL_INTERVAL_MS: u64 = 20;
+
+            // §5.9 NFC exchange timeout: if the outbound queue is non-empty for
+            // longer than this window, the tag session is assumed dropped.
+            // 2 s is conservative — NFC-DEP exchanges complete in <500 ms
+            // under normal conditions.
+            const EXCHANGE_TIMEOUT_MS: u64 = 2_000;
+
+            // Wall-clock timestamp of the first observation of a non-empty
+            // outbound queue.  Reset to `None` when the queue drains normally.
+            let mut outbound_queued_since: Option<std::time::Instant> = None;
+
+            loop {
+                // Sleep before checking so we don't burn a tick immediately
+                // on entry (the caller may still be setting up state).
+                std::thread::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+
+                // Exit condition: NFC hardware gone or disabled.
+                // The JoinHandle becomes joinable after this return, signalling
+                // the transport manager that NFC is no longer available.
+                if !android_nfc_ready() {
+                    break;
+                }
+
+                // --- Stale-exchange detection ---------------------------------
+                //
+                // Snapshot the outbound queue length under a short-lived lock.
+                // We do NOT hold the lock across the sleep — that would block
+                // the FFI functions that drain/fill the queue.
+                let outbound_len = {
+                    android_nfc_adapter_state()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .outbound
+                        .len()
+                };
+
+                if outbound_len > 0 {
+                    // Start the stale timer the first time we see queued frames.
+                    let first_seen = outbound_queued_since
+                        .get_or_insert_with(std::time::Instant::now);
+
+                    if first_seen.elapsed().as_millis() as u64 >= EXCHANGE_TIMEOUT_MS {
+                        // The outbound queue has been non-empty for the full
+                        // exchange timeout window.  The tag session has stalled:
+                        // the physical tag may have moved out of range, the
+                        // native bridge may not be polling, or the NFC-DEP
+                        // transaction was interrupted mid-exchange.
+                        //
+                        // Purge the outbound queue to reset the exchange state
+                        // so the transport is ready for the next tap.
+                        android_nfc_adapter_state()
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .outbound
+                            .clear();
+                        outbound_queued_since = None;
+                    }
+                } else {
+                    // Queue is empty — either it drained normally (native
+                    // bridge transmitted the frame) or it was never queued
+                    // this tick.  Reset the stale timer in either case.
+                    outbound_queued_since = None;
+                }
+            }
+            // Loop exits: `Arc<NfcTransport>` drops here, releasing the
+            // transport struct if this was the last reference.
+            drop(self);
+        })
     }
 
     /// Maximum payload bytes per NFC data exchange frame.

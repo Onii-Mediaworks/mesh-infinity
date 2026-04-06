@@ -197,19 +197,19 @@ impl MeshRuntime {
         self.rebuild_routing_table_from_contacts();
 
         // Replace the placeholder announcement processor address with our real
-        // peer ID now that the identity has been unlocked.
-        if let Some(our_peer_id) = self
-            .identity
+        // Layer 1 device address derived from the mesh identity.
+        if let Some(our_device_address) = self
+            .mesh_identity
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .map(|id| id.peer_id().0)
+            .map(|id| DeviceAddress(id.public_bytes()))
         {
             *self
                 .announcement_processor
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) =
-                AnnouncementProcessor::new(DeviceAddress(our_peer_id), 10);
+                AnnouncementProcessor::new(our_device_address, 10);
         }
     }
 
@@ -534,6 +534,7 @@ impl MeshRuntime {
     /// Persist settings to vault.  Called after any transport flag, node mode,
     /// threat context, notification config, or module config change.
     pub fn save_settings(&self) {
+        self.save_layer1_startup_config();
         let Some(vm) = self.vault.as_ref() else {
             return;
         };

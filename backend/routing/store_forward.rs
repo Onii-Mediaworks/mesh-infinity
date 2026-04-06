@@ -714,6 +714,14 @@ impl StoreForwardServer {
         Self::new(DEFAULT_SERVER_STORAGE_CAP)
     }
 
+    /// Update the total storage cap without discarding queued messages.
+    ///
+    /// Startup, node-mode changes, and restored settings all need to adjust the
+    /// S&F relay posture while preserving any already-buffered deliveries.
+    pub fn set_storage_cap(&mut self, storage_cap: u64) {
+        self.storage_cap = storage_cap;
+    }
+
     /// Deposit a message for deferred delivery.
     ///
     /// Validates all quota rules before accepting:

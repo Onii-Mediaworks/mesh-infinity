@@ -17,9 +17,8 @@ import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.os.Build
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -35,7 +34,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class AndroidProximityBridge(
-    private val activity: FlutterActivity,
+    private val activity: MainActivity,
     messenger: BinaryMessenger
 ) : MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
     companion object {
@@ -43,6 +42,7 @@ class AndroidProximityBridge(
         private const val EVENT_CHANNEL = "mesh_infinity/android_proximity_events"
         private const val NFC_EXTERNAL_TYPE = "meshinfinity.io:pairing"
         private const val WIFI_DIRECT_PAIRING_PORT = 37129
+        private const val WIFI_DIRECT_PERMISSION_REQUEST_CODE = 4101
     }
 
     private val applicationContext: Context = activity.applicationContext
@@ -65,15 +65,6 @@ class AndroidProximityBridge(
     private var wifiPairingServer: ServerSocket? = null
     private var pendingWifiPermissionResult: MethodChannel.Result? = null
     private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    private val wifiPermissionLauncher =
-        activity.registerForActivityResult(
-            ActivityResultContracts.RequestMultiplePermissions()
-        ) { grants ->
-            val granted = grants.values.all { it }
-            pendingWifiPermissionResult?.success(granted)
-            pendingWifiPermissionResult = null
-            emitWifiState()
-        }
 
     private val wifiReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -122,6 +113,22 @@ class AndroidProximityBridge(
         closeWifiPairingServer()
         ioExecutor.shutdownNow()
         unregisterWifiReceiver()
+        pendingWifiPermissionResult = null
+    }
+
+    fun on_request_permissions_result(
+        request_code: Int,
+        grant_results: IntArray,
+    ): Boolean {
+        if (request_code != WIFI_DIRECT_PERMISSION_REQUEST_CODE) {
+            return false
+        }
+        val granted = grant_results.isNotEmpty() &&
+            grant_results.all { it == PackageManager.PERMISSION_GRANTED }
+        pendingWifiPermissionResult?.success(granted)
+        pendingWifiPermissionResult = null
+        emitWifiState()
+        return true
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -185,9 +192,9 @@ class AndroidProximityBridge(
             }
         }
         if (delivered) {
-            activity.intent = Intent(activity.intent).apply {
+            activity.setIntent(Intent(activity.intent).apply {
                 action = Intent.ACTION_MAIN
-            }
+            })
         }
         return delivered
     }
@@ -223,7 +230,11 @@ class AndroidProximityBridge(
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
-        wifiPermissionLauncher.launch(permissions)
+        ActivityCompat.requestPermissions(
+            activity,
+            permissions,
+            WIFI_DIRECT_PERMISSION_REQUEST_CODE,
+        )
     }
 
     private fun startWifiDirectDiscovery(result: MethodChannel.Result) {

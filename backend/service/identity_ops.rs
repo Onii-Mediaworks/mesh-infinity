@@ -19,7 +19,8 @@
 use crate::crypto::backup::EncryptedBackup;
 use crate::identity::self_identity::{derive_kem_keypair, IdentityError, SelfIdentity};
 use crate::service::runtime::{
-    build_settings_json, try_random_fill, MeshRuntime, RegisteredDevice, SettingsVault,
+    build_settings_json, try_random_fill, Layer1StartupConfig, MeshRuntime, RegisteredDevice,
+    SettingsVault,
 };
 use crate::storage::VaultManager;
 use crate::trust::levels::TrustLevel;
@@ -118,6 +119,10 @@ impl MeshRuntime {
 
     fn pending_device_enrollment_path(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.data_dir).join("device_enrollment_request.json")
+    }
+
+    pub(crate) fn layer1_startup_config_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("layer1_startup.json")
     }
 
     fn has_duress_pin(&self) -> bool {
@@ -235,6 +240,78 @@ impl MeshRuntime {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
         }
+    }
+
+    pub(crate) fn snapshot_layer1_startup_config(&self) -> Layer1StartupConfig {
+        let flags = self
+            .transport_flags
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Layer1StartupConfig {
+            node_mode: *self.node_mode.lock().unwrap_or_else(|e| e.into_inner()),
+            threat_context: self.threat_context as u8,
+            tor: flags.tor,
+            clearnet: flags.clearnet,
+            i2p: flags.i2p,
+            bluetooth: flags.bluetooth,
+            rf: flags.rf,
+            mesh_discovery: flags.mesh_discovery,
+            allow_relays: flags.allow_relays,
+            clearnet_port: *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner()),
+        }
+    }
+
+    pub(crate) fn save_layer1_startup_config(&self) {
+        let path = self.layer1_startup_config_path();
+        let config = self.snapshot_layer1_startup_config();
+        let Ok(bytes) = serde_json::to_vec(&config) else {
+            return;
+        };
+        if let Err(err) = std::fs::write(path, bytes) {
+            eprintln!("[startup] ERROR: failed to persist layer1 startup config: {err}");
+        }
+    }
+
+    pub(crate) fn load_layer1_startup_config(&mut self) {
+        let path = self.layer1_startup_config_path();
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                eprintln!("[startup] ERROR: failed to read layer1 startup config: {err}");
+                return;
+            }
+        };
+        let config = match serde_json::from_slice::<Layer1StartupConfig>(&bytes) {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("[startup] ERROR: failed to decode layer1 startup config: {err}");
+                return;
+            }
+        };
+
+        *self.node_mode.lock().unwrap_or_else(|e| e.into_inner()) = config.node_mode;
+        if let Some(threat_context) =
+            crate::network::threat_context::ThreatContext::from_u8(config.threat_context)
+        {
+            self.threat_context = threat_context;
+        }
+        {
+            let mut flags = self
+                .transport_flags
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            flags.tor = config.tor;
+            flags.clearnet = config.clearnet;
+            flags.i2p = config.i2p;
+            flags.bluetooth = config.bluetooth;
+            flags.rf = config.rf;
+            flags.mesh_discovery = config.mesh_discovery;
+            flags.allow_relays = config.allow_relays;
+        }
+        *self.clearnet_port.lock().unwrap_or_else(|e| e.into_inner()) = config.clearnet_port;
+        self.sync_store_forward_mode();
     }
 
     fn ensure_local_device_registered(&self, primary_if_empty: bool) -> Result<(), String> {
@@ -443,6 +520,34 @@ impl MeshRuntime {
             crate::routing::tunnel_gossip::TunnelGossipProcessor::new(mesh_pub);
     }
 
+    fn sync_announcement_processor_identity(&self) {
+        let our_address = self
+            .mesh_identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|identity| crate::routing::table::DeviceAddress(identity.public_bytes()))
+            .unwrap_or(crate::routing::table::DeviceAddress([0u8; 32]));
+        *self
+            .announcement_processor
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            crate::routing::announcement::AnnouncementProcessor::new(our_address, 10);
+    }
+
+    pub(crate) fn sync_store_forward_mode(&self) {
+        let node_mode = *self.node_mode.lock().unwrap_or_else(|e| e.into_inner());
+        let storage_cap = if node_mode >= 2 {
+            crate::routing::store_forward::DEFAULT_SERVER_STORAGE_CAP
+        } else {
+            crate::routing::store_forward::DEFAULT_CLIENT_STORAGE_CAP
+        };
+        self.sf_server
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_storage_cap(storage_cap);
+    }
+
     fn load_or_create_mesh_identity(&self) -> Result<(), String> {
         let path = self.mesh_identity_path();
         let identity = match std::fs::read(&path) {
@@ -464,12 +569,15 @@ impl MeshRuntime {
         };
         *self.mesh_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(identity);
         self.sync_tunnel_gossip_identity();
+        self.sync_announcement_processor_identity();
+        self.sync_store_forward_mode();
         Ok(())
     }
 
     fn clear_mesh_identity_runtime_state(&self) {
         *self.mesh_identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.sync_tunnel_gossip_identity();
+        self.sync_announcement_processor_identity();
     }
 
     fn current_pin_wipe_threshold(&self) -> Option<u32> {
@@ -672,6 +780,7 @@ impl MeshRuntime {
         self.identity_unlocked = true;
         *self.identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(identity);
         self.load_from_vault();
+        self.sync_store_forward_mode();
         self.ensure_default_masks();
         let make_primary = self
             .registered_devices

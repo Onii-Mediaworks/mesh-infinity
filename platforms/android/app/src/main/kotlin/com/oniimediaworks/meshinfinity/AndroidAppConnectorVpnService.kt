@@ -9,7 +9,10 @@ import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import org.json.JSONArray
 import org.json.JSONObject
+import java.net.InetAddress
+import java.net.UnknownHostException
 
 class AndroidAppConnectorVpnService : VpnService() {
     companion object {
@@ -143,6 +146,23 @@ class AndroidAppConnectorVpnService : VpnService() {
         val appliedAllowed = applyAllowedApps(builder, allowedApps)
         val appliedDisallowed = applyDisallowedApps(builder, disallowedApps)
 
+        // Apply selector-based routing rules (§13.15).
+        //
+        // IP range rules are enforced via addRoute() — packets destined for
+        // those ranges are routed through the VPN tunnel.
+        //
+        // Domain pattern rules are resolved to IPs at policy apply time and
+        // handled as IP routes.  Note: this is best-effort; IPs for a domain
+        // can change after the policy is applied.
+        //
+        // Port-based rules are NOT enforceable via the Android VPN API —
+        // VpnService.Builder has no per-port routing API.  These rules are
+        // tracked as unresolved in the runtime state so the UI can warn the
+        // user that port selectors require a userspace proxy (future work).
+        val selectorRules = policy.optJSONArray("selectorRules")
+            ?: policy.optJSONArray("rules")
+        val selectorCounts = applySelectorRules(builder, selectorRules)
+
         tunnelInterface?.close()
         tunnelInterface = builder.establish()
 
@@ -156,10 +176,115 @@ class AndroidAppConnectorVpnService : VpnService() {
             },
             allowedCount = appliedAllowed,
             disallowedCount = appliedDisallowed,
+            ipRouteCount = selectorCounts.first,
+            unresolvedSelectorCount = selectorCounts.second,
         )
 
         if (tunnelInterface == null) {
             stopSelf()
+        }
+    }
+
+    // Apply selector-based routing rules to the VPN builder.
+    //
+    // Returns a pair (ipRoutesApplied, unresolvedCount) where:
+    //   ipRoutesApplied  — number of addRoute() calls that succeeded
+    //   unresolvedCount  — number of rules that could not be enforced
+    //                      (domain resolution failures, port-only rules)
+    private fun applySelectorRules(
+        builder: Builder,
+        rules: JSONArray?,
+    ): Pair<Int, Int> {
+        if (rules == null) return Pair(0, 0)
+        var applied = 0
+        var unresolved = 0
+
+        for (i in 0 until rules.length()) {
+            val rule = rules.optJSONObject(i) ?: continue
+            if (!rule.optBoolean("enabled", true)) continue
+
+            val selector = rule.optJSONObject("app_selector") ?: continue
+
+            // --- IP range rules -----------------------------------------------
+            // Selector: { "ip_range": "10.0.0.0/8" }
+            // Enforcement: addRoute() to send those packets through the tunnel.
+            val ipRange = selector.optString("ip_range", "").trim()
+            if (ipRange.isNotEmpty()) {
+                val applied1 = applyIpRangeRoute(builder, ipRange)
+                if (applied1) applied++ else unresolved++
+                continue
+            }
+
+            // --- Domain pattern rules -----------------------------------------
+            // Selector: { "domain_pattern": "*.example.com" }
+            // Enforcement: resolve domain to IPs and add routes.
+            // Limitations: wildcard patterns are collapsed to the base domain;
+            // IP addresses returned here may change later (no DNS TTL tracking).
+            val domain = selector.optString("domain_pattern", "").trim()
+            if (domain.isNotEmpty()) {
+                val resolved = resolveDomainToRoutes(builder, domain)
+                if (resolved > 0) applied += resolved else unresolved++
+                continue
+            }
+
+            // --- Port-only rules -----------------------------------------------
+            // Android VPN API has no port-based routing; mark as unresolved.
+            val port = selector.optInt("port", -1)
+            if (port > 0) {
+                unresolved++
+                android.util.Log.d(
+                    "AppConnectorVpn",
+                    "Port selector ($port) cannot be enforced via Android VPN API " +
+                        "— requires userspace proxy (future work, §13.15)"
+                )
+            }
+        }
+
+        return Pair(applied, unresolved)
+    }
+
+    // Parse a CIDR string (e.g. "10.0.0.0/8" or "fd00::/8") and call addRoute.
+    // Returns true if the route was added, false on any parse error.
+    private fun applyIpRangeRoute(builder: Builder, cidr: String): Boolean {
+        return try {
+            val slash = cidr.indexOf('/')
+            val addrStr = if (slash >= 0) cidr.substring(0, slash) else cidr
+            val prefix = if (slash >= 0) cidr.substring(slash + 1).toInt() else {
+                // No prefix length: derive from address family.
+                if (addrStr.contains(':')) 128 else 32
+            }
+            val addr = InetAddress.getByName(addrStr)
+            builder.addRoute(addr, prefix)
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("AppConnectorVpn", "Could not apply IP route $cidr: ${e.message}")
+            false
+        }
+    }
+
+    // Resolve a domain pattern to IPs and add routes for each resolved address.
+    // Wildcard patterns (e.g. "*.example.com") are stripped to the base domain.
+    // Returns the number of routes added (0 on resolution failure).
+    private fun resolveDomainToRoutes(builder: Builder, pattern: String): Int {
+        // Strip wildcard prefix: "*.example.com" → "example.com"
+        val domain = pattern.trimStart('*', '.')
+        if (domain.isEmpty()) return 0
+
+        return try {
+            val addresses = InetAddress.getAllByName(domain)
+            var count = 0
+            for (addr in addresses) {
+                try {
+                    val prefixLen = if (addr is java.net.Inet6Address) 128 else 32
+                    builder.addRoute(addr, prefixLen)
+                    count++
+                } catch (_: Exception) {
+                }
+            }
+            count
+        } catch (_: UnknownHostException) {
+            android.util.Log.d("AppConnectorVpn", "Could not resolve domain: $domain")
+            0
         }
     }
 

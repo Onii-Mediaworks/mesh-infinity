@@ -29,20 +29,43 @@ class AndroidStartupService : Service() {
         ensureNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
         AndroidStartupStateStore.markStartupServiceStarted(this)
+        // §3.1.1 — Start Layer 1 mesh participation at device-unlock time,
+        // before the app opens.  NativeLayer1Bridge loads the native library
+        // and calls into Rust to initialise the MeshRuntime, start WireGuard
+        // tunnel management, cover traffic, relay participation, and gossip.
+        // When Flutter later calls mesh_init(), it reuses this context.
+        startLayer1IfNeeded()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AndroidStartupStateStore.markStartupServiceStarted(this)
+        // Re-attempt Layer 1 startup on each command in case the first attempt
+        // failed (e.g., storage not yet available in direct-boot mode).
+        startLayer1IfNeeded()
         return START_STICKY
+    }
+
+    // Start Layer 1 via the native bridge.  Idempotent — NativeLayer1Bridge
+    // checks whether startup already happened and returns early if so.
+    private fun startLayer1IfNeeded() {
+        try {
+            NativeLayer1Bridge.startLayer1(this)
+        } catch (e: Exception) {
+            // Log and continue — a Layer 1 startup failure does not prevent
+            // the foreground service from running or the app from launching.
+            android.util.Log.w("AndroidStartupService", "Layer 1 startup failed: ${e.message}")
+        }
     }
 
     override fun onDestroy() {
         AndroidStartupStateStore.markStartupServiceStopped(this)
+        NativeLayer1Bridge.stopLayer1()
         super.onDestroy()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         AndroidStartupStateStore.markStartupServiceStopped(this)
+        NativeLayer1Bridge.stopLayer1()
         super.onTaskRemoved(rootIntent)
     }
 

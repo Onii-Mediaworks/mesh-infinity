@@ -3,31 +3,22 @@ package com.oniimediaworks.meshinfinity
 import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
-import androidx.activity.result.contract.ActivityResultContracts
-import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 
 class AndroidVpnChannel(
-    private val activity: FlutterActivity,
+    private val activity: MainActivity,
     messenger: BinaryMessenger
 ) : MethodChannel.MethodCallHandler {
     companion object {
         private const val METHOD_CHANNEL = "mesh_infinity/android_vpn"
+        private const val VPN_PERMISSION_REQUEST_CODE = 4102
     }
 
     private val methodChannel = MethodChannel(messenger, METHOD_CHANNEL)
     private var pendingPermissionResult: MethodChannel.Result? = null
-    private val vpnPermissionLauncher =
-        activity.registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            val granted = result.resultCode == Activity.RESULT_OK
-            pendingPermissionResult?.success(granted)
-            pendingPermissionResult = null
-        }
 
     init {
         methodChannel.setMethodCallHandler(this)
@@ -36,6 +27,19 @@ class AndroidVpnChannel(
     fun dispose() {
         methodChannel.setMethodCallHandler(null)
         pendingPermissionResult = null
+    }
+
+    fun on_activity_result(
+        request_code: Int,
+        result_code: Int,
+    ): Boolean {
+        if (request_code != VPN_PERMISSION_REQUEST_CODE) {
+            return false
+        }
+        val granted = result_code == Activity.RESULT_OK
+        pendingPermissionResult?.success(granted)
+        pendingPermissionResult = null
+        return true
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -67,7 +71,7 @@ class AndroidVpnChannel(
                 return
             }
         pendingPermissionResult = result
-        vpnPermissionLauncher.launch(intent)
+        activity.startActivityForResult(intent, VPN_PERMISSION_REQUEST_CODE)
     }
 
     private fun applyPolicy(call: MethodCall, result: MethodChannel.Result) {

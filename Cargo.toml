@@ -525,6 +525,23 @@ rand = "0.10.0"
 # bitflags — type-safe bitfield flag structs.
 # Used in the SDR transport layer (SdrFrameFlags) and elsewhere.
 bitflags = "2"
+
+# wasmtime — WebAssembly runtime for the plugin sandbox (§18).
+#
+# Plugins run as WASM modules in an isolated wasmtime sandbox.  wasmtime
+# provides:
+#   - Memory isolation: each plugin's WASM linear memory is bounded and
+#     completely separate from the host process and other plugins.
+#   - CPU time enforcement: epoch-based interruption is enabled at runtime via
+#     `wasmtime::Config::epoch_interruption(true)`, not a Cargo feature flag.
+#   - Capability-based I/O: the host grants only the WASI capabilities the
+#     user approved at install time; everything else is denied.
+#
+# "cranelift" is the optimising compiler backend (JIT).  Epoch-based
+# interruption is configured through the runtime API, so no extra Cargo
+# feature is needed here.
+wasmtime = { version = "25", features = ["cranelift"] }
+wasmtime-wasi = { version = "25" }
 ml-kem = { version = "0.2.3", features = ["zeroize", "deterministic"] }
 kem = "=0.3.0-pre.0"
 rand_chacha = "0.9"

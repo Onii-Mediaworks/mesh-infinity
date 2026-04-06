@@ -32,6 +32,29 @@ class MainActivity : FlutterActivity() {
         androidProximityBridge?.handleIntent(intent)
     }
 
+    override fun onActivityResult(request_code: Int, result_code: Int, data: Intent?) {
+        if (androidVpnChannel?.on_activity_result(request_code, result_code) == true) {
+            return
+        }
+        super.onActivityResult(request_code, result_code, data)
+    }
+
+    override fun onRequestPermissionsResult(
+        request_code: Int,
+        permissions: Array<String>,
+        grant_results: IntArray,
+    ) {
+        if (
+            androidProximityBridge?.on_request_permissions_result(
+                request_code,
+                grant_results,
+            ) == true
+        ) {
+            return
+        }
+        super.onRequestPermissionsResult(request_code, permissions, grant_results)
+    }
+
     override fun onDestroy() {
         androidProximityBridge?.dispose()
         androidProximityBridge = null

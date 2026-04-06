@@ -1840,6 +1840,7 @@ impl MeshRuntime {
         }
 
         *self.node_mode.lock().unwrap_or_else(|e| e.into_inner()) = mode;
+        self.sync_store_forward_mode();
         let routing_mode = match mode {
             0 => RoutingMode::Off,
             1 => RoutingMode::MeshOnly,

@@ -126,6 +126,52 @@ pub struct SettingsVault {
     pub bandwidth_profile: u8,
 }
 
+/// Minimal plaintext startup posture for Layer 1 before full identity unlock.
+///
+/// This record exists specifically so the native Android startup path can
+/// restore transport posture and node mode before the encrypted settings vault
+/// is available. It contains only startup-relevant transport state.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Layer1StartupConfig {
+    /// Node operating mode: 0 = client, 1 = relay, 2 = server.
+    pub node_mode: u8,
+    /// Threat context level (0 = Normal … 4 = Critical).
+    pub threat_context: u8,
+    /// Whether the Tor transport should be started when allowed.
+    pub tor: bool,
+    /// Whether the clearnet TCP transport should be started when allowed.
+    pub clearnet: bool,
+    /// Whether the I2P transport should be started when allowed.
+    pub i2p: bool,
+    /// Whether Bluetooth transport should be started when allowed.
+    pub bluetooth: bool,
+    /// Whether RF transport should be started when allowed.
+    pub rf: bool,
+    /// Whether LAN peer discovery should be started when allowed.
+    pub mesh_discovery: bool,
+    /// Whether Layer 1 should participate in relaying/store-and-forward.
+    pub allow_relays: bool,
+    /// Clearnet TCP listen port.
+    pub clearnet_port: u16,
+}
+
+impl Default for Layer1StartupConfig {
+    fn default() -> Self {
+        Self {
+            node_mode: 0,
+            threat_context: crate::network::threat_context::ThreatContext::Normal as u8,
+            tor: false,
+            clearnet: false,
+            i2p: false,
+            bluetooth: false,
+            rf: false,
+            mesh_discovery: true,
+            allow_relays: true,
+            clearnet_port: DEFAULT_HS_PORT,
+        }
+    }
+}
+
 /// Backend-owned directory entry for a discoverable Garden.
 #[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct GardenDirectoryEntry {

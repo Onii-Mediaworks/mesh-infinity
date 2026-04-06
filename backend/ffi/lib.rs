@@ -38,6 +38,12 @@ use std::ptr;
 
 use crate::service::MeshRuntime;
 
+// JNI types are only needed for the Android Layer 1 headless startup entry.
+#[cfg(target_os = "android")]
+use jni::JNIEnv;
+#[cfg(target_os = "android")]
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+
 // ---------------------------------------------------------------------------
 // Opaque context handle
 // ---------------------------------------------------------------------------
@@ -223,6 +229,46 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
     // Compute cfg for this protocol step.
     let cfg = unsafe { &*config };
 
+    // On Android: if the headless Layer 1 startup path already created a
+    // context (§3.1.1 — Layer 1 starts at device unlock before the app opens),
+    // adopt that runtime instead of allocating a second one.  Flutter's
+    // transport flags are layered on top so the user's preferences apply.
+    #[cfg(target_os = "android")]
+    {
+        let existing = HEADLESS_LAYER1_PTR.load(Ordering::Acquire);
+        if existing != 0 {
+            let ctx = existing as *mut MeshContext;
+            HEADLESS_LAYER1_ATTACHMENTS.fetch_add(1, Ordering::AcqRel);
+            // Apply any transport flags that were conservatively disabled during
+            // headless startup (Tor, I2P, clearnet, Bluetooth, RF).
+            {
+                let mut flags = unsafe { &*ctx }
+                    .transport_flags
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if cfg.enable_tor != 0 {
+                    flags.tor = true;
+                }
+                if cfg.enable_clearnet != 0 {
+                    flags.clearnet = true;
+                }
+                if cfg.enable_i2p != 0 {
+                    flags.i2p = true;
+                }
+                if cfg.enable_bluetooth != 0 {
+                    flags.bluetooth = true;
+                }
+                if cfg.enable_rf != 0 {
+                    flags.rf = true;
+                }
+            }
+            if let Err(e) = unsafe { &*ctx }.reconcile_layer1_runtime() {
+                eprintln!("[mesh_init] reconcile after Flutter attach failed: {e}");
+            }
+            return ctx;
+        }
+    }
+
     // Resolve the data-directory path: use the supplied path or a platform default.
     // Compute dir for this protocol step.
     let dir = if cfg.config_path.is_null() {
@@ -275,6 +321,7 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
     // let the backend restore any startup-ready state before handing
     // ownership to Flutter.
     let mut runtime = MeshRuntime::new(dir);
+    runtime.load_layer1_startup_config();
     {
         let mut flags = runtime
             .transport_flags
@@ -296,6 +343,168 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
     Box::into_raw(ctx)
 }
 
+// ---------------------------------------------------------------------------
+// Layer 1 headless startup (Android only)
+// ---------------------------------------------------------------------------
+//
+// The spec (§3.1.1) requires Layer 1 mesh participation to begin at device
+// unlock — before the app process, before Flutter, and before any user
+// interaction.  On Android this is achieved by `AndroidStartupService`, a
+// foreground `Service` launched by `AndroidStartupReceiver` in response to
+// `LOCKED_BOOT_COMPLETED` / `BOOT_COMPLETED` / `USER_UNLOCKED`.
+//
+// The startup service calls `NativeLayer1Bridge.nativeStartLayer1()` (JNI)
+// which maps to `Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeStartLayer1`
+// below.  This function creates a minimal `MeshContext`, loads the mesh
+// identity keypair (Layer 1), and starts the background subsystems:
+// WireGuard tunnel management, cover traffic, relay participation, and gossip.
+//
+// When Flutter subsequently calls `mesh_init()` it finds the process-global
+// `HEADLESS_LAYER1_PTR` set and returns the existing context instead of
+// allocating a new one.  This ensures a single `MeshRuntime` is shared
+// between the background service and the Flutter UI.
+
+/// Process-global pointer set by the headless Layer 1 startup path.
+///
+/// Stored as `i64` (matches JNI `jlong`) rather than a raw pointer so the
+/// atomic operations are portable.  `0` means "not started".
+#[cfg(target_os = "android")]
+static HEADLESS_LAYER1_PTR: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Number of Flutter/UI attachments currently using the headless runtime.
+///
+/// The Android startup service owns the runtime independently of Flutter.
+/// `mesh_init()` increments this counter when it adopts the headless context,
+/// and `mesh_destroy()` decrements it when the UI shuts down.
+#[cfg(target_os = "android")]
+static HEADLESS_LAYER1_ATTACHMENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether the Android startup service currently owns the headless runtime.
+///
+/// This is set to `true` when `nativeStartLayer1()` succeeds and reset by
+/// `nativeStopLayer1()`.  The runtime is dropped only after both:
+///   1. the service has released ownership, and
+///   2. all Flutter/UI attachments have detached.
+#[cfg(target_os = "android")]
+static HEADLESS_LAYER1_SERVICE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "android")]
+fn maybe_drop_headless_layer1() {
+    let ptr = HEADLESS_LAYER1_PTR.load(Ordering::Acquire);
+    if ptr == 0 {
+        return;
+    }
+
+    let service_active = HEADLESS_LAYER1_SERVICE_ACTIVE.load(Ordering::Acquire);
+    let attachments = HEADLESS_LAYER1_ATTACHMENTS.load(Ordering::Acquire);
+    if service_active || attachments != 0 {
+        return;
+    }
+
+    let claimed = HEADLESS_LAYER1_PTR.swap(0, Ordering::AcqRel);
+    if claimed == 0 {
+        return;
+    }
+
+    // SAFETY: the pointer originated from `Box::into_raw` in the headless
+    // startup path and is only dropped once after both owners release it.
+    unsafe {
+        drop(Box::from_raw(claimed as *mut MeshContext));
+    }
+}
+
+/// Android JNI entry point called by `NativeLayer1Bridge.nativeStartLayer1`.
+///
+/// Starts Layer 1 participation before Flutter launches:
+///   1. Creates a `MeshContext` from the supplied data-directory path.
+///   2. Enables mesh-discovery and relay flags so the node participates in
+///      routing, cover traffic, and gossip immediately.
+///   3. Calls `initialize_startup_state()` and `reconcile_layer1_runtime()`.
+///   4. Stores the raw pointer in `HEADLESS_LAYER1_PTR` so `mesh_init()` can
+///      reuse it, avoiding a duplicate runtime when Flutter starts.
+///
+/// Returns the context pointer cast to `i64`, or `0` on failure.
+///
+/// Thread safety: protected by `HEADLESS_LAYER1_PTR` atomic CAS — only the
+/// first successful call allocates; subsequent calls are no-ops that return
+/// the existing pointer.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeStartLayer1(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    data_dir: jni::objects::JString,
+) -> jni::sys::jlong {
+    // If Layer 1 was already started (e.g., service onCreate called twice),
+    // return the existing pointer immediately.
+    let existing = HEADLESS_LAYER1_PTR.load(Ordering::Acquire);
+    if existing != 0 {
+        HEADLESS_LAYER1_SERVICE_ACTIVE.store(true, Ordering::Release);
+        return existing;
+    }
+
+    // Convert the Java String to a Rust &str.
+    let dir: String = match env.get_string(&data_dir) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+
+    // Create the data directory if it does not already exist.
+    if std::fs::create_dir_all(&dir).is_err() {
+        eprintln!("[Layer1] WARNING: could not create data directory: {dir}");
+    }
+
+    // Build a minimal MeshRuntime for Layer 1 participation.
+    // Layer 1 only needs: transport (WireGuard), cover traffic, relay, gossip.
+    // Identity (Layer 2/3) is not loaded here — that happens at app open.
+    let mut runtime = MeshRuntime::new(dir);
+    runtime.load_layer1_startup_config();
+
+    // Restore any persisted identity and transport state.
+    runtime.initialize_startup_state();
+
+    // Start transport subsystems that are safe to run without a loaded
+    // identity: WireGuard tunnel management, cover traffic emission, relay
+    // slot acceptance, and tunnel-coordination gossip.
+    if let Err(e) = runtime.reconcile_layer1_runtime() {
+        eprintln!("[Layer1] reconcile_layer1_runtime failed: {e}");
+    }
+
+    // Heap-allocate the context and store the raw pointer.
+    let ctx = Box::into_raw(Box::new(MeshContext(Box::new(runtime))));
+    let ptr = ctx as i64;
+
+    // CAS: only write if still zero (handles unlikely races on first boot).
+    match HEADLESS_LAYER1_PTR.compare_exchange(0, ptr, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {
+            HEADLESS_LAYER1_SERVICE_ACTIVE.store(true, Ordering::Release);
+            ptr
+        }
+        Err(existing_ptr) => {
+            // Another thread beat us — drop the duplicate and return existing.
+            // SAFETY: we just allocated ctx and no one else has seen it.
+            unsafe { drop(Box::from_raw(ctx)) };
+            HEADLESS_LAYER1_SERVICE_ACTIVE.store(true, Ordering::Release);
+            existing_ptr
+        }
+    }
+}
+
+/// Android JNI entry point called when `AndroidStartupService` stops.
+///
+/// Releases the startup service's ownership of the headless Layer 1 runtime.
+/// The runtime is only dropped after both the service and all Flutter/UI
+/// attachments have detached.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeStopLayer1(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) {
+    HEADLESS_LAYER1_SERVICE_ACTIVE.store(false, Ordering::Release);
+    maybe_drop_headless_layer1();
+}
+
 /// Destroy the context and free all resources.
 ///
 /// Must be called exactly once at app shutdown.  After this call, `ctx` is
@@ -310,13 +519,29 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
 pub unsafe extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
     // Null ctx is a no-op rather than a hard error for defensive robustness.
     // Guard: validate the condition before proceeding.
-    if !ctx.is_null() {
-        // SAFETY: `ctx` was allocated by `Box::into_raw` in `mesh_init`; this
-        // is the unique ownership-reclaim point.
-        // Execute this protocol step.
-        unsafe {
-            drop(Box::from_raw(ctx));
+    if ctx.is_null() {
+        return;
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let headless_ptr = HEADLESS_LAYER1_PTR.load(Ordering::Acquire) as *mut MeshContext;
+        if ctx == headless_ptr && !headless_ptr.is_null() {
+            let _ = HEADLESS_LAYER1_ATTACHMENTS.fetch_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |count| count.checked_sub(1),
+            );
+            maybe_drop_headless_layer1();
+            return;
         }
+    }
+
+    // SAFETY: `ctx` was allocated by `Box::into_raw` in `mesh_init`; this
+    // is the unique ownership-reclaim point.
+    // Execute this protocol step.
+    unsafe {
+        drop(Box::from_raw(ctx));
     }
 }
 
@@ -5755,6 +5980,52 @@ mod tests {
         );
 
         unsafe { mesh_destroy(ctx1) };
+    }
+
+    #[test]
+    fn test_startup_config_persists_layer1_posture() {
+        let dir = TempDir::new().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let dir_str = CString::new(dir_path.to_str().unwrap()).unwrap();
+        let config = FfiMeshConfig {
+            config_path: dir_str.as_ptr(),
+            log_level: 0,
+            enable_tor: 0,
+            enable_clearnet: 0,
+            mesh_discovery: 1,
+            allow_relays: 1,
+            enable_i2p: 0,
+            enable_bluetooth: 0,
+            enable_rf: 0,
+            wireguard_port: 0,
+            max_peers: 100,
+            max_connections: 100,
+            node_mode: 0,
+        };
+
+        let ctx = unsafe { mesh_init(&config as *const FfiMeshConfig) };
+        assert!(!ctx.is_null());
+        let name = CString::new("Startup Config User").unwrap();
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
+        assert_eq!(unsafe { mi_set_node_mode(ctx, 2) }, 0);
+
+        let transport_flags = CString::new(
+            r#"{"mesh_discovery":false,"allow_relays":false,"clearnet":true,"tor":true}"#,
+        )
+        .unwrap();
+        assert_eq!(unsafe { mi_set_transport_flags(ctx, transport_flags.as_ptr()) }, 0);
+
+        let startup_config_path = dir_path.join("layer1_startup.json");
+        let startup_config_bytes = std::fs::read(startup_config_path).unwrap();
+        let startup_config: serde_json::Value =
+            serde_json::from_slice(&startup_config_bytes).unwrap();
+        assert_eq!(startup_config["node_mode"], 2);
+        assert_eq!(startup_config["mesh_discovery"], false);
+        assert_eq!(startup_config["allow_relays"], false);
+        assert_eq!(startup_config["clearnet"], true);
+        assert_eq!(startup_config["tor"], true);
+
+        unsafe { mesh_destroy(ctx) };
     }
 
     #[test]

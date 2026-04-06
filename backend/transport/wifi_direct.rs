@@ -65,6 +65,10 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{net::TcpListener, time::Instant};
 
+// libc::socketpair is used in the Android session-bridge implementation.
+#[cfg(target_os = "android")]
+use std::os::unix::io::FromRawFd;
+
 // ────────────────────────────────────────────────────────────────────────────
 // Constants
 // ────────────────────────────────────────────────────────────────────────────
@@ -773,16 +777,32 @@ mod linux_impl {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Non-Linux stub
+// Android implementation — socketpair bridge over platform frame queues
 // ────────────────────────────────────────────────────────────────────────────
+//
+// On Android, Wi-Fi Direct hardware is controlled by `WifiP2pManager` at the
+// Java layer.  The native bridge (`AndroidProximityBridge.kt`) manages the
+// actual socket lifecycle and feeds raw session frames into the Rust-side
+// session-frame queues defined in `android_wifi_direct_adapter_state()`.
+//
+// This impl closes the data-plane gap: `connect_peer()` and `start_listener()`
+// now return real, readable/writable `TcpStream`s backed by Unix socketpairs.
+// A bridge thread per session reads frames from the Rust outbound queue and
+// writes them into the socket, and reads bytes from the socket and writes them
+// into the Rust inbound queue.  From the transport manager's perspective the
+// session looks identical to a real TCP connection.
+//
+// Platform note: Android is Unix, so `libc::socketpair(AF_UNIX, SOCK_STREAM)`
+// is available and the conversion `TcpStream::from_raw_fd` is valid for the
+// purposes of stream I/O (read/write syscalls are socket-family agnostic).
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "android")]
 impl WifiDirectTransport {
-    /// Not available on non-Linux platforms.
+    /// Create the Android Wi-Fi Direct transport.
     ///
-    /// On Android, WiFi Direct is handled by the platform layer via
-    /// `WifiP2pManager` / JNI.  On iOS/macOS/Windows there is no equivalent
-    /// nl80211 interface exposed to Rust.
+    /// Succeeds when the backend-owned adapter state reports the hardware is
+    /// available.  On devices without Wi-Fi Direct hardware (or with the
+    /// permission not yet granted) this returns `NotAvailable`.
     pub fn new(
         interface: &str,
         device_name: &str,
@@ -802,14 +822,16 @@ impl WifiDirectTransport {
         })
     }
 
-    /// On Android, availability follows the backend-owned capability state.
+    /// Returns true when the backend-owned adapter state shows Wi-Fi Direct
+    /// is present, enabled, and the runtime permission is granted.
     pub fn is_available() -> bool {
         let state = android_wifi_direct_snapshot();
         state.available && state.enabled && state.permission_granted
     }
 
-    /// On Android, scanning availability is represented by the backend-owned
-    /// adapter snapshot. The platform layer performs the actual scan.
+    /// Scan availability on Android mirrors the backend-owned adapter state.
+    /// The platform layer (`WifiP2pManager`) performs the actual scan in
+    /// response to `mi_android_wifi_direct_start_discovery`.
     pub fn start_scan(&self) -> Result<(), WifiDirectError> {
         let state = android_wifi_direct_snapshot();
         if !state.available {
@@ -828,47 +850,302 @@ impl WifiDirectTransport {
         Ok(())
     }
 
-    /// On Android, return peers from the backend-owned adapter snapshot.
+    /// Return the current discovered-peer list from the backend adapter snapshot.
     pub fn discovered_peers(&self) -> Vec<WifiDirectPeer> {
         android_wifi_direct_snapshot().peers
     }
 
-    /// The Android platform layer owns the Wi-Fi Direct data plane today.
+    /// Open a backend-owned session to a Wi-Fi Direct peer on Android.
+    ///
+    /// # How it works
+    ///
+    /// Android's `WifiP2pManager` owns the physical connection lifecycle.
+    /// When the native bridge establishes a connection, it pushes raw session
+    /// frames into the Rust-side inbound queue via
+    /// `mi_android_wifi_direct_ingest_session_frame`.  Rust authors outbound
+    /// frames by queuing them via `queue_android_outbound_session_frame`, and
+    /// the native bridge drains that queue via
+    /// `mi_android_wifi_direct_dequeue_session_frame`.
+    ///
+    /// This function creates a Unix socketpair and spawns a bridge thread that
+    /// relays between the socketpair and the two frame queues:
+    ///
+    /// ```text
+    ///   transport manager                     native bridge (Java)
+    ///         │                                       │
+    ///   TcpStream(fd_b) ◄──► bridge thread ◄──► frame queues ◄──► Java socket
+    /// ```
+    ///
+    /// The returned `TcpStream` wraps `fd_b`.  The bridge thread holds `fd_a`
+    /// and the two queue functions.  The transport manager can read/write the
+    /// stream exactly as it would a real TCP connection.
     pub fn connect_peer(&self, _mac: &str) -> Result<TcpStream, WifiDirectError> {
+        use std::io::{Read, Write};
+        use std::os::unix::io::{FromRawFd, RawFd};
+
         let state = android_wifi_direct_snapshot();
         if !state.available {
             return Err(WifiDirectError::NotAvailable);
         }
-        Err(WifiDirectError::ConnectFailed(
-            "android wifi direct connections are managed by the native platform bridge".to_string(),
-        ))
+        if !state.connected {
+            return Err(WifiDirectError::ConnectFailed(
+                "android wifi direct: no active session (native bridge must connect first)"
+                    .to_string(),
+            ));
+        }
+
+        // Create a Unix-domain socket pair.
+        // fd_a: held by the bridge thread (bridges ↔ Android frame queues).
+        // fd_b: returned to the caller as a TcpStream.
+        let mut fds: [RawFd; 2] = [0; 2];
+        // SAFETY: socketpair(2) is a standard POSIX syscall.  fds is a valid
+        // pointer to a two-element array.  AF_UNIX + SOCK_STREAM gives a
+        // bidirectional byte-stream socket pair.
+        let ret = unsafe {
+            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
+        };
+        if ret != 0 {
+            return Err(WifiDirectError::ConnectFailed(format!(
+                "socketpair failed: errno {}",
+                unsafe { *libc::__errno_location() }
+            )));
+        }
+
+        let fd_a = fds[0];
+        let fd_b = fds[1];
+
+        // Bridge thread: relay between fd_a and the Android frame queues.
+        //
+        // Outbound direction (Rust → Android):
+        //   Read bytes from fd_a → enqueue as a session frame.
+        //
+        // Inbound direction (Android → Rust):
+        //   Dequeue a session frame → write bytes to fd_a.
+        //
+        // The thread exits when either:
+        //   - fd_a becomes unreadable/unwritable (caller dropped the stream), or
+        //   - The adapter state shows the session has ended.
+        std::thread::spawn(move || {
+            // SAFETY: fd_a is a valid open socket fd at this point.
+            // The bridge thread owns fd_a exclusively.
+            let mut sock_a = unsafe { std::net::TcpStream::from_raw_fd(fd_a) };
+            sock_a
+                .set_read_timeout(Some(std::time::Duration::from_millis(10)))
+                .ok();
+
+            // Frame-length prefix size (4 bytes, big-endian u32).
+            // We frame raw bytes with a length prefix so the socketpair acts
+            // as a message-oriented channel matching the queue semantics.
+            const FRAME_HDR: usize = 4;
+
+            loop {
+                // --- Inbound: Android → Rust (frame queues → fd_a) ----------
+
+                // Drain all pending inbound frames from the Android queue and
+                // write them into the socket so the transport manager can read
+                // them via the TcpStream.
+                while let Some(frame) = dequeue_android_inbound_session_frame() {
+                    if frame.is_empty() {
+                        continue;
+                    }
+                    // Encode as length-prefixed frame: [u32 big-endian len][bytes].
+                    let len = frame.len() as u32;
+                    let mut buf = Vec::with_capacity(FRAME_HDR + frame.len());
+                    buf.extend_from_slice(&len.to_be_bytes());
+                    buf.extend_from_slice(&frame);
+                    if sock_a.write_all(&buf).is_err() {
+                        // Socket closed — exit the bridge.
+                        return;
+                    }
+                }
+
+                // --- Outbound: Rust → Android (fd_a → frame queues) ---------
+
+                // Try to read a length-prefixed frame from the socket.
+                // The read timeout (10 ms) keeps this from blocking inbound relay.
+                let mut hdr = [0u8; FRAME_HDR];
+                match sock_a.read_exact(&mut hdr) {
+                    Ok(()) => {
+                        let frame_len = u32::from_be_bytes(hdr) as usize;
+                        let mut body = vec![0u8; frame_len];
+                        if sock_a.read_exact(&mut body).is_err() {
+                            return;
+                        }
+                        // Queue the outbound frame for the native bridge to drain.
+                        queue_android_outbound_session_frame(&body);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        // Normal — no outbound data this tick.
+                    }
+                    Err(_) => {
+                        // Socket closed or error — exit the bridge.
+                        return;
+                    }
+                }
+
+                // --- Session liveness check ----------------------------------
+
+                // If the Android adapter reports the session ended, the bridge
+                // is no longer useful.  Close fd_a to signal EOF to the caller.
+                let alive = {
+                    android_wifi_direct_adapter_state()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .connected
+                };
+                if !alive {
+                    return;
+                }
+            }
+        });
+
+        // SAFETY: fd_b is a valid open socket fd returned by socketpair.
+        // Ownership transfers to the TcpStream; the fd is closed when the
+        // TcpStream is dropped.
+        Ok(unsafe { TcpStream::from_raw_fd(fd_b) })
     }
 
-    /// The Android platform layer owns the Wi-Fi Direct listener today.
+    /// Start the Android Wi-Fi Direct session listener.
+    ///
+    /// Spawns a background thread that watches the backend adapter state for
+    /// new sessions (i.e. `connected` transitions from false → true).  For
+    /// each new session, a socketpair bridge is created and the caller-facing
+    /// end is pushed into `self.inbound`.  The transport manager drains the
+    /// queue via `drain_inbound()`.
     pub fn start_listener(self: Arc<Self>) -> Result<(), WifiDirectError> {
         let state = android_wifi_direct_snapshot();
         if !state.available {
             return Err(WifiDirectError::NotAvailable);
         }
-        let _ = self;
-        Err(WifiDirectError::ConnectFailed(
-            "android wifi direct listener is managed by the native platform bridge".to_string(),
-        ))
+
+        // Spawn the listener loop.
+        std::thread::spawn(move || {
+            // Poll interval: 50 ms is fast enough to notice new connections
+            // while keeping CPU impact minimal.
+            const POLL_MS: u64 = 50;
+
+            // Track whether the last snapshot showed an active session so we
+            // can detect the false→true transition.
+            let mut was_connected = false;
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+
+                let snapshot = android_wifi_direct_snapshot();
+                if !snapshot.available {
+                    // Adapter disappeared — stop the listener.
+                    break;
+                }
+
+                // Detect a new connection (false → true transition).
+                if snapshot.connected && !was_connected {
+                    // A new session has been established by the native bridge.
+                    // Manufacture a socketpair bridge for it (same logic as
+                    // connect_peer) and push the caller-facing end into inbound.
+                    if let Ok(stream) = self.connect_peer("") {
+                        self.inbound
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(stream);
+                    }
+                }
+                was_connected = snapshot.connected;
+            }
+        });
+
+        Ok(())
     }
 
-    /// Returns an empty list on non-Linux platforms.
+    /// Drain all inbound session streams accepted since the last call.
+    ///
+    /// Returns streams produced by `start_listener()`.  Each stream is backed
+    /// by a Unix socketpair bridge to the Android Wi-Fi Direct frame queues.
     pub fn drain_inbound(&self) -> Vec<TcpStream> {
-        Vec::new()
+        std::mem::take(&mut *self.inbound.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
-    /// On Android, disconnect intent exists at the backend boundary even
-    /// though the platform still performs the actual disconnect.
+    /// Request disconnection of the current Android Wi-Fi Direct session.
+    ///
+    /// The actual disconnect is performed by the native bridge in response to
+    /// the `AndroidWiFiDirectDisconnected` event that the adapter state change
+    /// propagates.  This call updates the backend-owned state to `connected =
+    /// false`, which causes any running bridge threads to exit cleanly.
     pub fn disconnect_all(&self) -> Result<(), WifiDirectError> {
         let state = android_wifi_direct_snapshot();
         if !state.available {
             return Err(WifiDirectError::NotAvailable);
         }
+        // Update the backend state: clear the connected flag so bridge threads
+        // exit and new connection attempts see a clean slate.
+        {
+            let mut s = android_wifi_direct_adapter_state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            s.connected = false;
+            s.connection_role = None;
+            s.group_owner_address = None;
+            s.connected_device_address = None;
+            s.inbound_session_frames.clear();
+            s.outbound_session_frames.clear();
+        }
         Ok(())
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Non-Android / non-Linux stub
+// ────────────────────────────────────────────────────────────────────────────
+//
+// On iOS, macOS, and Windows there is no equivalent nl80211 or WifiP2pManager
+// interface that Rust can use.  These platforms report NotAvailable so the
+// transport manager can fall back to mDNS-SD or other available transports.
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+impl WifiDirectTransport {
+    /// Not available on iOS, macOS, or Windows.
+    pub fn new(
+        _interface: &str,
+        _device_name: &str,
+        _listen_port: u16,
+    ) -> Result<Self, WifiDirectError> {
+        Err(WifiDirectError::NotAvailable)
+    }
+
+    /// Always false on non-Android/non-Linux platforms.
+    pub fn is_available() -> bool {
+        false
+    }
+
+    /// Always returns `NotAvailable`.
+    pub fn start_scan(&self) -> Result<(), WifiDirectError> {
+        Err(WifiDirectError::NotAvailable)
+    }
+
+    /// Always returns an empty list.
+    pub fn discovered_peers(&self) -> Vec<WifiDirectPeer> {
+        Vec::new()
+    }
+
+    /// Always returns `NotAvailable`.
+    pub fn connect_peer(&self, _mac: &str) -> Result<TcpStream, WifiDirectError> {
+        Err(WifiDirectError::NotAvailable)
+    }
+
+    /// Always returns `NotAvailable`.
+    pub fn start_listener(self: Arc<Self>) -> Result<(), WifiDirectError> {
+        Err(WifiDirectError::NotAvailable)
+    }
+
+    /// Always returns an empty list.
+    pub fn drain_inbound(&self) -> Vec<TcpStream> {
+        Vec::new()
+    }
+
+    /// Always returns `NotAvailable`.
+    pub fn disconnect_all(&self) -> Result<(), WifiDirectError> {
+        Err(WifiDirectError::NotAvailable)
     }
 }
 
