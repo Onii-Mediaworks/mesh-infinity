@@ -431,9 +431,9 @@ fn maybe_drop_headless_layer1() {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeStartLayer1(
-    mut env: jni::JNIEnv,
-    _class: jni::objects::JClass,
-    data_dir: jni::objects::JString,
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    data_dir: jni::objects::JString<'_>,
 ) -> jni::sys::jlong {
     // If Layer 1 was already started (e.g., service onCreate called twice),
     // return the existing pointer immediately.
@@ -498,8 +498,8 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeStopLayer1(
-    _env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    _env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
 ) {
     HEADLESS_LAYER1_SERVICE_ACTIVE.store(false, Ordering::Release);
     maybe_drop_headless_layer1();
@@ -528,8 +528,8 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeBootstrapLayer1(
-    _env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    _env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx: jni::sys::jlong,
 ) -> jni::sys::jint {
     // Guard: a zero pointer means the runtime was never allocated.
@@ -564,8 +564,8 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeIsLayer1Ready(
-    _env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    _env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx: jni::sys::jlong,
 ) -> jni::sys::jint {
     if ctx == 0 {
@@ -609,10 +609,10 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeWifiDirectSessionFd(
-    mut env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx: jni::sys::jlong,
-    peer_mac: jni::objects::JString,
+    peer_mac: jni::objects::JString<'_>,
     fd: jni::sys::jint,
 ) -> jni::sys::jint {
     if ctx == 0 {
@@ -649,10 +649,10 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeWifiDirectDrainSession(
-    mut env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx: jni::sys::jlong,
-    peer_mac: jni::objects::JString,
+    peer_mac: jni::objects::JString<'_>,
 ) -> jni::sys::jint {
     if ctx == 0 {
         return -1;
@@ -688,8 +688,8 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeNfcPopOutboundFrame(
-    env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx: jni::sys::jlong,
     buf: jni::sys::jbyteArray,
     buf_len: jni::sys::jint,
@@ -732,8 +732,8 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeNfcPushInboundFrame(
-    env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx: jni::sys::jlong,
     data: jni::sys::jbyteArray,
     data_len: jni::sys::jint,
@@ -2967,8 +2967,8 @@ pub unsafe extern "C" fn mi_layer1_export_secret(
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeInjectLayer1Secret(
-    mut env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx_long: jni::sys::jlong,
     data: jni::objects::JByteArray,
 ) -> jni::sys::jint {
@@ -3025,8 +3025,8 @@ pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1B
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeExportLayer1Secret(
-    mut env: jni::JNIEnv,
-    _class: jni::objects::JClass,
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
     ctx_long: jni::sys::jlong,
 ) -> jni::sys::jobject {
     // Null sentinel value used when there is nothing to return.

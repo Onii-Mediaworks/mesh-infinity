@@ -1121,7 +1121,7 @@ impl WifiDirectTransport {
         if ret != 0 {
             return Err(WifiDirectError::ConnectFailed(format!(
                 "socketpair failed: errno {}",
-                unsafe { *libc::__errno_location() }
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
             )));
         }
 

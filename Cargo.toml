@@ -540,8 +540,14 @@ bitflags = "2"
 # "cranelift" is the optimising compiler backend (JIT).  Epoch-based
 # interruption is configured through the runtime API, so no extra Cargo
 # feature is needed here.
-wasmtime = { version = "25", features = ["cranelift"] }
-wasmtime-wasi = { version = "25" }
+#
+# iOS EXCLUSION: wasmtime uses inline assembly (via wasmtime-fiber) that
+# requires GNU-assembler directives unsupported by Apple's Clang assembler on
+# iOS.  Additionally, iOS prohibits third-party JIT compilation (W^X policy).
+# Per §18.1, executable plugins are not available on iOS.  The plugin sandbox
+# (`PluginSandbox`) is already gated with `#[cfg(not(target_os = "ios"))]`
+# in backend/services/plugin.rs; wasmtime must also be excluded from the iOS
+# dependency graph here so it is never compiled for that target.
 ml-kem = { version = "0.2.3", features = ["zeroize", "deterministic"] }
 kem = "=0.3.0-pre.0"
 rand_chacha = "0.9"
@@ -634,6 +640,16 @@ wintun = "0.5"
 # constants. Those symbols live in windows-sys, so the Windows build needs the
 # crate linked explicitly for target-specific compilation.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+# iOS-excluded: wasmtime (§18.1)
+#
+# wasmtime-fiber uses GNU-assembler directives that Apple's Clang assembler on
+# iOS/iPadOS rejects.  Additionally, iOS prohibits third-party JIT (W^X).
+# Per §18.1, executable plugins are not available on iOS.  PluginSandbox is
+# already gated with #[cfg(not(target_os = "ios"))] in plugin.rs.
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+wasmtime = { version = "25", features = ["cranelift"] }
+wasmtime-wasi = { version = "25" }
 
 # =============================================================================
 # [dev-dependencies] — dependencies used ONLY during testing
