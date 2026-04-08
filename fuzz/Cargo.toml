@@ -1,0 +1,77 @@
+# =============================================================================
+# fuzz/Cargo.toml — cargo-fuzz manifest for Mesh Infinity fuzz targets.
+#
+# What is cargo-fuzz?
+# -------------------
+# cargo-fuzz is a tool that integrates libFuzzer (part of LLVM) with Rust.
+# libFuzzer is a coverage-guided fuzzing engine: it mutates inputs based on
+# which code branches have been hit, steering mutations toward unexplored
+# paths.  Every fuzz target is a small binary that calls one harness function
+# with the fuzz-generated input.
+#
+# This workspace is kept separate from the main Mesh Infinity workspace so
+# that fuzz binaries (which require nightly Rust and special sanitizer flags)
+# never pollute the production build.
+#
+# Usage:
+#   cargo +nightly fuzz run fuzz_nfc_ndef
+#   cargo +nightly fuzz run fuzz_pairing_payload -- -max_total_time=30
+#   cargo +nightly fuzz run fuzz_message_frame   -- -max_total_time=60
+# =============================================================================
+
+[package]
+name = "mesh-infinity-fuzz"
+version = "0.0.1"
+edition = "2021"
+# Fuzz binaries are not published to crates.io.
+publish = false
+
+# libfuzzer-sys provides the Rust binding to libFuzzer.
+# It exports the `fuzz_target!` macro that wraps our harness function as the
+# libFuzzer entry point (the `LLVMFuzzerTestOneInput` C symbol).
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The main Mesh Infinity crate — provides all parsers under test.
+# `path` points to the workspace root from the fuzz/ subdirectory.
+mesh-infinity = { path = ".." }
+
+# cargo-fuzz requires fuzz crates to declare themselves as their own workspace
+# so that Cargo does not try to inherit settings from the parent workspace.
+# Without this, cargo-fuzz fails because the parent Cargo.toml's crate-type
+# list (cdylib, staticlib, rlib) conflicts with fuzz binary compilation.
+[workspace]
+
+# =============================================================================
+# Fuzz target binaries
+#
+# Each [[bin]] entry corresponds to one fuzz target.  The `name` field must
+# match the filename in fuzz_targets/ (without the .rs extension).
+# =============================================================================
+
+# --- Target 1: NFC NDEF record parsing (§5.9) --------------------------------
+#
+# Feeds arbitrary bytes into the NFC NDEF parser that Mesh Infinity uses to
+# read pairing records from NFC tags.  Any malformed tag data a hostile device
+# broadcasts must be gracefully rejected — never panic.
+[[bin]]
+name = "fuzz_nfc_ndef"
+path = "fuzz_targets/fuzz_nfc_ndef.rs"
+
+# --- Target 2: Pairing payload deserialization (§8.3) ------------------------
+#
+# Feeds arbitrary bytes as a candidate JSON pairing payload.  The pairing
+# subsystem is the first point of contact with an unknown peer; it must
+# handle arbitrarily malformed JSON without crashing.
+[[bin]]
+name = "fuzz_pairing_payload"
+path = "fuzz_targets/fuzz_pairing_payload.rs"
+
+# --- Target 3: Mesh message frame deserialization (§6.5) ---------------------
+#
+# Feeds arbitrary bytes into the MeshPacket JSON deserializer.  Intermediate
+# relay nodes process packets from peers they may not trust; the framing layer
+# must never panic regardless of what bytes arrive over the wire.
+[[bin]]
+name = "fuzz_message_frame"
+path = "fuzz_targets/fuzz_message_frame.rs"

@@ -18,16 +18,31 @@ class ZeroTierSetupScreen extends StatefulWidget {
 }
 
 class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
+  /// Which controller backend the user has selected.
   _ControllerType _controllerType = _ControllerType.central;
 
+  /// API key obtained from ZeroTier Central (my.zerotier.com) or the
+  /// self-hosted controller admin panel.  Treated as a secret — obscured.
   final _apiKeyCtrl = TextEditingController();
+
+  /// URL of a self-hosted ZeroTier controller, e.g. "https://zt.example.com".
+  /// Only used when [_controllerType] is [_ControllerType.selfHosted].
   final _controllerUrlCtrl = TextEditingController();
+
+  /// Text field for entering a ZeroTier network ID to join.
   final _networkIdCtrl = TextEditingController();
 
+  /// True while a bridge call is in flight — disables buttons to prevent
+  /// double-submission.
   bool _connecting = false;
+
+  /// Human-readable error from the most recent failed bridge call.
+  /// Null means no error is currently displayed.
   String? _errorMessage;
 
-  // Networks that have been joined this session (before saving).
+  /// Network IDs staged for joining during the initial-setup flow (before the
+  /// user taps "Connect").  Shown as removable chips in the UI.  Distinct from
+  /// the `networks` list that comes back from the backend after connection.
   final List<String> _pendingNetworks = [];
 
   @override
@@ -38,6 +53,13 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
     super.dispose();
   }
 
+  /// Validates and stages a network ID for the pending-join list.
+  ///
+  /// ZeroTier network IDs are exactly 16 hexadecimal characters (e.g.
+  /// "8056c2e21c000001").  The first 10 characters are the controller's
+  /// node ID and the last 6 identify the network within that controller.
+  /// Validation here prevents the user from submitting an obviously wrong
+  /// value to the backend.
   void _addNetwork() {
     final id = _networkIdCtrl.text.trim();
     if (id.isEmpty) return;
@@ -47,6 +69,7 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
       setState(() => _errorMessage = 'Network ID must be 16 hex characters');
       return;
     }
+    // Guard against duplicates in the pending list.
     if (_pendingNetworks.contains(id)) return;
     setState(() {
       _pendingNetworks.add(id);
@@ -55,6 +78,15 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
     });
   }
 
+  /// Submits the API key and network list to the Rust backend to start the
+  /// ZeroTier client.
+  ///
+  /// The backend stores the credentials, connects to the controller, and joins
+  /// each network ID in [_pendingNetworks].  Private networks require the
+  /// network admin to authorise the new member before traffic flows.
+  ///
+  /// On failure the error from the bridge is surfaced in [_errorMessage] so
+  /// the user can correct it (wrong API key, unreachable controller, etc.).
   Future<void> _connect() async {
     final apiKey = _apiKeyCtrl.text.trim();
     if (apiKey.isEmpty) {
@@ -74,28 +106,41 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
     final net = context.read<NetworkState>();
     final bridge = context.read<BackendBridge>();
 
+    // Empty string tells the backend to use ZeroTier Central (my.zerotier.com).
     final controllerUrl = _controllerType == _ControllerType.selfHosted
         ? _controllerUrlCtrl.text.trim()
         : '';
 
     try {
+      // zerotierConnect passes the API key, optional controller URL, and the
+      // list of 16-char network IDs to join.
       final ok = bridge.zerotierConnect(apiKey, controllerUrl, List.from(_pendingNetworks));
       if (!ok) {
         throw Exception(bridge.getLastError() ?? 'ZeroTier connection failed');
       }
+      // Reload state so the status card reflects the new connection.
       await net.loadAll();
     } catch (e) {
+      // Catch covers both bridge rejection (ok == false → Exception above) and
+      // unexpected Dart errors.  Errors are shown inline rather than crashing.
       setState(() {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
     } finally {
+      // Always reset _connecting so the button re-enables after the call.
       if (mounted) setState(() => _connecting = false);
     }
   }
 
+  /// Asks the Rust backend to re-sync ZeroTier state from the controller.
+  ///
+  /// Useful when a network admin has changed the topology, authorised new
+  /// members, or when the device has regained connectivity after going offline.
   Future<void> _refresh(NetworkState net, BackendBridge bridge) async {
     setState(() => _connecting = true);
     final ok = bridge.zerotierRefresh();
+    // Reload state regardless of whether the refresh succeeded so the UI
+    // reflects the most recent information available from the backend.
     await net.loadAll();
     if (!ok && mounted) {
       setState(() {
@@ -107,6 +152,10 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
     }
   }
 
+  /// Disconnects the ZeroTier client and clears stored credentials from Rust.
+  ///
+  /// After disconnection the status card returns to "Not configured" and
+  /// the setup form is shown again so the user can re-enroll if desired.
   Future<void> _disconnect(NetworkState net, BackendBridge bridge) async {
     setState(() => _connecting = true);
     final ok = bridge.zerotierDisconnect();
@@ -121,6 +170,11 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
     }
   }
 
+  /// Joins an additional ZeroTier network while already connected.
+  ///
+  /// Used after initial setup when the user wants to add more networks
+  /// without going through the full enrolment form again.  Validates the
+  /// 16-char network ID before passing it to the bridge.
   Future<void> _joinNetwork(NetworkState net, BackendBridge bridge) async {
     final id = _networkIdCtrl.text.trim();
     if (!RegExp(r'^[0-9a-fA-F]{16}$').hasMatch(id)) {
@@ -134,12 +188,19 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
         _errorMessage = bridge.getLastError() ?? 'Could not join that network';
       });
     } else if (mounted) {
+      // Clear the field on success so the user can enter the next network ID.
       setState(() {
         _networkIdCtrl.clear();
       });
     }
   }
 
+  /// Toggles whether to prefer Mesh Infinity relay infrastructure over
+  /// ZeroTier's own relay servers (PLANET/MOON nodes).
+  ///
+  /// When enabled, the backend routes traffic through mesh relays instead of
+  /// reaching out to ZeroTier's centralised infrastructure — a privacy
+  /// improvement for users running a self-hosted controller.
   Future<void> _setPreferMeshRelay(
     NetworkState net,
     BackendBridge bridge,
@@ -155,6 +216,11 @@ class _ZeroTierSetupScreenState extends State<ZeroTierSetupScreen> {
     }
   }
 
+  /// Authorises or deauthorises a ZeroTier network member.
+  ///
+  /// This is only available when Mesh Infinity manages a ZeroTier network as
+  /// the controller (i.e. this device's ZeroTier node is the network owner).
+  /// [networkId] identifies the network; [nodeId] identifies the member node.
   Future<void> _setMemberAuthorized(
     NetworkState net,
     BackendBridge bridge,

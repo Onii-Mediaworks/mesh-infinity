@@ -585,6 +585,21 @@ pub struct MeshRuntime {
     /// per unique sender and 200 total entries; requests older than 30 days
     /// are pruned on load.
     pub pending_message_requests: Mutex<Vec<serde_json::Value>>,
+    /// Stop flag for the Tailscale background map-poll thread (§5.23).
+    ///
+    /// `None` when no poll thread is running.  `Some(flag)` while the thread
+    /// is alive — setting the flag to `false` asks the thread to exit on its
+    /// next iteration.  The `Arc` allows the thread and the runtime to both
+    /// hold a handle; dropping the outer `Option` does not stop the thread
+    /// immediately, only the flag does.
+    pub tailscale_poll_active: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    /// Live ZeroTier UDP transport (§5.22).
+    ///
+    /// `Some` after a successful `sync_zerotier_client` call.  Held here (not
+    /// in `OverlayManager`) because `ZeroTierTransport` owns a `UdpSocket`
+    /// and cannot be serialised to JSON.  The `Arc` is shared with the
+    /// background receive thread started by `start_recv()`.
+    pub zerotier_transport: Mutex<Option<std::sync::Arc<crate::transport::zerotier::ZeroTierTransport>>>,
 }
 
 // SAFETY: All mutable state is wrapped in `Mutex`, making MeshRuntime safe
@@ -686,6 +701,10 @@ impl MeshRuntime {
             pending_wg_handshakes: Mutex::new(std::collections::HashMap::new()),
             dedup_msg_cache: Mutex::new(crate::messaging::delivery::DeliveredMessageCache::new()),
             pending_message_requests: Mutex::new(Vec::new()),
+            // No background poll thread is running at startup.
+            tailscale_poll_active: Mutex::new(None),
+            // No ZeroTier transport socket is active at startup.
+            zerotier_transport: Mutex::new(None),
         }
     }
 

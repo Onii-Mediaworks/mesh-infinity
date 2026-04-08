@@ -1693,6 +1693,391 @@ class BackendBridge {
     return result == 0;
   }
 
+  /// Complete a Tailscale OAuth login flow after the user authenticates
+  /// in-browser.
+  ///
+  /// Call this when the system browser or in-app web view redirects back with
+  /// the auth token in the URL query parameters.  [token] is that token string.
+  ///
+  /// On success the backend stores the credential, emits
+  /// `TailscaleOAuthComplete`, and begins the initial map sync (which emits
+  /// `OverlayStatusChanged` when complete).
+  ///
+  /// Returns true if Rust accepted the token.
+  bool tailscaleCompleteOAuth(String token) {
+    if (!isAvailable) return false;
+    final tokenPtr = token.toNativeUtf8();
+    final result = _bindings!.tailscaleCompleteOAuth(_context, tokenPtr);
+    calloc.free(tokenPtr);
+    return result == 0;
+  }
+
+  /// Trigger a fresh Tailscale OAuth flow to renew an expired or expiring key.
+  ///
+  /// Clears the stored auth token and begins a new browser-based login via the
+  /// stored controller URL.  The backend emits `TailscaleOAuthUrl` with the
+  /// new URL to open.
+  ///
+  /// Returns true if Rust started the reauthentication flow.
+  bool tailscaleReoauth() {
+    if (!isAvailable) return false;
+    return _bindings!.tailscaleReoauth(_context) == 0;
+  }
+
+  /// Start the Tailscale background map-poll thread.
+  ///
+  /// The thread polls the control plane every 30 seconds and emits
+  /// `OverlayStatusChanged` on each topology update.  No-op if a poll thread
+  /// is already running.
+  ///
+  /// Returns true if the thread was started (or was already running).
+  bool tailscaleStartBackgroundPoll() {
+    if (!isAvailable) return false;
+    return _bindings!.tailscaleStartBackgroundPoll(_context) == 0;
+  }
+
+  /// Stop the Tailscale background map-poll thread.
+  ///
+  /// Signals the thread to exit on its next wake-up.  Returns immediately;
+  /// thread cleanup is asynchronous.
+  void tailscaleStopBackgroundPoll() {
+    if (!isAvailable) return;
+    _bindings!.tailscaleStopBackgroundPoll(_context);
+  }
+
+  /// Probe ZeroTier PLANET root servers to verify UDP connectivity.
+  ///
+  /// Returns true when the transport socket is bound and probe packets were
+  /// dispatched to the root servers.  Returns false when ZeroTier is not
+  /// connected or the socket is not available.
+  bool zerotierProbeRoots() {
+    if (!isAvailable) return false;
+    return _bindings!.zerotierProbeRoots(_context) != 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-instance Tailscale management (§5.22)
+  //
+  // Each user can run any number of Tailscale clients (tailnets) simultaneously.
+  // Each instance is identified by a stable UUID generated at creation time and
+  // stored in OverlayManager.tailnets on the Rust side.
+  //
+  // ROUTING CONFLICT RESOLUTION:
+  // When more than one tailnet is active, the "priority" tailnet wins for any
+  // routing decision that cannot be split across multiple clients.  The user sets
+  // the priority tailnet explicitly via tailscaleSetPriorityInstance().
+  //
+  // DESIGN: all per-instance calls take an instanceId string so Rust can look up
+  // the right TailscaleClient in OverlayManager.tailnets by its stable UUID.
+  // ---------------------------------------------------------------------------
+
+  /// Returns a JSON array of all configured Tailscale instances.
+  ///
+  /// Each element has: id, label, status, controller, deviceIp, deviceName,
+  /// tailnetName, keyExpiryUnixMs, peerCount, preferMeshRelay, activeExitNode.
+  ///
+  /// Returns null if the backend is unavailable or returns an empty JSON.
+  String? tailscaleListInstances() {
+    if (!isAvailable) return null;
+    final ptr = _bindings!.tailscaleListInstances(_context);
+    if (ptr == nullptr) return null;
+    return ptr.toDartString();
+  }
+
+  /// Create a new Tailscale instance with the given [label].
+  ///
+  /// [label] is the user-assigned display name ("Work", "Home VPN", etc.).
+  /// [controlUrl] is the coordination server URL — empty string for the default
+  /// Tailscale SaaS; a Headscale URL for self-hosted deployments.
+  ///
+  /// Returns a JSON string `{"id":"..."}` containing the new stable UUID, or
+  /// null if the backend rejected the call.  The caller must then call an auth
+  /// method ([tailscaleAuthKeyInstance] or [tailscaleBeginOAuthInstance]) to
+  /// authenticate the new instance.
+  String? tailscaleAddInstance(String label, String controlUrl) {
+    if (!isAvailable) return null;
+    final labelPtr = label.toNativeUtf8();
+    final urlPtr = controlUrl.toNativeUtf8();
+    final ptr = _bindings!.tailscaleAddInstance(_context, labelPtr, urlPtr);
+    calloc.free(labelPtr);
+    calloc.free(urlPtr);
+    if (ptr == nullptr) return null;
+    return ptr.toDartString();
+  }
+
+  /// Remove a Tailscale instance permanently.
+  ///
+  /// Deletes the instance's credentials and removes it from the manager.
+  /// If [instanceId] was the priority tailnet, the priority is cleared.
+  bool tailscaleRemoveInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.tailscaleRemoveInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Set the priority tailnet for routing conflict resolution.
+  ///
+  /// When multiple tailnets are active, routing decisions (exit node selection,
+  /// DERP relay preference) are made by the priority tailnet.  The non-priority
+  /// tailnets still route traffic but defer on conflicts.
+  bool tailscaleSetPriorityInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.tailscaleSetPriorityInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Authenticate a specific Tailscale instance using a pre-auth key.
+  bool tailscaleAuthKeyInstance(
+    String instanceId,
+    String authKey,
+    String controlUrl,
+  ) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final keyPtr = authKey.toNativeUtf8();
+    final urlPtr = controlUrl.toNativeUtf8();
+    final result = _bindings!.tailscaleAuthKeyInstance(
+      _context,
+      idPtr,
+      keyPtr,
+      urlPtr,
+    );
+    calloc.free(idPtr);
+    calloc.free(keyPtr);
+    calloc.free(urlPtr);
+    return result == 0;
+  }
+
+  /// Begin an OAuth login flow for a specific Tailscale instance.
+  ///
+  /// The backend emits a `TailscaleOAuthUrl` event with the URL to open.
+  bool tailscaleBeginOAuthInstance(String instanceId, String controlUrl) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final urlPtr = controlUrl.toNativeUtf8();
+    final result =
+        _bindings!.tailscaleBeginOAuthInstance(_context, idPtr, urlPtr);
+    calloc.free(idPtr);
+    calloc.free(urlPtr);
+    return result == 0;
+  }
+
+  /// Disconnect a specific Tailscale instance.
+  bool tailscaleDisconnectInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.tailscaleDisconnectInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Refresh a specific Tailscale instance from its control server.
+  bool tailscaleRefreshInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.tailscaleRefreshInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Toggle mesh relay preference for a specific Tailscale instance.
+  bool tailscaleSetPreferMeshRelayInstance(String instanceId, bool enabled) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.tailscaleSetPreferMeshRelayInstance(
+      _context,
+      idPtr,
+      enabled ? 1 : 0,
+    );
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Set the exit node for a specific Tailscale instance by peer name.
+  ///
+  /// [peerName] empty = clear the exit node selection for this instance.
+  bool tailscaleSetExitNodeInstance(String instanceId, String peerName) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final peerPtr = peerName.toNativeUtf8();
+    final result =
+        _bindings!.tailscaleSetExitNodeInstance(_context, idPtr, peerPtr);
+    calloc.free(idPtr);
+    calloc.free(peerPtr);
+    return result == 0;
+  }
+
+  /// Complete an OAuth flow for a specific Tailscale instance.
+  bool tailscaleCompleteOAuthInstance(String instanceId, String token) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final tokenPtr = token.toNativeUtf8();
+    final result =
+        _bindings!.tailscaleCompleteOAuthInstance(_context, idPtr, tokenPtr);
+    calloc.free(idPtr);
+    calloc.free(tokenPtr);
+    return result == 0;
+  }
+
+  /// Reauthenticate a specific Tailscale instance (renew expired key).
+  bool tailscaleReauthInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.tailscaleReauthInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-instance ZeroTier management (§5.23)
+  //
+  // Each user can run any number of ZeroTier clients (zeronets) simultaneously.
+  // ZeroTier identifies each node by a 10-character hex node ID derived from
+  // the node's cryptographic public key.  Each joined network has a 16-character
+  // hex network ID (first 10 chars = controller node ID, last 6 = network).
+  //
+  // ROUTING CONFLICTS: overlapping IP ranges from different zeronets are resolved
+  // by the priority zeronet — set via zerotierSetPriorityInstance().
+  //
+  // PLANET/MOON RELAYS: ZeroTier uses centralised relay servers (PLANETs) when
+  // direct UDP paths are unavailable.  preferMeshRelay routes via Mesh Infinity
+  // relay nodes instead, avoiding ZeroTier's centralised infrastructure.
+  // ---------------------------------------------------------------------------
+
+  /// Returns a JSON array of all configured ZeroTier instances.
+  ///
+  /// Each element has: id, label, status, nodeId, controller, networkCount,
+  /// memberCount, preferMeshRelay.
+  String? zerotierListInstances() {
+    if (!isAvailable) return null;
+    final ptr = _bindings!.zerotierListInstances(_context);
+    if (ptr == nullptr) return null;
+    return ptr.toDartString();
+  }
+
+  /// Create a new ZeroTier instance and join the given networks.
+  ///
+  /// [label] is the display name ("Work LAN", "Project VPN", etc.).
+  /// [apiKey] is the ZeroTier Central API token (empty for self-hosted without auth).
+  /// [controllerUrl] is the controller URL; empty = ZeroTier Central SaaS.
+  /// [networkIdsJson] is a JSON-encoded array of 16-hex-char network IDs to join.
+  ///
+  /// Returns `{"id":"..."}` on success, null on failure.
+  String? zerotierAddInstance(
+    String label,
+    String apiKey,
+    String controllerUrl,
+    String networkIdsJson,
+  ) {
+    if (!isAvailable) return null;
+    final labelPtr = label.toNativeUtf8();
+    final keyPtr = apiKey.toNativeUtf8();
+    final urlPtr = controllerUrl.toNativeUtf8();
+    final idsPtr = networkIdsJson.toNativeUtf8();
+    final ptr = _bindings!.zerotierAddInstance(
+      _context,
+      labelPtr,
+      keyPtr,
+      urlPtr,
+      idsPtr,
+    );
+    calloc.free(labelPtr);
+    calloc.free(keyPtr);
+    calloc.free(urlPtr);
+    calloc.free(idsPtr);
+    if (ptr == nullptr) return null;
+    return ptr.toDartString();
+  }
+
+  /// Remove a ZeroTier instance permanently.
+  bool zerotierRemoveInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.zerotierRemoveInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Set the priority zeronet for routing conflict resolution.
+  bool zerotierSetPriorityInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.zerotierSetPriorityInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Refresh a specific ZeroTier instance from its controller.
+  bool zerotierRefreshInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.zerotierRefreshInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Disconnect a specific ZeroTier instance.
+  bool zerotierDisconnectInstance(String instanceId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.zerotierDisconnectInstance(_context, idPtr);
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Join an additional network on a specific ZeroTier instance.
+  bool zerotierJoinNetworkInstance(String instanceId, String networkId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final netPtr = networkId.toNativeUtf8();
+    final result =
+        _bindings!.zerotierJoinNetworkInstance(_context, idPtr, netPtr);
+    calloc.free(idPtr);
+    calloc.free(netPtr);
+    return result == 0;
+  }
+
+  /// Toggle mesh relay preference for a specific ZeroTier instance.
+  bool zerotierSetPreferMeshRelayInstance(String instanceId, bool enabled) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final result = _bindings!.zerotierSetPreferMeshRelayInstance(
+      _context,
+      idPtr,
+      enabled ? 1 : 0,
+    );
+    calloc.free(idPtr);
+    return result == 0;
+  }
+
+  /// Authorize or deauthorize a member on a specific ZeroTier instance's network.
+  bool zerotierSetMemberAuthorizedInstance(
+    String instanceId,
+    String networkId,
+    String nodeId,
+    bool authorized,
+  ) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final netPtr = networkId.toNativeUtf8();
+    final nodePtr = nodeId.toNativeUtf8();
+    final result = _bindings!.zerotierSetMemberAuthorizedInstance(
+      _context,
+      idPtr,
+      netPtr,
+      nodePtr,
+      authorized ? 1 : 0,
+    );
+    calloc.free(idPtr);
+    calloc.free(netPtr);
+    calloc.free(nodePtr);
+    return result == 0;
+  }
+
   // ---------------------------------------------------------------------------
   // LoSec — Low-Traffic Security Mode (§6.9.6)
   // ---------------------------------------------------------------------------
@@ -2693,6 +3078,28 @@ class _BackendBindings {
           .lookupFunction<TailscaleBeginOAuthNative, TailscaleBeginOAuthDart>(
             'mi_tailscale_begin_oauth',
           ),
+      tailscaleCompleteOAuth = _lib.lookupFunction<
+        TailscaleCompleteOAuthNative,
+        TailscaleCompleteOAuthDart
+      >(
+        'mi_tailscale_complete_oauth',
+      ),
+      tailscaleReoauth = _lib
+          .lookupFunction<TailscaleReauthNative, TailscaleReauthDart>(
+            'mi_tailscale_reauthenticate',
+          ),
+      tailscaleStartBackgroundPoll = _lib.lookupFunction<
+        TailscaleStartBackgroundPollNative,
+        TailscaleStartBackgroundPollDart
+      >(
+        'mi_tailscale_start_background_poll',
+      ),
+      tailscaleStopBackgroundPoll = _lib.lookupFunction<
+        TailscaleStopBackgroundPollNative,
+        TailscaleStopBackgroundPollDart
+      >(
+        'mi_tailscale_stop_background_poll',
+      ),
       tailscaleDisconnect = _lib
           .lookupFunction<TailscaleDisconnectNative, TailscaleDisconnectDart>(
             'mi_tailscale_disconnect',
@@ -2739,6 +3146,94 @@ class _BackendBindings {
       >(
         'mi_zerotier_set_member_authorized',
       ),
+      zerotierProbeRoots = _lib
+          .lookupFunction<ZeroTierProbeRootsNative, ZeroTierProbeRootsDart>(
+            'mi_zerotier_probe_roots',
+          ),
+      tailscaleListInstances = _lib.lookupFunction<
+        TailscaleListInstancesNative,
+        TailscaleListInstancesDart
+      >('mi_tailscale_list_instances'),
+      tailscaleAddInstance = _lib.lookupFunction<
+        TailscaleAddInstanceNative,
+        TailscaleAddInstanceDart
+      >('mi_tailscale_add_instance'),
+      tailscaleRemoveInstance = _lib.lookupFunction<
+        TailscaleRemoveInstanceNative,
+        TailscaleRemoveInstanceDart
+      >('mi_tailscale_remove_instance'),
+      tailscaleSetPriorityInstance = _lib.lookupFunction<
+        TailscaleSetPriorityInstanceNative,
+        TailscaleSetPriorityInstanceDart
+      >('mi_tailscale_set_priority'),
+      tailscaleAuthKeyInstance = _lib.lookupFunction<
+        TailscaleAuthKeyInstanceNative,
+        TailscaleAuthKeyInstanceDart
+      >('mi_tailscale_auth_key_instance'),
+      tailscaleBeginOAuthInstance = _lib.lookupFunction<
+        TailscaleBeginOAuthInstanceNative,
+        TailscaleBeginOAuthInstanceDart
+      >('mi_tailscale_begin_oauth_instance'),
+      tailscaleDisconnectInstance = _lib.lookupFunction<
+        TailscaleDisconnectInstanceNative,
+        TailscaleDisconnectInstanceDart
+      >('mi_tailscale_disconnect_instance'),
+      tailscaleRefreshInstance = _lib.lookupFunction<
+        TailscaleRefreshInstanceNative,
+        TailscaleRefreshInstanceDart
+      >('mi_tailscale_refresh_instance'),
+      tailscaleSetPreferMeshRelayInstance = _lib.lookupFunction<
+        TailscaleSetPreferMeshRelayInstanceNative,
+        TailscaleSetPreferMeshRelayInstanceDart
+      >('mi_tailscale_set_prefer_mesh_relay_instance'),
+      tailscaleSetExitNodeInstance = _lib.lookupFunction<
+        TailscaleSetExitNodeInstanceNative,
+        TailscaleSetExitNodeInstanceDart
+      >('mi_tailscale_set_exit_node_instance'),
+      tailscaleCompleteOAuthInstance = _lib.lookupFunction<
+        TailscaleCompleteOAuthInstanceNative,
+        TailscaleCompleteOAuthInstanceDart
+      >('mi_tailscale_complete_oauth_instance'),
+      tailscaleReauthInstance = _lib.lookupFunction<
+        TailscaleReauthInstanceNative,
+        TailscaleReauthInstanceDart
+      >('mi_tailscale_reauthenticate_instance'),
+      zerotierListInstances = _lib.lookupFunction<
+        ZeroTierListInstancesNative,
+        ZeroTierListInstancesDart
+      >('mi_zerotier_list_instances'),
+      zerotierAddInstance = _lib.lookupFunction<
+        ZeroTierAddInstanceNative,
+        ZeroTierAddInstanceDart
+      >('mi_zerotier_add_instance'),
+      zerotierRemoveInstance = _lib.lookupFunction<
+        ZeroTierRemoveInstanceNative,
+        ZeroTierRemoveInstanceDart
+      >('mi_zerotier_remove_instance'),
+      zerotierSetPriorityInstance = _lib.lookupFunction<
+        ZeroTierSetPriorityInstanceNative,
+        ZeroTierSetPriorityInstanceDart
+      >('mi_zerotier_set_priority'),
+      zerotierRefreshInstance = _lib.lookupFunction<
+        ZeroTierRefreshInstanceNative,
+        ZeroTierRefreshInstanceDart
+      >('mi_zerotier_refresh_instance'),
+      zerotierDisconnectInstance = _lib.lookupFunction<
+        ZeroTierDisconnectInstanceNative,
+        ZeroTierDisconnectInstanceDart
+      >('mi_zerotier_disconnect_instance'),
+      zerotierJoinNetworkInstance = _lib.lookupFunction<
+        ZeroTierJoinNetworkInstanceNative,
+        ZeroTierJoinNetworkInstanceDart
+      >('mi_zerotier_join_network_instance'),
+      zerotierSetPreferMeshRelayInstance = _lib.lookupFunction<
+        ZeroTierSetPreferMeshRelayInstanceNative,
+        ZeroTierSetPreferMeshRelayInstanceDart
+      >('mi_zerotier_set_prefer_mesh_relay_instance'),
+      zerotierSetMemberAuthorizedInstance = _lib.lookupFunction<
+        ZeroTierSetMemberAuthorizedInstanceNative,
+        ZeroTierSetMemberAuthorizedInstanceDart
+      >('mi_zerotier_set_member_authorized_instance'),
       overlayStatus = _lib
           .lookupFunction<OverlayStatusNative, OverlayStatusDart>(
             'mi_overlay_status',
@@ -3003,6 +3498,10 @@ class _BackendBindings {
   final SdrListHardwareDart sdrListHardware;
   final TailscaleAuthKeyDart tailscaleAuthKey;
   final TailscaleBeginOAuthDart tailscaleBeginOAuth;
+  final TailscaleCompleteOAuthDart tailscaleCompleteOAuth;
+  final TailscaleReauthDart tailscaleReoauth;
+  final TailscaleStartBackgroundPollDart tailscaleStartBackgroundPoll;
+  final TailscaleStopBackgroundPollDart tailscaleStopBackgroundPoll;
   final TailscaleDisconnectDart tailscaleDisconnect;
   final TailscaleRefreshDart tailscaleRefresh;
   final TailscaleSetPreferMeshRelayDart tailscaleSetPreferMeshRelay;
@@ -3013,6 +3512,30 @@ class _BackendBindings {
   final ZeroTierJoinNetworkDart zerotierJoinNetwork;
   final ZeroTierSetPreferMeshRelayDart zerotierSetPreferMeshRelay;
   final ZeroTierSetMemberAuthorizedDart zerotierSetMemberAuthorized;
+  final ZeroTierProbeRootsDart zerotierProbeRoots;
+  // Multi-instance Tailscale (§5.22) — one entry per tailnet
+  final TailscaleListInstancesDart tailscaleListInstances;
+  final TailscaleAddInstanceDart tailscaleAddInstance;
+  final TailscaleRemoveInstanceDart tailscaleRemoveInstance;
+  final TailscaleSetPriorityInstanceDart tailscaleSetPriorityInstance;
+  final TailscaleAuthKeyInstanceDart tailscaleAuthKeyInstance;
+  final TailscaleBeginOAuthInstanceDart tailscaleBeginOAuthInstance;
+  final TailscaleDisconnectInstanceDart tailscaleDisconnectInstance;
+  final TailscaleRefreshInstanceDart tailscaleRefreshInstance;
+  final TailscaleSetPreferMeshRelayInstanceDart tailscaleSetPreferMeshRelayInstance;
+  final TailscaleSetExitNodeInstanceDart tailscaleSetExitNodeInstance;
+  final TailscaleCompleteOAuthInstanceDart tailscaleCompleteOAuthInstance;
+  final TailscaleReauthInstanceDart tailscaleReauthInstance;
+  // Multi-instance ZeroTier (§5.23) — one entry per zeronet
+  final ZeroTierListInstancesDart zerotierListInstances;
+  final ZeroTierAddInstanceDart zerotierAddInstance;
+  final ZeroTierRemoveInstanceDart zerotierRemoveInstance;
+  final ZeroTierSetPriorityInstanceDart zerotierSetPriorityInstance;
+  final ZeroTierRefreshInstanceDart zerotierRefreshInstance;
+  final ZeroTierDisconnectInstanceDart zerotierDisconnectInstance;
+  final ZeroTierJoinNetworkInstanceDart zerotierJoinNetworkInstance;
+  final ZeroTierSetPreferMeshRelayInstanceDart zerotierSetPreferMeshRelayInstance;
+  final ZeroTierSetMemberAuthorizedInstanceDart zerotierSetMemberAuthorizedInstance;
   final OverlayStatusDart overlayStatus;
   final LoSecRequestDart loSecRequest;
   final LoSecAmbientStatusDart loSecAmbientStatus;
@@ -3628,6 +4151,24 @@ typedef TailscaleBeginOAuthNative =
     Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef TailscaleBeginOAuthDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
+// mi_tailscale_complete_oauth(ctx, token) -> i32
+typedef TailscaleCompleteOAuthNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleCompleteOAuthDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_tailscale_reauthenticate(ctx) -> i32
+typedef TailscaleReauthNative = Int32 Function(Pointer<Void>);
+typedef TailscaleReauthDart = int Function(Pointer<Void>);
+
+// mi_tailscale_start_background_poll(ctx) -> i32
+typedef TailscaleStartBackgroundPollNative = Int32 Function(Pointer<Void>);
+typedef TailscaleStartBackgroundPollDart = int Function(Pointer<Void>);
+
+// mi_tailscale_stop_background_poll(ctx) -> void
+typedef TailscaleStopBackgroundPollNative = Void Function(Pointer<Void>);
+typedef TailscaleStopBackgroundPollDart = void Function(Pointer<Void>);
+
 // mi_tailscale_disconnect(ctx) -> i32
 typedef TailscaleDisconnectNative = Int32 Function(Pointer<Void>);
 typedef TailscaleDisconnectDart = int Function(Pointer<Void>);
@@ -3677,6 +4218,162 @@ typedef ZeroTierSetMemberAuthorizedNative =
     Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Int32);
 typedef ZeroTierSetMemberAuthorizedDart =
     int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, int);
+
+// mi_zerotier_probe_roots(ctx) -> i32  (1 = probed, 0 = not connected)
+typedef ZeroTierProbeRootsNative = Int32 Function(Pointer<Void>);
+typedef ZeroTierProbeRootsDart = int Function(Pointer<Void>);
+
+// ---------------------------------------------------------------------------
+// Multi-instance Tailscale typedefs (§5.22)
+// ---------------------------------------------------------------------------
+
+// mi_tailscale_list_instances(ctx) -> *mut c_char  (JSON array)
+typedef TailscaleListInstancesNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef TailscaleListInstancesDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_tailscale_add_instance(ctx, label, control_url) -> *mut c_char  (JSON {id})
+typedef TailscaleAddInstanceNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleAddInstanceDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_tailscale_remove_instance(ctx, instance_id) -> i32
+typedef TailscaleRemoveInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleRemoveInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_tailscale_set_priority(ctx, instance_id) -> i32
+typedef TailscaleSetPriorityInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleSetPriorityInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_tailscale_auth_key_instance(ctx, instance_id, key, control_url) -> i32
+typedef TailscaleAuthKeyInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleAuthKeyInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_tailscale_begin_oauth_instance(ctx, instance_id, control_url) -> i32
+typedef TailscaleBeginOAuthInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleBeginOAuthInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_tailscale_disconnect_instance(ctx, instance_id) -> i32
+typedef TailscaleDisconnectInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleDisconnectInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_tailscale_refresh_instance(ctx, instance_id) -> i32
+typedef TailscaleRefreshInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleRefreshInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_tailscale_set_prefer_mesh_relay_instance(ctx, instance_id, enabled) -> i32
+typedef TailscaleSetPreferMeshRelayInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef TailscaleSetPreferMeshRelayInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_tailscale_set_exit_node_instance(ctx, instance_id, peer_name) -> i32
+typedef TailscaleSetExitNodeInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleSetExitNodeInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_tailscale_complete_oauth_instance(ctx, instance_id, token) -> i32
+typedef TailscaleCompleteOAuthInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef TailscaleCompleteOAuthInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_tailscale_reauthenticate_instance(ctx, instance_id) -> i32
+typedef TailscaleReauthInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleReauthInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// ---------------------------------------------------------------------------
+// Multi-instance ZeroTier typedefs (§5.23)
+// ---------------------------------------------------------------------------
+
+// mi_zerotier_list_instances(ctx) -> *mut c_char  (JSON array)
+typedef ZeroTierListInstancesNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef ZeroTierListInstancesDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_zerotier_add_instance(ctx, label, api_key, controller_url, network_ids_json) -> *mut c_char
+typedef ZeroTierAddInstanceNative = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
+typedef ZeroTierAddInstanceDart = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
+
+// mi_zerotier_remove_instance(ctx, instance_id) -> i32
+typedef ZeroTierRemoveInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef ZeroTierRemoveInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_zerotier_set_priority(ctx, instance_id) -> i32
+typedef ZeroTierSetPriorityInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef ZeroTierSetPriorityInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_zerotier_refresh_instance(ctx, instance_id) -> i32
+typedef ZeroTierRefreshInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef ZeroTierRefreshInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_zerotier_disconnect_instance(ctx, instance_id) -> i32
+typedef ZeroTierDisconnectInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef ZeroTierDisconnectInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_zerotier_join_network_instance(ctx, instance_id, network_id) -> i32
+typedef ZeroTierJoinNetworkInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ZeroTierJoinNetworkInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_zerotier_set_prefer_mesh_relay_instance(ctx, instance_id, enabled) -> i32
+typedef ZeroTierSetPreferMeshRelayInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
+typedef ZeroTierSetPreferMeshRelayInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_zerotier_set_member_authorized_instance(ctx, instance_id, network_id, node_id, authorized) -> i32
+typedef ZeroTierSetMemberAuthorizedInstanceNative =
+    Int32 Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Int32,
+    );
+typedef ZeroTierSetMemberAuthorizedInstanceDart =
+    int Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      int,
+    );
 
 // mi_overlay_status(ctx) -> *const c_char  (JSON overlay state)
 typedef OverlayStatusNative = Pointer<Utf8> Function(Pointer<Void>);

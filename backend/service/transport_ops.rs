@@ -799,6 +799,36 @@ impl MeshRuntime {
     }
 
     // -----------------------------------------------------------------------
+    // App Connector selector evaluation — data-plane decision function
+    // -----------------------------------------------------------------------
+
+    /// Evaluate the active App Connector rules against a connection 4-tuple.
+    ///
+    /// Delegates directly to `AppConnectorConfig::evaluate_connection` which
+    /// walks enabled rules in priority order and applies per-selector matching
+    /// (package name, domain glob, CIDR, port).  See `app_connector.rs` for
+    /// the full matching semantics.
+    ///
+    /// Returns a `ConnectorAction` that the FFI layer maps to an integer:
+    ///   0 = block, 1 = allow_direct, 2 = route_via_mesh.
+    pub fn evaluate_connector_connection(
+        &self,
+        package: &str,
+        dst_ip: std::net::IpAddr,
+        dst_port: u16,
+        dst_domain: Option<&str>,
+    ) -> crate::vpn::app_connector::ConnectorAction {
+        // Take a snapshot of the config under the lock so we hold it for the
+        // minimum duration — the evaluation itself is lock-free.
+        let config = self
+            .app_connector_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        config.evaluate_connection(package, dst_ip, dst_port, dst_domain)
+    }
+
+    // -----------------------------------------------------------------------
     // Overlay networks — Tailscale and ZeroTier (§5.22, §5.23)
     // -----------------------------------------------------------------------
 
@@ -829,22 +859,38 @@ impl MeshRuntime {
             })
     }
 
-    fn sync_tailscale_client(&self) -> Result<(), String> {
+    /// Sync a specific Tailscale instance (identified by `instance_id`) with
+    /// its control plane.  Reads credentials from `tailnets`, performs the
+    /// WireGuard registration, pulls the peer map, and writes results back.
+    ///
+    /// Returns `Err` when the instance ID does not exist in `tailnets` or
+    /// when the control-plane call fails.
+    fn sync_tailscale_client(&self, instance_id: &str) -> Result<(), String> {
         use crate::transport::overlay_client::{
             OverlayClientStatus, TailscaleController as OverlayController, TailscaleDeviceInfo,
             TailscalePeer as OverlayPeer,
         };
         use crate::transport::tailscale::{TailscaleAuth, TailscaleClient as ControlClient};
 
+        // Snapshot the credentials for this specific instance so we can
+        // release the overlay lock before issuing the network call.
         let credentials = {
             self.overlay
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .tailscale
-                .credentials
-                .clone()
+                .tailnet_by_id(instance_id)
+                .and_then(|t| t.credentials.clone())
         }
-        .ok_or_else(|| "Tailscale is not configured".to_string())?;
+        .ok_or_else(|| format!("Tailscale instance '{instance_id}' is not configured"))?;
+
+        // Also snapshot the prefer_mesh_relay flag while the lock is open.
+        let prefer_mesh_relay = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tailnet_by_id(instance_id)
+            .map(|t| t.prefer_mesh_relay)
+            .unwrap_or(true);
 
         let wg_pubkey = self.overlay_mesh_pubkey()?;
         let hostname = self.overlay_hostname();
@@ -872,13 +918,8 @@ impl MeshRuntime {
         };
 
         let relay_mode = if client.best_derp_relay().is_some() {
-            if self
-                .overlay
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .tailscale
-                .prefer_mesh_relay
-            {
+            // Use the snapshotted prefer_mesh_relay flag for this instance.
+            if prefer_mesh_relay {
                 "mesh_preferred"
             } else {
                 "derp"
@@ -939,25 +980,25 @@ impl MeshRuntime {
             .unwrap_or(0);
 
         let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        overlay.tailscale.status = if register.node_authorized {
-            OverlayClientStatus::Connected
-        } else if register.auth_url.is_some() {
-            OverlayClientStatus::Connecting
-        } else {
-            OverlayClientStatus::Disconnected
-        };
-        overlay.tailscale.device_info = device_info;
-        overlay.tailscale.peers = mapped_peers;
-        overlay.tailscale.relay_mode = relay_mode.to_string();
-        overlay.tailscale.key_expiry_ms = key_expiry_ms;
-        overlay.tailscale.active_exit_node =
-            overlay.tailscale.active_exit_node.clone().filter(|active| {
-                overlay
-                    .tailscale
-                    .peers
-                    .iter()
-                    .any(|peer| peer.name == *active)
-            });
+        // Find the specific instance and update it in-place.
+        if let Some(instance) = overlay.tailnet_by_id_mut(instance_id) {
+            instance.status = if register.node_authorized {
+                OverlayClientStatus::Connected
+            } else if register.auth_url.is_some() {
+                OverlayClientStatus::Connecting
+            } else {
+                OverlayClientStatus::Disconnected
+            };
+            instance.device_info = device_info;
+            // Prune the active exit node if the peer is no longer visible.
+            instance.active_exit_node =
+                instance.active_exit_node.clone().filter(|active| {
+                    mapped_peers.iter().any(|peer| peer.name == *active)
+                });
+            instance.peers = mapped_peers;
+            instance.relay_mode = relay_mode.to_string();
+            instance.key_expiry_ms = key_expiry_ms;
+        }
         drop(overlay);
 
         self.save_overlay_state();
@@ -970,34 +1011,127 @@ impl MeshRuntime {
                 "authUrl": register.auth_url,
             }),
         );
+
+        // Key-expiry warning: emit a `TailscaleKeyExpiryWarning` event when
+        // the key expires within 7 days.
+        //
+        // Why 7 days?  Tailscale's web panel highlights expiring keys 7 days
+        // ahead of time; matching that threshold lets the UI surface the same
+        // urgency framing the user already sees in the admin panel.  A shorter
+        // window (e.g. 24 h) would leave too little time for users who only
+        // open the app occasionally.  A longer window generates noise for
+        // users on long-lived keys who rotate them well ahead of expiry.
+        //
+        // The `key_expiry_ms` value comes from the control plane as a Unix
+        // timestamp in seconds (stored on `MapResponse::key_expiry`), which
+        // `TailscaleClient::poll_map*` stores unchanged.  A value of 0 means
+        // the server did not return an expiry (key rotation disabled), so we
+        // skip the check.
+        if key_expiry_ms > 0 {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            // Convert the stored expiry (seconds, from the control plane
+            // `KeyExpiry` field) to milliseconds for a uniform time comparison.
+            // The overlay state field is named `key_expiry_ms` but the raw
+            // value coming from `MapResponse::key_expiry` is a Unix timestamp
+            // in seconds — multiply by 1 000 to get milliseconds.
+            let expiry_ms_i64 = (key_expiry_ms as i64).saturating_mul(1_000);
+            let remaining_ms = expiry_ms_i64 - now_ms;
+            let seven_days_ms: i64 = 7 * 24 * 60 * 60 * 1_000;
+            if remaining_ms > 0 && remaining_ms < seven_days_ms {
+                self.push_event(
+                    "TailscaleKeyExpiryWarning",
+                    serde_json::json!({
+                        // Unix timestamp in ms — the UI formats this for display.
+                        "expiryMs": expiry_ms_i64,
+                        // How many ms remain — UI can compute a countdown.
+                        "remainingMs": remaining_ms,
+                        // Whole days remaining — used for the headline label.
+                        "daysRemaining": remaining_ms / 86_400_000,
+                    }),
+                );
+            }
+        }
+
         Ok(())
     }
 
-    fn sync_zerotier_client(&self) -> Result<(), String> {
+    /// Sync a specific ZeroTier instance (identified by `instance_id`) with
+    /// its controller.  Reads credentials from `zeronets`, initialises the
+    /// UDP transport, queries network/member state, and writes results back.
+    ///
+    /// Returns `Err` when the instance ID does not exist in `zeronets` or
+    /// when the controller call fails.
+    fn sync_zerotier_client(&self, instance_id: &str) -> Result<(), String> {
         use crate::transport::overlay_client::{
             OverlayClientStatus, ZeroTierController as OverlayController, ZeroTierMember,
             ZeroTierNetwork, ZeroTierNetworkAuthStatus,
         };
         use crate::transport::zerotier::{ZeroTierTransport, ZtControllerClient, ZtNodeId};
+        use std::sync::Arc;
 
+        // Snapshot the credentials for this specific instance.
         let credentials = {
             self.overlay
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .zerotier
-                .credentials
-                .clone()
+                .zeronet_by_id(instance_id)
+                .and_then(|z| z.credentials.clone())
         }
-        .ok_or_else(|| "ZeroTier is not configured".to_string())?;
+        .ok_or_else(|| format!("ZeroTier instance '{instance_id}' is not configured"))?;
+
+        // Snapshot the prefer_mesh_relay flag.
+        let prefer_mesh_relay = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .zeronet_by_id(instance_id)
+            .map(|z| z.prefer_mesh_relay)
+            .unwrap_or(true);
 
         let ed25519_pub = self.overlay_local_identity_pubkey()?;
         let node_id = ZtNodeId::from_ed25519(&ed25519_pub).to_hex();
         let mut transport = ZeroTierTransport::new(&ed25519_pub);
+        // Bind to an OS-assigned ephemeral port on all interfaces.  ZeroTier
+        // uses UDP so any reachable port works — outbound discovery via PLANET
+        // roots will be initiated from this socket.
         let _ = transport.bind(0);
+        // Announce our presence to all PLANET root servers.  This tells the
+        // ZeroTier infrastructure that our node is online and allows peers on
+        // shared networks to discover us via WHOIS.
         let _ = transport.hello_roots();
         for network_id in &credentials.network_ids {
             transport.join_network(network_id);
         }
+        // Promote the transport to an Arc so it can be shared between:
+        //  - this method (for probe_roots)
+        //  - the background receive thread (start_recv)
+        //  - the MeshRuntime field (for subsequent send_frame calls)
+        let transport_arc = std::sync::Arc::new(transport);
+
+        // Probe PLANET roots to verify the UDP socket is operational and the
+        // root servers are reachable.  This is a best-effort check — the return
+        // value is `true` when the socket exists (sends were attempted) and
+        // `false` when the transport has no socket.  Actual reachability is
+        // confirmed when the roots reply with OK(HELLO), which the recv thread
+        // will process once it is running.
+        transport_arc.probe_roots();
+
+        // Start the background receive loop so inbound ZeroTier frames
+        // (FRAME, MULTICAST_FRAME, OK(HELLO), WHOIS replies) are captured
+        // into `transport_arc.inbound` for later processing.  The thread
+        // holds its own `Arc` clone so it stays alive for as long as the
+        // transport socket is open.
+        Arc::clone(&transport_arc).start_recv();
+
+        // Store the live transport in the runtime so subsequent operations
+        // (`zerotier_probe_roots`, frame forwarding, disconnect) can access it.
+        *self
+            .zerotier_transport
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&transport_arc));
 
         let controller = match &credentials.controller {
             OverlayController::Central => ZtControllerClient::central(&credentials.api_key),
@@ -1089,19 +1223,23 @@ impl MeshRuntime {
         }
 
         let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        overlay.zerotier.node_id = Some(node_id.clone());
-        overlay.zerotier.networks = networks;
-        overlay.zerotier.members = members;
-        overlay.zerotier.relay_mode = if overlay.zerotier.prefer_mesh_relay {
-            "mesh_preferred".to_string()
-        } else {
-            "vendor_relay".to_string()
-        };
-        overlay.zerotier.status = if any_authorized {
-            OverlayClientStatus::Connected
-        } else {
-            OverlayClientStatus::Connecting
-        };
+        // Find the specific ZeroTier instance and update it in-place.
+        if let Some(instance) = overlay.zeronet_by_id_mut(instance_id) {
+            instance.node_id = Some(node_id.clone());
+            instance.networks = networks;
+            instance.members = members;
+            // Use the snapshotted prefer_mesh_relay flag for this instance.
+            instance.relay_mode = if prefer_mesh_relay {
+                "mesh_preferred".to_string()
+            } else {
+                "vendor_relay".to_string()
+            };
+            instance.status = if any_authorized {
+                OverlayClientStatus::Connected
+            } else {
+                OverlayClientStatus::Connecting
+            };
+        }
         drop(overlay);
 
         self.save_overlay_state();
@@ -1126,7 +1264,7 @@ impl MeshRuntime {
     /// `control_url`: empty string for the official server, or a Headscale URL.
     pub fn tailscale_auth_key(&self, auth_key: &str, control_url: &str) -> Result<(), String> {
         use crate::transport::overlay_client::{
-            OverlayClientStatus, TailscaleController, TailscaleCredentials,
+            OverlayClientStatus, TailscaleClient, TailscaleController, TailscaleCredentials,
         };
 
         if auth_key.is_empty() {
@@ -1146,14 +1284,23 @@ impl MeshRuntime {
             is_auth_key: true,
         };
 
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        overlay.tailscale.credentials = Some(creds);
-        overlay.tailscale.status = OverlayClientStatus::Connecting;
-        drop(overlay);
+        // The single-instance API always operates on the first tailnet in the Vec.
+        // If no tailnets exist yet, create a default instance so the first-run
+        // path just works without requiring the caller to call add_instance first.
+        let instance_id = {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if overlay.tailnets.is_empty() {
+                overlay.tailnets.push(TailscaleClient::new());
+            }
+            let instance = &mut overlay.tailnets[0];
+            instance.credentials = Some(creds);
+            instance.status = OverlayClientStatus::Connecting;
+            instance.id.clone()
+        };
         self.save_overlay_state();
 
         self.push_event("TailscaleConnecting", serde_json::json!({}));
-        self.sync_tailscale_client()
+        self.sync_tailscale_client(&instance_id)
     }
 
     /// Begin the Tailscale OAuth interactive login flow.
@@ -1163,7 +1310,9 @@ impl MeshRuntime {
     ///
     /// `control_url`: empty string for official server, or Headscale URL.
     pub fn tailscale_begin_oauth(&self, control_url: &str) -> Result<(), String> {
-        use crate::transport::overlay_client::{OverlayClientStatus, TailscaleController};
+        use crate::transport::overlay_client::{
+            OverlayClientStatus, TailscaleClient, TailscaleController,
+        };
         use crate::transport::tailscale::{TailscaleAuth, TailscaleClient as ControlClient};
 
         let controller = if control_url.is_empty() {
@@ -1190,23 +1339,287 @@ impl MeshRuntime {
             .auth_url
             .unwrap_or_else(|| format!("{}/a/", controller.base_url()));
 
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        overlay.tailscale.status = OverlayClientStatus::Connecting;
-        drop(overlay);
+        // Mark the first (default) instance as Connecting.  Create it if absent.
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if overlay.tailnets.is_empty() {
+                overlay.tailnets.push(TailscaleClient::new());
+            }
+            overlay.tailnets[0].status = OverlayClientStatus::Connecting;
+        }
         self.save_overlay_state();
 
         self.push_event("TailscaleOAuthUrl", serde_json::json!({ "url": oauth_url }));
         Ok(())
     }
 
+    /// Complete a Tailscale OAuth login flow after the user authenticates in-browser.
+    ///
+    /// # OAuth completion contract
+    ///
+    /// After `tailscale_begin_oauth` emits `TailscaleOAuthUrl`, the UI opens
+    /// that URL in a browser.  When the browser redirects back (deep-link or
+    /// in-app web view), the calling code extracts the `auth_token` from the
+    /// redirect URL query parameters and calls this function.
+    ///
+    /// The token is stored as `is_auth_key: false` to distinguish it from a
+    /// one-time pre-auth key (`tskey-auth-…`) — OAuth tokens may be long-lived
+    /// and are handled differently by the control plane on re-registration.
+    ///
+    /// `auth_token`: the auth key returned by the Tailscale/Headscale control
+    /// server after the user completes the browser-based login.  Stores the
+    /// credentials and calls `sync_tailscale_client()` to register the machine
+    /// and pull the initial network map.
+    ///
+    /// Emits `TailscaleOAuthComplete` on success.
+    pub fn tailscale_complete_oauth(&self, auth_token: &str) -> Result<(), String> {
+        use crate::transport::overlay_client::{
+            OverlayClientStatus, TailscaleClient, TailscaleController, TailscaleCredentials,
+        };
+
+        if auth_token.is_empty() {
+            return Err("auth_token must not be empty".into());
+        }
+
+        // Read the previously stored controller from the first instance's credentials,
+        // set there by `tailscale_begin_oauth`.  Fall back to the vendor server when the
+        // caller skips begin_oauth and calls complete_oauth directly.
+        let instance_id = {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if overlay.tailnets.is_empty() {
+                overlay.tailnets.push(TailscaleClient::new());
+            }
+            let instance = &mut overlay.tailnets[0];
+            let controller = instance
+                .credentials
+                .as_ref()
+                .map(|c| c.controller.clone())
+                .unwrap_or(TailscaleController::Vendor);
+            // Store credentials with `is_auth_key: false` — this is an OAuth
+            // session token, not a pre-auth key.  The distinction matters because
+            // the control plane may accept OAuth tokens for re-registration without
+            // requiring a machine key rotation, whereas pre-auth keys are one-shot.
+            instance.credentials = Some(TailscaleCredentials {
+                controller,
+                auth_token: auth_token.to_string(),
+                is_auth_key: false,
+            });
+            instance.status = OverlayClientStatus::Connecting;
+            instance.id.clone()
+        };
+        self.save_overlay_state();
+
+        self.push_event("TailscaleOAuthComplete", serde_json::json!({}));
+        // Register with the control plane and pull the initial network map.
+        self.sync_tailscale_client(&instance_id)
+    }
+
+    /// Trigger Tailscale reauthentication (used when the key is expired or
+    /// about to expire — see the 7-day warning in `sync_tailscale_client`).
+    ///
+    /// Clears the stored auth token so that the next `sync_tailscale_client`
+    /// call will not attempt to reuse an expired credential, then begins a
+    /// fresh OAuth flow via the stored controller URL.  The UI responds to
+    /// the resulting `TailscaleOAuthUrl` event the same way as initial setup.
+    pub fn tailscale_reauthenticate(&self) -> Result<(), String> {
+        // Read the controller URL from the first instance's credentials.
+        // If no instances exist, there is nothing to reauthenticate.
+        let control_url = {
+            let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            match overlay.tailnets.first().and_then(|t| t.credentials.as_ref()) {
+                Some(creds) => creds.controller.base_url().to_string(),
+                None => return Err("Tailscale is not configured".into()),
+            }
+        };
+
+        // Wipe the auth token so the credential record does not accidentally
+        // get re-submitted to the control plane while the browser flow is open.
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(instance) = overlay.tailnets.first_mut() {
+                if let Some(creds) = instance.credentials.as_mut() {
+                    creds.auth_token.clear();
+                }
+            }
+        }
+        self.save_overlay_state();
+
+        // Start a fresh OAuth flow.  The controller URL empty-string convention
+        // used by tailscale_begin_oauth means "use vendor server"; for Headscale
+        // we pass the actual URL.
+        let empty = String::new();
+        let url = if control_url == "https://login.tailscale.com" {
+            empty.as_str()
+        } else {
+            control_url.as_str()
+        };
+        self.tailscale_begin_oauth(url)
+    }
+
+    /// Start a background thread that continuously polls the Tailscale control
+    /// plane for topology updates.
+    ///
+    /// # Polling strategy
+    ///
+    /// `poll_map()` is a long-poll HTTP request with `Stream: true`.  The
+    /// server holds the connection open and writes a response whenever the
+    /// peer list or DERP map changes.  After each response (or on error) we
+    /// call `sync_tailscale_client()` to apply the update to overlay state
+    /// and emit `OverlayStatusChanged`, then immediately issue the next
+    /// long-poll.  If `poll_map` returns quickly due to an error we sleep
+    /// 30 seconds to avoid hammering the control plane.
+    ///
+    /// The `tailscale_poll_active` `AtomicBool` flag allows `tailscale_stop_background_poll`
+    /// to cleanly signal the thread to exit on the next iteration — the
+    /// thread checks the flag before each poll request.
+    ///
+    /// No-op if a poll thread is already running or Tailscale is not connected.
+    pub fn tailscale_start_background_poll(&self) -> Result<(), String> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        // Guard: must already be connected to have something to poll.
+        // Check the first instance (the legacy "single-instance" default).
+        {
+            let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if overlay
+                .tailnets
+                .first()
+                .and_then(|t| t.credentials.as_ref())
+                .is_none()
+            {
+                return Err("Tailscale is not configured".into());
+            }
+        }
+
+        // Guard: only one poll thread at a time.
+        {
+            let existing = self
+                .tailscale_poll_active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if existing
+                .as_ref()
+                .map(|flag| flag.load(Ordering::Relaxed))
+                .unwrap_or(false)
+            {
+                // A thread is already running — nothing to do.
+                return Ok(());
+            }
+        }
+
+        // Create a stop flag shared between the spawned thread and this struct.
+        let stop_flag = Arc::new(AtomicBool::new(true));
+        *self
+            .tailscale_poll_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&stop_flag));
+
+        // We need to pass a reference to `self` into the thread.  MeshRuntime
+        // is `Sync`, so sharing the raw pointer is safe as long as the runtime
+        // outlives the thread.  The FFI layer guarantees this — `MeshRuntime`
+        // is only freed on `mesh_deinit`, which joins or waits for background
+        // tasks first.
+        //
+        // SAFETY: `self` is pinned in a `Box<MeshRuntime>` for the lifetime of
+        // the app process.  The thread does not outlive the process.
+        let self_ptr = self as *const MeshRuntime as usize;
+
+        std::thread::Builder::new()
+            .name("tailscale-poll".into())
+            .spawn(move || {
+                use std::sync::atomic::Ordering;
+
+                // Reconstitute the runtime reference.
+                // SAFETY: see comment above.
+                let runtime: &MeshRuntime = unsafe { &*(self_ptr as *const MeshRuntime) };
+
+                tracing::info!("Tailscale background poll thread started");
+
+                while stop_flag.load(Ordering::Relaxed) {
+                    // Re-sync state using poll_map_once (the sync function) so
+                    // that overlay state, events, and vault are all updated in
+                    // one consistent operation.  The background poll thread
+                    // always targets the first (default) instance; multi-instance
+                    // polling is handled by the per-instance FFI refresh calls.
+                    let first_id = runtime
+                        .overlay
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .tailnets
+                        .first()
+                        .map(|t| t.id.clone());
+                    let sync_result = if let Some(ref id) = first_id {
+                        runtime.sync_tailscale_client(id)
+                    } else {
+                        // No instances configured — skip this cycle.
+                        Ok(())
+                    };
+                    if let Err(ref err) = sync_result {
+                        tracing::warn!(error = %err, "Tailscale background poll failed");
+                        // Back off 30 s on error to avoid hammering the control plane
+                        // when the server is unreachable or credentials have expired.
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                    }
+                    // Check the stop flag again before sleeping so that
+                    // tailscale_stop_background_poll takes effect promptly.
+                    if !stop_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // Pause between poll cycles.  Tailscale's own client polls
+                    // roughly every 60 s; we use 30 s to stay reasonably fresh
+                    // without generating excessive control-plane traffic.
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
+
+                tracing::info!("Tailscale background poll thread stopped");
+            })
+            .map_err(|e| format!("Failed to spawn Tailscale poll thread: {e}"))?;
+
+        Ok(())
+    }
+
+    /// Stop the background Tailscale map-poll thread if running.
+    ///
+    /// Sets the stop flag so the thread exits on its next wake-up.  The call
+    /// returns immediately — thread cleanup is asynchronous.
+    pub fn tailscale_stop_background_poll(&self) {
+        use std::sync::atomic::Ordering;
+
+        let mut guard = self
+            .tailscale_poll_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(ref flag) = *guard {
+            // Signal the thread to stop.  The thread will exit after its
+            // current sleep or sync completes (at most ~30 s from now).
+            flag.store(false, Ordering::Relaxed);
+        }
+        // Drop our reference to the flag.  The thread still holds its own Arc
+        // so the AtomicBool stays alive until the thread exits.
+        *guard = None;
+    }
+
     /// Disconnect and forget the current Tailscale configuration.
+    ///
+    /// Operates on the first (legacy "single-instance" default) tailnet in the Vec.
+    /// Resets it to a freshly-constructed unconfigured state, preserving its id so
+    /// any in-flight FFI callers holding the id see a clean "not configured" status
+    /// rather than a stale reference.
     pub fn tailscale_disconnect(&self) -> Result<(), String> {
         use crate::transport::overlay_client::{OverlayClientStatus, TailscaleClient};
 
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        overlay.tailscale = TailscaleClient::new();
-        overlay.tailscale.status = OverlayClientStatus::NotConfigured;
-        drop(overlay);
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(instance) = overlay.tailnets.first_mut() {
+                // Preserve the stable id; reset everything else to clean defaults.
+                let id = instance.id.clone();
+                *instance = TailscaleClient::new();
+                instance.id = id;
+                instance.status = OverlayClientStatus::NotConfigured;
+            }
+            // If the tailnets Vec is empty there is nothing to disconnect — idempotent.
+        }
         self.save_overlay_state();
         self.push_event(
             "OverlayStatusChanged",
@@ -1219,45 +1632,72 @@ impl MeshRuntime {
     }
 
     /// Refresh Tailscale control-plane state from the configured controller.
+    ///
+    /// Targets the first (legacy "single-instance" default) tailnet.
+    /// Returns `Ok(())` when no instances are configured (no-op).
     pub fn tailscale_refresh(&self) -> Result<(), String> {
-        self.sync_tailscale_client()
+        let first_id = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tailnets
+            .first()
+            .map(|t| t.id.clone());
+        match first_id {
+            Some(id) => self.sync_tailscale_client(&id),
+            None => Ok(()),
+        }
     }
 
     /// Toggle whether mesh relay is preferred over DERP when both are possible.
+    ///
+    /// Targets the first (legacy "single-instance" default) tailnet.
     pub fn tailscale_set_prefer_mesh_relay(&self, enabled: bool) -> Result<(), String> {
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        if overlay.tailscale.credentials.is_none() {
-            return Err("Tailscale is not configured".into());
-        }
-        overlay.tailscale.prefer_mesh_relay = enabled;
-        drop(overlay);
+        let instance_id = {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnets
+                .first_mut()
+                .ok_or("Tailscale is not configured")?;
+            if instance.credentials.is_none() {
+                return Err("Tailscale is not configured".into());
+            }
+            instance.prefer_mesh_relay = enabled;
+            instance.id.clone()
+        };
         self.save_overlay_state();
-        self.sync_tailscale_client()
+        self.sync_tailscale_client(&instance_id)
     }
 
     /// Select the active Tailscale exit node by peer name, or clear it.
+    ///
+    /// Targets the first (legacy "single-instance" default) tailnet.
     pub fn tailscale_set_exit_node(&self, peer_name: &str) -> Result<(), String> {
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        if overlay.tailscale.credentials.is_none() {
-            return Err("Tailscale is not configured".into());
-        }
-        if peer_name.is_empty() {
-            overlay.tailscale.active_exit_node = None;
-        } else {
-            let Some(peer) = overlay
-                .tailscale
-                .peers
-                .iter()
-                .find(|peer| peer.name == peer_name)
-            else {
-                return Err("Unknown Tailscale exit node".into());
-            };
-            if !peer.is_exit_node {
-                return Err("Selected Tailscale peer is not an exit node".into());
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnets
+                .first_mut()
+                .ok_or("Tailscale is not configured")?;
+            if instance.credentials.is_none() {
+                return Err("Tailscale is not configured".into());
             }
-            overlay.tailscale.active_exit_node = Some(peer_name.to_string());
+            if peer_name.is_empty() {
+                instance.active_exit_node = None;
+            } else {
+                // Verify the named peer exists and advertises exit-node capability.
+                let is_valid_exit = instance
+                    .peers
+                    .iter()
+                    .find(|p| p.name == peer_name)
+                    .map(|p| p.is_exit_node)
+                    .ok_or_else(|| "Unknown Tailscale exit node".to_string())?;
+                if !is_valid_exit {
+                    return Err("Selected Tailscale peer is not an exit node".into());
+                }
+                instance.active_exit_node = Some(peer_name.to_string());
+            }
         }
-        drop(overlay);
         self.save_overlay_state();
         self.push_event(
             "OverlayStatusChanged",
@@ -1311,45 +1751,60 @@ impl MeshRuntime {
             network_ids: network_ids.clone(),
         };
 
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        overlay.zerotier.credentials = Some(creds);
-        overlay.zerotier.status = OverlayClientStatus::Connecting;
-
-        // Enqueue each network as pending (if not already tracked).
-        for nid in &network_ids {
-            if !overlay
-                .zerotier
-                .networks
-                .iter()
-                .any(|n| &n.network_id == nid)
-            {
-                overlay.zerotier.networks.push(ZeroTierNetwork {
-                    network_id: nid.clone(),
-                    name: nid.clone(),
-                    assigned_ip: None,
-                    auth_status: ZeroTierNetworkAuthStatus::AwaitingAuthorization,
-                    member_count: 0,
-                });
+        // The single-instance API always operates on the first zeronet in the Vec.
+        // If no zeronets exist yet, create a default instance so the first-run
+        // path just works without requiring the caller to call add_instance first.
+        let instance_id = {
+            use crate::transport::overlay_client::ZeroTierClient;
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if overlay.zeronets.is_empty() {
+                overlay.zeronets.push(ZeroTierClient::new());
             }
-        }
-        drop(overlay);
+            let instance = &mut overlay.zeronets[0];
+            instance.credentials = Some(creds);
+            instance.status = OverlayClientStatus::Connecting;
+
+            // Enqueue each network as pending (if not already tracked).
+            for nid in &network_ids {
+                if !instance.networks.iter().any(|n| &n.network_id == nid) {
+                    instance.networks.push(ZeroTierNetwork {
+                        network_id: nid.clone(),
+                        name: nid.clone(),
+                        assigned_ip: None,
+                        auth_status: ZeroTierNetworkAuthStatus::AwaitingAuthorization,
+                        member_count: 0,
+                    });
+                }
+            }
+            instance.id.clone()
+        };
         self.save_overlay_state();
 
         self.push_event(
             "ZeroTierConnecting",
             serde_json::json!({ "networkIds": network_ids }),
         );
-        self.sync_zerotier_client()
+        self.sync_zerotier_client(&instance_id)
     }
 
     /// Disconnect and forget the current ZeroTier configuration.
+    ///
+    /// Operates on the first (legacy "single-instance" default) zeronet in the Vec.
+    /// Resets it to a freshly-constructed unconfigured state, preserving its id.
     pub fn zerotier_disconnect(&self) -> Result<(), String> {
         use crate::transport::overlay_client::{OverlayClientStatus, ZeroTierClient};
 
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        overlay.zerotier = ZeroTierClient::new();
-        overlay.zerotier.status = OverlayClientStatus::NotConfigured;
-        drop(overlay);
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(instance) = overlay.zeronets.first_mut() {
+                // Preserve the stable id; reset everything else to clean defaults.
+                let id = instance.id.clone();
+                *instance = ZeroTierClient::new();
+                instance.id = id;
+                instance.status = OverlayClientStatus::NotConfigured;
+            }
+            // If the zeronets Vec is empty there is nothing to disconnect — idempotent.
+        }
         self.save_overlay_state();
         self.push_event(
             "OverlayStatusChanged",
@@ -1362,8 +1817,21 @@ impl MeshRuntime {
     }
 
     /// Refresh ZeroTier controller state from the configured controller.
+    ///
+    /// Targets the first (legacy "single-instance" default) zeronet.
+    /// Returns `Ok(())` when no instances are configured (no-op).
     pub fn zerotier_refresh(&self) -> Result<(), String> {
-        self.sync_zerotier_client()
+        let first_id = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .zeronets
+            .first()
+            .map(|z| z.id.clone());
+        match first_id {
+            Some(id) => self.sync_zerotier_client(&id),
+            None => Ok(()),
+        }
     }
 
     /// Join an additional ZeroTier network using the stored controller config.
@@ -1372,35 +1840,49 @@ impl MeshRuntime {
             return Err("network_id must be 16 hex characters".into());
         }
 
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(credentials) = overlay.zerotier.credentials.as_mut() else {
-            return Err("ZeroTier is not configured".into());
+        // Targets the first (legacy "single-instance" default) zeronet.
+        let instance_id = {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .zeronets
+                .first_mut()
+                .ok_or("ZeroTier is not configured")?;
+            let credentials = instance
+                .credentials
+                .as_mut()
+                .ok_or("ZeroTier is not configured")?;
+            if !credentials.network_ids.iter().any(|entry| entry == network_id) {
+                credentials.network_ids.push(network_id.to_string());
+            }
+            instance.id.clone()
         };
-        if !credentials
-            .network_ids
-            .iter()
-            .any(|entry| entry == network_id)
-        {
-            credentials.network_ids.push(network_id.to_string());
-        }
-        drop(overlay);
         self.save_overlay_state();
-        self.sync_zerotier_client()
+        self.sync_zerotier_client(&instance_id)
     }
 
     /// Toggle whether mesh relay is preferred over vendor relay for ZeroTier.
+    ///
+    /// Targets the first (legacy "single-instance" default) zeronet.
     pub fn zerotier_set_prefer_mesh_relay(&self, enabled: bool) -> Result<(), String> {
-        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-        if overlay.zerotier.credentials.is_none() {
-            return Err("ZeroTier is not configured".into());
-        }
-        overlay.zerotier.prefer_mesh_relay = enabled;
-        drop(overlay);
+        let instance_id = {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .zeronets
+                .first_mut()
+                .ok_or("ZeroTier is not configured")?;
+            if instance.credentials.is_none() {
+                return Err("ZeroTier is not configured".into());
+            }
+            instance.prefer_mesh_relay = enabled;
+            instance.id.clone()
+        };
         self.save_overlay_state();
-        self.sync_zerotier_client()
+        self.sync_zerotier_client(&instance_id)
     }
 
     /// Change a ZeroTier member's authorization state on a specific network.
+    ///
+    /// Targets the first (legacy "single-instance" default) zeronet.
     pub fn zerotier_set_member_authorized(
         &self,
         network_id: &str,
@@ -1414,15 +1896,19 @@ impl MeshRuntime {
             return Err("network_id and node_id are required".into());
         }
 
-        let credentials = {
-            self.overlay
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .zerotier
+        // Snapshot credentials from the first zeronet instance.
+        let (credentials, instance_id) = {
+            let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .zeronets
+                .first()
+                .ok_or_else(|| "ZeroTier is not configured".to_string())?;
+            let creds = instance
                 .credentials
                 .clone()
-        }
-        .ok_or_else(|| "ZeroTier is not configured".to_string())?;
+                .ok_or_else(|| "ZeroTier is not configured".to_string())?;
+            (creds, instance.id.clone())
+        };
 
         let controller = match &credentials.controller {
             OverlayController::Central => ZtControllerClient::central(&credentials.api_key),
@@ -1435,67 +1921,137 @@ impl MeshRuntime {
         runtime
             .block_on(controller.set_member_authorized(network_id, node_id, authorized))
             .map_err(|e| format!("ZeroTier member update failed: {e}"))?;
-        self.sync_zerotier_client()
+        self.sync_zerotier_client(&instance_id)
+    }
+
+    /// Probe ZeroTier PLANET root servers to verify UDP connectivity.
+    ///
+    /// Reads the live `ZeroTierTransport` stored by the most recent
+    /// `sync_zerotier_client` call and calls `probe_roots()` on it.
+    ///
+    /// Returns `true` when the transport socket exists and probe packets were
+    /// dispatched.  Returns `false` when ZeroTier is not configured, the
+    /// transport is not running, or the socket is not bound.
+    ///
+    /// This is a fire-and-forget connectivity check — actual reachability is
+    /// confirmed when the background recv thread captures an `OK(HELLO)` from
+    /// a root server.
+    pub fn zerotier_probe_roots(&self) -> bool {
+        let guard = self
+            .zerotier_transport
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            // Call probe_roots on the live transport.  The method sends a
+            // small UDP probe to each PLANET root and returns true when the
+            // socket is bound, false otherwise.
+            Some(transport) => transport.probe_roots(),
+            // No live transport — ZeroTier has not been connected yet.
+            None => false,
+        }
     }
 
     /// Get the current status of all overlay networks as a JSON string.
+    ///
+    /// Refreshes the first (default) instance of each overlay type before
+    /// serializing, so the caller always receives reasonably fresh data.
+    /// The returned object preserves the legacy single-instance shape for
+    /// backward compatibility with existing Flutter consumers; the new
+    /// multi-instance list is also included under "tailscaleInstances" and
+    /// "zerotierInstances".
     pub fn overlay_status(&self) -> String {
-        let _ = self.sync_tailscale_client();
-        let _ = self.sync_zerotier_client();
+        // Refresh the first tailnet instance if one exists.
+        let ts_first_id = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tailnets
+            .first()
+            .map(|t| t.id.clone());
+        if let Some(ref id) = ts_first_id {
+            let _ = self.sync_tailscale_client(id);
+        }
+
+        // Refresh the first zeronet instance if one exists.
+        let zt_first_id = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .zeronets
+            .first()
+            .map(|z| z.id.clone());
+        if let Some(ref id) = zt_first_id {
+            let _ = self.sync_zerotier_client(id);
+        }
+
         let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Build the legacy single-instance Tailscale block from the first tailnet.
+        // This keeps the Flutter transport screen working with no changes needed.
+        let ts = overlay.tailnets.first();
+        let tailscale_block = serde_json::json!({
+            "status":             ts.map(|t| format!("{:?}", t.status).to_lowercase()).unwrap_or_else(|| "not_configured".into()),
+            "connected":          ts.map(|t| t.is_connected()).unwrap_or(false),
+            "deviceIp":           ts.and_then(|t| t.device_info.as_ref()).map(|d| d.tailscale_ip.as_str()),
+            "deviceName":         ts.and_then(|t| t.device_info.as_ref()).map(|d| d.device_name.as_str()),
+            "tailnetName":        ts.and_then(|t| t.device_info.as_ref()).map(|d| d.tailnet_name.as_str()),
+            "os":                 ts.and_then(|t| t.device_info.as_ref()).map(|d| d.os.as_str()),
+            "controller":         ts.and_then(|t| t.credentials.as_ref()).map(|c| c.controller.base_url()),
+            "relayMode":          ts.map(|t| t.relay_mode.as_str()).unwrap_or(""),
+            "keyExpiryUnixMs":    ts.map(|t| t.key_expiry_ms).unwrap_or(0),
+            "peers":              ts.map(|t| t.peers.iter().map(|p| serde_json::json!({
+                "name":       p.name,
+                "ip":         p.ip,
+                "online":     p.online,
+                "isExitNode": p.is_exit_node,
+                "os":         p.os,
+                "lastSeen":   p.last_seen,
+            })).collect::<Vec<_>>()).unwrap_or_default(),
+            "exitNode":           ts.and_then(|t| t.active_exit_node.clone()),
+            "exitNodes":          ts.map(|t| t.available_exit_nodes().iter().map(|p| serde_json::json!({
+                "name":   p.name,
+                "ip":     p.ip,
+                "online": p.online,
+            })).collect::<Vec<_>>()).unwrap_or_default(),
+            "preferMeshRelay":    ts.map(|t| t.prefer_mesh_relay).unwrap_or(true),
+            "anonymizationScore": ts.map(|t| t.anonymization_score()).unwrap_or(0.0),
+        });
+
+        // Build the legacy single-instance ZeroTier block from the first zeronet.
+        let zt = overlay.zeronets.first();
+        let zerotier_block = serde_json::json!({
+            "status":             zt.map(|z| format!("{:?}", z.status).to_lowercase()).unwrap_or_else(|| "not_configured".into()),
+            "connected":          zt.map(|z| z.is_connected()).unwrap_or(false),
+            "nodeId":             zt.and_then(|z| z.node_id.clone()),
+            "controller":         zt.and_then(|z| z.credentials.as_ref()).map(|c| c.controller.api_base_url()),
+            "networks":           zt.map(|z| z.networks.iter().map(|n| serde_json::json!({
+                "networkId":   n.network_id,
+                "name":        n.name,
+                "assignedIp":  n.assigned_ip,
+                "authStatus":  format!("{:?}", n.auth_status).to_lowercase(),
+                "memberCount": n.member_count,
+            })).collect::<Vec<_>>()).unwrap_or_default(),
+            "members":            zt.map(|z| z.members.iter().map(|m| serde_json::json!({
+                "networkId": m.network_id,
+                "nodeId":    m.node_id,
+                "name":      m.name,
+                "ips":       m.ips,
+                "authorized":m.authorized,
+                "lastSeen":  m.last_seen,
+            })).collect::<Vec<_>>()).unwrap_or_default(),
+            "relayMode":          zt.map(|z| z.relay_mode.as_str()).unwrap_or(""),
+            "preferMeshRelay":    zt.map(|z| z.prefer_mesh_relay).unwrap_or(true),
+            "anonymizationScore": zt.map(|z| z.anonymization_score()).unwrap_or(0.0),
+        });
+
         serde_json::json!({
-            "tailscale": {
-                "status":              format!("{:?}", overlay.tailscale.status).to_lowercase(),
-                "connected":           overlay.tailscale.is_connected(),
-                "deviceIp":            overlay.tailscale.device_info.as_ref().map(|d| d.tailscale_ip.as_str()),
-                "deviceName":          overlay.tailscale.device_info.as_ref().map(|d| d.device_name.as_str()),
-                "tailnetName":         overlay.tailscale.device_info.as_ref().map(|d| d.tailnet_name.as_str()),
-                "os":                  overlay.tailscale.device_info.as_ref().map(|d| d.os.as_str()),
-                "controller":          overlay.tailscale.credentials.as_ref().map(|c| c.controller.base_url()),
-                "relayMode":           overlay.tailscale.relay_mode,
-                "keyExpiryUnixMs":     overlay.tailscale.key_expiry_ms,
-                "peers":               overlay.tailscale.peers.iter().map(|peer| serde_json::json!({
-                    "name":       peer.name,
-                    "ip":         peer.ip,
-                    "online":     peer.online,
-                    "isExitNode": peer.is_exit_node,
-                    "os":         peer.os,
-                    "lastSeen":   peer.last_seen,
-                })).collect::<Vec<_>>(),
-                "exitNode":            overlay.tailscale.active_exit_node,
-                "exitNodes":           overlay.tailscale.available_exit_nodes().iter().map(|peer| serde_json::json!({
-                    "name": peer.name,
-                    "ip": peer.ip,
-                    "online": peer.online,
-                })).collect::<Vec<_>>(),
-                "preferMeshRelay":     overlay.tailscale.prefer_mesh_relay,
-                "anonymizationScore":  overlay.tailscale.anonymization_score(),
-            },
-            "zerotier": {
-                "status":    format!("{:?}", overlay.zerotier.status).to_lowercase(),
-                "connected": overlay.zerotier.is_connected(),
-                "nodeId":    overlay.zerotier.node_id,
-                "controller": overlay.zerotier.credentials.as_ref().map(|c| c.controller.api_base_url()),
-                "networks":  overlay.zerotier.networks.iter().map(|n| serde_json::json!({
-                    "networkId":  n.network_id,
-                    "name":       n.name,
-                    "assignedIp": n.assigned_ip,
-                    "authStatus": format!("{:?}", n.auth_status).to_lowercase(),
-                    "memberCount": n.member_count,
-                })).collect::<Vec<_>>(),
-                "members": overlay.zerotier.members.iter().map(|member| serde_json::json!({
-                    "networkId": member.network_id,
-                    "nodeId": member.node_id,
-                    "name": member.name,
-                    "ips": member.ips,
-                    "authorized": member.authorized,
-                    "lastSeen": member.last_seen,
-                })).collect::<Vec<_>>(),
-                "relayMode": overlay.zerotier.relay_mode,
-                "preferMeshRelay": overlay.zerotier.prefer_mesh_relay,
-                "anonymizationScore": overlay.zerotier.anonymization_score(),
-            },
+            // Legacy single-instance fields for backward compatibility.
+            "tailscale": tailscale_block,
+            "zerotier":  zerotier_block,
             "anyActive": overlay.any_overlay_active(),
+            // Multi-instance counts for the UI instances list.
+            "tailscaleInstanceCount": overlay.tailnets.len(),
+            "zerotierInstanceCount":  overlay.zeronets.len(),
         })
         .to_string()
     }
@@ -2776,6 +3332,733 @@ impl MeshRuntime {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
         self.vault = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Tailscale multi-instance management (§5.23)
+    // -----------------------------------------------------------------------
+    //
+    // These methods sit above the legacy single-instance API.  Each one
+    // accepts an `instance_id: &str` that identifies which tailnet to operate
+    // on.  The single-instance methods above delegate to these via the id of
+    // the first entry in `overlay.tailnets`.
+
+    /// Return a JSON array of all configured Tailscale instances.
+    ///
+    /// Each element contains the key display fields needed by the UI instances
+    /// list:  id, label, status, controller, deviceIp, deviceName,
+    /// tailnetName, keyExpiryUnixMs, peersCount, preferMeshRelay, activeExitNode.
+    ///
+    /// Never fails — returns an empty JSON array when no instances exist.
+    pub fn tailscale_list_instances(&self) -> String {
+        let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+        // Build one JSON object per tailnet in insertion order.  The priority
+        // instance is identified separately so the UI can show a "priority" badge.
+        let instances: Vec<serde_json::Value> = overlay
+            .tailnets
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    // Stable id — used to address this instance in all other calls.
+                    "id":             t.id,
+                    // User-assigned label, e.g. "Work tailnet".
+                    "label":          t.label,
+                    // One of: not_configured, connecting, connected, disconnected, error.
+                    "status":         format!("{:?}", t.status).to_lowercase(),
+                    // URL of the coordination server (Headscale or login.tailscale.com).
+                    "controller":     t.credentials.as_ref().map(|c| c.controller.base_url()),
+                    // This device's Tailscale IP (e.g. 100.x.y.z).
+                    "deviceIp":       t.device_info.as_ref().map(|d| d.tailscale_ip.as_str()),
+                    // This device's name on the tailnet.
+                    "deviceName":     t.device_info.as_ref().map(|d| d.device_name.as_str()),
+                    // The tailnet name (e.g. "example.com").
+                    "tailnetName":    t.device_info.as_ref().map(|d| d.tailnet_name.as_str()),
+                    // Key expiry in Unix milliseconds; 0 = not available.
+                    "keyExpiryUnixMs": t.key_expiry_ms,
+                    // Number of visible peers on this tailnet.
+                    "peersCount":     t.peers.len(),
+                    // Whether mesh relay is preferred over Tailscale DERP.
+                    "preferMeshRelay": t.prefer_mesh_relay,
+                    // Currently active exit node peer name, or null.
+                    "activeExitNode": t.active_exit_node,
+                    // Whether this is the priority instance for routing conflicts.
+                    "isPriority":     overlay.priority_tailnet_id.as_deref() == Some(t.id.as_str()),
+                })
+            })
+            .collect();
+        serde_json::to_string(&instances).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Create a new Tailscale instance with the given label and (optional) Headscale URL.
+    ///
+    /// The new instance starts in `NotConfigured` state with a fresh stable id.
+    /// It must be authenticated separately via `tailscale_auth_key_instance` or
+    /// `tailscale_begin_oauth_instance` before it can connect.
+    ///
+    /// Returns the new instance's id as a JSON string: `{"id":"<hex>"}`.
+    ///
+    /// `label`:       User-visible name shown in the instances list, e.g. "Work tailnet".
+    /// `control_url`: Empty string for the official Tailscale server, or the base URL of
+    ///                a self-hosted Headscale instance (e.g. "https://hs.example.com").
+    pub fn tailscale_add_instance(
+        &self,
+        label: &str,
+        control_url: &str,
+    ) -> anyhow::Result<String> {
+        use crate::transport::overlay_client::TailscaleClient;
+
+        // Build the new instance.  `TailscaleClient::with_label` calls
+        // `generate_instance_id()` internally to produce the stable id.
+        let mut instance = TailscaleClient::with_label(label);
+
+        // If a Headscale URL was supplied, store it in the credentials skeleton
+        // so that subsequent auth calls know which controller to target without
+        // requiring the caller to pass the URL again.
+        if !control_url.is_empty() {
+            use crate::transport::overlay_client::{TailscaleController, TailscaleCredentials};
+            instance.credentials = Some(TailscaleCredentials {
+                controller: TailscaleController::Headscale {
+                    url: control_url.to_string(),
+                },
+                // Auth token is empty until the caller calls auth_key_instance or
+                // begin_oauth_instance; it is an error to sync without one.
+                auth_token: String::new(),
+                is_auth_key: false,
+            });
+        }
+
+        let id = instance.id.clone();
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            overlay.tailnets.push(instance);
+        }
+        self.save_overlay_state();
+
+        // Return the new id so the caller can store it and reference this
+        // instance in subsequent multi-instance calls.
+        Ok(serde_json::json!({ "id": id }).to_string())
+    }
+
+    /// Remove a Tailscale instance by id.
+    ///
+    /// If the removed instance was the priority, the priority is cleared so the
+    /// fallback "first connected" policy takes over.  If no instance with that id
+    /// exists, returns `Ok(())` (idempotent).
+    pub fn tailscale_remove_instance(&self, instance_id: &str) -> anyhow::Result<()> {
+        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Remove by id.  `retain` keeps all instances whose id does NOT match.
+        let before = overlay.tailnets.len();
+        overlay.tailnets.retain(|t| t.id != instance_id);
+        let removed = overlay.tailnets.len() < before;
+
+        // If the removed instance was the priority, clear it.  The routing solver
+        // will fall back to the first connected instance automatically.
+        if removed {
+            if overlay
+                .priority_tailnet_id
+                .as_deref()
+                .is_some_and(|p| p == instance_id)
+            {
+                overlay.priority_tailnet_id = None;
+            }
+        }
+        drop(overlay);
+        self.save_overlay_state();
+        Ok(())
+    }
+
+    /// Mark a Tailscale instance as the priority for routing conflict resolution.
+    ///
+    /// The priority instance's exit nodes appear first in the UI and its
+    /// anonymization score is used by the transport solver.
+    ///
+    /// Returns `Err` when no instance with `instance_id` exists.
+    pub fn tailscale_set_priority(&self, instance_id: &str) -> anyhow::Result<()> {
+        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+        // Verify the id exists before writing it as the priority.  Writing a
+        // non-existent id would leave the priority pointing at nothing, which is
+        // confusing but not unsafe.  We reject it explicitly for cleaner errors.
+        if overlay.tailnet_by_id(instance_id).is_none() {
+            anyhow::bail!(
+                "no Tailscale instance with id '{}' — cannot set as priority",
+                instance_id
+            );
+        }
+        overlay.priority_tailnet_id = Some(instance_id.to_string());
+        drop(overlay);
+        self.save_overlay_state();
+        Ok(())
+    }
+
+    /// Configure a Tailscale instance using an auth key and (optional) Headscale URL.
+    ///
+    /// Equivalent to `tailscale_auth_key` but targets the instance identified by
+    /// `instance_id` rather than always operating on the first entry.
+    pub fn tailscale_auth_key_instance(
+        &self,
+        instance_id: &str,
+        auth_key: &str,
+        control_url: &str,
+    ) -> anyhow::Result<()> {
+        use crate::transport::overlay_client::{
+            OverlayClientStatus, TailscaleController, TailscaleCredentials,
+        };
+
+        if auth_key.is_empty() {
+            anyhow::bail!("auth_key must not be empty");
+        }
+
+        let controller = if control_url.is_empty() {
+            TailscaleController::Vendor
+        } else {
+            TailscaleController::Headscale {
+                url: control_url.to_string(),
+            }
+        };
+        let creds = TailscaleCredentials {
+            controller,
+            auth_token: auth_key.to_string(),
+            is_auth_key: true,
+        };
+
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no Tailscale instance '{instance_id}'"))?;
+            instance.credentials = Some(creds);
+            instance.status = OverlayClientStatus::Connecting;
+        }
+        self.save_overlay_state();
+        self.push_event("TailscaleConnecting", serde_json::json!({ "instanceId": instance_id }));
+        self.sync_tailscale_client(instance_id).map_err(anyhow::Error::msg)
+    }
+
+    /// Begin Tailscale OAuth flow for a specific instance.
+    ///
+    /// Marks the instance as `Connecting` and emits `TailscaleOAuthUrl` with the
+    /// redirect URL.  The UI opens the URL in a browser; when the browser
+    /// redirects back, the caller extracts the token and calls
+    /// `tailscale_complete_oauth_instance`.
+    pub fn tailscale_begin_oauth_instance(
+        &self,
+        instance_id: &str,
+        control_url: &str,
+    ) -> anyhow::Result<()> {
+        use crate::transport::overlay_client::{OverlayClientStatus, TailscaleController};
+        use crate::transport::tailscale::{TailscaleAuth, TailscaleClient as ControlClient};
+
+        let controller = if control_url.is_empty() {
+            TailscaleController::Vendor
+        } else {
+            TailscaleController::Headscale {
+                url: control_url.to_string(),
+            }
+        };
+        let wg_pubkey = self
+            .overlay_mesh_pubkey()
+            .map_err(anyhow::Error::msg)?;
+        let hostname = self.overlay_hostname();
+        let client = match &controller {
+            TailscaleController::Vendor => ControlClient::new_central(wg_pubkey, &hostname),
+            TailscaleController::Headscale { url } => {
+                ControlClient::new_headscale(url, wg_pubkey, &hostname)
+            }
+        };
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create overlay runtime: {e}"))?;
+        let register = runtime
+            .block_on(client.register(TailscaleAuth::AuthUrl(String::new())))
+            .map_err(|e| anyhow::anyhow!("Tailscale OAuth start failed: {e}"))?;
+        let oauth_url = register
+            .auth_url
+            .unwrap_or_else(|| format!("{}/a/", controller.base_url()));
+
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no Tailscale instance '{instance_id}'"))?;
+            instance.status = OverlayClientStatus::Connecting;
+        }
+        self.save_overlay_state();
+        self.push_event(
+            "TailscaleOAuthUrl",
+            serde_json::json!({ "url": oauth_url, "instanceId": instance_id }),
+        );
+        Ok(())
+    }
+
+    /// Disconnect a specific Tailscale instance by id.
+    ///
+    /// Resets the instance to `NotConfigured` state, preserving its stable id and label
+    /// so it remains visible in the UI instances list.  The caller can then re-authenticate
+    /// it without removing and re-adding.
+    pub fn tailscale_disconnect_instance(&self, instance_id: &str) -> anyhow::Result<()> {
+        use crate::transport::overlay_client::OverlayClientStatus;
+
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no Tailscale instance '{instance_id}'"))?;
+            // Wipe credentials and peer state; keep id and label for UI continuity.
+            instance.credentials = None;
+            instance.device_info = None;
+            instance.peers.clear();
+            instance.active_exit_node = None;
+            instance.relay_mode.clear();
+            instance.key_expiry_ms = 0;
+            instance.status = OverlayClientStatus::NotConfigured;
+        }
+        self.save_overlay_state();
+        self.push_event(
+            "OverlayStatusChanged",
+            serde_json::json!({
+                "overlay": "tailscale",
+                "instanceId": instance_id,
+                "status": "not_configured",
+            }),
+        );
+        Ok(())
+    }
+
+    /// Refresh control-plane state for a specific Tailscale instance.
+    pub fn tailscale_refresh_instance(&self, instance_id: &str) -> anyhow::Result<()> {
+        self.sync_tailscale_client(instance_id)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Toggle mesh-relay preference for a specific Tailscale instance.
+    pub fn tailscale_set_prefer_mesh_relay_instance(
+        &self,
+        instance_id: &str,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no Tailscale instance '{instance_id}'"))?;
+            if instance.credentials.is_none() {
+                anyhow::bail!("Tailscale instance '{instance_id}' is not configured");
+            }
+            instance.prefer_mesh_relay = enabled;
+        }
+        self.save_overlay_state();
+        self.sync_tailscale_client(instance_id)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Set the active exit node for a specific Tailscale instance.
+    ///
+    /// Pass an empty `peer_name` to clear the active exit node (route traffic
+    /// without an exit node).
+    pub fn tailscale_set_exit_node_instance(
+        &self,
+        instance_id: &str,
+        peer_name: &str,
+    ) -> anyhow::Result<()> {
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no Tailscale instance '{instance_id}'"))?;
+            if instance.credentials.is_none() {
+                anyhow::bail!("Tailscale instance '{instance_id}' is not configured");
+            }
+            if peer_name.is_empty() {
+                instance.active_exit_node = None;
+            } else {
+                // Verify the peer name exists and has exit-node capability.
+                let valid = instance
+                    .peers
+                    .iter()
+                    .find(|p| p.name == peer_name)
+                    .map(|p| p.is_exit_node)
+                    .ok_or_else(|| anyhow::anyhow!("unknown Tailscale exit node '{peer_name}'"))?;
+                if !valid {
+                    anyhow::bail!("peer '{peer_name}' is not an exit node");
+                }
+                instance.active_exit_node = Some(peer_name.to_string());
+            }
+        }
+        self.save_overlay_state();
+        self.push_event(
+            "OverlayStatusChanged",
+            serde_json::json!({
+                "overlay": "tailscale",
+                "instanceId": instance_id,
+                "status": "connected",
+                "activeExitNode": if peer_name.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(peer_name.to_string())
+                },
+            }),
+        );
+        Ok(())
+    }
+
+    /// Complete the OAuth flow for a specific Tailscale instance.
+    ///
+    /// Called after `tailscale_begin_oauth_instance` — once the user completes
+    /// browser-based login and the caller extracts `auth_token` from the redirect.
+    pub fn tailscale_complete_oauth_instance(
+        &self,
+        instance_id: &str,
+        token: &str,
+    ) -> anyhow::Result<()> {
+        use crate::transport::overlay_client::{
+            OverlayClientStatus, TailscaleController, TailscaleCredentials,
+        };
+
+        if token.is_empty() {
+            anyhow::bail!("auth_token must not be empty");
+        }
+
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no Tailscale instance '{instance_id}'"))?;
+            // Inherit the controller URL set by begin_oauth_instance; fall back to vendor.
+            let controller = instance
+                .credentials
+                .as_ref()
+                .map(|c| c.controller.clone())
+                .unwrap_or(TailscaleController::Vendor);
+            instance.credentials = Some(TailscaleCredentials {
+                controller,
+                auth_token: token.to_string(),
+                // OAuth tokens are long-lived session tokens, not one-shot pre-auth keys.
+                is_auth_key: false,
+            });
+            instance.status = OverlayClientStatus::Connecting;
+        }
+        self.save_overlay_state();
+        self.push_event("TailscaleOAuthComplete", serde_json::json!({ "instanceId": instance_id }));
+        self.sync_tailscale_client(instance_id).map_err(anyhow::Error::msg)
+    }
+
+    /// Trigger reauthentication for a specific Tailscale instance.
+    ///
+    /// Clears the stored auth token and starts a fresh OAuth flow.  The UI
+    /// responds to the emitted `TailscaleOAuthUrl` event as in initial setup.
+    pub fn tailscale_reauthenticate_instance(&self, instance_id: &str) -> anyhow::Result<()> {
+        // Extract the controller URL from the existing credentials.
+        let control_url = {
+            let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .tailnet_by_id(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no Tailscale instance '{instance_id}'"))?;
+            match instance.credentials.as_ref() {
+                Some(creds) => creds.controller.base_url().to_string(),
+                None => anyhow::bail!("Tailscale instance '{instance_id}' is not configured"),
+            }
+        };
+
+        // Wipe the auth token to prevent accidental re-submission during the browser flow.
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(instance) = overlay.tailnet_by_id_mut(instance_id) {
+                if let Some(creds) = instance.credentials.as_mut() {
+                    creds.auth_token.clear();
+                }
+            }
+        }
+        self.save_overlay_state();
+
+        // Begin a fresh OAuth flow for this specific instance.
+        // Empty string = vendor server; non-empty = Headscale.
+        let empty = String::new();
+        let url = if control_url == "https://login.tailscale.com" {
+            empty.as_str()
+        } else {
+            control_url.as_str()
+        };
+        self.tailscale_begin_oauth_instance(instance_id, url)
+    }
+
+    // -----------------------------------------------------------------------
+    // ZeroTier multi-instance management (§5.22)
+    // -----------------------------------------------------------------------
+
+    /// Return a JSON array of all configured ZeroTier instances.
+    ///
+    /// Each element contains: id, label, status, nodeId, controller,
+    /// networksCount, membersCount, preferMeshRelay.
+    ///
+    /// Never fails — returns an empty JSON array when no instances exist.
+    pub fn zerotier_list_instances(&self) -> String {
+        let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+        let instances: Vec<serde_json::Value> = overlay
+            .zeronets
+            .iter()
+            .map(|z| {
+                serde_json::json!({
+                    // Stable id — used to address this instance in all other calls.
+                    "id":             z.id,
+                    // User-assigned label, e.g. "Company ZeroTier".
+                    "label":          z.label,
+                    // One of: not_configured, connecting, connected, disconnected, error.
+                    "status":         format!("{:?}", z.status).to_lowercase(),
+                    // This device's ZeroTier Node ID (10-char hex), or null if not joined.
+                    "nodeId":         z.node_id,
+                    // API base URL of the controller (Central or self-hosted).
+                    "controller":     z.credentials.as_ref().map(|c| c.controller.api_base_url()),
+                    // Number of networks this instance has joined.
+                    "networksCount":  z.networks.len(),
+                    // Number of visible members across all joined networks.
+                    "membersCount":   z.members.len(),
+                    // Whether mesh relay is preferred over ZeroTier PLANET/MOON relay.
+                    "preferMeshRelay": z.prefer_mesh_relay,
+                    // Whether this is the priority instance for routing conflicts.
+                    "isPriority":     overlay.priority_zeronet_id.as_deref() == Some(z.id.as_str()),
+                })
+            })
+            .collect();
+        serde_json::to_string(&instances).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Create a new ZeroTier instance with the given credentials.
+    ///
+    /// The instance connects immediately to the supplied network IDs.
+    /// Returns the new instance's id as a JSON string: `{"id":"<hex>"}`.
+    ///
+    /// `label`:          User-visible name shown in the instances list.
+    /// `api_key`:        ZeroTier Central API key, or empty for self-hosted.
+    /// `controller_url`: Empty string for Central; self-hosted base URL otherwise.
+    /// `network_ids`:    Network IDs to join immediately (16-char hex each).
+    pub fn zerotier_add_instance(
+        &self,
+        label: &str,
+        api_key: &str,
+        controller_url: &str,
+        network_ids: &[String],
+    ) -> anyhow::Result<String> {
+        use crate::transport::overlay_client::{
+            OverlayClientStatus, ZeroTierClient, ZeroTierController, ZeroTierCredentials,
+            ZeroTierNetwork, ZeroTierNetworkAuthStatus,
+        };
+
+        let controller = if controller_url.is_empty() {
+            ZeroTierController::Central
+        } else {
+            ZeroTierController::SelfHosted {
+                url: controller_url.to_string(),
+            }
+        };
+        let creds = ZeroTierCredentials {
+            controller,
+            api_key: api_key.to_string(),
+            network_ids: network_ids.to_vec(),
+        };
+
+        // Build the new instance with the supplied credentials.  The id is
+        // generated by `ZeroTierClient::with_label` → `Default::default()` →
+        // `generate_instance_id()`.
+        let mut instance = ZeroTierClient::with_label(label);
+        instance.credentials = Some(creds);
+        instance.status = OverlayClientStatus::Connecting;
+
+        // Pre-populate the networks list so the UI can show them immediately
+        // before the first sync call completes.
+        for nid in network_ids {
+            if !instance.networks.iter().any(|n| &n.network_id == nid) {
+                instance.networks.push(ZeroTierNetwork {
+                    network_id: nid.clone(),
+                    name: nid.clone(),
+                    assigned_ip: None,
+                    auth_status: ZeroTierNetworkAuthStatus::AwaitingAuthorization,
+                    member_count: 0,
+                });
+            }
+        }
+
+        let id = instance.id.clone();
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            overlay.zeronets.push(instance);
+        }
+        self.save_overlay_state();
+        Ok(serde_json::json!({ "id": id }).to_string())
+    }
+
+    /// Remove a ZeroTier instance by id.
+    ///
+    /// If the removed instance was the priority, the priority is cleared.
+    /// Idempotent — returns `Ok(())` when no instance with that id exists.
+    pub fn zerotier_remove_instance(&self, instance_id: &str) -> anyhow::Result<()> {
+        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+        let before = overlay.zeronets.len();
+        overlay.zeronets.retain(|z| z.id != instance_id);
+        let removed = overlay.zeronets.len() < before;
+        if removed {
+            if overlay
+                .priority_zeronet_id
+                .as_deref()
+                .is_some_and(|p| p == instance_id)
+            {
+                overlay.priority_zeronet_id = None;
+            }
+        }
+        drop(overlay);
+        self.save_overlay_state();
+        Ok(())
+    }
+
+    /// Mark a ZeroTier instance as the priority for routing conflict resolution.
+    ///
+    /// Returns `Err` when no instance with `instance_id` exists.
+    pub fn zerotier_set_priority(&self, instance_id: &str) -> anyhow::Result<()> {
+        let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+        if overlay.zeronet_by_id(instance_id).is_none() {
+            anyhow::bail!(
+                "no ZeroTier instance with id '{}' — cannot set as priority",
+                instance_id
+            );
+        }
+        overlay.priority_zeronet_id = Some(instance_id.to_string());
+        drop(overlay);
+        self.save_overlay_state();
+        Ok(())
+    }
+
+    /// Refresh controller state for a specific ZeroTier instance.
+    pub fn zerotier_refresh_instance(&self, instance_id: &str) -> anyhow::Result<()> {
+        self.sync_zerotier_client(instance_id)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Disconnect a specific ZeroTier instance by id.
+    ///
+    /// Resets the instance to `NotConfigured` state while preserving its id and
+    /// label so it remains visible in the UI instances list.
+    pub fn zerotier_disconnect_instance(&self, instance_id: &str) -> anyhow::Result<()> {
+        use crate::transport::overlay_client::OverlayClientStatus;
+
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .zeronet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?;
+            // Wipe credentials and network state; keep id and label for UI continuity.
+            instance.credentials = None;
+            instance.node_id = None;
+            instance.networks.clear();
+            instance.members.clear();
+            instance.relay_mode.clear();
+            instance.status = OverlayClientStatus::NotConfigured;
+        }
+        self.save_overlay_state();
+        self.push_event(
+            "OverlayStatusChanged",
+            serde_json::json!({
+                "overlay": "zerotier",
+                "instanceId": instance_id,
+                "status": "not_configured",
+            }),
+        );
+        Ok(())
+    }
+
+    /// Join an additional ZeroTier network on a specific instance.
+    ///
+    /// Adds the network to the credential's `network_ids` list and calls
+    /// `sync_zerotier_client` to pick it up immediately.
+    pub fn zerotier_join_network_instance(
+        &self,
+        instance_id: &str,
+        network_id: &str,
+    ) -> anyhow::Result<()> {
+        if network_id.len() != 16 || !network_id.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            anyhow::bail!("network_id must be exactly 16 hex characters");
+        }
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .zeronet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?;
+            let creds = instance
+                .credentials
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured"))?;
+            if !creds.network_ids.iter().any(|entry| entry == network_id) {
+                creds.network_ids.push(network_id.to_string());
+            }
+        }
+        self.save_overlay_state();
+        self.sync_zerotier_client(instance_id)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Toggle mesh-relay preference for a specific ZeroTier instance.
+    pub fn zerotier_set_prefer_mesh_relay_instance(
+        &self,
+        instance_id: &str,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .zeronet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?;
+            if instance.credentials.is_none() {
+                anyhow::bail!("ZeroTier instance '{instance_id}' is not configured");
+            }
+            instance.prefer_mesh_relay = enabled;
+        }
+        self.save_overlay_state();
+        self.sync_zerotier_client(instance_id)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Authorize or de-authorize a member on a ZeroTier network for a specific instance.
+    ///
+    /// `network_id`:  16-char hex ZeroTier network ID.
+    /// `node_id`:     10-char hex ZeroTier Node ID of the member.
+    /// `authorized`:  `true` to authorize; `false` to revoke.
+    pub fn zerotier_set_member_authorized_instance(
+        &self,
+        instance_id: &str,
+        network_id: &str,
+        node_id: &str,
+        authorized: bool,
+    ) -> anyhow::Result<()> {
+        use crate::transport::overlay_client::ZeroTierController as OverlayController;
+        use crate::transport::zerotier::ZtControllerClient;
+
+        if network_id.is_empty() || node_id.is_empty() {
+            anyhow::bail!("network_id and node_id are required");
+        }
+
+        // Snapshot credentials for the target instance.
+        let credentials = {
+            let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            overlay
+                .zeronet_by_id(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?
+                .credentials
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured"))?
+        };
+
+        let controller = match &credentials.controller {
+            OverlayController::Central => ZtControllerClient::central(&credentials.api_key),
+            OverlayController::SelfHosted { url } => {
+                ZtControllerClient::self_hosted(url, &credentials.api_key)
+            }
+        };
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| anyhow::anyhow!("Failed to create overlay runtime: {e}"))?;
+        runtime
+            .block_on(controller.set_member_authorized(network_id, node_id, authorized))
+            .map_err(|e| anyhow::anyhow!("ZeroTier member update failed: {e}"))?;
+        // Re-sync to pick up the updated authorization state.
+        self.sync_zerotier_client(instance_id)
+            .map_err(anyhow::Error::msg)
     }
 }
 

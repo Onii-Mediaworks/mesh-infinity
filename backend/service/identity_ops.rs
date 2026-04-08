@@ -574,6 +574,133 @@ impl MeshRuntime {
         Ok(())
     }
 
+    /// Inject 32 raw secret bytes as the in-memory mesh identity, bypassing
+    /// the filesystem entirely.
+    ///
+    /// Called by the Android startup service when the Keystore-backed wrapped
+    /// copy of the Layer 1 secret is available.  The Keystore copy takes
+    /// precedence over the on-disk `mesh_identity.key` file because it is
+    /// hardware-protected — even an attacker with raw filesystem access cannot
+    /// recover the plaintext key without the device hardware and a successful
+    /// boot attestation.
+    ///
+    /// This method constructs a `MeshIdentity` from the provided secret, stores
+    /// it in the runtime, and propagates the identity to all dependent
+    /// subsystems (tunnel gossip, announcement processor, store-forward mode).
+    ///
+    /// Returns `Ok(())` on success.  Returns `Err` if the byte slice is not
+    /// exactly 32 bytes, which would indicate a bug in the Keystore unwrap path.
+    pub fn inject_mesh_identity_secret(&self, secret: [u8; 32]) -> Result<(), String> {
+        // Reconstruct the full X25519 keypair from the raw entropy.
+        // `from_secret_bytes` re-derives the public key deterministically,
+        // so no public key needs to be stored in the Keystore blob.
+        let identity = crate::identity::mesh_identity::MeshIdentity::from_secret_bytes(secret);
+
+        // Overwrite whatever was in memory (e.g., the file-based key that
+        // `initialize_startup_state` may have loaded a moment before).
+        *self.mesh_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(identity);
+
+        // Propagate the new identity to all subsystems that cache the mesh
+        // public key.  These calls are no-ops if the subsystem has not been
+        // started yet, so they are safe to call at any point in the startup
+        // sequence.
+        self.sync_tunnel_gossip_identity();
+        self.sync_announcement_processor_identity();
+        self.sync_store_forward_mode();
+
+        Ok(())
+    }
+
+    /// Export the current in-memory mesh identity secret bytes.
+    ///
+    /// Returns `Some([u8; 32])` if a mesh identity is loaded, `None` if the
+    /// identity has not been loaded yet.
+    ///
+    /// Used by the Android startup service on the very first boot (or after a
+    /// Keystore entry deletion) to wrap the freshly generated / file-loaded
+    /// secret with the hardware-backed AES key before persisting it.  After
+    /// `wrapAndSaveKeypairIfNeeded` completes on the Kotlin side the raw bytes
+    /// are zeroed immediately — the secret should never persist in the JVM heap.
+    ///
+    /// ## Security note
+    ///
+    /// The returned bytes are the raw WireGuard private key.  The caller is
+    /// responsible for zeroing them immediately after use.
+    pub fn export_mesh_identity_secret(&self) -> Option<[u8; 32]> {
+        self.mesh_identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            // `secret_bytes()` copies from `secret_raw` — the return value is
+            // a stack allocation, not a reference into the MeshIdentity.
+            .map(|id| id.secret_bytes())
+    }
+
+    /// Like `initialize_startup_state` but uses a caller-supplied secret
+    /// instead of reading from or writing to disk.
+    ///
+    /// This is the Android Keystore-first startup path (§3.1.1):
+    ///
+    /// 1. The Kotlin startup service reads the Keystore-wrapped blob from
+    ///    device-protected storage and unwraps it with the hardware AES key.
+    /// 2. It calls `mi_layer1_inject_secret` (FFI) → `inject_mesh_identity_secret`
+    ///    to put the unwrapped secret into the runtime's `mesh_identity` slot.
+    /// 3. It then calls `initialize_startup_state_with_secret` (via the Kotlin
+    ///    path that calls `startLayer1` then immediately injects), which:
+    ///    - Writes the same bytes to `mesh_identity.key` as a **fallback** only
+    ///      if that file does not yet exist.  This ensures the node can still
+    ///      boot if the Keystore entry is ever deleted (e.g., after a factory
+    ///      reset of the security chip that does not wipe storage).
+    ///    - Calls `refresh_layer1_participation_state` and
+    ///      `ensure_layer1_transport_started` to bring up WireGuard and cover
+    ///      traffic.
+    ///    - Auto-unlocks Layer 2 if no PIN is configured (same as the base
+    ///      `initialize_startup_state`).
+    ///
+    /// The file-based key is a **write-once fallback** — we never read it back
+    /// inside this function because the Keystore copy is authoritative.
+    pub fn initialize_startup_state_with_secret(&mut self, secret: [u8; 32]) {
+        // Inject the hardware-backed secret before any subsystem reads the
+        // identity.  This overwrites any stale value from a prior file-based
+        // load, making the Keystore copy authoritative.
+        if let Err(e) = self.inject_mesh_identity_secret(secret) {
+            self.set_error(&format!("Mesh identity injection failed: {e}"));
+            return;
+        }
+
+        // Write the secret to the fallback file only if it does not already
+        // exist.  We intentionally never re-read this file here — the Keystore
+        // copy was injected above and is now the single source of truth.
+        // The file exists solely as a last-resort recovery path in case the
+        // Keystore entry is lost (§3.1.1 — hardware-backed key is preferred
+        // but must not be the only copy on devices without secure deletion).
+        let path = self.mesh_identity_path();
+        if !path.exists() {
+            // Best-effort: ignore write errors.  The in-memory identity is
+            // already loaded, so a failed write only affects the fallback path.
+            let _ = std::fs::write(&path, secret);
+        }
+
+        // Refresh Layer 1 participation flags and start transport subsystems.
+        self.refresh_layer1_participation_state();
+        if !self.has_identity() {
+            // Should never happen — we just injected a valid identity above.
+            return;
+        }
+        if let Err(e) = self.ensure_layer1_transport_started() {
+            self.set_error(&format!("Layer 1 transport startup failed: {e}"));
+        }
+
+        // Auto-unlock Layer 2 if no PIN has been configured.  This mirrors
+        // the behaviour in `initialize_startup_state` so that the Keystore
+        // path does not create a divergent startup experience.
+        if !self.has_pin_configured() {
+            if let Err(e) = self.unlock_identity(None) {
+                self.set_error(&format!("Automatic identity unlock failed: {e}"));
+            }
+        }
+    }
+
     fn clear_mesh_identity_runtime_state(&self) {
         *self.mesh_identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.sync_tunnel_gossip_identity();

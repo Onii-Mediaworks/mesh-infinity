@@ -382,6 +382,44 @@ sealed class BackendEvent {
           : null,
 
         // -----------------------------------------------------------------------
+        // 'TailscaleOAuthUrl'
+        // Fired by tailscale_begin_oauth when the control plane returns a
+        // browser login URL.  The UI opens this URL in an in-app browser or
+        // the system browser.  When the browser flow completes (deep-link
+        // redirect), the UI extracts the token from the redirect URL and
+        // calls bridge.tailscaleCompleteOAuth(token).
+        // -----------------------------------------------------------------------
+        'TailscaleOAuthUrl' => dataMap != null && dataMap['url'] is String
+          ? TailscaleOAuthUrlEvent(url: dataMap['url'] as String)
+          : null,
+
+        // -----------------------------------------------------------------------
+        // 'TailscaleOAuthComplete'
+        // Fired by tailscale_complete_oauth when credentials are stored and the
+        // initial map sync has been requested.  The UI can dismiss the browser
+        // view and show a "Connecting…" state while the map sync completes.
+        // -----------------------------------------------------------------------
+        'TailscaleOAuthComplete' => const TailscaleOAuthCompleteEvent(),
+
+        // -----------------------------------------------------------------------
+        // 'TailscaleKeyExpiryWarning'
+        // Fired by sync_tailscale_client when the key expires within 7 days.
+        // The UI should surface a banner with a "Re-authenticate" button so the
+        // user can renew before the key expires and the tailnet disconnects.
+        //
+        // [expiryMs]     — Unix timestamp (ms) of the key expiry.
+        // [remainingMs]  — milliseconds until expiry at the time the event fired.
+        // [daysRemaining] — whole days remaining (rounded down).
+        // -----------------------------------------------------------------------
+        'TailscaleKeyExpiryWarning' => dataMap != null
+          ? TailscaleKeyExpiryWarningEvent(
+              expiryMs: (dataMap['expiryMs'] as num?)?.toInt() ?? 0,
+              remainingMs: (dataMap['remainingMs'] as num?)?.toInt() ?? 0,
+              daysRemaining: (dataMap['daysRemaining'] as num?)?.toInt() ?? 0,
+            )
+          : null,
+
+        // -----------------------------------------------------------------------
         // Catch-all: any event type we don't recognise is silently dropped.
         // This makes the app forward-compatible with new event types added in
         // newer versions of the Rust backend.
@@ -636,4 +674,47 @@ final class ReactionAddedEvent extends BackendEvent {
   final String msgId;
   final String? peerId;
   final String emoji;
+}
+
+/// The Tailscale control plane returned a browser login URL for OAuth (§5.23.2).
+///
+/// The UI should open [url] in an in-app browser or the system browser.
+/// When the browser flow completes (redirect deep-link), the UI extracts the
+/// auth token from the redirect URL query parameters and calls
+/// bridge.tailscaleCompleteOAuth(token) to finalise the connection.
+final class TailscaleOAuthUrlEvent extends BackendEvent {
+  const TailscaleOAuthUrlEvent({required this.url});
+
+  /// The OAuth login URL to open in the browser.  Comes from the control
+  /// server's RegisterResponse.AuthURL field.
+  final String url;
+}
+
+/// The Tailscale OAuth browser flow has been completed and credentials stored.
+///
+/// Fired by tailscale_complete_oauth after the token is saved and the initial
+/// map sync has been queued.  The UI can dismiss the browser view and show a
+/// "Connecting…" state while the first OverlayStatusChanged event arrives.
+final class TailscaleOAuthCompleteEvent extends BackendEvent {
+  const TailscaleOAuthCompleteEvent();
+}
+
+/// The Tailscale key expires within 7 days (§5.23.3).
+///
+/// Fired by sync_tailscale_client whenever the map response shows the key
+/// expiring within the 7-day warning window.  The UI should surface a banner
+/// prompting the user to re-authenticate via bridge.tailscaleReoauth().
+///
+/// [expiryMs]     — Unix timestamp (ms) when the key expires.
+/// [remainingMs]  — milliseconds remaining at the moment the event fired.
+/// [daysRemaining] — whole days remaining (floor division of remainingMs).
+final class TailscaleKeyExpiryWarningEvent extends BackendEvent {
+  const TailscaleKeyExpiryWarningEvent({
+    required this.expiryMs,
+    required this.remainingMs,
+    required this.daysRemaining,
+  });
+  final int expiryMs;
+  final int remainingMs;
+  final int daysRemaining;
 }

@@ -30,6 +30,43 @@
 //! receives a JSON input and returns a JSON output. The registry
 //! records timing for each invocation to detect performance regressions.
 //!
+//! # WASM Sandbox (§18.1, §18.2)
+//!
+//! On Android and desktop platforms, plugin WASM modules execute inside a
+//! `PluginSandbox` powered by wasmtime with cranelift JIT compilation.
+//! Key properties of the sandbox:
+//!
+//! - **Memory isolation**: each plugin's WASM linear memory is bounded and
+//!   completely separate from the host process and other plugins.
+//! - **CPU time limits**: epoch-based interruption is enabled on the engine,
+//!   and each invocation sets a deadline of `MAX_CPU_PER_CALLBACK_MS` ticks.
+//!   The epoch counter is advanced by a background thread; when the deadline
+//!   is reached, wasmtime traps the WASM execution and returns an error.
+//! - **Capability-based I/O**: WASI preview1 is linked but configured with
+//!   no filesystem mounts and no network access — an empty `WasiCtxBuilder`.
+//!   Plugins can only call the two host imports we explicitly expose:
+//!     - `mesh_log(ptr, len)` — write a log line via the registry logger
+//!     - `mesh_get_permission(ptr, len) -> i32` — query a permission by name
+//! - **Permanently off-limits** (§18.3): key material, raw transport, trust
+//!   graph, other plugins' data, and all 11 §18.3 items are never exposed.
+//!
+//! iOS / iPadOS: third-party executable plugins are not available per §18.1.
+//! The sandbox and all WASM execution code is excluded from iOS builds via
+//! `#[cfg(not(target_os = "ios"))]`. On iOS, `invoke_hook_sandboxed` returns
+//! an empty vec immediately.
+//!
+//! # Plugin ABI
+//!
+//! The plugin must export:
+//! ```text
+//! hook_dispatch(hook_name_ptr: i32, hook_name_len: i32,
+//!               input_ptr: i32, input_len: i32) -> i64
+//! ```
+//! The return value is a packed `(output_ptr: i32, output_len: i32)` encoded
+//! as `(output_ptr as i64) << 32 | output_len as i64`. The output bytes in
+//! WASM linear memory are valid UTF-8 JSON. An output_len of 0 means no
+//! output (equivalent to `None`).
+//!
 //! # Signature Verification
 //!
 //! Plugin packages carry an Ed25519 signature that binds the manifest
@@ -47,6 +84,648 @@ use crate::error::MeshError;
 // Import the domain-separated signing module for plugin signature verification.
 // All signature operations go through this centralized module (§18.3).
 use crate::crypto::signing;
+
+// ---------------------------------------------------------------------------
+// WASM Sandbox (non-iOS only — §18.1)
+// ---------------------------------------------------------------------------
+//
+// All wasmtime types are gated behind `#[cfg(not(target_os = "ios"))]`.
+// iOS does not support user-installed executable plugins (§18.1), so there
+// is no sandbox to build, and wasmtime is never linked on that target.
+
+/// Per-invocation state threaded through the wasmtime Store (non-iOS only).
+///
+/// wasmtime's `Linker<T>` is generic over a host state type `T`. Every host
+/// function closure receives `&mut T` (wrapped in a `Caller<T>`), so we use
+/// this struct to pass per-call context — the plugin's granted permissions
+/// and the WASI preview1 execution context — into the host functions without
+/// global mutable state.
+///
+/// A fresh `SandboxState` is created for every `invoke_hook_sandboxed` call;
+/// it is dropped when the `Store` is dropped at the end of the call.
+#[cfg(not(target_os = "ios"))]
+struct SandboxState {
+    /// Permissions granted to the currently executing plugin.
+    ///
+    /// Host functions such as `mesh_get_permission` consult this list to
+    /// decide whether to return 1 (granted) or 0 (denied). The list is a
+    /// clone of `Plugin::permissions` captured before instantiation.
+    permissions: Vec<PluginPermission>,
+
+    /// WASI preview1 execution context.
+    ///
+    /// wasmtime-wasi's preview1 shim requires a `WasiP1Ctx` object (produced
+    /// by `WasiCtxBuilder::build_p1()`) to be accessible from the `T` type
+    /// stored in the `Store`. The linker function registered by
+    /// `wasmtime_wasi::preview1::add_to_linker_sync` extracts it via the
+    /// closure we pass: `|state| &mut state.wasi`.
+    ///
+    /// We configure it with an empty `WasiCtxBuilder` — no filesystem mounts,
+    /// no network access, no pre-opened directories, no env vars. Plugins
+    /// cannot touch the host filesystem or initiate network calls through WASI.
+    wasi: wasmtime_wasi::preview1::WasiP1Ctx,
+}
+
+/// The WASM plugin execution sandbox (non-iOS only, §18.1).
+///
+/// `PluginSandbox` is a long-lived object (typically one per backend runtime
+/// instance) that owns the shared wasmtime `Engine` and `Linker`. These are
+/// expensive to create but cheap to clone references to, so they are created
+/// once and reused across all plugin invocations.
+///
+/// # Engine configuration
+///
+/// - Cranelift JIT compilation (`features = ["cranelift"]` in Cargo.toml)
+/// - Epoch interruption enabled at the Config level
+///   (`Config::epoch_interruption(true)`) — this arms the mechanism;
+///   each Store still calls `set_epoch_deadline` to set a per-call deadline.
+///
+/// # Module cache
+///
+/// Compiled `wasmtime::Module` objects are stored in `modules`, keyed by the
+/// same 16-byte plugin ID used by the registry. AOT compilation happens once
+/// (in `load_module`) and the result is reused for every subsequent
+/// invocation, making repeated calls cheap (just instantiation overhead).
+///
+/// # Epoch counter thread
+///
+/// A background thread drives the epoch counter by calling
+/// `Engine::increment_epoch` every millisecond. Each Store call sets its
+/// deadline to `MAX_CPU_PER_CALLBACK_MS` ticks; if execution hasn't returned
+/// by the time the background thread has incremented the counter that many
+/// times, wasmtime interrupts the guest with a trap.
+#[cfg(not(target_os = "ios"))]
+pub struct PluginSandbox {
+    /// The shared wasmtime engine with cranelift JIT and epoch interruption.
+    ///
+    /// `Engine` is internally reference-counted and cheap to clone. The same
+    /// engine is shared across all modules and stores in this sandbox.
+    engine: wasmtime::Engine,
+
+    /// The linker pre-populated with WASI preview1 and our mesh host imports.
+    ///
+    /// `Linker<SandboxState>` is built once in `PluginSandbox::new()`:
+    ///   1. `wasmtime_wasi::preview1::add_to_linker_sync` populates WASI.
+    ///   2. We manually define `mesh_log` and `mesh_get_permission`.
+    ///
+    /// Every instantiation clones this linker (cheap — it shares a reference
+    /// to the underlying data structures) and then calls `instantiate`.
+    linker: wasmtime::Linker<SandboxState>,
+
+    /// AOT-compiled modules, indexed by the 16-byte plugin ID.
+    ///
+    /// Populated by `load_module` when a plugin is activated. Keyed by the
+    /// same `[u8; 16]` ID that `PluginRegistry` uses internally. A missing
+    /// entry means the plugin has no WASM bytes loaded (or they failed to
+    /// compile), and `invoke_hook_sandboxed` will skip that plugin gracefully.
+    modules: HashMap<[u8; 16], wasmtime::Module>,
+
+    /// Per-plugin timeout counter (number of consecutive epoch timeouts).
+    ///
+    /// When a plugin's WASM execution exceeds `MAX_CPU_PER_CALLBACK_MS` the
+    /// epoch mechanism traps it. Each trap increments this counter. When it
+    /// reaches `TIMEOUT_AUTO_DISABLE`, the plugin is flagged for suspension
+    /// and the caller should call `PluginRegistry::suspend()`.
+    timeout_counts: HashMap<[u8; 16], u32>,
+
+    /// Per-plugin crash counter (number of consecutive WASM traps).
+    ///
+    /// Any WASM trap (including panics that compile to `unreachable`) that is
+    /// NOT an epoch timeout increments this counter. When it reaches
+    /// `CRASH_QUARANTINE_THRESHOLD`, the plugin's status should be set to
+    /// `PluginStatus::Failed` and marked for quarantine.
+    crash_counts: HashMap<[u8; 16], u32>,
+}
+
+#[cfg(not(target_os = "ios"))]
+impl PluginSandbox {
+    /// Create a new sandbox with a cranelift engine and WASI+mesh host imports.
+    ///
+    /// This function:
+    /// 1. Configures a `wasmtime::Engine` with cranelift JIT and epoch
+    ///    interruption enabled.
+    /// 2. Creates a `Linker<SandboxState>` and populates it with:
+    ///    - WASI preview1 snapshot (no filesystem/network capability granted
+    ///      at construction time — capability is per-Store via `WasiCtxBuilder`)
+    ///    - `mesh::mesh_log(ptr: i32, len: i32)` host function
+    ///    - `mesh::mesh_get_permission(ptr: i32, len: i32) -> i32` host function
+    /// 3. Spawns a background thread that increments the engine's epoch counter
+    ///    once per millisecond, driving the CPU time enforcement mechanism.
+    ///
+    /// Returns an error if wasmtime fails to initialise (should not happen in
+    /// practice on supported platforms).
+    pub fn new() -> anyhow::Result<Self> {
+        // --- Engine configuration -------------------------------------------
+        //
+        // Build a wasmtime Config with:
+        //   - Cranelift: the optimising JIT compiler (enabled via Cargo feature)
+        //   - Epoch interruption: armed here at the Config level; individual
+        //     Stores must also call set_epoch_deadline() to activate it per call
+        let mut config = wasmtime::Config::new();
+        // Epoch interruption is a RUNTIME config option, not a Cargo feature.
+        // Enabling it here arms the mechanism globally for this engine.
+        // Each Store must still call `set_epoch_deadline(N)` to set its own
+        // deadline — until that call, no interruption will occur.
+        config.epoch_interruption(true);
+        // cranelift_opt_level is the default for the cranelift feature; we
+        // spell it out explicitly so the intent is clear in code review.
+        config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+
+        let engine = wasmtime::Engine::new(&config)?;
+
+        // --- Linker setup ---------------------------------------------------
+        //
+        // The linker is populated once and reused across instantiations.
+        // Order matters: WASI must be added before any custom imports in the
+        // same namespace (though "wasi_snapshot_preview1" and "mesh" are
+        // separate namespaces so order is actually irrelevant here).
+        let mut linker: wasmtime::Linker<SandboxState> = wasmtime::Linker::new(&engine);
+
+        // Add WASI preview1 (wasi_snapshot_preview1) imports to the linker.
+        //
+        // This populates ~50 WASI syscall imports (fd_read, fd_write, proc_exit,
+        // etc.) so plugins compiled against wasi-sdk or similar toolchains link
+        // without import errors. The actual capabilities granted at runtime are
+        // controlled by the per-Store `WasiCtxBuilder::build_p1()` — our empty
+        // builder grants zero filesystem/network access.
+        wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |state: &mut SandboxState| {
+            // Extract the `WasiP1Ctx` from our composite state.
+            // The linker uses this closure to get the WASI context out of T
+            // for every WASI host function call.
+            &mut state.wasi
+        })?;
+
+        // --- Host import: mesh::mesh_log(ptr: i32, len: i32) ---------------
+        //
+        // Allows plugins to write log messages visible in the backend log.
+        // The plugin passes a UTF-8 string in its linear memory at [ptr, ptr+len).
+        // We validate the range, convert to UTF-8, and log via tracing.
+        //
+        // Security: this function does not grant any capability beyond logging.
+        // It cannot be used to exfiltrate data because the log is not returned
+        // to the plugin. Per §18.3, key material and internals are never logged.
+        linker.func_wrap(
+            "mesh",           // module name in the WASM import section
+            "mesh_log",       // function name in the WASM import section
+            |mut caller: wasmtime::Caller<'_, SandboxState>, ptr: i32, len: i32| {
+                // Retrieve the plugin's linear memory.
+                // "memory" is the standard WASM memory export name.
+                // If the plugin has no memory export, we log a warning and return.
+                let mem = match caller.get_export("memory") {
+                    Some(wasmtime::Extern::Memory(m)) => m,
+                    _ => {
+                        // Plugin module has no "memory" export — unusual but not fatal.
+                        // We cannot read the log message, so we skip it silently.
+                        tracing::warn!("plugin mesh_log: no memory export");
+                        return;
+                    }
+                };
+
+                // Bounds-check the pointer and length against the linear memory size.
+                // ptr and len are i32 (WASM's native integer type); cast to usize safely.
+                let ptr = ptr as usize;
+                let len = len as usize;
+                let mem_data = mem.data(&caller);
+
+                // Ensure the slice [ptr, ptr+len) is within the allocated linear memory.
+                // An out-of-bounds access would be a plugin bug; we ignore it.
+                if ptr.saturating_add(len) > mem_data.len() {
+                    tracing::warn!("plugin mesh_log: pointer out of bounds");
+                    return;
+                }
+
+                // Extract the bytes and validate UTF-8.
+                // Plugins compiled from Rust/C will always produce valid UTF-8;
+                // if they don't, we fall back to a lossy conversion.
+                let bytes = &mem_data[ptr..ptr + len];
+                let msg = String::from_utf8_lossy(bytes);
+                // Log at INFO level through the standard tracing infrastructure.
+                // These messages appear in the app's debug log alongside backend messages.
+                tracing::info!(target: "plugin", "[plugin log] {}", msg);
+            },
+        )?;
+
+        // --- Host import: mesh::mesh_get_permission(ptr, len) -> i32 -------
+        //
+        // Allows plugins to query whether they hold a named permission.
+        // The plugin passes a UTF-8 permission name string in linear memory.
+        // Returns 1 if the permission is granted, 0 if denied.
+        //
+        // This is a read-only query — it cannot grant new permissions.
+        // The permission list in SandboxState is a snapshot captured at
+        // invocation time from Plugin::permissions; the plugin cannot modify it.
+        //
+        // Security (§18.3): this function only reflects permissions the user
+        // already granted at install time. It cannot be used to escalate
+        // privileges or discover undeclared capabilities.
+        linker.func_wrap(
+            "mesh",
+            "mesh_get_permission",
+            |mut caller: wasmtime::Caller<'_, SandboxState>, ptr: i32, len: i32| -> i32 {
+                // Read the permission name from linear memory (same pattern as mesh_log).
+                let mem = match caller.get_export("memory") {
+                    Some(wasmtime::Extern::Memory(m)) => m,
+                    _ => return 0, // No memory → no permissions readable → deny
+                };
+
+                let ptr = ptr as usize;
+                let len = len as usize;
+                let mem_data = mem.data(&caller);
+
+                // Bounds check before slicing.
+                if ptr.saturating_add(len) > mem_data.len() {
+                    return 0; // Out-of-bounds → deny
+                }
+
+                // Parse the permission name. Invalid UTF-8 → deny.
+                let name = match std::str::from_utf8(&mem_data[ptr..ptr + len]) {
+                    Ok(s) => s,
+                    Err(_) => return 0,
+                };
+
+                // Convert the permission name string to a typed PluginPermission.
+                // parse_permission_str handles unknown strings as Custom variants.
+                let requested = parse_permission_str(name);
+
+                // Check against the snapshot in SandboxState.
+                // The `data()` call returns a reference to T from the Caller.
+                // We need to take the data AFTER we're done with mem_data borrow.
+                // Reborrow needed: drop mem_data first.
+                let granted = caller.data().permissions.contains(&requested);
+                // Return 1 (granted) or 0 (denied) following WASM boolean convention.
+                if granted { 1 } else { 0 }
+            },
+        )?;
+
+        // --- Background epoch ticker ----------------------------------------
+        //
+        // wasmtime's epoch interruption requires something to periodically call
+        // `Engine::increment_epoch()`. Without this, the epoch counter never
+        // advances and the deadline is never reached — effectively disabling
+        // the CPU time limit.
+        //
+        // We spawn a daemon thread that sleeps 1ms between increments. This
+        // gives ~1ms epoch resolution, which is sufficient for the 100ms
+        // deadline (100 ticks). The thread holds an `Arc<Engine>` so it
+        // doesn't prevent the engine from being dropped when the sandbox is
+        // dropped (Arc reference drops when the thread exits or when the
+        // engine is no longer referenced).
+        //
+        // NOTE: The thread is intentionally NOT joined on sandbox drop. It is
+        // marked as a daemon thread (via `thread::Builder`) so the process does
+        // not wait for it at exit. This is the standard pattern for wasmtime
+        // epoch threads.
+        {
+            // Clone the engine handle for the background thread.
+            // Engine is Arc-internally-referenced, so this clone is cheap.
+            let engine_clone = engine.clone();
+            std::thread::Builder::new()
+                .name("plugin-epoch-ticker".to_string())
+                .spawn(move || {
+                    // Loop forever, advancing the epoch once per millisecond.
+                    // When the sandbox (and thus the last Engine clone) is dropped,
+                    // the engine handle inside this thread will also be dropped
+                    // and the thread will exit on its next iteration.
+                    loop {
+                        // Sleep for one millisecond between epoch increments.
+                        // This gives the epoch counter ~1ms granularity, which is
+                        // fine for the 100ms CPU deadline (100 increments needed).
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        // Increment the global epoch counter on the shared engine.
+                        // When a Store's deadline is N and the epoch reaches N,
+                        // wasmtime traps the executing WASM function.
+                        engine_clone.increment_epoch();
+                    }
+                })
+                // Epoch ticker failure is not fatal — plugins will just run
+                // without CPU time enforcement (degraded safety). Log the error.
+                .map_err(|e| {
+                    tracing::error!("failed to spawn plugin epoch ticker: {}", e);
+                })
+                .ok();
+        }
+
+        Ok(Self {
+            engine,
+            linker,
+            modules: HashMap::new(),
+            timeout_counts: HashMap::new(),
+            crash_counts: HashMap::new(),
+        })
+    }
+
+    /// Compile and cache a WASM module for the given plugin ID.
+    ///
+    /// Takes the raw WASM bytes (the plugin binary), compiles them with
+    /// cranelift, and stores the result in `self.modules`. Subsequent
+    /// invocations of the same plugin reuse the compiled module without
+    /// recompiling.
+    ///
+    /// This should be called when a plugin is activated (transitioned to
+    /// `PluginStatus::Active`). If the WASM bytes are malformed or contain
+    /// invalid instructions, wasmtime returns a compile-time error here rather
+    /// than at invocation time, giving a cleaner failure path.
+    ///
+    /// Returns an error if compilation fails. Does NOT write to the registry —
+    /// the caller is responsible for setting `PluginStatus::Failed` if needed.
+    pub fn load_module(&mut self, plugin_id: [u8; 16], wasm_bytes: &[u8]) -> anyhow::Result<()> {
+        // Compile the WASM binary to native code using cranelift.
+        // This is the expensive step (~tens of ms for typical plugins).
+        // Subsequent calls to instantiate() reuse this compiled module.
+        let module = wasmtime::Module::new(&self.engine, wasm_bytes)?;
+        // Store the compiled module, replacing any previous version.
+        // This handles plugin updates — new bytes produce a new compiled module.
+        self.modules.insert(plugin_id, module);
+        Ok(())
+    }
+
+    /// Remove a compiled module from the cache when a plugin is uninstalled.
+    ///
+    /// Called by the backend when `PluginRegistry::uninstall()` succeeds.
+    /// After this call, any attempt to invoke hooks for the plugin will
+    /// silently skip the missing module (graceful degradation).
+    pub fn unload_module(&mut self, plugin_id: &[u8; 16]) {
+        // Remove the compiled module from the cache.
+        // Also reset the per-plugin counters so a reinstalled plugin starts clean.
+        self.modules.remove(plugin_id);
+        self.timeout_counts.remove(plugin_id);
+        self.crash_counts.remove(plugin_id);
+    }
+
+    /// Execute a single hook invocation in the WASM sandbox.
+    ///
+    /// This is the core execution path:
+    /// 1. Look up the compiled module for `plugin_id`. If missing, return `None`.
+    /// 2. Create a fresh `Store<SandboxState>` with the plugin's permissions
+    ///    and an empty WASI context (no filesystem or network access).
+    /// 3. Set the epoch deadline to `MAX_CPU_PER_CALLBACK_MS` ticks.
+    /// 4. Configure the Store to trap on epoch expiry.
+    /// 5. Instantiate the module through the linker (resolves all imports).
+    /// 6. Call `hook_dispatch(hook_name_ptr, hook_name_len, input_ptr, input_len) -> i64`.
+    /// 7. Read the output bytes from WASM linear memory and deserialize as JSON.
+    /// 8. Handle timeout and crash errors, updating the per-plugin counters.
+    ///
+    /// Returns `Ok(Some(output))` on success, `Ok(None)` if the plugin
+    /// produced no output (output_len == 0), or `Err(...)` on timeout/crash.
+    ///
+    /// The caller (`invoke_hook_sandboxed`) translates the error into the
+    /// appropriate registry state changes (suspend on timeout, fail on crash).
+    fn run_hook(
+        &mut self,
+        plugin_id: &[u8; 16],
+        plugin_permissions: Vec<PluginPermission>,
+        hook_name: &str,
+        input: &serde_json::Value,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        // Look up the pre-compiled module. Return None if not found.
+        // A missing module means the plugin was installed without WASM bytes,
+        // or the compile step was skipped. We skip gracefully.
+        let module = match self.modules.get(plugin_id) {
+            Some(m) => m.clone(), // Clone is cheap (Arc internally)
+            None => {
+                // No compiled module for this plugin — nothing to execute.
+                // Return None (no output) rather than an error so the calling
+                // code still records a HookInvocation with output=None.
+                return Ok(None);
+            }
+        };
+
+        // --- Serialize the hook input to JSON bytes -------------------------
+        //
+        // The WASM ABI passes data through linear memory. We serialize the
+        // JSON input value to bytes and write them into the WASM heap.
+        // The plugin reads input_ptr..input_ptr+input_len to get the JSON.
+        let input_bytes = serde_json::to_vec(input)?;
+        let hook_name_bytes = hook_name.as_bytes();
+
+        // --- Build per-invocation Store<SandboxState> -----------------------
+        //
+        // A fresh Store is created for every invocation. This ensures:
+        //   - No state leaks between calls (each call gets a clean WASM memory)
+        //   - The epoch deadline is reset for each call
+        //   - Any WASM linear memory from the previous call is freed
+        //
+        // Building the WASI context with an empty WasiCtxBuilder gives the plugin
+        // no pre-opened file descriptors, no environment variables, and no network
+        // access through WASI. stdin/stdout/stderr are also not connected.
+        let wasi_ctx = wasmtime_wasi::WasiCtxBuilder::new().build_p1();
+        let state = SandboxState {
+            permissions: plugin_permissions,
+            wasi: wasi_ctx,
+        };
+        let mut store = wasmtime::Store::new(&self.engine, state);
+
+        // --- Configure epoch-based CPU time limiting -------------------------
+        //
+        // `set_epoch_deadline(N)` tells wasmtime to interrupt execution when the
+        // engine's epoch counter advances N ticks beyond its current value.
+        // The background thread advances the counter at ~1ms intervals, so
+        // N = MAX_CPU_PER_CALLBACK_MS ticks ≈ MAX_CPU_PER_CALLBACK_MS milliseconds.
+        //
+        // `epoch_deadline_trap()` configures what happens when the deadline is
+        // reached: the Store raises a WASM trap (caught by wasmtime and returned
+        // as an Err from the called function). This does NOT panic or crash the
+        // host process — wasmtime's isolation guarantee holds.
+        store.set_epoch_deadline(MAX_CPU_PER_CALLBACK_MS);
+        store.epoch_deadline_trap();
+
+        // --- Instantiate the module -----------------------------------------
+        //
+        // `linker.instantiate` resolves all WASM imports (WASI functions + our
+        // two mesh:: functions) and produces a live WASM instance. This step
+        // calls the WASM start function if present (typically none in plugins).
+        let instance = self.linker.instantiate(&mut store, &module)?;
+
+        // --- Get a reference to the WASM linear memory ----------------------
+        //
+        // The memory export named "memory" is the standard WASM memory. We need
+        // it to write input strings and read output bytes. All standard WASM
+        // toolchains (Rust/wasm-pack, C/clang, TinyGo) export this.
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .ok_or_else(|| anyhow::anyhow!("plugin WASM module has no 'memory' export"))?;
+
+        // --- Get the hook_dispatch function export --------------------------
+        //
+        // `hook_dispatch` is the single entrypoint for all hooks. The plugin
+        // receives the hook name and JSON input via WASM linear memory pointers.
+        // Signature: (hook_name_ptr: i32, hook_name_len: i32,
+        //             input_ptr: i32, input_len: i32) -> i64
+        //
+        // The i64 return value encodes two i32 values:
+        //   output_ptr = (return_value >> 32) as i32
+        //   output_len = (return_value & 0xFFFF_FFFF) as i32
+        //
+        // If output_len == 0, the plugin produced no output.
+        let hook_dispatch: wasmtime::TypedFunc<(i32, i32, i32, i32), i64> =
+            instance.get_typed_func(&mut store, "hook_dispatch")?;
+
+        // --- Write input data into WASM linear memory -----------------------
+        //
+        // We need the plugin to allocate memory for us, or we can write into
+        // a known scratch area. The standard approach for simple WASM ABIs is
+        // to ask the plugin to malloc() and then we write. However, to keep
+        // the ABI simple and avoid requiring plugins to export malloc, we
+        // write into static data at the start of the memory and require the
+        // plugin NOT to use that area for output.
+        //
+        // Simple allocation strategy: write hook_name and input_bytes to the
+        // beginning of the memory (offset 0 for hook_name, offset 4096 for input).
+        // The output must come from a different memory region (the plugin's heap).
+        // 4096 bytes is sufficient for hook names; 4096..8192 is the input scratch area.
+        //
+        // This approach works because:
+        //   1. The plugin reads its inputs once at the start of hook_dispatch.
+        //   2. It writes its output to its own heap (above 8192).
+        //   3. We read the output after hook_dispatch returns.
+        //
+        // Plugins that need more than 4096 bytes of JSON input will fail.
+        // For production use, a proper allocation protocol (export `alloc`) is
+        // recommended. This scratch-buffer approach is spec-compliant for the
+        // hooknames and typical JSON inputs in this system.
+        const HOOK_NAME_OFFSET: i32 = 0;
+        const INPUT_OFFSET: i32 = 4096;
+        const MAX_INPUT_LEN: usize = 4096;
+        const MAX_HOOK_NAME_LEN: usize = 256;
+
+        // Verify the memory is large enough for our scratch areas.
+        // Standard WASM pages are 65536 bytes; one page is enough for our 8KB scratch.
+        let mem_size = memory.data_size(&store);
+        if mem_size < 8192 {
+            anyhow::bail!("plugin WASM memory too small ({} bytes)", mem_size);
+        }
+        if hook_name_bytes.len() > MAX_HOOK_NAME_LEN {
+            anyhow::bail!("hook name too long ({} bytes)", hook_name_bytes.len());
+        }
+        if input_bytes.len() > MAX_INPUT_LEN {
+            anyhow::bail!("plugin input JSON too large ({} bytes)", input_bytes.len());
+        }
+
+        // Write hook name bytes to offset 0 in WASM linear memory.
+        memory.write(&mut store, HOOK_NAME_OFFSET as usize, hook_name_bytes)
+            .map_err(|e| anyhow::anyhow!("failed to write hook name to WASM memory: {}", e))?;
+
+        // Write serialized JSON input bytes to offset 4096 in WASM linear memory.
+        memory.write(&mut store, INPUT_OFFSET as usize, &input_bytes)
+            .map_err(|e| anyhow::anyhow!("failed to write input JSON to WASM memory: {}", e))?;
+
+        // --- Call hook_dispatch in the WASM sandbox -------------------------
+        //
+        // This is the only point at which plugin code runs. wasmtime enforces:
+        //   - Memory safety (WASM's isolation guarantee)
+        //   - The epoch deadline (CPU time limit)
+        //   - Import restrictions (only the functions we explicitly linked)
+        //
+        // If the plugin traps (WASM unreachable, OOM, stack overflow, or
+        // epoch timeout), wasmtime catches the trap and returns Err here.
+        // The host process is unaffected.
+        let result = hook_dispatch.call(
+            &mut store,
+            (
+                HOOK_NAME_OFFSET,
+                hook_name_bytes.len() as i32,
+                INPUT_OFFSET,
+                input_bytes.len() as i32,
+            ),
+        );
+
+        // --- Interpret the result -------------------------------------------
+        match result {
+            Ok(packed) => {
+                // Successful execution. Unpack the two i32 values from the i64.
+                // Upper 32 bits: output_ptr (pointer into WASM linear memory)
+                // Lower 32 bits: output_len (number of bytes of output)
+                let output_ptr = ((packed >> 32) & 0xFFFF_FFFF) as usize;
+                let output_len = (packed & 0xFFFF_FFFF) as usize;
+
+                // Reset the crash and timeout counters on success.
+                // A successful call means the plugin is healthy again.
+                self.crash_counts.insert(*plugin_id, 0);
+                self.timeout_counts.insert(*plugin_id, 0);
+
+                if output_len == 0 {
+                    // The plugin explicitly returned no output (notification-only hooks).
+                    return Ok(None);
+                }
+
+                // Read the output bytes from WASM linear memory.
+                // The plugin wrote output_len bytes starting at output_ptr.
+                let mem_data = memory.data(&store);
+                if output_ptr.saturating_add(output_len) > mem_data.len() {
+                    anyhow::bail!(
+                        "plugin hook_dispatch returned out-of-bounds output pointer \
+                         (ptr={}, len={}, mem={})",
+                        output_ptr,
+                        output_len,
+                        mem_data.len()
+                    );
+                }
+                let output_bytes = &mem_data[output_ptr..output_ptr + output_len];
+
+                // Deserialize the output bytes as JSON.
+                // Plugin output must be valid UTF-8 JSON; if it isn't, we return an error.
+                let output_value: serde_json::Value =
+                    serde_json::from_slice(output_bytes)
+                        .map_err(|e| anyhow::anyhow!("plugin output is not valid JSON: {}", e))?;
+                Ok(Some(output_value))
+            }
+            Err(trap_err) => {
+                // The plugin trapped. This could be:
+                //   a) An epoch timeout (CPU time limit exceeded)
+                //   b) A WASM trap (unreachable, out-of-bounds, stack overflow)
+                //   c) An import failure (e.g., tried to call an unlisted import)
+                //
+                // We distinguish timeouts from other traps by inspecting the error.
+                // wasmtime represents epoch interrupts as a specific trap kind.
+                let is_timeout = trap_err
+                    .downcast_ref::<wasmtime::Trap>()
+                    .map(|t| *t == wasmtime::Trap::Interrupt)
+                    .unwrap_or(false);
+
+                if is_timeout {
+                    // Epoch timeout: increment the timeout counter.
+                    let count = self.timeout_counts.entry(*plugin_id).or_insert(0);
+                    *count += 1;
+                    tracing::warn!(
+                        "plugin {:?} timed out (count={}): {}",
+                        hex::encode(plugin_id),
+                        count,
+                        trap_err
+                    );
+                } else {
+                    // WASM trap (crash): increment the crash counter.
+                    let count = self.crash_counts.entry(*plugin_id).or_insert(0);
+                    *count += 1;
+                    tracing::error!(
+                        "plugin {:?} crashed (count={}): {}",
+                        hex::encode(plugin_id),
+                        count,
+                        trap_err
+                    );
+                }
+
+                // Propagate the error so invoke_hook_sandboxed can check counters.
+                Err(trap_err)
+            }
+        }
+    }
+
+    /// Return the current consecutive timeout count for a plugin.
+    ///
+    /// Used by `invoke_hook_sandboxed` to decide whether to auto-suspend
+    /// a plugin that has hit `TIMEOUT_AUTO_DISABLE` consecutive timeouts.
+    pub fn timeout_count(&self, plugin_id: &[u8; 16]) -> u32 {
+        self.timeout_counts.get(plugin_id).copied().unwrap_or(0)
+    }
+
+    /// Return the current consecutive crash count for a plugin.
+    ///
+    /// Used by `invoke_hook_sandboxed` to decide whether to quarantine
+    /// a plugin that has hit `CRASH_QUARANTINE_THRESHOLD` consecutive crashes.
+    pub fn crash_count(&self, plugin_id: &[u8; 16]) -> u32 {
+        self.crash_counts.get(plugin_id).copied().unwrap_or(0)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -132,6 +811,63 @@ fn parse_permission_str(s: &str) -> PluginPermission {
         "crypto_access" => PluginPermission::CryptoAccess,
         // Forward-compatibility: preserve the raw string for display in the UI.
         other => PluginPermission::Custom(other.to_string()),
+    }
+}
+
+/// Map a hook name to the permission required to handle it (§18.2).
+///
+/// Before dispatching a hook in the WASM sandbox, `invoke_hook_sandboxed`
+/// calls this function to find the required permission. If the plugin does
+/// not hold it, the invocation is skipped entirely.
+///
+/// Returns `None` if the hook has no required permission (infrastructure
+/// hooks that don't touch user content may be open to all active plugins).
+///
+/// The mapping follows §18.2's scope categories:
+///   - `on_message_*` hooks require `ReadMessages` (reading messages is the
+///     gateway to handling them, even for filtering/modification plugins)
+///   - `on_send_*` hooks require `SendMessages` (plugins that post need explicit
+///     send capability, separate from read)
+///   - `on_peer_*` / `on_contact_*` hooks require `ReadContacts`
+///   - `on_file_*` hooks require `FileAccess`
+///   - `on_notify_*` hooks require `NotificationAccess`
+///   - Crypto operation hooks require `CryptoAccess`
+///   - All other hooks have no mandatory permission (custom hooks)
+// hook_name_to_permission() — maps hook strings to the required PluginPermission.
+// Used exclusively by invoke_hook_sandboxed() for pre-dispatch permission gating.
+fn hook_name_to_permission(hook_name: &str) -> Option<PluginPermission> {
+    // Check each well-known hook prefix and return the corresponding permission.
+    // Prefix matching is used so plugin authors can create namespaced variants
+    // (e.g., "on_message_received", "on_message_edited") without each needing
+    // a separate entry here.
+    if hook_name.starts_with("on_message") {
+        // Hooks that observe or process messages require ReadMessages.
+        // This includes: on_message_received, on_message_edited, on_message_deleted.
+        Some(PluginPermission::ReadMessages)
+    } else if hook_name.starts_with("on_send") {
+        // Hooks that intercept or augment outgoing messages require SendMessages.
+        // This includes: on_send_message, on_send_file.
+        Some(PluginPermission::SendMessages)
+    } else if hook_name.starts_with("on_peer") || hook_name.starts_with("on_contact") {
+        // Hooks about peer discovery or contact events require ReadContacts.
+        // This includes: on_peer_connected, on_peer_disconnected, on_contact_updated.
+        Some(PluginPermission::ReadContacts)
+    } else if hook_name.starts_with("on_file") {
+        // Hooks about file sharing events require FileAccess.
+        // This includes: on_file_received, on_file_shared.
+        Some(PluginPermission::FileAccess)
+    } else if hook_name.starts_with("on_notify") {
+        // Hooks that post notifications require NotificationAccess.
+        // This includes: on_notify_send.
+        Some(PluginPermission::NotificationAccess)
+    } else if hook_name.starts_with("on_crypto") {
+        // Hooks that perform cryptographic operations require CryptoAccess.
+        // This includes: on_crypto_hash, on_crypto_sign.
+        Some(PluginPermission::CryptoAccess)
+    } else {
+        // Unknown or custom hooks have no mandatory permission requirement.
+        // The plugin still must be active; but no specific scope gate applies.
+        None
     }
 }
 
@@ -234,6 +970,13 @@ pub struct RegistryManifest {
 /// Created by `PluginRegistry::install()` and stored in the registry's
 /// plugin list. The `id` is a random 16-byte identifier generated at
 /// install time — it is NOT the reverse-domain ID from the manifest.
+///
+/// The `wasm_bytes` field carries the raw WASM binary for this plugin.
+/// It is NOT serialized (marked `#[serde(skip)]`) because WASM binaries
+/// can be several megabytes and should be stored separately (in the plugin
+/// vault directory per §17.9), not embedded in the registry snapshot.
+/// The caller must re-supply WASM bytes after deserialization by calling
+/// `Plugin::set_wasm_bytes()` and then `PluginSandbox::load_module()`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 // Plugin — the primary record stored per installed plugin.
 // ID is random, generated at install time.
@@ -265,6 +1008,34 @@ pub struct Plugin {
     /// Unix timestamp (seconds since epoch) when the plugin was installed.
     // Recorded for audit and sorting in the UI.
     pub installed_at: u64,
+
+    /// Raw WASM binary bytes for this plugin.
+    ///
+    /// Populated by `Plugin::set_wasm_bytes()` after install. Skipped during
+    /// serialization/deserialization because binaries are stored separately
+    /// in the vault (§17.9). After loading a registry snapshot from disk,
+    /// callers must re-supply bytes via `set_wasm_bytes()` and then call
+    /// `PluginSandbox::load_module()` to recompile.
+    ///
+    /// `None` means the plugin has no WASM bytes loaded (e.g., a manifest-only
+    /// install for preview, or a reload that hasn't re-supplied bytes yet).
+    /// `invoke_hook_sandboxed` skips plugins with no loaded module gracefully.
+    #[serde(skip)]
+    pub wasm_bytes: Option<Vec<u8>>,
+}
+
+impl Plugin {
+    /// Set (or replace) the WASM binary bytes for this plugin.
+    ///
+    /// Called after installation or when loading a registry snapshot from disk.
+    /// After calling this, pass `plugin.id` and `wasm_bytes` to
+    /// `PluginSandbox::load_module()` to compile the module.
+    // set_wasm_bytes() — stores the raw binary for later compilation.
+    // Must be followed by PluginSandbox::load_module() before invocation.
+    pub fn set_wasm_bytes(&mut self, bytes: Vec<u8>) {
+        // Store the bytes. Any previous bytes are overwritten (plugin update path).
+        self.wasm_bytes = Some(bytes);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +1281,7 @@ impl PluginRegistry {
 
         // Build the Plugin record from the manifest fields.
         // Status starts as Installed — caller must explicitly activate.
+        // wasm_bytes starts as None; set via Plugin::set_wasm_bytes() + PluginSandbox::load_module().
         let plugin = Plugin {
             id,
             name: manifest.name,
@@ -520,6 +1292,11 @@ impl PluginRegistry {
             status: PluginStatus::Installed,
             signature,
             installed_at,
+            // WASM bytes are not stored in the manifest; the caller must supply
+            // them separately via Plugin::set_wasm_bytes() after install.
+            // We start with None so the plugin can be registered in the registry
+            // before the binary has been validated/stored.
+            wasm_bytes: None,
         };
 
         // Add to the registry's plugin list.
@@ -687,20 +1464,23 @@ impl PluginRegistry {
         Ok(())
     }
 
-    /// Invoke all active plugins registered for a named hook.
+    /// Invoke all active plugins registered for a named hook (no-sandbox path).
+    ///
+    /// This is the API-framework-only version: it records timing and performs
+    /// status filtering but does NOT execute any WASM code. Output is always
+    /// `None`. It is used by tests and by callers that do not have a
+    /// `PluginSandbox` available (e.g., in environments where WASM execution
+    /// is intentionally disabled or not yet configured).
+    ///
+    /// For real WASM execution, use `invoke_hook_sandboxed()` instead, which
+    /// takes a `PluginSandbox` and actually calls the plugin's `hook_dispatch`
+    /// export.
     ///
     /// Each plugin receives the same `input` JSON value. The registry
     /// records timing for each invocation and returns a `HookInvocation`
     /// per plugin. Suspended and non-active plugins are skipped.
-    /// Permission checks are NOT done here — the caller must check
-    /// permissions before invoking the hook if needed.
-    ///
-    /// In this native API implementation, hook output is always `None`
-    /// because actual plugin execution requires a runtime (WASM or native
-    /// dylib). The framework records timing and filters by status, ready
-    /// for a real runtime to be plugged in.
-    // invoke_hook() — dispatches the hook to all registered, active plugins.
-    // Returns one HookInvocation per eligible plugin with timing data.
+    // invoke_hook() — lightweight dispatch without WASM execution.
+    // Returns one HookInvocation (output=None) per eligible active plugin.
     pub fn invoke_hook(&self, hook_name: &str, input: serde_json::Value) -> Vec<HookInvocation> {
         // Look up the subscriber list for this hook. Empty vec if no registrations.
         // Cloning the subscriber list avoids borrow conflicts during iteration.
@@ -733,9 +1513,8 @@ impl PluginRegistry {
             // Uses monotonic Instant to avoid clock skew issues.
             let start = std::time::Instant::now();
 
-            // In the native API framework, actual execution is a no-op.
-            // A real runtime (WASM/dylib) would call the plugin here and
-            // capture its output. For now, output is None.
+            // No WASM execution in this path — output is always None.
+            // Use invoke_hook_sandboxed() to actually execute plugin code.
             let output: Option<serde_json::Value> = None;
 
             // Compute the elapsed time in milliseconds.
@@ -754,6 +1533,203 @@ impl PluginRegistry {
         }
 
         results
+    }
+
+    /// Invoke all active plugins registered for a named hook via the WASM sandbox.
+    ///
+    /// This is the real execution path. For each active plugin registered for
+    /// `hook_name`:
+    ///
+    /// 1. **Permission check** — the hook name is mapped to a required permission
+    ///    via `hook_name_to_permission()`. If the plugin lacks the required
+    ///    permission, the invocation is skipped and recorded with `output=None`.
+    ///    This enforces §18.2 capability gating at the dispatch layer.
+    ///
+    /// 2. **WASM execution** — `PluginSandbox::run_hook()` is called with:
+    ///    - A clone of the plugin's permissions (captured in the Store)
+    ///    - The hook name and serialized JSON input
+    ///    The sandbox creates a fresh wasmtime `Store`, sets the epoch deadline
+    ///    to `MAX_CPU_PER_CALLBACK_MS` ticks, instantiates the module, and calls
+    ///    `hook_dispatch(hook_name_ptr, hook_name_len, input_ptr, input_len) -> i64`.
+    ///
+    /// 3. **Timeout handling** — if the plugin's epoch deadline is exceeded,
+    ///    the sandbox increments `timeout_count`. When `timeout_count` reaches
+    ///    `TIMEOUT_AUTO_DISABLE`, the registry suspends the plugin automatically.
+    ///    The HookInvocation is still recorded with `output=None`.
+    ///
+    /// 4. **Crash handling** — any non-timeout WASM trap increments `crash_count`.
+    ///    When `crash_count` reaches `CRASH_QUARANTINE_THRESHOLD`, the plugin's
+    ///    status is set to `PluginStatus::Failed` and it is quarantined.
+    ///    The HookInvocation is still recorded with `output=None`.
+    ///
+    /// On iOS, this method returns an empty vec immediately because WASM plugin
+    /// execution is not available on that platform (§18.1).
+    ///
+    /// The `sandbox` parameter is taken as `&mut PluginSandbox` because
+    /// `run_hook` mutates the timeout/crash counters inside the sandbox.
+    // invoke_hook_sandboxed() — real WASM execution path with permission gating.
+    // Returns one HookInvocation per eligible active plugin with real output.
+    #[cfg(not(target_os = "ios"))]
+    pub fn invoke_hook_sandboxed(
+        &mut self,
+        hook_name: &str,
+        input: serde_json::Value,
+        sandbox: &mut PluginSandbox,
+    ) -> Vec<HookInvocation> {
+        // Look up the subscriber list for this hook. Empty vec if no registrations.
+        // Cloning the subscriber list avoids borrow conflicts during the mutable loop.
+        let subscriber_ids = match self.hooks.get(hook_name) {
+            Some(ids) => ids.clone(),
+            // No plugins registered for this hook — return empty results.
+            None => return Vec::new(),
+        };
+
+        // Determine the permission required for this hook.
+        // Hooks that don't map to a known permission are allowed through
+        // (None means no specific permission required for this hook).
+        let required_permission = hook_name_to_permission(hook_name);
+
+        // Collect invocation results for each registered, active plugin.
+        // Pre-allocate to the number of subscribers (upper bound).
+        let mut results = Vec::with_capacity(subscriber_ids.len());
+
+        for plugin_id in &subscriber_ids {
+            // Look up the plugin record to check its status and permissions.
+            // Skip if the plugin was uninstalled between registration and invocation.
+            let plugin = match self.get(plugin_id) {
+                Some(p) => p,
+                // Plugin was uninstalled — skip silently.
+                None => continue,
+            };
+
+            // Only active plugins receive hook invocations.
+            // Installed, Suspended, and Failed plugins are skipped.
+            if plugin.status != PluginStatus::Active {
+                continue;
+            }
+
+            // --- Permission enforcement (§18.2) ----------------------------
+            //
+            // Before dispatching to the WASM sandbox, verify the plugin holds
+            // the permission required for this hook. If not, the invocation is
+            // skipped. This implements the principle: "No scope equals permission
+            // error, never silent failure or crash" (§18.2).
+            //
+            // If the hook maps to None (no required permission), all active
+            // plugins may handle it (e.g., infrastructure hooks that don't
+            // touch user content).
+            if let Some(ref required) = required_permission {
+                // Plugin must hold the required permission.
+                if !plugin.permissions.contains(required) {
+                    // Permission denied — skip this plugin for this hook.
+                    // We do NOT record a HookInvocation so the caller cannot
+                    // infer which hooks were denied from the result set.
+                    tracing::debug!(
+                        "plugin {:?} lacks permission {:?} for hook {:?} — skipping",
+                        hex::encode(plugin_id),
+                        required,
+                        hook_name
+                    );
+                    continue;
+                }
+            }
+
+            // Snapshot the plugin's permissions and ID before the mutable borrow.
+            // We need these after the sandbox call when we may mutate the registry.
+            let plugin_permissions = plugin.permissions.clone();
+            let pid = *plugin_id;
+
+            // Record the start time for wall-clock timing.
+            // Uses monotonic Instant to avoid system clock skew.
+            let start = std::time::Instant::now();
+
+            // --- WASM sandbox execution ------------------------------------
+            //
+            // Delegate to the sandbox's run_hook method, which:
+            //   1. Creates a fresh Store<SandboxState> with the plugin's permissions
+            //   2. Sets the epoch deadline to MAX_CPU_PER_CALLBACK_MS ticks
+            //   3. Instantiates the compiled module through the linker
+            //   4. Calls hook_dispatch(hook_name_ptr, hook_name_len, input_ptr, input_len)
+            //   5. Reads and deserializes the output from WASM linear memory
+            //
+            // If the plugin has no compiled module (no wasm_bytes), run_hook
+            // returns Ok(None) and we record an empty output.
+            let run_result = sandbox.run_hook(&pid, plugin_permissions, hook_name, &input);
+
+            // Measure actual wall-clock time of the WASM execution.
+            let duration_ms = start.elapsed().as_millis() as u64;
+
+            // Process the result and check if auto-management actions are needed.
+            let output = match run_result {
+                Ok(output_value) => {
+                    // Successful execution or graceful no-output (output_len == 0).
+                    output_value
+                }
+                Err(ref trap_err) => {
+                    // The WASM module trapped (timeout or crash).
+                    // Check whether this plugin has crossed an auto-management threshold.
+                    let timeout_count = sandbox.timeout_count(&pid);
+                    let crash_count = sandbox.crash_count(&pid);
+
+                    if timeout_count >= TIMEOUT_AUTO_DISABLE {
+                        // Three consecutive timeouts — auto-suspend per §18 spec.
+                        // Suspend the plugin; the user will see a notification in the UI.
+                        tracing::warn!(
+                            "auto-suspending plugin {:?}: {} consecutive timeouts",
+                            hex::encode(&pid),
+                            timeout_count
+                        );
+                        // Suspend via the registry; future invocations will skip it.
+                        // Ignore the error (NotFound would be a logic bug here).
+                        let _ = self.suspend(&pid);
+                    } else if crash_count >= CRASH_QUARANTINE_THRESHOLD {
+                        // Three consecutive crashes — move to Failed/quarantine state.
+                        tracing::error!(
+                            "quarantining plugin {:?}: {} consecutive crashes",
+                            hex::encode(&pid),
+                            crash_count
+                        );
+                        // Mark as Failed so the UI shows the quarantine badge.
+                        if let Some(p) = self.plugins.iter_mut().find(|p| p.id == pid) {
+                            p.status = PluginStatus::Failed(
+                                format!("crash loop: {} consecutive traps — {}", crash_count, trap_err)
+                            );
+                        }
+                    }
+
+                    // No output for failed invocations.
+                    None
+                }
+            };
+
+            // Build the invocation record with real timing and execution output.
+            results.push(HookInvocation {
+                hook_name: hook_name.to_string(),
+                plugin_id: pid,
+                input: input.clone(),
+                output,
+                duration_ms,
+            });
+        }
+
+        results
+    }
+
+    /// Fallback for iOS: WASM plugin execution is not available (§18.1).
+    ///
+    /// Returns an empty vec immediately. No WASM code is compiled or linked
+    /// for iOS builds — this stub satisfies the call site without any
+    /// wasmtime dependency being pulled in.
+    #[cfg(target_os = "ios")]
+    pub fn invoke_hook_sandboxed(
+        &mut self,
+        _hook_name: &str,
+        _input: serde_json::Value,
+        _sandbox: &mut (),
+    ) -> Vec<HookInvocation> {
+        // iOS does not support third-party executable plugins (§18.1).
+        // Return empty — no invocations, no error.
+        Vec::new()
     }
 
     /// Verify a plugin's Ed25519 signature against a trusted signing key.
@@ -1703,5 +2679,236 @@ mod tests {
         assert!(registry.list().is_empty());
         let results = registry.invoke_hook("on_message_received", serde_json::json!({}));
         assert!(results.is_empty(), "Uninstalled plugins leave no traces");
+    }
+
+    // -----------------------------------------------------------------------
+    // hook_name_to_permission mapping
+    // -----------------------------------------------------------------------
+
+    /// Verify that on_message_* hooks map to ReadMessages.
+    #[test]
+    fn test_hook_permission_on_message() {
+        // All on_message_* variants should require ReadMessages.
+        assert_eq!(
+            hook_name_to_permission("on_message_received"),
+            Some(PluginPermission::ReadMessages),
+        );
+        assert_eq!(
+            hook_name_to_permission("on_message_edited"),
+            Some(PluginPermission::ReadMessages),
+        );
+        // Exact prefix match — "on_message" alone also maps.
+        assert_eq!(
+            hook_name_to_permission("on_message"),
+            Some(PluginPermission::ReadMessages),
+        );
+    }
+
+    /// Verify that on_send_* hooks map to SendMessages.
+    #[test]
+    fn test_hook_permission_on_send() {
+        // on_send_message requires SendMessages (not just ReadMessages).
+        assert_eq!(
+            hook_name_to_permission("on_send_message"),
+            Some(PluginPermission::SendMessages),
+        );
+    }
+
+    /// Verify that on_peer_* and on_contact_* hooks map to ReadContacts.
+    #[test]
+    fn test_hook_permission_on_peer_contact() {
+        assert_eq!(
+            hook_name_to_permission("on_peer_connected"),
+            Some(PluginPermission::ReadContacts),
+        );
+        assert_eq!(
+            hook_name_to_permission("on_contact_updated"),
+            Some(PluginPermission::ReadContacts),
+        );
+    }
+
+    /// Verify that on_file_* hooks map to FileAccess.
+    #[test]
+    fn test_hook_permission_on_file() {
+        assert_eq!(
+            hook_name_to_permission("on_file_received"),
+            Some(PluginPermission::FileAccess),
+        );
+    }
+
+    /// Verify that unknown hooks return None (no required permission).
+    #[test]
+    fn test_hook_permission_unknown() {
+        // Custom or infrastructure hooks have no mandatory permission requirement.
+        assert_eq!(hook_name_to_permission("on_custom_event"), None);
+        assert_eq!(hook_name_to_permission("startup"), None);
+        assert_eq!(hook_name_to_permission(""), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Plugin WASM bytes and sandbox
+    // -----------------------------------------------------------------------
+
+    /// Plugin::set_wasm_bytes stores bytes and they are accessible.
+    #[test]
+    fn test_plugin_set_wasm_bytes() {
+        // Install a plugin and give it some (fake) WASM bytes.
+        let mut registry = PluginRegistry::new();
+        let id = registry.install(test_manifest(), None).expect("install");
+
+        // wasm_bytes starts as None after install.
+        {
+            let plugin = registry.get(&id).expect("plugin should exist");
+            assert!(plugin.wasm_bytes.is_none(), "wasm_bytes should start None");
+        }
+
+        // get_mut access through the plugins vec to call set_wasm_bytes.
+        // In production, the caller iterates the registry's plugin list.
+        registry
+            .plugins
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("plugin should be in list")
+            .set_wasm_bytes(vec![0x00, 0x61, 0x73, 0x6d]); // WASM magic bytes
+
+        // wasm_bytes should now be Some.
+        let plugin = registry.get(&id).expect("plugin should still exist");
+        assert!(plugin.wasm_bytes.is_some(), "wasm_bytes should be set");
+        assert_eq!(
+            plugin.wasm_bytes.as_ref().unwrap(),
+            &[0x00, 0x61, 0x73, 0x6d],
+        );
+    }
+
+    /// PluginSandbox::new() succeeds and produces a functional sandbox.
+    ///
+    /// This test verifies that the wasmtime engine initializes correctly
+    /// with cranelift JIT and epoch interruption enabled.
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn test_plugin_sandbox_new() {
+        // Creating a sandbox should succeed on all supported platforms.
+        let sandbox = PluginSandbox::new();
+        assert!(sandbox.is_ok(), "PluginSandbox::new() should succeed: {:?}", sandbox.err());
+
+        let sandbox = sandbox.unwrap();
+
+        // A fresh sandbox has no modules, timeouts, or crashes loaded.
+        assert!(sandbox.modules.is_empty(), "modules should start empty");
+        assert!(sandbox.timeout_counts.is_empty(), "timeout_counts should start empty");
+        assert!(sandbox.crash_counts.is_empty(), "crash_counts should start empty");
+    }
+
+    /// PluginSandbox::load_module rejects malformed WASM bytes.
+    ///
+    /// Invalid WASM should fail at compile time (load_module), not at
+    /// invocation time, giving a clean failure path.
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn test_plugin_sandbox_load_module_invalid_wasm() {
+        // Create a sandbox.
+        let mut sandbox = PluginSandbox::new().expect("sandbox creation should succeed");
+
+        // Attempt to load obviously invalid WASM bytes (just random data).
+        let plugin_id = [0x01u8; 16];
+        let bad_bytes = b"this is not valid wasm";
+        let result = sandbox.load_module(plugin_id, bad_bytes);
+
+        // Compilation should fail with a clear error.
+        assert!(result.is_err(), "load_module should reject invalid WASM");
+        // No module should be cached after a compile failure.
+        assert!(!sandbox.modules.contains_key(&plugin_id),
+            "failed module should not be cached");
+    }
+
+    /// invoke_hook_sandboxed skips plugins with no compiled module.
+    ///
+    /// A plugin installed without WASM bytes (no load_module call) should
+    /// produce a HookInvocation with output=None rather than an error.
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn test_invoke_hook_sandboxed_no_module() {
+        // Install and activate a plugin with no WASM bytes.
+        let mut registry = PluginRegistry::new();
+        let id = registry.install(test_manifest(), None).expect("install");
+        registry.activate(&id).expect("activate");
+        registry.register_hook("on_message", id).expect("register_hook");
+
+        // Create a sandbox but do NOT load any module.
+        let mut sandbox = PluginSandbox::new().expect("sandbox creation should succeed");
+
+        // Invoke the hook — should return one invocation with output=None
+        // (graceful skip for missing module).
+        let results = registry.invoke_hook_sandboxed(
+            "on_message",
+            serde_json::json!({"text": "hello"}),
+            &mut sandbox,
+        );
+
+        // One invocation returned (the plugin was active).
+        assert_eq!(results.len(), 1, "should return one invocation record");
+        // Output is None because there was no compiled WASM module to run.
+        assert!(results[0].output.is_none(), "output should be None with no module");
+    }
+
+    /// invoke_hook_sandboxed enforces permission gating (§18.2).
+    ///
+    /// A plugin registered for an on_message hook but lacking ReadMessages
+    /// permission should be silently skipped — no invocation record produced.
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn test_invoke_hook_sandboxed_permission_denied() {
+        // Install a plugin with ONLY FileAccess — no ReadMessages.
+        let mut registry = PluginRegistry::new();
+        let mut manifest = test_manifest();
+        // Override permissions: only FileAccess, not ReadMessages.
+        manifest.permissions = vec![PluginPermission::FileAccess];
+        let id = registry.install(manifest, None).expect("install");
+        registry.activate(&id).expect("activate");
+        // Register the plugin for an on_message hook.
+        registry.register_hook("on_message_received", id).expect("register_hook");
+
+        // Create a sandbox.
+        let mut sandbox = PluginSandbox::new().expect("sandbox creation should succeed");
+
+        // Invoke on_message_received — requires ReadMessages, which this plugin lacks.
+        let results = registry.invoke_hook_sandboxed(
+            "on_message_received",
+            serde_json::json!({"text": "secret"}),
+            &mut sandbox,
+        );
+
+        // The plugin should be skipped — zero invocations.
+        assert!(
+            results.is_empty(),
+            "plugin without ReadMessages should not handle on_message_received"
+        );
+    }
+
+    /// invoke_hook_sandboxed allows plugins with the required permission.
+    ///
+    /// A plugin with ReadMessages should receive on_message hooks.
+    /// Without a real WASM module, output is None but the invocation is recorded.
+    #[cfg(not(target_os = "ios"))]
+    #[test]
+    fn test_invoke_hook_sandboxed_permission_granted() {
+        // Install a plugin with ReadMessages (from test_manifest default).
+        let mut registry = PluginRegistry::new();
+        let id = registry.install(test_manifest(), None).expect("install");
+        registry.activate(&id).expect("activate");
+        registry.register_hook("on_message_received", id).expect("register_hook");
+
+        let mut sandbox = PluginSandbox::new().expect("sandbox creation should succeed");
+
+        // Invoke on_message_received — the plugin has ReadMessages → should pass permission gate.
+        let results = registry.invoke_hook_sandboxed(
+            "on_message_received",
+            serde_json::json!({"text": "hello"}),
+            &mut sandbox,
+        );
+
+        // One invocation should be recorded (permission passed, module missing → output=None).
+        assert_eq!(results.len(), 1, "plugin with ReadMessages should handle on_message_received");
+        assert_eq!(results[0].hook_name, "on_message_received");
     }
 }

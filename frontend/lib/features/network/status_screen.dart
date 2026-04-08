@@ -6,6 +6,26 @@ import 'screens/metrics_screen.dart';
 import 'screens/exit_node_screen.dart';
 import 'screens/app_connector_screen.dart';
 
+/// NetworkStatusScreen — the overview card in the Network section's Status tab.
+///
+/// Provides a quick summary of the most important network health indicators
+/// without drowning the user in raw counters.  Detailed data is reachable via
+/// the three quick-link tiles at the bottom.
+///
+/// Sections:
+///   1. Connection — peer count, WireGuard sessions, clearnet connections,
+///      average latency.
+///   2. Routing posture — VPN mode, connection status, kill switch, exit node
+///      or profile, and a plain-language privacy summary.
+///   3. Traffic — cumulative bytes sent/received, bandwidth, packet loss.
+///   4. Routing — routing table size, gossip map, delivered/failed routes,
+///      Store-and-Forward backlog.
+///   5. Node mode — client/relay/full-node designation and pairing code.
+///   6. Quick links — one-tap navigation to MetricsScreen, ExitNodeScreen,
+///      and AppConnectorScreen.
+///
+/// All values come from [NetworkState].  Pull-to-refresh calls
+/// [NetworkState.loadAll] which re-fetches everything from the Rust backend.
 class NetworkStatusScreen extends StatelessWidget {
   const NetworkStatusScreen({super.key});
 
@@ -13,6 +33,7 @@ class NetworkStatusScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final net = context.watch<NetworkState>();
     final stats = net.stats;
+    // s may be null before the first loadAll() completes.
     final s = net.settings;
 
     return Scaffold(
@@ -21,7 +42,7 @@ class NetworkStatusScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            // Connection health card
+            // ── Connection health ─────────────────────────────────────────
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -35,14 +56,20 @@ class NetworkStatusScreen extends StatelessWidget {
                       label: 'Peers connected',
                       value: '${net.totalPeers}',
                     ),
+                    // wireGuardSessions: the number of active WireGuard
+                    // key-exchange tunnels.  Each session = one secured peer link.
                     _StatusRow(
                       label: 'WireGuard sessions',
                       value: '${stats?.wireGuardSessions ?? 0}',
                     ),
+                    // clearnetConnections: active TCP/IP connections not using
+                    // an anonymising overlay (Tor/I2P).
                     _StatusRow(
                       label: 'Clearnet connections',
                       value: '${stats?.clearnetConnections ?? 0}',
                     ),
+                    // null stats = no data yet; show "—" instead of 0 to signal
+                    // "we don't know" rather than "latency is zero".
                     _StatusRow(
                       label: 'Avg latency',
                       value: stats != null
@@ -54,6 +81,9 @@ class NetworkStatusScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
+
+            // ── Routing posture ────────────────────────────────────────────
+            // Answers: "is the VPN on, and what does it do to my traffic?"
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -75,29 +105,39 @@ class NetworkStatusScreen extends StatelessWidget {
                       label: 'Kill switch',
                       value: net.vpnKillSwitch ? 'On' : 'Off',
                     ),
+                    // selectedExitNodeId is null when no mesh-peer exit is
+                    // chosen, so we only show this row when it is set.
                     if (net.selectedExitNodeId != null)
                       _StatusRow(
                         label: 'Exit node',
+                        // Show a truncated ID rather than the full 64-char hex.
                         value: _exitNodeLabel(net.selectedExitNodeId!),
                         mono: true,
                       ),
+                    // Tailscale exit: separate from mesh peer exit.
                     if (net.selectedTailscaleExitNode != null)
                       _StatusRow(
                         label: 'Tailscale exit',
                         value: net.selectedTailscaleExitNode!,
                       ),
+                    // Exit profile: an additional routing layer applied on top
+                    // of the exit node path.
                     if (net.selectedExitProfileId != null)
                       _StatusRow(
                         label: 'Exit profile',
                         value: _exitNodeLabel(net.selectedExitProfileId!),
                         mono: true,
                       ),
+                    // vpnExitRouteKind classifies the active exit path type;
+                    // "none" means no exit path is in use.
                     if (net.vpnExitRouteKind != 'none')
                       _StatusRow(
                         label: 'Exit path',
                         value: _exitRouteLabel(net.vpnExitRouteKind),
                       ),
                     const SizedBox(height: 8),
+                    // Plain-language impact summary derived from the backend's
+                    // composite vpnSecurityPosture code.
                     Text(
                       _routingImpactSummary(net),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -109,7 +149,8 @@ class NetworkStatusScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            // Traffic card
+
+            // ── Traffic ────────────────────────────────────────────────────
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -119,6 +160,7 @@ class NetworkStatusScreen extends StatelessWidget {
                     Text('Traffic',
                         style: Theme.of(context).textTheme.titleSmall),
                     const SizedBox(height: 12),
+                    // Show "—" when stats is null rather than claiming 0 bytes.
                     _StatusRow(
                       label: 'Bytes sent',
                       value: stats != null
@@ -146,7 +188,8 @@ class NetworkStatusScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            // Routing card
+
+            // ── Routing table ──────────────────────────────────────────────
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -156,10 +199,14 @@ class NetworkStatusScreen extends StatelessWidget {
                     Text('Routing',
                         style: Theme.of(context).textTheme.titleSmall),
                     const SizedBox(height: 12),
+                    // routingEntries: number of destination→next-hop mappings
+                    // in the local routing table.
                     _StatusRow(
                       label: 'Routing entries',
                       value: '${stats?.routingEntries ?? 0}',
                     ),
+                    // gossipMapSize: nodes known via gossip advertisements from
+                    // connected peers — the "world map" of the mesh.
                     _StatusRow(
                       label: 'Gossip map size',
                       value: '${stats?.gossipMapSize ?? 0}',
@@ -172,6 +219,8 @@ class NetworkStatusScreen extends StatelessWidget {
                       label: 'Failed routes',
                       value: '${stats?.failedRoutes ?? 0}',
                     ),
+                    // sfPendingMessages: messages buffered in Store-and-Forward
+                    // waiting for an offline destination to come online.
                     _StatusRow(
                       label: 'Pending S&F messages',
                       value: '${stats?.sfPendingMessages ?? 0}',
@@ -180,6 +229,9 @@ class NetworkStatusScreen extends StatelessWidget {
                 ),
               ),
             ),
+
+            // ── Node mode ─────────────────────────────────────────────────
+            // Only rendered when settings have loaded; s is null before then.
             if (s != null) ...[
               const SizedBox(height: 12),
               Card(
@@ -191,10 +243,13 @@ class NetworkStatusScreen extends StatelessWidget {
                       Text('Node mode',
                           style: Theme.of(context).textTheme.titleSmall),
                       const SizedBox(height: 12),
+                      // Mode 0 = leaf/client, 1 = relay, 2 = full node.
                       _StatusRow(
                         label: 'Mode',
                         value: _nodeModeName(s.nodeMode),
                       ),
+                      // pairingCode: a short alphanumeric code that can be
+                      // shared with another user to initiate pairing.
                       _StatusRow(
                         label: 'Pairing code',
                         value: (s.pairingCode?.isNotEmpty ?? false)
@@ -208,10 +263,11 @@ class NetworkStatusScreen extends StatelessWidget {
               ),
             ],
 
-            // ── Quick links to sub-screens ─────────────────────────────
-            // MetricsScreen and AppConnectorScreen are separate destinations
-            // rather than inline content — they're too detailed for a status
-            // overview but reachable with one tap from here.
+            // ── Quick links to sub-screens ─────────────────────────────────
+            // MetricsScreen, ExitNodeScreen, and AppConnectorScreen are
+            // separate destinations rather than inline content because they
+            // are too detailed for a status overview.  One-tap reachability
+            // here keeps the path short for users who navigate to them often.
             const SizedBox(height: 12),
             ListTile(
               leading: const Icon(Icons.analytics_outlined),
@@ -255,6 +311,7 @@ class NetworkStatusScreen extends StatelessWidget {
     );
   }
 
+  /// Formats a raw byte count into a human-readable binary-unit string.
   String _formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
@@ -264,6 +321,11 @@ class NetworkStatusScreen extends StatelessWidget {
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
+  /// Maps the integer node-mode value to a label.
+  ///
+  /// 0 = Leaf: standard end-user node that does not forward traffic.
+  /// 1 = Relay: forwards encrypted packets for peers that can't reach each other.
+  /// 2 = Full node: participates in both leaf and relay roles.
   String _nodeModeName(int mode) => switch (mode) {
     0 => 'Leaf',
     1 => 'Relay',
@@ -272,23 +334,28 @@ class NetworkStatusScreen extends StatelessWidget {
   };
 
   String _routingModeLabel(String mode) => switch (mode) {
-    'mesh_only' => 'Mesh only',
-    'exit_node' => 'Exit node',
+    'mesh_only'    => 'Mesh only',
+    'exit_node'    => 'Exit node',
     'policy_based' => 'Policy-based',
-    _ => 'Off',
+    _              => 'Off',
   };
 
   String _routingStatusLabel(String status) => switch (status) {
-    'connected' => 'Connected',
-    'connecting' => 'Connecting',
-    'blocked' => 'Blocked',
+    'connected'     => 'Connected',
+    'connecting'    => 'Connecting',
+    'blocked'       => 'Blocked',
     'disconnecting' => 'Disconnecting',
-    _ => 'Inactive',
+    _               => 'Inactive',
   };
 
+  /// Truncates a long peer or profile ID for compact display.
   String _exitNodeLabel(String peerId) =>
       peerId.length > 12 ? '${peerId.substring(0, 12)}...' : peerId;
 
+  /// Returns a plain-language description of the current routing privacy impact.
+  ///
+  /// The vpnSecurityPosture code is owned by the Rust backend and combines
+  /// VPN mode with exit-path details into a single summary key.
   String _routingImpactSummary(NetworkState net) {
     return switch (net.vpnSecurityPosture) {
       'mesh_only' =>
@@ -299,6 +366,8 @@ class NetworkStatusScreen extends StatelessWidget {
         'node\'s chosen network profile. Websites see that profile\'s egress IP.',
       'exit_node' =>
         net.vpnExitNodeSeesDestinations
+            // The exit node operator can observe which internet destinations
+            // the user visits after traffic leaves the mesh.
             ? 'Internet traffic leaves through the selected exit node. '
               'Websites see that node\'s IP, and the operator can see '
               'destinations after traffic leaves the mesh.'
@@ -323,18 +392,26 @@ class NetworkStatusScreen extends StatelessWidget {
     };
   }
 
+  /// Maps backend exit-route-kind string to a display label.
   String _exitRouteLabel(String routeKind) => switch (routeKind) {
-    'peer_exit' => 'Trusted peer exit',
+    'peer_exit'    => 'Trusted peer exit',
     'profile_exit' => 'Exit profile',
     'profile_only' => 'Profile-defined exit',
-    _ => 'None',
+    _              => 'None',
   };
 }
 
+/// _StatusRow — a labelled key/value row used throughout the status cards.
+///
+/// [mono] enables monospace font for values like IDs and pairing codes.
 class _StatusRow extends StatelessWidget {
   const _StatusRow({required this.label, required this.value, this.mono = false});
+
   final String label;
   final String value;
+
+  /// When true the value is displayed in monospace, suitable for hex IDs and
+  /// pairing codes that must be read character-by-character.
   final bool mono;
 
   @override

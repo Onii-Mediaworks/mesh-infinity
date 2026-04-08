@@ -20,17 +20,28 @@ class TailscaleSetupScreen extends StatefulWidget {
 }
 
 class _TailscaleSetupScreenState extends State<TailscaleSetupScreen> {
-  // Which controller type is selected.
+  /// Which control server to use: vendor Tailscale.com or a self-hosted
+  /// Headscale instance.
   _ControllerType _controllerType = _ControllerType.tailscaleVendor;
 
-  // Headscale URL controller.
+  /// URL of the Headscale server, e.g. "https://headscale.example.com".
+  /// Only used when [_controllerType] is [_ControllerType.headscale].
   final _headscaleUrlCtrl = TextEditingController();
 
-  // Auth key for headless enrollment.
+  /// Pre-auth key for headless (non-interactive) enrolment.
+  /// Generated in the Tailscale admin panel or the Headscale CLI.
   final _authKeyCtrl = TextEditingController();
 
+  /// When true the user wants to authenticate via a pre-auth key rather than
+  /// an interactive OAuth browser flow.  Appropriate for servers/CI nodes.
   bool _useAuthKey = false;
+
+  /// True while a bridge call is in flight — disables buttons to prevent
+  /// double-submission and shows a spinner in the Connect button.
   bool _connecting = false;
+
+  /// Human-readable error from the most recent failed bridge call.
+  /// Null means no error is currently displayed.
   String? _errorMessage;
 
   @override
@@ -40,6 +51,15 @@ class _TailscaleSetupScreenState extends State<TailscaleSetupScreen> {
     super.dispose();
   }
 
+  /// Initiates the Tailscale connection using either an OAuth browser flow or
+  /// a pre-auth key, depending on [_useAuthKey].
+  ///
+  /// OAuth flow: opens a browser to tailscale.com or the Headscale URL so the
+  ///   user can sign in with their account.  The browser redirects back with a
+  ///   token that Rust stores.
+  ///
+  /// Auth key flow: passes the key directly to Rust, which enrolls the device
+  ///   without any browser interaction.  Suitable for headless servers.
   Future<void> _connect() async {
     setState(() {
       _connecting = true;
@@ -49,6 +69,7 @@ class _TailscaleSetupScreenState extends State<TailscaleSetupScreen> {
     final net = context.read<NetworkState>();
     final bridge = context.read<BackendBridge>();
 
+    // Empty string tells the backend to use tailscale.com as the control server.
     final controlUrl = _controllerType == _ControllerType.headscale
         ? _headscaleUrlCtrl.text.trim()
         : '';
@@ -58,27 +79,39 @@ class _TailscaleSetupScreenState extends State<TailscaleSetupScreen> {
       if (_useAuthKey) {
         final key = _authKeyCtrl.text.trim();
         if (key.isEmpty) throw Exception('Auth key is required');
+        // tailscaleAuthKey: synchronous enrolment with the given pre-auth key.
         ok = bridge.tailscaleAuthKey(key, controlUrl);
       } else {
+        // tailscaleBeginOAuth: opens the system browser to start the OAuth flow.
+        // Rust handles the redirect callback and stores the resulting token.
         ok = bridge.tailscaleBeginOAuth(controlUrl);
       }
 
       if (!ok) {
         throw Exception(bridge.getLastError() ?? 'Tailscale connection failed');
       }
+      // Reload so the status card reflects the new connection immediately.
       await net.loadAll();
     } catch (e) {
+      // Catch covers both bridge rejection and unexpected Dart errors.
+      // Shown inline rather than crashing the screen.
       setState(() {
         _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
     } finally {
+      // Always re-enable the button after the call, success or failure.
       if (mounted) setState(() => _connecting = false);
     }
   }
 
+  /// Re-syncs Tailscale state from the control server.
+  ///
+  /// Useful after the admin has added new peers to the tailnet or changed
+  /// ACL rules, or after regaining connectivity.
   Future<void> _refresh(NetworkState net, BackendBridge bridge) async {
     setState(() => _connecting = true);
     final ok = bridge.tailscaleRefresh();
+    // Reload state regardless of bridge result so the UI stays in sync.
     await net.loadAll();
     if (!ok && mounted) {
       setState(() {
@@ -90,6 +123,10 @@ class _TailscaleSetupScreenState extends State<TailscaleSetupScreen> {
     }
   }
 
+  /// Disconnects the Tailscale client and clears credentials from Rust.
+  ///
+  /// The device is removed from the tailnet session.  The user can re-enroll
+  /// using the setup form that is shown again after disconnect.
   Future<void> _disconnect(NetworkState net, BackendBridge bridge) async {
     setState(() => _connecting = true);
     final ok = bridge.tailscaleDisconnect();
@@ -104,6 +141,11 @@ class _TailscaleSetupScreenState extends State<TailscaleSetupScreen> {
     }
   }
 
+  /// Toggles whether to route traffic through Mesh Infinity relay nodes
+  /// instead of Tailscale's own DERP (relay) servers.
+  ///
+  /// DERP servers are Tailscale's fallback relay infrastructure; they can see
+  /// connection metadata.  Preferring mesh relays avoids that dependency.
   Future<void> _setPreferMeshRelay(
     NetworkState net,
     BackendBridge bridge,
@@ -119,6 +161,11 @@ class _TailscaleSetupScreenState extends State<TailscaleSetupScreen> {
     }
   }
 
+  /// Sets the preferred Tailscale exit node by peer name.
+  ///
+  /// An empty [peerName] clears the exit node selection (no exit routing).
+  /// The exit node routes internet-bound traffic out of its own connection;
+  /// websites see the exit node's IP, not the device's real IP.
   Future<void> _setExitNode(
     NetworkState net,
     BackendBridge bridge,

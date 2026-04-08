@@ -2809,6 +2809,265 @@ pub unsafe extern "C" fn mi_is_layer1_ready(ctx: *mut MeshContext) -> i32 {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Keystore-backed mesh identity inject / export (§3.1.1)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These two C-ABI entry points are the bridge between Android Keystore
+// hardware protection and the Rust runtime's in-memory identity slot.
+//
+// ## Why these exist
+//
+// `load_or_create_mesh_identity()` writes/reads the 32-byte WireGuard private
+// key as raw bytes to `data_dir/mesh_identity.key`.  On Android, an attacker
+// with root or physical flash access can read that file.  Wrapping the key with
+// an Android Keystore AES-256-GCM entry (`setUserAuthenticationRequired(false)`)
+// ties the AES wrapping key to the hardware security module (TEE/StrongBox):
+// the ciphertext on disk is useless without the device hardware.
+//
+// ## Startup flow (§3.1.1)
+//
+//   Boot / unlock →
+//     AndroidStartupService.startLayer1IfNeeded()
+//       → NativeLayer1Bridge.startLayer1()          (creates runtime, file-based key loaded)
+//       → tryLoadFromKeystore()                     (unwrap Keystore blob → 32 bytes)
+//       → mi_layer1_inject_secret()  ← this fn     (overwrite in-memory key with hw-backed copy)
+//       → bootstrapLayer1IfNeeded()                 (WireGuard, gossip, cover traffic)
+//
+//   First boot (no Keystore blob yet):
+//       → NativeLayer1Bridge.startLayer1()          (generates + writes file-based key)
+//       → mi_layer1_export_secret()  ← this fn     (read 32 bytes from in-memory identity)
+//       → KeystoreBridge.wrapKey()                  (AES-256-GCM encrypt with hw key)
+//       → keystoreFile.writeBytes()                 (persist wrapped blob)
+//       → bootstrapLayer1IfNeeded()
+
+/// Inject 32 raw secret bytes as the in-memory mesh identity, bypassing the
+/// filesystem.
+///
+/// Called by the Android startup service when the Keystore-backed wrapped copy
+/// of the Layer 1 secret has been successfully unwrapped.  The Keystore copy
+/// takes precedence over the on-disk `mesh_identity.key` file.
+///
+/// `data`  — pointer to exactly `len` bytes of raw WireGuard private key
+///           entropy.  Must be valid for the duration of this call; the bytes
+///           are copied into a stack buffer immediately and not retained.
+/// `len`   — must be exactly 32; any other value returns `-1`.
+///
+/// Returns `0` on success, `-1` on error (null pointer, wrong length).
+///
+/// # Safety
+///
+/// `ctx` must be the value returned by `mesh_init` or `nativeStartLayer1`.
+/// `data` must point to at least `len` readable bytes for the duration of
+/// this call.  The caller may zero or free `data` immediately after return.
+#[no_mangle]
+pub unsafe extern "C" fn mi_layer1_inject_secret(
+    ctx: *mut MeshContext,
+    data: *const u8,
+    len: i32,
+) -> i32 {
+    // Guard: null context pointer is always a programming error.
+    if ctx.is_null() || data.is_null() {
+        return -1;
+    }
+
+    // Only 32-byte secrets are valid for X25519 / WireGuard.
+    if len != 32 {
+        return -1;
+    }
+
+    // Copy the bytes into a stack buffer so the caller can zero `data`
+    // immediately after this function returns without affecting us.
+    // SAFETY: caller guarantees `data` is valid for `len` bytes.
+    let mut secret = [0u8; 32];
+    unsafe { std::ptr::copy_nonoverlapping(data, secret.as_mut_ptr(), 32) };
+
+    // Inject the secret into the runtime.  This overwrites any identity
+    // previously loaded from the file-based path, making the Keystore copy
+    // the authoritative in-memory value.
+    let ctx = unsafe { &*ctx };
+    match ctx.inject_mesh_identity_secret(secret) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&format!("mi_layer1_inject_secret: {e}"));
+            -1
+        }
+    }
+}
+
+/// Export the current 32-byte mesh identity secret into a caller-supplied
+/// buffer.
+///
+/// Used by the Android startup service on first boot (or after a Keystore
+/// entry deletion) to retrieve the freshly generated / file-loaded secret so
+/// it can be wrapped with the hardware-backed AES key.  The caller must zero
+/// `buf` immediately after passing it to `KeystoreBridge.wrapKey()`.
+///
+/// `buf`     — pointer to a caller-owned buffer of at least `buf_len` bytes.
+/// `buf_len` — must be >= 32; any smaller value returns `-1`.
+///
+/// Returns `32` on success (number of bytes written), `-1` if no identity is
+/// loaded yet or if `buf` is too small.
+///
+/// # Safety
+///
+/// `ctx` must be the value returned by `mesh_init` or `nativeStartLayer1`.
+/// `buf` must point to at least `buf_len` writable bytes for the duration of
+/// this call.
+#[no_mangle]
+pub unsafe extern "C" fn mi_layer1_export_secret(
+    ctx: *mut MeshContext,
+    buf: *mut u8,
+    buf_len: i32,
+) -> i32 {
+    // Guard: null pointers or undersized buffer are programming errors.
+    if ctx.is_null() || buf.is_null() || buf_len < 32 {
+        return -1;
+    }
+
+    let ctx = unsafe { &*ctx };
+    match ctx.export_mesh_identity_secret() {
+        Some(secret) => {
+            // Copy into the caller's buffer.
+            // SAFETY: caller guarantees `buf` is valid for `buf_len` bytes,
+            // and we checked buf_len >= 32 above.
+            unsafe { std::ptr::copy_nonoverlapping(secret.as_ptr(), buf, 32) };
+            32
+        }
+        // No identity loaded yet (e.g., called before initialize_startup_state).
+        None => -1,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JNI entry points for NativeLayer1Bridge — Keystore secret inject / export
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These JNI symbols are the Android-specific bridge between the Kotlin Keystore
+// path and the C-ABI functions above.  They translate JNI types (jlong, jbyteArray)
+// into Rust types and delegate to `mi_layer1_inject_secret` /
+// `mi_layer1_export_secret`.
+//
+// Naming follows the JNI convention:
+//   Java_<package>_<Class>_<methodName>
+// where dots in the package name are replaced with underscores.
+
+/// JNI entry point for `NativeLayer1Bridge.nativeInjectLayer1Secret`.
+///
+/// Receives the context pointer as a `jlong` and the raw secret as a Java
+/// `byte[]`.  Copies the bytes into a Rust `[u8; 32]` stack buffer, calls
+/// `inject_mesh_identity_secret`, then returns:
+///   0  — success
+///  -1  — null pointer, wrong array length, or JNI error
+///
+/// # Safety
+///
+/// `ctx_long` must be the value returned by `nativeStartLayer1`.
+/// `data` must be a valid non-null JNI byte array of exactly 32 bytes.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeInjectLayer1Secret(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx_long: jni::sys::jlong,
+    data: jni::objects::JByteArray,
+) -> jni::sys::jint {
+    // Guard: a zero context pointer means the runtime was never allocated.
+    if ctx_long == 0 {
+        return -1;
+    }
+
+    // Retrieve the byte array length before copying.
+    let len = match env.get_array_length(&data) {
+        Ok(n) => n,
+        Err(_) => return -1,
+    };
+    // Only 32-byte secrets are valid.
+    if len != 32 {
+        return -1;
+    }
+
+    // Copy the JVM-managed bytes into a local stack buffer.  We use a signed
+    // slice first (jbyte = i8) then transmute to [u8; 32] — the bit patterns
+    // are identical; we just change the type interpretation.
+    let mut buf = [0i8; 32];
+    if env.get_byte_array_region(&data, 0, &mut buf).is_err() {
+        return -1;
+    }
+    // SAFETY: i8 and u8 have the same size and alignment; all bit patterns are
+    // valid for both types.  This transmute does not produce undefined behaviour.
+    let secret: [u8; 32] = unsafe { std::mem::transmute(buf) };
+
+    // Delegate to the C-ABI inject function via the raw pointer.
+    // SAFETY: ctx_long was returned by nativeStartLayer1 and is valid for the
+    // lifetime of the startup service, coordinated by HEADLESS_LAYER1_PTR.
+    let ctx = unsafe { &*(ctx_long as *const MeshContext) };
+    match ctx.inject_mesh_identity_secret(secret) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("[Layer1] nativeInjectLayer1Secret: {e}");
+            -1
+        }
+    }
+}
+
+/// JNI entry point for `NativeLayer1Bridge.nativeExportLayer1Secret`.
+///
+/// Retrieves the current 32-byte in-memory mesh identity secret and returns
+/// it as a new Java `byte[]`.  Returns `null` if no identity is loaded yet.
+///
+/// The Kotlin caller (`wrapAndSaveKeypairIfNeeded`) must zero the returned
+/// array with `.fill(0)` immediately after passing it to `KeystoreBridge.wrapKey()`.
+///
+/// # Safety
+///
+/// `ctx_long` must be the value returned by `nativeStartLayer1`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeExportLayer1Secret(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx_long: jni::sys::jlong,
+) -> jni::sys::jobject {
+    // Null sentinel value used when there is nothing to return.
+    let null_obj = std::ptr::null_mut();
+
+    // Guard: a zero context pointer means the runtime was never allocated.
+    if ctx_long == 0 {
+        return null_obj;
+    }
+
+    // SAFETY: ctx_long was returned by nativeStartLayer1 and is still valid
+    // (startup service owns the context; HEADLESS_LAYER1_PTR CAS protects it).
+    let ctx = unsafe { &*(ctx_long as *const MeshContext) };
+
+    // Retrieve the secret bytes from the runtime.
+    let secret = match ctx.export_mesh_identity_secret() {
+        Some(s) => s,
+        // No identity loaded — caller should retry after initialize_startup_state.
+        None => return null_obj,
+    };
+
+    // Allocate a new Java byte[] and copy the secret into it.
+    // The JVM garbage-collects the array when the Kotlin caller loses the
+    // reference — fill(0) in Kotlin ensures it is zeroed before GC.
+    let arr = match env.new_byte_array(32) {
+        Ok(a) => a,
+        Err(_) => return null_obj,
+    };
+    // Reinterpret [u8; 32] as [i8; 32] for the JNI API (jbyte = i8).
+    // SAFETY: same size, alignment, and all bit patterns valid for both types.
+    let signed: [i8; 32] = unsafe { std::mem::transmute(secret) };
+    if env.set_byte_array_region(&arr, 0, &signed).is_err() {
+        return null_obj;
+    }
+
+    // Return a raw jobject.  The JVM owns the array; the Kotlin caller must
+    // zero it with `.fill(0)` after use to minimise secret dwell time in GC.
+    // SAFETY: JByteArray is a transparent wrapper around jobject.
+    unsafe { jni::objects::JObject::from(arr).as_raw() }
+}
+
 /// Submit a pairing payload received over Android NFC or Wi-Fi Direct.
 ///
 /// # Safety
@@ -4986,6 +5245,789 @@ pub unsafe extern "C" fn mi_zerotier_set_member_authorized(
         Ok(()) => 0,
         Err(e) => {
             ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Complete a Tailscale OAuth login after the user finishes the browser flow.
+///
+/// `token_ptr`: the auth token returned by the control server in the redirect
+/// URL query parameters after the user authenticates in-browser.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.  `token_ptr` must be a valid
+/// null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_complete_oauth(
+    ctx: *mut MeshContext,
+    token_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    // The token is required — an empty token cannot authenticate.
+    let token = match unsafe { c_str_to_str(token_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_complete_oauth(token) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Trigger Tailscale reauthentication.
+///
+/// Clears the stored auth token and begins a fresh OAuth flow via the stored
+/// controller.  Use when the key has expired or the `TailscaleKeyExpiryWarning`
+/// event indicates fewer than 7 days remain.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_reauthenticate(ctx: *mut MeshContext) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    match ctx.tailscale_reauthenticate() {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Start the Tailscale background map-poll thread.
+///
+/// No-op if a poll thread is already running.  The thread polls the control
+/// plane every 30 seconds and emits `OverlayStatusChanged` on each update.
+///
+/// Returns 0 on success, -1 on failure (e.g. Tailscale not configured).
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_start_background_poll(ctx: *mut MeshContext) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    match ctx.tailscale_start_background_poll() {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Stop the Tailscale background map-poll thread.
+///
+/// Signals the thread to exit on its next wake-up.  Returns immediately;
+/// thread cleanup is asynchronous.
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_stop_background_poll(ctx: *mut MeshContext) {
+    if ctx.is_null() {
+        return;
+    }
+    let ctx = unsafe { &*ctx };
+    ctx.tailscale_stop_background_poll();
+}
+
+/// Probe ZeroTier PLANET root servers to verify UDP connectivity.
+///
+/// Returns 1 when the transport socket is bound and probes were dispatched,
+/// 0 when ZeroTier is not connected or the socket is not available.
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_probe_roots(ctx: *mut MeshContext) -> i32 {
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &*ctx };
+    if ctx.zerotier_probe_roots() { 1 } else { 0 }
+}
+
+// ---------------------------------------------------------------------------
+// Tailscale multi-instance FFI (§5.23)
+// ---------------------------------------------------------------------------
+//
+// These functions correspond to the `tailscale_*_instance` methods added in
+// service/transport_ops.rs.  Each follows the same three-step pattern as all
+// other FFI functions:
+//   1. Null-check ctx.
+//   2. Parse C-string arguments.
+//   3. Call the service method and translate the Result to an i32 / *mut c_char.
+//
+// For functions that return data (list, add), the result is owned by
+// `ctx.last_response` and is valid until the next FFI call that writes to
+// that field.  Flutter must copy the string before calling any other FFI fn.
+
+/// Return a JSON array of all configured Tailscale instances.
+///
+/// Returns a JSON array of instance summary objects.
+/// Returns null if ctx is null.
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_list_instances(ctx: *mut MeshContext) -> *mut c_char {
+    // Guard: null ctx has no instances to list.
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: caller guarantees non-null.
+    let ctx = unsafe { &*ctx };
+    // Delegate to service layer — never fails; returns "[]" on empty.
+    ctx.set_response(&ctx.tailscale_list_instances()) as *mut c_char
+}
+
+/// Add a new Tailscale instance and return its id.
+///
+/// Returns a JSON object `{"id":"<hex>"}` on success, null on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `label_ptr` and `control_url_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_add_instance(
+    ctx: *mut MeshContext,
+    // User-assigned label for the new instance (e.g. "Work tailnet").
+    label_ptr: *const c_char,
+    // Empty string = official Tailscale server; otherwise a Headscale base URL.
+    control_url_ptr: *const c_char,
+) -> *mut c_char {
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    let ctx = unsafe { &*ctx };
+    // Label is required; control_url may be empty (vendor server default).
+    let label = match unsafe { c_str_to_str(label_ptr) } {
+        Some(s) => s,
+        None => return ptr::null_mut(),
+    };
+    let control_url = unsafe { c_str_to_str(control_url_ptr) }.unwrap_or("");
+    match ctx.tailscale_add_instance(label, control_url) {
+        Ok(json) => ctx.set_response(&json) as *mut c_char,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Remove a Tailscale instance by id.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_remove_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_remove_instance(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Set a Tailscale instance as the priority for routing conflict resolution.
+///
+/// Returns 0 on success, -1 if the instance id does not exist.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_set_priority(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_set_priority(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Authenticate a Tailscale instance using an auth key.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  All string args must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_auth_key_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // Tailscale pre-auth key (tskey-auth-…) or OAuth token.
+    key_ptr: *const c_char,
+    // Empty = official Tailscale server; non-empty = Headscale URL.
+    url_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let key = match unsafe { c_str_to_str(key_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let url = unsafe { c_str_to_str(url_ptr) }.unwrap_or("");
+    match ctx.tailscale_auth_key_instance(instance_id, key, url) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Begin the Tailscale OAuth flow for a specific instance.
+///
+/// Emits `TailscaleOAuthUrl` with the login redirect URL.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  String args must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_begin_oauth_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // Empty = official Tailscale server; non-empty = Headscale base URL.
+    url_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let url = unsafe { c_str_to_str(url_ptr) }.unwrap_or("");
+    match ctx.tailscale_begin_oauth_instance(instance_id, url) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Disconnect a specific Tailscale instance.
+///
+/// Resets the instance to NotConfigured; keeps its id and label in the list.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_disconnect_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_disconnect_instance(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Refresh control-plane state for a specific Tailscale instance.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_refresh_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_refresh_instance(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Toggle mesh-relay preference for a specific Tailscale instance.
+///
+/// `enabled`: non-zero = prefer mesh relay; 0 = prefer DERP relay.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_set_prefer_mesh_relay_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // non-zero = prefer mesh relay; 0 = prefer DERP.
+    enabled: i32,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_set_prefer_mesh_relay_instance(instance_id, enabled != 0) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Set the active exit node for a specific Tailscale instance.
+///
+/// Pass an empty `peer_name_ptr` to clear the active exit node.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  String args must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_set_exit_node_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // Name of the Tailscale peer to use as exit node; empty string clears it.
+    peer_name_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    // peer_name may be absent (null) or empty — both mean "clear exit node".
+    let peer_name = unsafe { c_str_to_str(peer_name_ptr) }.unwrap_or("");
+    match ctx.tailscale_set_exit_node_instance(instance_id, peer_name) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Complete the OAuth flow for a specific Tailscale instance.
+///
+/// Called after `mi_tailscale_begin_oauth_instance` — once the user completes
+/// browser-based login and the app extracts `token` from the redirect URL.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  String args must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_complete_oauth_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // Auth token extracted from the Tailscale/Headscale OAuth redirect.
+    token_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let token = match unsafe { c_str_to_str(token_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_complete_oauth_instance(instance_id, token) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Trigger reauthentication for a specific Tailscale instance.
+///
+/// Clears the auth token and begins a fresh OAuth flow.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_tailscale_reauthenticate_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.tailscale_reauthenticate_instance(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ZeroTier multi-instance FFI (§5.22)
+// ---------------------------------------------------------------------------
+
+/// Return a JSON array of all configured ZeroTier instances.
+///
+/// Returns a JSON array; null if ctx is null.
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_list_instances(ctx: *mut MeshContext) -> *mut c_char {
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    let ctx = unsafe { &*ctx };
+    // Never fails — returns "[]" on empty.
+    ctx.set_response(&ctx.zerotier_list_instances()) as *mut c_char
+}
+
+/// Add a new ZeroTier instance and return its id.
+///
+/// `network_ids_json_ptr`: JSON array of 16-char hex network IDs to join immediately.
+/// Returns a JSON object `{"id":"<hex>"}` on success, null on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  All string args must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_add_instance(
+    ctx: *mut MeshContext,
+    // User-assigned label for the new instance.
+    label_ptr: *const c_char,
+    // ZeroTier Central API key, or empty for self-hosted.
+    api_key_ptr: *const c_char,
+    // Empty = ZeroTier Central; non-empty = self-hosted controller URL.
+    controller_url_ptr: *const c_char,
+    // JSON array of 16-char hex network IDs to join immediately.
+    network_ids_json_ptr: *const c_char,
+) -> *mut c_char {
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    let ctx = unsafe { &*ctx };
+    let label = match unsafe { c_str_to_str(label_ptr) } {
+        Some(s) => s,
+        None => return ptr::null_mut(),
+    };
+    let api_key = unsafe { c_str_to_str(api_key_ptr) }.unwrap_or("");
+    let controller_url = unsafe { c_str_to_str(controller_url_ptr) }.unwrap_or("");
+    // Parse the network IDs JSON array.  Default to empty array on null/invalid.
+    let network_ids_json = unsafe { c_str_to_str(network_ids_json_ptr) }.unwrap_or("[]");
+    let network_ids: Vec<String> = match serde_json::from_str(network_ids_json) {
+        Ok(ids) => ids,
+        Err(e) => {
+            ctx.set_error(&format!("network_ids_json is not valid JSON: {e}"));
+            return ptr::null_mut();
+        }
+    };
+    match ctx.zerotier_add_instance(label, api_key, controller_url, &network_ids) {
+        Ok(json) => ctx.set_response(&json) as *mut c_char,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Remove a ZeroTier instance by id.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_remove_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_remove_instance(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Set a ZeroTier instance as the priority for routing conflict resolution.
+///
+/// Returns 0 on success, -1 if the instance id does not exist.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_set_priority(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_set_priority(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Refresh controller state for a specific ZeroTier instance.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_refresh_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_refresh_instance(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Disconnect a specific ZeroTier instance.
+///
+/// Resets the instance to NotConfigured while keeping its id and label.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_disconnect_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_disconnect_instance(instance_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Join an additional ZeroTier network on a specific instance.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  String args must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_join_network_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // 16-char hex network ID to join.
+    network_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let network_id = match unsafe { c_str_to_str(network_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_join_network_instance(instance_id, network_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Toggle mesh-relay preference for a specific ZeroTier instance.
+///
+/// `enabled`: non-zero = prefer mesh relay; 0 = prefer PLANET/MOON relay.
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  `instance_id_ptr` must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_set_prefer_mesh_relay_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    enabled: i32,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_set_prefer_mesh_relay_instance(instance_id, enabled != 0) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
+/// Authorize or de-authorize a ZeroTier network member on a specific instance.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+/// `ctx` must be non-null.  All string args must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_set_member_authorized_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // 16-char hex ZeroTier network ID.
+    network_id_ptr: *const c_char,
+    // 10-char hex ZeroTier Node ID of the member.
+    node_id_ptr: *const c_char,
+    // non-zero = authorize; 0 = revoke.
+    authorized: i32,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let network_id = match unsafe { c_str_to_str(network_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let node_id = match unsafe { c_str_to_str(node_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_set_member_authorized_instance(
+        instance_id,
+        network_id,
+        node_id,
+        authorized != 0,
+    ) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
             -1
         }
     }

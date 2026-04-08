@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import java.io.File
 
 // AndroidStartupService — headless Layer 1 startup for Mesh Infinity.
 //
@@ -77,6 +78,49 @@ class AndroidStartupService : Service() {
     @Volatile
     private var layer1Bootstrapped = false
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Keystore-backed Layer 1 secret storage (§3.1.1)
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // The 32-byte WireGuard private key is wrapped with an Android Keystore
+    // AES-256-GCM entry (`setUserAuthenticationRequired(false)`) and stored in
+    // device-protected storage as a ciphertext blob.
+    //
+    // ## Accessibility model (§3.1.1)
+    //
+    // Device-protected storage (createDeviceProtectedStorageContext) is readable
+    // after first device unlock — the same accessibility level as the raw
+    // `mesh_identity.key` file that Rust uses as a fallback.  Storing the
+    // Keystore blob here means it can be read at LOCKED_BOOT_COMPLETED time on
+    // devices that have already completed first unlock at least once.
+    //
+    // The Keystore AES wrapping key is bound to the hardware security module
+    // (TEE or StrongBox).  Even if an attacker extracts the blob from device-
+    // protected storage, the plaintext key cannot be recovered without the
+    // device hardware performing the AES-GCM decryption inside the TEE.
+    //
+    // ## Fallback
+    //
+    // Rust's `initialize_startup_state()` continues to write the raw key to
+    // `data_dir/mesh_identity.key` as a last-resort fallback.  If the Keystore
+    // entry is ever deleted (e.g., a security chip reset that does not wipe
+    // storage), the node can still boot using the file-based copy.  On the next
+    // boot after a Keystore loss, `tryLoadFromKeystore()` returns null and
+    // `wrapAndSaveKeypairIfNeeded()` re-wraps the file-based key.
+
+    // The ciphertext blob produced by KeystoreBridge.wrapKey().
+    // Stored in device-protected storage so it is readable at boot time.
+    // Lazy so we never allocate until first access and createDeviceProtectedStorageContext
+    // is available (it requires a fully constructed Context).
+    private val keystoreFile: File by lazy {
+        // Device-protected context is readable after first device unlock.
+        // Using getDir("layer1", ...) creates a private subdirectory:
+        //   /data/user_de/<uid>/com.oniimediaworks.meshinfinity/app_layer1/
+        createDeviceProtectedStorageContext()
+            .getDir("layer1", Context.MODE_PRIVATE)
+            .resolve("layer1_keystore.bin")
+    }
+
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
@@ -98,15 +142,49 @@ class AndroidStartupService : Service() {
         return START_STICKY
     }
 
-    // Drive the full Layer 1 startup sequence.
+    // Drive the full Layer 1 startup sequence, using the Android Keystore to
+    // protect the 32-byte WireGuard private key.
     //
-    // Step 1: Allocate the native MeshRuntime via NativeLayer1Bridge (idempotent
-    //         — the Rust CAS guard means only the first call allocates; later
-    //         calls return the existing pointer).
+    // ## Startup sequence (§3.1.1 — Keystore path)
     //
-    // Step 2: If the runtime is available and we have not yet successfully
-    //         bootstrapped the Layer 1 subsystems, call bootstrapLayer1IfNeeded().
+    // Step 1 — Attempt Keystore unwrap BEFORE starting the native runtime.
+    //   `tryLoadFromKeystore()` reads the AES-256-GCM ciphertext blob from
+    //   device-protected storage and decrypts it using the hardware-backed AES
+    //   key.  If the blob is missing (first boot) or decryption fails (hardware
+    //   change), the return value is null and we fall through to the file-based
+    //   path.
+    //
+    // Step 2 — Start the native runtime (idempotent CAS guard in Rust).
+    //   `NativeLayer1Bridge.startLayer1()` calls the Rust JNI entry point which:
+    //     - Creates a MeshRuntime in device-protected storage.
+    //     - Calls `load_or_create_mesh_identity()` to read/generate the raw key.
+    //     - Calls `reconcile_layer1_runtime()` to start transport listeners.
+    //   On repeat calls (BOOT_COMPLETED then USER_UNLOCKED) this is a no-op.
+    //
+    // Step 3a — Keystore copy available: inject it over the file-based key.
+    //   `NativeLayer1Bridge.injectLayer1Secret()` calls `mi_layer1_inject_secret`
+    //   which overwrites the in-memory identity loaded by Step 2 with the
+    //   hardware-backed copy.  This is the common case after the first boot.
+    //
+    // Step 3b — No Keystore copy: export the file-based key and wrap it.
+    //   `wrapAndSaveKeypairIfNeeded()` calls `mi_layer1_export_secret`, wraps
+    //   the bytes with `KeystoreBridge.wrapKey()`, and writes the ciphertext
+    //   blob to device-protected storage.  On all subsequent boots Step 3a will
+    //   be taken instead.
+    //
+    // Step 4 — Bootstrap deeper Layer 1 subsystems.
+    //   `bootstrapLayer1IfNeeded()` drives gossip, cover traffic, and WireGuard
+    //   interface sync.
     private fun startLayer1IfNeeded() {
+        // Step 1: Attempt to unwrap the hardware-backed secret.
+        // Performed BEFORE startLayer1() so we know whether to inject
+        // afterward.  If the Keystore blob is absent or corrupted, this
+        // returns null and Rust will use/generate the file-based key in Step 2.
+        val keystoreSecret = tryLoadFromKeystore()
+
+        // Step 2: Allocate or retrieve the Rust MeshRuntime.
+        // The CAS guard inside Rust ensures only one runtime is allocated even
+        // if this method is called multiple times (BOOT + USER_UNLOCKED).
         try {
             // NativeLayer1Bridge.startLayer1() calls the Rust JNI entry point
             // Java_…_NativeLayer1Bridge_nativeStartLayer1, which:
@@ -127,11 +205,108 @@ class AndroidStartupService : Service() {
             Log.w(TAG, "Layer 1 native startup failed: ${e.message}")
         }
 
-        // Step 2: Bootstrap the deeper Layer 1 subsystems if we now have a
+        // Step 3: Apply the Keystore secret or persist it for future boots.
+        if (keystoreSecret != null) {
+            // Step 3a: Keystore blob was available and decrypted successfully.
+            // Inject it over whatever the file-based path loaded so the
+            // hardware-backed copy is the authoritative in-memory key.
+            val ok = NativeLayer1Bridge.injectLayer1Secret(keystoreSecret)
+            // Zero the plaintext secret immediately — it is now in Rust memory.
+            keystoreSecret.fill(0)
+            if (ok) {
+                Log.d(TAG, "Layer 1 secret injected from Android Keystore.")
+            } else {
+                Log.w(TAG, "Layer 1 Keystore injection failed — using file-based key.")
+            }
+        } else {
+            // Step 3b: No Keystore blob available (first boot or entry lost).
+            // Export the key that Rust just loaded/generated from the file and
+            // wrap it with the hardware-backed AES key for future boots.
+            wrapAndSaveKeypairIfNeeded()
+        }
+
+        // Step 4: Bootstrap the deeper Layer 1 subsystems if we now have a
         // valid runtime pointer.  This may succeed even if a previous call to
         // startLayer1() failed (e.g., library was loaded but storage was not
         // yet available; storage is now available after USER_UNLOCKED).
         bootstrapLayer1IfNeeded()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Keystore helper methods
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Try to load and AES-256-GCM-unwrap the Keystore-protected mesh secret.
+    //
+    // Returns the raw 32-byte secret if successful, or null if:
+    //   - The ciphertext blob does not exist yet (first boot or Keystore loss).
+    //   - Decryption fails (hardware change, tampered blob, etc.).
+    //
+    // Failure is non-fatal: the Rust runtime will use the file-based key
+    // (mesh_identity.key) as a fallback, and wrapAndSaveKeypairIfNeeded() will
+    // re-wrap it for subsequent boots.
+    private fun tryLoadFromKeystore(): ByteArray? {
+        return try {
+            // If the blob file does not exist, this is either the first boot
+            // or the Keystore entry was lost — both cases handled below.
+            if (!keystoreFile.exists()) return null
+            val wrapped = keystoreFile.readBytes()
+            // Decrypt with the hardware-backed AES key.  Throws on MAC failure.
+            KeystoreBridge.unwrapKey(wrapped)
+        } catch (e: Exception) {
+            // Decryption failure can occur if:
+            //   - The Keystore AES entry was deleted (factory reset of TEE).
+            //   - The ciphertext blob on disk is corrupted.
+            //   - The device was restored to a new device without re-enrolling.
+            // In all cases we fall back to the file-based key so the node can
+            // still boot.  wrapAndSaveKeypairIfNeeded() will re-wrap after load.
+            Log.w(TAG, "Keystore unwrap failed — falling back to file-based key: ${e.message}")
+            null
+        }
+    }
+
+    // Export the in-memory secret from Rust and persist it as a Keystore blob.
+    //
+    // Called on first boot (or after a Keystore entry deletion) immediately
+    // after NativeLayer1Bridge.startLayer1() has loaded or generated the key.
+    //
+    // ## Why write-once
+    //
+    // We check keystoreFile.exists() and return early if it does.  This means
+    // we never overwrite a valid Keystore blob with a new one — the file-based
+    // key may rotate (e.g., after an identity reset) but the Keystore blob is
+    // sticky until explicitly deleted.  An identity reset should call
+    // KeystoreBridge.deleteKey() and delete keystoreFile before regenerating.
+    private fun wrapAndSaveKeypairIfNeeded() {
+        // If the blob already exists from a previous boot, nothing to do.
+        if (keystoreFile.exists()) return
+
+        // Export the 32-byte secret that Rust has in memory.  Returns null if
+        // the runtime was never allocated or the identity is not loaded yet.
+        val rawSecret = NativeLayer1Bridge.exportLayer1Secret() ?: return
+
+        try {
+            // Wrap with the hardware-backed AES-256-GCM key.
+            // KeystoreBridge.wrapKey() creates the Keystore entry on first use.
+            val wrapped = KeystoreBridge.wrapKey(rawSecret)
+
+            // Persist the ciphertext blob to device-protected storage.
+            // Parent directory was created by getDir() in the lazy initialiser.
+            keystoreFile.parentFile?.mkdirs()
+            keystoreFile.writeBytes(wrapped)
+
+            Log.i(TAG, "Layer 1 secret wrapped and saved to Android Keystore-backed storage.")
+        } catch (e: Exception) {
+            // Wrap or write failure — the node continues with the file-based key.
+            // On the next boot tryLoadFromKeystore() will return null again and
+            // we will retry the wrap.
+            Log.w(TAG, "Keystore wrap/write failed — secret not persisted to Keystore: ${e.message}")
+        } finally {
+            // Zero the raw secret bytes immediately regardless of success or
+            // failure.  The secret now lives in Rust memory (or the Keystore
+            // blob on disk); keeping it in the JVM heap is unnecessary risk.
+            rawSecret.fill(0)
+        }
     }
 
     // Call mi_bootstrap_layer1() via JNI to drive deeper subsystem startup.

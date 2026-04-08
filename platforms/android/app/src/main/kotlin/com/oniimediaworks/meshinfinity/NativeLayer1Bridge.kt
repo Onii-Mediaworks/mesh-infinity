@@ -120,6 +120,81 @@ object NativeLayer1Bridge {
         return nativeIsLayer1Ready(contextPointer) != 0
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Keystore-backed identity inject / export (§3.1.1)
+    // ─────────────────────────────────────────────────────────────────────────
+    //
+    // These two methods are the Kotlin side of the hardware-backed key-protection
+    // path.  They wrap the JNI declarations `nativeInjectLayer1Secret` and
+    // `nativeExportLayer1Secret` with null-pointer / library-loaded guards.
+    //
+    // ## Why the Keystore path matters
+    //
+    // Without Keystore wrapping the 32-byte WireGuard private key lives in
+    // `data_dir/mesh_identity.key` as raw bytes.  An attacker with physical
+    // flash access or root could extract it.  By wrapping the key with an
+    // AES-256-GCM entry in the Android Keystore (`setUserAuthenticationRequired
+    // = false`, so it is unlocked on first device boot), the plaintext key
+    // material never touches persistent storage — only the ciphertext blob does.
+    // The AES wrapping key is bound to the hardware security module (TEE /
+    // StrongBox) and cannot be exported.
+    //
+    // ## Call contract
+    //
+    // `injectLayer1Secret` — called by AndroidStartupService after a successful
+    //   Keystore unwrap.  The 32-byte array passed here is zeroed by the caller
+    //   immediately after this method returns.
+    //
+    // `exportLayer1Secret` — called by AndroidStartupService on first boot (or
+    //   after a Keystore entry deletion) to retrieve the key that Rust already
+    //   has in memory so Kotlin can wrap it.  The returned array MUST be zeroed
+    //   (`.fill(0)`) by the caller immediately after wrapping.
+
+    /** Inject 32 raw secret bytes as the in-memory mesh identity.
+     *
+     * Overwrites whatever file-based key Rust loaded during `startLayer1()` so
+     * the hardware-backed Keystore copy is authoritative for the lifetime of
+     * this boot.  The supplied array is copied into a Rust stack buffer on the
+     * native side; the caller must zero it with `.fill(0)` immediately after
+     * this call returns to minimise the window during which the secret is live
+     * in the JVM heap.
+     *
+     * Returns `true` on success, `false` if the library is not loaded, the
+     * context is not yet allocated, or the native side rejected the injection.
+     */
+    @Synchronized
+    fun injectLayer1Secret(secretBytes: ByteArray): Boolean {
+        // Guard: library not available (test environment or missing .so).
+        if (!libLoaded) return false
+        // Guard: runtime was never allocated — nothing to inject into.
+        val ptr = contextPointer
+        if (ptr == 0L) return false
+        // Delegate to the JNI symbol; result 0 = success, -1 = error.
+        return nativeInjectLayer1Secret(ptr, secretBytes) == 0
+    }
+
+    /** Export the current 32-byte mesh identity secret from native memory.
+     *
+     * Returns the raw WireGuard private key bytes if a mesh identity is
+     * currently loaded, or `null` if the identity has not been loaded yet.
+     *
+     * ## IMPORTANT — caller must zero the returned array
+     *
+     * The returned `ByteArray` is a copy of secret key material.  The caller
+     * MUST call `.fill(0)` on it as soon as the wrapping operation is complete
+     * to prevent the secret from living in the JVM heap until GC.
+     */
+    @Synchronized
+    fun exportLayer1Secret(): ByteArray? {
+        // Guard: library not available (test environment or missing .so).
+        if (!libLoaded) return null
+        // Guard: runtime was never allocated — no identity to export.
+        val ptr = contextPointer
+        if (ptr == 0L) return null
+        // Delegate to the JNI symbol; returns null if no identity is loaded.
+        return nativeExportLayer1Secret(ptr)
+    }
+
     // JNI declaration matching the Rust symbol
     //   Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeStartLayer1
     //
@@ -146,4 +221,18 @@ object NativeLayer1Bridge {
     // ctx:     MeshContext pointer (cast to Long / jlong).
     // Returns: 1 if Layer 1 is active, 0 otherwise.
     private external fun nativeIsLayer1Ready(ctx: Long): Int
+
+    // JNI declaration for the Keystore inject path.
+    //
+    // ctx:  MeshContext pointer (cast to Long / jlong).
+    // data: exactly 32 bytes of raw WireGuard private key entropy.
+    // Returns: 0 on success, -1 on error (null pointer or wrong length).
+    private external fun nativeInjectLayer1Secret(ctx: Long, data: ByteArray): Int
+
+    // JNI declaration for the Keystore export path.
+    //
+    // ctx:  MeshContext pointer (cast to Long / jlong).
+    // Returns: a new 32-byte ByteArray, or null if no identity is loaded.
+    // Caller MUST call `.fill(0)` on the returned array after use.
+    private external fun nativeExportLayer1Secret(ctx: Long): ByteArray?
 }

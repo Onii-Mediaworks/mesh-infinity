@@ -1,0 +1,239 @@
+name: Quality Gates
+
+# Run on every push and pull request targeting main.
+#
+# This workflow enforces the four spec-required quality gates (§21.6):
+#   1. rust-quality  — clippy, format check, unit tests, integration tests
+#   2. flutter-quality — flutter analyze, flutter test
+#   3. fuzz-smoke    — 30-second libFuzzer smoke run for each fuzz target
+#                      (pushes to main only; skipped on PRs to keep CI fast)
+#
+# The build.yml workflow handles platform compilation and packaging.  This
+# workflow is deliberately lightweight and runs on ubuntu-latest for all jobs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel any in-progress run for the same branch/PR so a new push does not
+# queue behind a stale run.
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Force GitHub Actions to use Node.js 24 for any JS-based action steps.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Disable incremental compilation in CI — it does not improve cold-cache
+  # build times and wastes cache space on small changes.
+  CARGO_INCREMENTAL: 0
+  # Abort immediately on any Rust warning treated as an error (matches the
+  # -D warnings flag passed to clippy below).
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+
+  # ── Rust quality: clippy, fmt, unit tests, integration tests ──────────────
+
+  rust-quality:
+    name: rust-quality
+    runs-on: ubuntu-latest
+
+    steps:
+      # Check out the repository.  `fetch-depth: 1` (the default) is fine
+      # because we do not need git history for quality checks.
+      - uses: actions/checkout@v4
+
+      # Install the stable Rust toolchain with the rustfmt and clippy components.
+      # Both are required for the fmt check and lint steps below.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Restore the Rust compiler and dependency cache from a previous run.
+      # Swatinem/rust-cache is aware of Cargo.lock and Cargo.toml changes and
+      # invalidates selectively, keeping CI fast on incremental changes.
+      - uses: Swatinem/rust-cache@v2
+
+      # Install Linux system libraries required by some of our dependencies:
+      #   libgtk-3-dev  — required by flutter_rust_bridge (desktop FFI)
+      #   libblkid-dev  — required by mdns-sd
+      #   liblzma-dev   — required by some compression crates
+      #   pkg-config    — required to locate system libraries
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid-dev \
+            liblzma-dev \
+            pkg-config
+
+      # ── Step 1: cargo clippy ──────────────────────────────────────────────
+      #
+      # clippy is Rust's official linter.  `-D warnings` turns every clippy
+      # warning into a hard error so that warnings cannot accumulate silently.
+      # `--all-targets` lints library code, binary code, integration tests,
+      # build scripts, and examples — everything in the crate.
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # ── Step 2: cargo fmt --check ─────────────────────────────────────────
+      #
+      # rustfmt is Rust's official code formatter.  `--check` exits non-zero
+      # if any file differs from the canonical format without modifying files.
+      # This enforces a single, consistent code style across all contributors.
+      - name: cargo fmt (check only)
+        run: cargo fmt --check
+
+      # ── Step 3: cargo test --lib ──────────────────────────────────────────
+      #
+      # Runs the unit tests embedded in library source files (the #[test]
+      # blocks inside each module).  These are fast, in-process tests that
+      # exercise individual functions in isolation.
+      #
+      # `--lib` limits the run to the library target; it does NOT run the
+      # integration tests (those are in `tests/` and run with `--test`).
+      - name: cargo test (unit tests)
+        run: cargo test --lib
+
+      # ── Step 4: cargo test --test integration ────────────────────────────
+      #
+      # Runs the integration test suite from tests/integration.rs.
+      # These tests exercise cross-module flows (identity save/reload, vault
+      # persistence, runtime construction) that cannot be tested in unit tests.
+      #
+      # Failures here indicate a regression in the public API surface, not
+      # just an internal module.
+      - name: cargo test (integration tests)
+        run: cargo test --test integration
+
+  # ── Flutter quality: analyze + test ───────────────────────────────────────
+
+  flutter-quality:
+    name: flutter-quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install Linux system libraries required to build the Flutter Linux
+      # runner (needed even for `flutter analyze`'s pub resolution step).
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid-dev \
+            liblzma-dev \
+            ninja-build \
+            pkg-config
+
+      # Install Flutter using the official flutter-action.
+      # `channel: stable` matches the toolchain used by the build.yml workflow.
+      # We do not pin to a specific version so that the toolchain tracks the
+      # latest stable release automatically.
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      # ── Step 1: flutter analyze ───────────────────────────────────────────
+      #
+      # `flutter analyze` runs the Dart analyzer over the entire frontend
+      # codebase.  It catches type errors, unused imports, deprecated API
+      # usage, and linting rules defined in analysis_options.yaml.
+      #
+      # This is equivalent to `dart analyze` but also validates Flutter-specific
+      # patterns (widget build methods, setState usage, etc.).
+      - name: flutter analyze
+        working-directory: frontend
+        run: flutter analyze
+
+      # ── Step 2: flutter test ──────────────────────────────────────────────
+      #
+      # Runs all Dart/Flutter unit and widget tests in `frontend/test/`.
+      # These tests do not require a display server — they run headlessly via
+      # the flutter_test framework's in-memory widget environment.
+      - name: flutter test
+        working-directory: frontend
+        run: flutter test
+
+  # ── Fuzz smoke: 30-second libFuzzer run for each target ──────────────────
+  #
+  # This job runs ONLY on pushes to main (not on pull_request events).
+  #
+  # Why not on PRs?  A 30-second fuzz run per target is fast enough for a
+  # smoke check but adds ~3 minutes to CI.  PR feedback latency matters more
+  # than fuzz coverage at review time; the smoke run on main catches regressions
+  # before they accumulate.
+  #
+  # For deeper fuzzing (24h+ duration), a separate nightly workflow is used
+  # (see §21.2.3).
+
+  fuzz-smoke:
+    name: fuzz-smoke
+    runs-on: ubuntu-latest
+    # Run only on direct pushes to main; skip for pull_request events.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-fuzz requires the nightly Rust toolchain because it uses
+      # unstable compiler features (sanitizers, coverage instrumentation).
+      # The `+nightly` override in the run steps below selects this toolchain.
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Use a separate cache key for the fuzz workspace so it does not
+          # conflict with the stable-toolchain cache used by other jobs.
+          key: fuzz-nightly
+
+      # Install Linux system dependencies required by the main crate's
+      # transitive dependencies (same set as rust-quality job).
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid-dev \
+            liblzma-dev \
+            pkg-config
+
+      # Install cargo-fuzz — the Cargo subcommand that wraps libFuzzer.
+      # `cargo-fuzz` manages the fuzz workspace, compiles targets with the
+      # correct sanitizer flags, and runs the libFuzzer binary.
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      # ── Fuzz target 1: NFC NDEF parser ───────────────────────────────────
+      #
+      # Feeds arbitrary bytes to decode_ndef_message for 30 seconds.
+      # The corpus directory provides seed inputs for the fuzzer to start from.
+      # `-max_total_time=30` tells libFuzzer to exit after 30 seconds regardless
+      # of how many iterations it has completed.
+      - name: fuzz smoke — fuzz_nfc_ndef (30s)
+        run: cargo +nightly fuzz run fuzz_nfc_ndef -- -max_total_time=30
+        working-directory: fuzz
+
+      # ── Fuzz target 2: Pairing payload parser ────────────────────────────
+      #
+      # Feeds arbitrary bytes to serde_json::from_slice::<PairingPayload> for
+      # 30 seconds.
+      - name: fuzz smoke — fuzz_pairing_payload (30s)
+        run: cargo +nightly fuzz run fuzz_pairing_payload -- -max_total_time=30
+        working-directory: fuzz
+
+      # ── Fuzz target 3: MeshPacket frame parser ───────────────────────────
+      #
+      # Feeds arbitrary bytes to serde_json::from_slice::<MeshPacket> for
+      # 30 seconds.
+      - name: fuzz smoke — fuzz_message_frame (30s)
+        run: cargo +nightly fuzz run fuzz_message_frame -- -max_total_time=30
+        working-directory: fuzz

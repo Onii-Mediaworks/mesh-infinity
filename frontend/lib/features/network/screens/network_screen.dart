@@ -16,6 +16,23 @@ import 'tailscale_setup_screen.dart';
 import 'vpn_screen.dart';
 import 'zerotier_setup_screen.dart';
 
+/// NetworkScreen — the main configuration hub for all network-layer settings.
+///
+/// Provides access to:
+///   - Node mode (Client / Server / Dual) — whether this node only sends and
+///     receives (client) or also forwards traffic for other peers (server/relay).
+///   - Transport toggles — per-transport on/off switches for Tor, Clearnet,
+///     I2P, Bluetooth, RF, mDNS, relays, and overlay networks.
+///   - Traffic Routing — navigates to VpnScreen for VPN mode and exit nodes.
+///   - Trusted Contexts (§4.8.3) — networks over which peer discovery is
+///     permitted automatically (Tailscale, ZeroTier, LAN, mDNS on trusted).
+///   - Local Discovery (mDNS) — toggle and live peer list.
+///   - Android Proximity — NFC tap-to-pair and WiFi Direct discovery.
+///   - Statistics grid — live counters from NetworkState.stats.
+///
+/// All toggle changes are sent to the Rust backend immediately via
+/// [NetworkState] methods.  Pull-to-refresh re-fetches the authoritative
+/// state from Rust.
 class NetworkScreen extends StatelessWidget {
   const NetworkScreen({super.key});
 
@@ -398,6 +415,12 @@ class NetworkScreen extends StatelessWidget {
   }
 }
 
+/// _OverlayTransportTile — a list tile for a Tailscale or ZeroTier overlay client.
+///
+/// Overlay transports are networks managed by a third-party control plane.
+/// Mesh Infinity acts as the CLIENT for these networks (no separate app needed).
+/// The tile shows the current connection status and provides a "Set up" /
+/// "Manage" button that opens the dedicated setup screen.
 class _OverlayTransportTile extends StatelessWidget {
   const _OverlayTransportTile({
     required this.icon,
@@ -410,6 +433,8 @@ class _OverlayTransportTile extends StatelessWidget {
   final IconData icon;
   final String label;
   final String description;
+
+  /// Current connection state of this overlay client.
   final OverlayClientStatus status;
   final VoidCallback onConfigure;
 
@@ -499,9 +524,23 @@ class _DiscoveredPeerTile extends StatefulWidget {
 }
 
 class _DiscoveredPeerTileState extends State<_DiscoveredPeerTile> {
+  /// True while a pairing call is in flight — prevents double-tapping.
   bool _pairing = false;
 
+  /// Attempts to pair with the discovered peer by submitting their public
+  /// keys and address to the Rust backend.
+  ///
+  /// The pairing payload includes:
+  ///   ed25519_public  — the peer's identity key (used for authentication).
+  ///   x25519_public   — the peer's key-exchange key (used for WireGuard).
+  ///   display_name    — optional human-readable name from their mDNS record.
+  ///   transport_hints — where to reach the peer; clearnet + their mDNS-
+  ///                     advertised IP address is the best starting hint.
+  ///
+  /// On success the PeersState is refreshed so the new contact appears
+  /// immediately in the Contacts list.
   Future<void> _pair() async {
+    // Guard: ignore taps while a pairing call is already running.
     if (_pairing) return;
     setState(() => _pairing = true);
 
@@ -510,6 +549,8 @@ class _DiscoveredPeerTileState extends State<_DiscoveredPeerTile> {
     final payload = jsonEncode({
       'ed25519_public': p.ed25519Pub,
       'x25519_public': p.x25519Pub,
+      // Omit display_name entirely when empty; the backend uses null to mean
+      // "no name advertised".
       'display_name': p.displayName.isNotEmpty ? p.displayName : null,
       'transport_hints': [
         {'transport': 'clearnet', 'endpoint': p.address},
@@ -582,15 +623,29 @@ class _AndroidProximitySection extends StatefulWidget {
 }
 
 class _AndroidProximitySectionState extends State<_AndroidProximitySection> {
+  /// Android device capabilities (NFC available? WiFi Direct available? etc.).
+  /// Null while the initial load is running, or on non-Android platforms where
+  /// the bridge returns an empty map — in that case the whole section is hidden.
   AndroidProximityCapabilities? _capabilities;
+
+  /// List of nearby Android devices discovered via WiFi Direct peer discovery.
   List<AndroidWifiDirectPeer> _peers = const [];
+
+  /// Subscription to the proximity event stream so we can react to WiFi Direct
+  /// state changes (e.g. a new peer appearing or a connection being formed)
+  /// without polling.
   StreamSubscription<AndroidProximityEvent>? _sub;
+
+  /// True while the first capability load is running; used to avoid rendering
+  /// the section before we know whether the hardware is present.
   bool _loading = true;
 
   @override
   void initState() {
     super.initState();
     _load();
+    // Re-load whenever the WiFi Direct state or peer list changes so the UI
+    // stays in sync without requiring the user to pull-to-refresh.
     _sub = AndroidProximityBridge.instance.events.listen((event) {
       if (event is WifiDirectStateChangedEvent ||
           event is WifiDirectPeersChangedEvent) {
@@ -599,9 +654,17 @@ class _AndroidProximitySectionState extends State<_AndroidProximitySection> {
     });
   }
 
+  /// Syncs the current Android proximity state from the platform channel and
+  /// updates [_capabilities] and [_peers].
+  ///
+  /// AndroidProximitySync.syncCurrentState bridges to the Kotlin layer to query
+  /// NFC and WiFi Direct status.  The result is a flat Map that we decode into
+  /// typed objects.
   Future<void> _load() async {
     final bridge = context.read<BackendBridge>();
     final state = await AndroidProximitySync.syncCurrentState(bridge);
+    // Guard: the widget may have been disposed while the async call was running
+    // (e.g. the user navigated away).  `mounted` checks this.
     if (!mounted) {
       return;
     }
@@ -828,15 +891,27 @@ class _AndroidProximitySectionState extends State<_AndroidProximitySection> {
         : '$status • ${peer.deviceAddress}';
   }
 
+  /// Decodes the raw proximity state map into an [AndroidProximityCapabilities].
+  ///
+  /// Returns null for an empty map — this happens on non-Android platforms or
+  /// when the platform channel returns no data.  Callers hide the section when
+  /// capabilities is null.
   AndroidProximityCapabilities? _readCapabilities(Map<String, dynamic> state) {
     if (state.isEmpty) {
       return null;
     }
+    // Map<Object?, Object?> is the most general cast accepted by fromMap;
+    // the underlying platform channel may return a Java/Kotlin Map whose keys
+    // are not typed as String at the Dart boundary.
     return AndroidProximityCapabilities.fromMap(
       Map<Object?, Object?>.from(state),
     );
   }
 
+  /// Extracts the WiFi Direct peer list from the raw proximity state map.
+  ///
+  /// Returns an empty const list when the "peers" key is absent or not a List,
+  /// e.g. before discovery has started or on non-Android platforms.
   List<AndroidWifiDirectPeer> _readPeers(Map<String, dynamic> state) {
     final raw = state['peers'];
     if (raw is! List) {
@@ -845,10 +920,17 @@ class _AndroidProximitySectionState extends State<_AndroidProximitySection> {
     return raw
         .whereType<Map>()
         .map((peer) => AndroidWifiDirectPeer.fromMap(Map<Object?, Object?>.from(peer)))
+        // growable: false — we never mutate this list, so a fixed-size array
+        // is slightly more efficient.
         .toList(growable: false);
   }
 }
 
+/// _Section — a bolded section header + child content group.
+///
+/// Used throughout NetworkScreen to visually separate the different
+/// configuration areas (Node Mode, Transports, Trusted Contexts, etc.)
+/// with a primary-coloured label in the Material 3 list-header style.
 class _Section extends StatelessWidget {
   const _Section({required this.title, required this.child});
 

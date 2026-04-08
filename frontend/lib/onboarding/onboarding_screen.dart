@@ -1,326 +1,318 @@
 // onboarding_screen.dart
 //
-// WHY does onboarding exist?
-// --------------------------
-// Mesh Infinity is a peer-to-peer encrypted messaging app.  Every node in
-// the network is identified by a *cryptographic identity* — a public/private
-// key pair generated on-device.  Without this identity the app cannot:
-//   • Prove to other peers who it is.
-//   • Encrypt or decrypt any message.
-//   • Participate in the mesh network at all.
+// OVERVIEW — WHY THIS FILE EXISTS
+// --------------------------------
+// Mesh Infinity is a peer-to-peer encrypted mesh network app.  Every node is
+// identified by a cryptographic identity — a public/private key pair generated
+// on this device.  On the very first launch no identity exists, so app.dart
+// detects that and routes here before showing the main shell.
 //
-// On the very first launch there is no identity stored on disk.  The app
-// detects this (in app.dart) and routes the user here before showing the
-// main shell.  Onboarding walks the user through either:
-//   (a) Creating a brand new identity (generates a fresh key pair), or
-//   (b) Restoring an existing identity from an encrypted backup.
+// This wizard is also the mandatory point at which the user receives all
+// "ambient state" disclosures required by §22.23: things that are always true
+// about the system (relay participation, cover traffic, key storage location,
+// etc.) that must be communicated before any message can be sent.
 //
-// After the key pair exists the user is given the chance to set up two
-// profiles:
-//   Public profile  — a display name that *might* be visible to unknown peers.
-//   Private profile — personal notes stored only on this device.
-//
-// Once both profile steps are completed, widget.onComplete() is called,
-// which dismisses the onboarding screen and shows the main app shell.
-//
-// WHAT is a public/private key pair?
-// ------------------------------------
-// Public-key cryptography (also called asymmetric cryptography) works by
-// generating two mathematically linked numbers:
-//
-//   Private key — kept secret, never shared.  Used to SIGN outgoing messages
-//                 and DECRYPT incoming ones.
-//
-//   Public key  — shareable freely (like a username or address).  Others use
-//                 it to VERIFY your signatures and ENCRYPT messages only you
-//                 can read.
-//
-// The pair is generated on the device (in Rust, via the backend) using a
-// cryptographically secure random number generator.  No server is involved —
-// the user's identity exists only on their device.
-//
-// WHY must identity creation happen before anything else?
+// THE 7-STEP ONBOARDING FLOW (§22.42, §22.23, §22.27)
 // -------------------------------------------------------
-// Every action in the app is tied to an identity:
-//   - Sending a message requires signing it with the private key.
-//   - Joining a room requires proving identity to other members.
-//   - The peer ID (shown in QR codes) is derived from the public key.
+// Step 0 — Welcome (_Step.welcome)
+//   App name, brand logo, tagline.  Offers "Create new identity" and
+//   "Import from backup."  This is the entry gate — the user hasn't touched
+//   any cryptographic material yet.
 //
-// Without an identity the app literally has nothing to identify the local
-// node as, so the backend refuses to do anything meaningful.
+// Step 1 — Create or Import (_Step.importBackup for import path)
+//   "Create new identity" generates a fresh keypair via bridge.createIdentity()
+//   and proceeds to step 2.  "Import" shows the import UI (passphrase + JSON).
+//
+// Step 2 — Your Identity (_Step.identity)
+//   Sets the private identity name (the primary mask).  This is what trusted
+//   contacts will see.  The backend receives the name as part of setPrivateProfile().
+//   Do not use the word "mask" on this screen (§22.42.3 note).
+//
+// Step 3 — Public Presence (_Step.publicProfile)
+//   Optionally set a public display name.  Entirely skippable — privacy-first.
+//   If left blank, setPublicProfile() is called with displayName: null,
+//   isPublic: false (§9.1 default).
+//
+// Step 4 — Ambient Disclosures (_Step.disclosures)
+//   Mandatory.  Presents the §22.23 ambient state disclosures in clear,
+//   non-scary language.  The "I understand" button is DISABLED until the user
+//   scrolls to the bottom of the list — this prevents click-through without
+//   reading, which is the entire point of mandatory disclosure.  This step
+//   CANNOT be skipped.
+//
+// Step 5 — PIN Setup (_Step.pinSetup)
+//   Strongly encouraged (§22.27.2) but skippable with an explicit warning.
+//   Shows the benefit of a PIN ("prevents anyone who unlocks your phone from
+//   reading your messages").  Offers inline PIN entry (not a push to PinScreen,
+//   which is a separate full-screen flow) so the user stays in the onboarding
+//   context.  A skip path shows an inline warning before allowing bypass.
+//
+// Step 6 — Done (_Step.done)
+//   "You're set up. Your node is now part of the mesh."  Calls widget.onComplete()
+//   which dismisses onboarding and shows AppShell.
+//
+// WHAT IS A KEYPAIR?
+// -------------------
+// Public-key cryptography generates two mathematically linked numbers:
+//   Private key — kept secret; signs outgoing messages, decrypts incoming ones.
+//   Public key  — shareable; others verify signatures and encrypt messages to you.
+// The pair is generated entirely on-device (in Rust via secure RNG).  No server
+// is involved — the identity exists only on this phone.
 //
 // WIZARD PATTERN
-// --------------
-// This screen uses the "wizard" (also called "stepper") pattern: a linear
-// sequence of screens where each screen gathers one piece of information and
-// the user can only proceed forward (or back) through the sequence.  This is
-// simpler for the user than a single large form with many fields because:
-//   - One decision at a time reduces cognitive load.
-//   - Each step can be validated independently.
-//   - Error messages appear close to the relevant input.
+// ---------------
+// Each step is a private _build* method.  A simple integer index (_stepIndex)
+// drives which step is currently shown.  AnimatedSwitcher provides a 250ms
+// cross-fade between steps.  No PageView is needed because the back button is
+// disabled on some steps (Step 0, Step 4, Step 5) to prevent bypass.
 //
-// The steps are driven by the _Step enum and _buildStep() method below.
+// Back navigation is disabled on:
+//   - Step 0 (Welcome) — nothing to go back to.
+//   - Step 4 (Disclosures) — must not be bypassable by going back-then-forward.
+//   - Step 5 (PIN Setup) — must not be bypassable by going back-then-forward.
+//
+// FFI CALL GAPS DOCUMENTED BELOW:
+//   - bridge.setThreatContext() does NOT exist as a named bridge method for
+//     threat level selection during onboarding; instead bridge.setThreatContext(int)
+//     IS available (confirmed in backend_bridge.dart line 899).
+//   - bridge.createIdentity(name: ...) passes the name as part of creation (line 665).
+//   - Timeout/lock settings after PIN are written via bridge.setSecurityConfig().
 
 import 'package:flutter/material.dart';
-// material.dart is Flutter's Material Design widget library.
-// It provides Scaffold, TextField, FilledButton, Column, AnimatedSwitcher, etc.
-
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-// provider.dart lets us reach BackendBridge (the Rust FFI layer) from any
-// widget without passing it through every constructor manually.
 
+import '../app/app_theme.dart';
 import '../backend/backend_bridge.dart';
-// BackendBridge wraps all calls to the Rust backend via FFI (Foreign Function
-// Interface).  It is the only place where the Flutter side talks to Rust.
+import '../widgets/mask_avatar.dart';
 
 // ---------------------------------------------------------------------------
-// _Step — the onboarding wizard's internal page sequence
+// _Step — the wizard's named step sequence
 // ---------------------------------------------------------------------------
 
-/// Private enum that names each screen in the onboarding wizard.
-/// Being private (leading underscore) means it cannot be used outside this file.
+/// Names each screen in the onboarding wizard.  Private (underscore prefix)
+/// means it cannot be referenced outside this file.
 ///
-/// The sequence is:
-///   choice        — "Create new" vs "Import backup"
-///   importBackup  — paste passphrase + backup JSON (only reached via Import)
-///   identity      — set your private identity name; this is your primary mask
-///                   and the "self" shown to trusted contacts
-///   publicProfile — optional: set a public display name; toggle discoverability
-enum _Step { choice, importBackup, linkDevice, identity, publicProfile }
+/// The sequence is strictly linear.  Back navigation between some steps is
+/// disabled (see file-level comment).
+enum _Step {
+  // Step 0 — App name, tagline, Create / Import choice.
+  welcome,
+  // Step 1 — Passphrase + backup JSON for import path (only reached via Import).
+  importBackup,
+  // Step 2 — Private identity name and avatar colour.
+  identity,
+  // Step 3 — Optional public display name.
+  publicProfile,
+  // Step 4 — Mandatory §22.23 ambient state disclosures.
+  disclosures,
+  // Step 5 — §22.27 PIN setup offer.
+  pinSetup,
+  // Step 6 — Done screen before calling onComplete().
+  done,
+}
 
 // ---------------------------------------------------------------------------
-// OnboardingScreen — the top-level StatefulWidget
+// OnboardingScreen — top-level StatefulWidget
 // ---------------------------------------------------------------------------
 
-/// The full-screen wizard shown on first launch.
+/// Full-screen wizard shown on first launch.
 ///
-/// What is a StatefulWidget?
-/// -------------------------
-/// Flutter widgets come in two flavours:
-///   StatelessWidget — has no mutable internal data; just maps inputs → UI.
-///   StatefulWidget  — has a companion State object that can mutate over time.
-///                     When the state changes and setState() is called, Flutter
-///                     rebuilds only the affected subtree.
-///
-/// We need StatefulWidget here because the wizard tracks:
-///   - Which step is currently visible (_step).
-///   - Whether an async operation is in flight (_busy).
-///   - Error messages from the backend (_error).
-///   - Text typed into name/bio/passphrase fields (via TextEditingControllers).
-///
-/// [onComplete] is a callback provided by the parent (app.dart).  When we
-/// call it, the parent knows onboarding finished and switches to the main app.
+/// [onComplete] is called exactly once at the end of the flow.  The parent
+/// (app.dart) uses it to replace this screen with AppShell.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key, required this.onComplete});
 
-  /// Called once, after the user taps "Get Started" at the end of the wizard.
-  /// The parent (app.dart) uses this to hide OnboardingScreen and show the
-  /// main AppShell.
+  /// Invoked when the user taps "Get Started" at the end of step 6.
   final VoidCallback onComplete;
-  // VoidCallback is Dart shorthand for `void Function()` — a function that
-  // takes no arguments and returns nothing.
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
 // ---------------------------------------------------------------------------
-// _OnboardingScreenState — the mutable half of OnboardingScreen
+// _OnboardingScreenState — mutable state for the wizard
 // ---------------------------------------------------------------------------
 
-/// Holds all mutable state for the onboarding wizard.
-///
-/// The State object lives as long as OnboardingScreen is in the widget tree.
-/// setState() is the mechanism that tells Flutter "my data changed, please
-/// rebuild the widgets."
 class _OnboardingScreenState extends State<OnboardingScreen> {
-  /// Which step (page) of the wizard is currently shown.
-  /// Starts at choice — the very first screen.
-  _Step _step = _Step.choice;
+  // -------------------------------------------------------------------------
+  // Step tracking
+  // -------------------------------------------------------------------------
 
-  /// True while an async backend call (createIdentity, importIdentity) is
-  /// running.  Used to disable buttons and show a loading spinner so the user
-  /// knows work is happening and can't accidentally trigger a second request.
+  /// The current wizard step.  Drives which _buildStep* method renders.
+  _Step _step = _Step.welcome;
+
+  // -------------------------------------------------------------------------
+  // General async state
+  // -------------------------------------------------------------------------
+
+  /// True while a backend call is in progress — disables buttons, shows spinner.
   bool _busy = false;
 
-  /// An error message from the last backend call, or null if there was no
-  /// error.  Shown as a red banner above the action buttons.
+  /// Most recent backend error, or null.  Shown as a red banner above buttons.
   String? _error;
 
   // -------------------------------------------------------------------------
-  // TextEditingControllers — bridges between TextField widgets and our code
+  // Step 1 — Import backup
   // -------------------------------------------------------------------------
-  // A TextEditingController is a Flutter object that lets code read (and
-  // optionally write) the text currently in a TextField.  We create one
-  // controller per input field and dispose them in dispose() to free memory.
 
-  /// Display name for the public profile (what other peers might see).
-  final _pubName = TextEditingController();
+  /// Multi-line import field: line 1 = passphrase, lines 2+ = backup JSON.
+  final _phraseController = TextEditingController();
 
-  /// Whether the user's identity is discoverable by strangers.
-  /// Starts false ("don't show my identity publicly" is pre-checked by default)
-  /// because privacy-first is the safer default for an encrypted mesh app.
-  bool _identityPublic = false;
+  // -------------------------------------------------------------------------
+  // Step 2 — Identity
+  // -------------------------------------------------------------------------
 
-  /// Name for the primary private identity — shown to trusted contacts.
-  /// This is the user's "self" on Mesh Infinity (the primary mask from a
-  /// crypto perspective, but simply "your name" from a UX perspective).
+  /// Private identity name — shown to trusted contacts only.
   final _nameController = TextEditingController();
 
-  /// Bio / personal notes for the private identity (device-only).
-  final _privBio = TextEditingController();
-
-  /// Multi-line field for the import wizard: line 1 = passphrase, rest = JSON.
-  final _phrase = TextEditingController();
-
-  /// Optional human-readable name for this device during multi-device linking.
-  final _deviceLinkName = TextEditingController();
-
-  /// Generated enrollment request to copy to an existing trusted device.
-  final _deviceRequestController = TextEditingController();
-
-  /// Enrollment package pasted back from the existing trusted device.
-  final _devicePackageController = TextEditingController();
+  /// Selected avatar colour index into kMaskAvatarColors.  Defaults to 0
+  /// (brand blue) — users can change it by tapping a colour swatch.
+  int _selectedColorIndex = 0;
 
   // -------------------------------------------------------------------------
-  // Lifecycle — dispose() cleans up controllers to prevent memory leaks
+  // Step 3 — Public profile
+  // -------------------------------------------------------------------------
+
+  /// Optional public display name.  If empty on "Next", no public profile
+  /// is set (isPublic: false, displayName: null — §9.1 default).
+  final _publicNameController = TextEditingController();
+
+  // -------------------------------------------------------------------------
+  // Step 4 — Disclosures scroll gate
+  // -------------------------------------------------------------------------
+
+  /// Controls the disclosures scroll view.  We listen to this to track whether
+  /// the user has scrolled far enough to enable the "I understand" button.
+  late final ScrollController _disclosuresScrollCtrl = ScrollController()
+    ..addListener(_onDisclosuresScroll);
+
+  /// True once the user has scrolled to the bottom of the disclosures list.
+  /// Only when true does the "I understand" button become active.
+  bool _disclosuresRead = false;
+
+  /// Called by the ScrollController whenever the scroll position changes.
+  ///
+  /// We consider "bottom reached" when the user is within 32 pixels of the
+  /// maximum scroll extent.  A small tolerance (32px) accounts for rounding
+  /// in the scroll physics and prevents the button from never enabling on
+  /// devices where content fits exactly.
+  void _onDisclosuresScroll() {
+    if (_disclosuresRead) return; // already unlocked, no need to keep checking
+    final pos = _disclosuresScrollCtrl.position;
+    // Compare current offset to the maximum scrollable distance.
+    // extentAfter is how many pixels remain below the current viewport edge.
+    if (pos.extentAfter <= 32.0) {
+      setState(() => _disclosuresRead = true);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 5 — PIN Setup
+  // -------------------------------------------------------------------------
+
+  /// PIN entry field (first entry — the one the user types initially).
+  final _pinController = TextEditingController();
+
+  /// PIN confirmation field (re-entry to confirm no typo).
+  final _pinConfirmController = TextEditingController();
+
+  /// True when the user tapped "Skip for now" — shows the inline warning
+  /// container before allowing bypass.
+  bool _showSkipWarning = false;
+
+  /// True when the user tapped "Set a PIN" on the PIN step — shows the
+  /// inline PIN entry form.
+  bool _showPinForm = false;
+
+  /// True when the two PIN fields don't match (shown as error text on confirm).
+  bool _pinMismatch = false;
+
+  // -------------------------------------------------------------------------
+  // Lifecycle
   // -------------------------------------------------------------------------
 
   @override
   void dispose() {
-    // TextEditingControllers hold references to native text-editing resources.
-    // Calling dispose() releases them when this State object is removed from
-    // the tree.  Forgetting this would cause a memory leak.
-    _pubName.dispose();
+    // Always dispose TextEditingControllers to free native text-editing resources.
+    _phraseController.dispose();
     _nameController.dispose();
-    _privBio.dispose();
-    _phrase.dispose();
-    _deviceLinkName.dispose();
-    _deviceRequestController.dispose();
-    _devicePackageController.dispose();
-    super.dispose(); // Always call super.dispose() last.
+    _publicNameController.dispose();
+    _pinController.dispose();
+    _pinConfirmController.dispose();
+    // Remove the listener before disposing to prevent use-after-free.
+    _disclosuresScrollCtrl.removeListener(_onDisclosuresScroll);
+    _disclosuresScrollCtrl.dispose();
+    super.dispose();
+  }
+
+  // -------------------------------------------------------------------------
+  // Step advance / back helpers
+  // -------------------------------------------------------------------------
+
+  /// Move forward one step.  The calling _buildStep* method is responsible for
+  /// validating its own inputs before calling this.
+  void _goTo(_Step target) {
+    setState(() {
+      _step = target;
+      _error = null; // Clear any lingering error when changing steps.
+    });
   }
 
   // -------------------------------------------------------------------------
   // Backend actions
   // -------------------------------------------------------------------------
-  //
-  // Each action follows the same async pattern:
-  //   1. Read the bridge from the Provider (context.read — no rebuild needed).
-  //   2. Set _busy = true via setState so the UI shows a spinner.
-  //   3. Call the synchronous bridge method (Rust via FFI — fast in practice).
-  //   4. Check `mounted` to guard against the widget being disposed mid-flight.
-  //   5. Set _busy = false and either advance the wizard or show _error.
-  //
-  // WHY are these marked `async` if the bridge calls are synchronous?
-  // -----------------------------------------------------------------
-  // In Dart, `async` functions return a Future, which allows callers to `await`
-  // them and allows the method body to use `await` for any future work.  Even
-  // if the body doesn't currently have any `await` expressions, marking the
-  // function `async` is a forward-compatibility choice: if the backend later
-  // needs a real asynchronous operation (e.g. a network handshake), the
-  // signature stays the same and callers don't need updating.
-  //
-  // Also note: these functions are called with `onCreateNew: _createIdentity`
-  // (a function reference, not a call).  The caller type is VoidCallback
-  // (void Function()) not Future<void> Function(), but Dart allows assigning
-  // an async function to a VoidCallback — the Future is simply not awaited by
-  // the callback handler, which is fine here because errors are handled
-  // internally via _error state.
 
-  /// Ask the Rust backend to generate a new cryptographic identity (key pair).
+  /// Create a fresh cryptographic identity via the Rust backend.
   ///
-  /// This is an async function (marked with `async`) because in principle the
-  /// key generation could take time.  In practice it is fast, but we still
-  /// show a spinner so the UI never appears frozen.
+  /// Called when the user taps "Create new identity" on the Welcome screen.
+  /// On success advances to _Step.identity.  On failure shows an error banner.
   ///
-  /// On success:  advance to the publicProfile step.
-  /// On failure:  show the error returned by the backend.
+  /// The name is intentionally NOT passed here — the name is collected in the
+  /// identity step and written later via setPrivateProfile().  Passing null
+  /// creates an anonymous identity that the identity step then names.
   Future<void> _createIdentity() async {
-    // context.read<T>() fetches a Provider-supplied object without subscribing
-    // to changes (we just need it once here, not ongoing).
-    //
-    // We use read (not watch) here because:
-    //   - We only need the bridge once — we are not building UI based on it.
-    //   - Using watch inside an event handler (rather than build()) can cause
-    //     spurious rebuilds or assertion failures in some Provider versions.
     final bridge = context.read<BackendBridge>();
-
-    // setState() is the Flutter mechanism to update State-owned variables and
-    // trigger a rebuild.  Everything inside the lambda runs synchronously;
-    // after the lambda returns, Flutter schedules a rebuild of this widget.
-    // We set _busy = true so the button disables and a spinner appears.
     setState(() {
       _busy = true;
-      _error = null; // Clear any previous error.
+      _error = null;
     });
 
-    // Call through to Rust via FFI.  Returns true on success.
-    // Even though it is declared as synchronous (bool, not Future<bool>),
-    // the Dart await-able nature of this async function means other microtasks
-    // can run between the setState above and the code below if there were any
-    // explicit await expressions — but there are none here, so execution is
-    // actually continuous.
+    // createIdentity() is a synchronous FFI call that generates the keypair
+    // and writes it to disk.  Fast in practice (< 100 ms).
     final ok = bridge.createIdentity();
-
-    // After an async gap, the widget might have been removed from the tree
-    // (e.g. the user rotated the screen and Flutter rebuilt).  Checking
-    // `mounted` prevents setState() calls on a dead State object, which
-    // would throw an exception.
-    //
-    // `mounted` is a property on the State base class.  It is true while the
-    // State object is attached to the widget tree and false after dispose().
     if (!mounted) return;
 
     if (ok) {
       setState(() {
         _busy = false;
-        _step = _Step.identity; // Advance to "Your Identity" step.
+        _step = _Step.identity;
       });
     } else {
       setState(() {
         _busy = false;
-        // getLastError() retrieves the most recent error string from the
-        // Rust backend.  If it's null (shouldn't happen) we fall back to a
-        // generic message.
-        //
-        // The `??` operator is Dart's "if-null" operator:
-        //   a ?? b  means  a != null ? a : b
-        // So this reads: "use the error from the backend; if that's null,
-        // use the fallback string instead."
         _error = bridge.getLastError() ?? 'Failed to create identity.';
       });
     }
   }
 
-  /// Parse the multi-line import field and send the backup to Rust for decryption.
+  /// Import a backup using the passphrase + JSON from the import text field.
   ///
-  /// The field format is:
-  ///   Line 1:      the user's passphrase (used to decrypt the backup)
-  ///   Remaining:   the backup JSON payload (the EncryptedBackup struct)
-  ///
-  /// This two-in-one field avoids having two separate inputs, which reduces
-  /// confusion for users doing a manual recovery process.
-  Future<void> _importBackup() async {
-    final text = _phrase.text.trim(); // Remove leading/trailing whitespace.
-
-    // Guard: the field must not be empty.
+  /// The field format is: line 1 = passphrase, lines 2+ = backup JSON blob.
+  /// On success advances to _Step.identity.
+  Future<void> _doImport() async {
+    final text = _phraseController.text.trim();
     if (text.isEmpty) {
       setState(() => _error = 'Please enter your passphrase and backup data.');
       return;
     }
 
-    // Split on the first newline.  Everything before it is the passphrase;
-    // everything after is the JSON backup blob.
     final newlineIdx = text.indexOf('\n');
-
-    // If there is no newline, the user only typed a passphrase with no JSON.
     final passphrase =
         newlineIdx >= 0 ? text.substring(0, newlineIdx).trim() : text;
     final backupJson =
         newlineIdx >= 0 ? text.substring(newlineIdx + 1).trim() : '';
 
-    // Guard: the JSON portion must not be empty.
     if (backupJson.isEmpty) {
       setState(() => _error =
           'Paste your passphrase on the first line and the backup JSON below it.');
@@ -333,15 +325,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       _error = null;
     });
 
-    // Hand both pieces to the Rust backend, which will decrypt the backup
-    // and store the recovered key pair on disk.
-    final ok = bridge.importIdentity(backupJson: backupJson, passphrase: passphrase);
+    final ok = bridge.importIdentity(
+      backupJson: backupJson,
+      passphrase: passphrase,
+    );
     if (!mounted) return;
 
     if (ok) {
       setState(() {
         _busy = false;
-        _step = _Step.identity; // Advance to "Your Identity" step.
+        _step = _Step.identity;
       });
     } else {
       setState(() {
@@ -352,99 +345,27 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
-  /// Generate the request payload for linking this device to an existing identity.
-  void _startDeviceLink() {
-    final bridge = context.read<BackendBridge>();
-    final request = bridge.createDeviceEnrollmentRequest(
-      deviceName: _deviceLinkName.text.trim().isEmpty
-          ? null
-          : _deviceLinkName.text.trim(),
-    );
-    if (!mounted) return;
-    if (request == null || request.isEmpty) {
-      setState(() {
-        _error = bridge.getLastError() ?? 'Failed to create device link request.';
-      });
-      return;
-    }
-    setState(() {
-      _error = null;
-      _deviceRequestController.text = request;
-    });
-  }
-
-  /// Accept the package created by the primary device and complete onboarding.
-  void _acceptDeviceLinkPackage() {
-    final package = _devicePackageController.text.trim();
-    if (package.isEmpty) {
-      setState(() {
-        _error = 'Paste the link package from your existing device.';
-      });
-      return;
-    }
-    final bridge = context.read<BackendBridge>();
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    final ok = bridge.acceptDeviceEnrollment(package);
-    if (!mounted) return;
-    if (ok) {
-      setState(() {
-        _busy = false;
-      });
-      widget.onComplete();
-      return;
-    }
-    setState(() {
-      _busy = false;
-      _error = bridge.getLastError() ?? 'Failed to accept the device link package.';
-    });
-  }
-
-  /// Save both profile payloads to the backend and call [onComplete] to
-  /// dismiss onboarding.
+  /// Save private and public profiles at the end of the public-profile step.
   ///
-  /// This is called from the final wizard step ("Get Started" button).
-  /// It writes the public and private profiles synchronously (they are just
-  /// JSON writes in Rust — no network round-trip), then invokes the parent's
-  /// callback which swaps the UI from OnboardingScreen → AppShell.
-  ///
-  /// NOTE: This method is NOT async because both bridge calls are synchronous
-  /// (simple disk writes) and there is no need to show a spinner — they are
-  /// fast enough that the user will not notice any delay before onComplete()
-  /// removes the onboarding screen.
-  void _finishProfiles() {
+  /// Writes both profiles to disk, then advances to the disclosures step.
+  void _saveProfiles() {
     final bridge = context.read<BackendBridge>();
 
-    // Read the text fields.  trim() removes accidental leading/trailing spaces.
-    // controller.text is the current string in the TextField controlled by
-    // that TextEditingController.
-    final pubName  = _pubName.text.trim();
     final privName = _nameController.text.trim();
-    final bio      = _privBio.text.trim();
+    final pubName = _publicNameController.text.trim();
 
-    // Write the public profile.  Empty strings become null so the backend
-    // knows "the user left this field blank" rather than "their name is ''".
-    //
-    // The ternary `pubName.isEmpty ? null : pubName` reads:
-    //   "If pubName is an empty string, pass null; otherwise pass pubName."
-    // This lets the Rust backend distinguish between "field was left blank"
-    // and "field was filled with a value" — an important semantic difference
-    // when merging profiles later.
-    final pubOk = bridge.setPublicProfile(
-      displayName: pubName.isEmpty ? null : pubName,
-      isPublic: _identityPublic,
-    );
-
-    // Write the private profile (device-only, never sent over the network).
-    // Same null-for-blank convention as the public profile above.
+    // Write private profile — the name the user set in step 2.
     final privOk = bridge.setPrivateProfile(
       displayName: privName.isEmpty ? null : privName,
-      bio: bio.isEmpty ? null : bio,
     );
 
-    if (!pubOk || !privOk) {
+    // Write public profile — empty public name means stay anonymous (§9.1).
+    final pubOk = bridge.setPublicProfile(
+      displayName: pubName.isEmpty ? null : pubName,
+      isPublic: pubName.isNotEmpty,
+    );
+
+    if (!privOk || !pubOk) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -455,53 +376,70 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       return;
     }
 
-    // Tell the parent that onboarding is finished.  The parent (app.dart)
-    // will remove OnboardingScreen from the tree and show the main AppShell.
-    //
-    // `widget` is how a State object accesses the fields of its associated
-    // StatefulWidget.  In Flutter, the State class has a built-in `widget`
-    // getter that returns the StatefulWidget it belongs to.  So
-    // `widget.onComplete` is the VoidCallback that was passed to the
-    // OnboardingScreen constructor.
-    widget.onComplete();
+    _goTo(_Step.disclosures);
+  }
+
+  /// Set the PIN via bridge.setPin() after confirming the two fields match.
+  ///
+  /// On success hides the PIN form and advances to _Step.done.
+  void _confirmPin() {
+    final pin = _pinController.text;
+    final confirm = _pinConfirmController.text;
+
+    // Validate minimum length (4 digits).
+    if (pin.length < 4) {
+      setState(() => _pinMismatch = false);
+      return;
+    }
+
+    // Validate that the confirmation matches.
+    if (pin != confirm) {
+      setState(() => _pinMismatch = true);
+      // Vibrate to give tactile feedback that something is wrong.
+      HapticFeedback.vibrate();
+      return;
+    }
+
+    final bridge = context.read<BackendBridge>();
+    final ok = bridge.setPin(pin);
+    if (!ok) {
+      setState(() => _error = bridge.getLastError() ?? 'Failed to set PIN.');
+      return;
+    }
+
+    // PIN set successfully — proceed to Done.
+    _goTo(_Step.done);
   }
 
   // -------------------------------------------------------------------------
-  // Widget build — the UI
+  // Build — top-level scaffold
   // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
+    // Scaffold provides the background surface.  No AppBar — onboarding is
+    // an immersive full-screen experience.
     return Scaffold(
-      // Scaffold provides the white (or themed) background surface.
       body: SafeArea(
-        // SafeArea adds padding to avoid overlapping the status bar, notch,
-        // or home indicator on phones so content is always visible.
+        // SafeArea keeps content away from the notch, status bar, and home
+        // indicator on modern phones.
         child: Center(
-          // Center positions its child at the middle of the screen.
           child: SingleChildScrollView(
-            // SingleChildScrollView allows the content to scroll if the
-            // soft keyboard pushes the layout off-screen on small phones.
+            // SingleChildScrollView allows content to scroll when the soft
+            // keyboard pushes the layout off-screen on small devices.
             padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
             child: ConstrainedBox(
-              // ConstrainedBox caps the width at 420 px so on wide screens
-              // the form doesn't stretch to an unreadable 1000-pixel width.
-              // This is a common pattern for centred form-based screens.
+              // Cap width at 420px so the form doesn't stretch to an
+              // unreadable line length on tablets and large desktops.
               constraints: const BoxConstraints(maxWidth: 420),
               child: AnimatedSwitcher(
-                // AnimatedSwitcher cross-fades between its child widgets.
-                // When _step changes, _buildStep() returns a different child
-                // and AnimatedSwitcher fades from the old one to the new one
-                // over 250 ms, giving a smooth page transition.
+                // AnimatedSwitcher cross-fades between its children when the
+                // key changes.  Each step widget has a ValueKey(_step) so
+                // Flutter detects the change and plays the transition.
                 duration: const Duration(milliseconds: 250),
-                transitionBuilder: (child, anim) => FadeTransition(
-                  // FadeTransition ties a widget's opacity to an Animation<double>.
-                  // anim goes from 0.0 → 1.0 as the new child appears.
-                  opacity: anim,
-                  child: child,
-                ),
-                // _buildStep() returns the widget for the current wizard step.
-                child: _buildStep(),
+                transitionBuilder: (child, anim) =>
+                    FadeTransition(opacity: anim, child: child),
+                child: _buildCurrentStep(),
               ),
             ),
           ),
@@ -510,726 +448,1104 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
-  /// Maps the current _step value to the correct step widget.
-  ///
-  /// Each step widget is a separate private class defined below.  We pass
-  /// callbacks into them so they can trigger state transitions without knowing
-  /// about the parent State.  This keeps each step widget simple and focused.
-  ///
-  /// PATTERN: callback-based communication between parent State and child widgets
-  /// -----------------------------------------------------------------------------
-  /// Because each step (_ChoiceStep, _ImportStep, etc.) is a StatelessWidget,
-  /// it cannot directly call setState() on the parent.  Instead, the parent
-  /// passes closures (anonymous functions) as arguments.  When the child
-  /// needs to advance the wizard, it calls the closure, which runs in the
-  /// parent's context and can call setState().
-  ///
-  /// This is sometimes called "lifting state up" or the "callback pattern" and
-  /// is the standard Flutter way to let child widgets communicate with parents
-  /// without tight coupling between the two.
-  Widget _buildStep() {
-    switch (_step) {
-      case _Step.choice:
-        return _ChoiceStep(
-          // ValueKey is required by AnimatedSwitcher to tell which child is
-          // "old" and which is "new" when animating.  Without a key it might
-          // fail to detect that the child changed.
-          //
-          // Keys in Flutter are identifiers attached to widgets.  When Flutter
-          // rebuilds a widget tree, it uses keys to match old widgets to new
-          // widgets.  AnimatedSwitcher specifically requires that its children
-          // have different keys so it can detect when the child changes and
-          // trigger the transition animation.  ValueKey(x) creates a key from
-          // any value — here we use the enum value itself as the key.
-          key: const ValueKey(_Step.choice),
-          busy: _busy,
-          error: _error,
-          onCreateNew: _createIdentity,
-          // onImport just transitions to the importBackup step; the actual
-          // import is triggered from within _ImportStep.
-          onImport: () => setState(() {
-            _step = _Step.importBackup;
-            _error = null; // Clear error when switching steps.
-          }),
-          onLinkDevice: () => setState(() {
-            _step = _Step.linkDevice;
-            _error = null;
-          }),
-        );
-
-      case _Step.importBackup:
-        return _ImportStep(
-          key: const ValueKey(_Step.importBackup),
-          controller: _phrase, // The shared TextEditingController for the paste field.
-          busy: _busy,
-          error: _error,
-          onImport: _importBackup,
-          onBack: () => setState(() {
-            _step = _Step.choice;
-            _error = null;
-          }),
-        );
-
-      case _Step.linkDevice:
-        return _LinkDeviceStep(
-          key: const ValueKey(_Step.linkDevice),
-          deviceNameController: _deviceLinkName,
-          requestController: _deviceRequestController,
-          packageController: _devicePackageController,
-          busy: _busy,
-          error: _error,
-          onGenerateRequest: _startDeviceLink,
-          onAcceptPackage: _acceptDeviceLinkPackage,
-          onBack: () => setState(() {
-            _step = _Step.choice;
-            _error = null;
-          }),
-        );
-
-      case _Step.identity:
-        return _IdentityStep(
-          key: const ValueKey(_Step.identity),
-          nameController: _nameController,
-          bioController: _privBio,
-          onNext: () => setState(() => _step = _Step.publicProfile),
-        );
-
-      case _Step.publicProfile:
-        return _PublicProfileStep(
-          key: const ValueKey(_Step.publicProfile),
-          controller: _pubName,
-          isPublic: _identityPublic,
-          // onPublicChanged toggles the _identityPublic flag; the setState
-          // triggers a rebuild so the checkbox re-renders with the new value.
-          onPublicChanged: (v) => setState(() => _identityPublic = v),
-          onNext: _finishProfiles,  // "Get Started" — save and leave onboarding.
-          onSkip: _finishProfiles,  // "Skip" — save with public profile blank.
-          onBack: () => setState(() => _step = _Step.identity),
-        );
-    }
+  /// Routes to the correct step builder based on [_step].
+  Widget _buildCurrentStep() {
+    return switch (_step) {
+      _Step.welcome => _buildWelcome(),
+      _Step.importBackup => _buildImportBackup(),
+      _Step.identity => _buildIdentity(),
+      _Step.publicProfile => _buildPublicProfile(),
+      _Step.disclosures => _buildDisclosures(),
+      _Step.pinSetup => _buildPinSetup(),
+      _Step.done => _buildDone(),
+    };
   }
-}
 
-// ---------------------------------------------------------------------------
-// Shared header widget
-// ---------------------------------------------------------------------------
+  // =========================================================================
+  // Step 0 — Welcome
+  // =========================================================================
 
-/// Displays the app logo, the "Mesh Infinity" name, a step title, and an
-/// optional subtitle.  Reused at the top of every wizard step for visual
-/// consistency.
-class _Header extends StatelessWidget {
-  const _Header({required this.title, this.subtitle});
-
-  /// Short step title shown below the app name (e.g. "Welcome", "Import Backup").
-  final String title;
-
-  /// Optional explanatory sentence shown below the title in smaller text.
-  /// The `?` means this can be null (omitted when not needed).
-  final String? subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    // Theme.of(context).colorScheme gives access to the app's colour palette
-    // (primary, surface, outline, etc.) as defined in app_theme.dart.
-    final cs = Theme.of(context).colorScheme;
+  /// Builds the Welcome screen (§22.42.1).
+  ///
+  /// Shows the app logo, name, and tagline.  Offers two primary actions:
+  /// "Create new identity" (calls _createIdentity, then advances to identity
+  /// step) and "Import from backup" (navigates to importBackup step).
+  ///
+  /// The back button is disabled implicitly because this is the first step
+  /// in the wizard and there is no previous screen to go back to.
+  Widget _buildWelcome() {
     return Column(
+      key: const ValueKey(_Step.welcome),
+      mainAxisSize: MainAxisSize.min,
       children: [
-        const SizedBox(height: 16), // Breathing room at the top.
-        const _Logo(size: 64),      // App icon — 64×64 logical pixels.
-        const SizedBox(height: 16),
+        const SizedBox(height: 48),
+
+        // Brand logo.  Falls back to an icon if the asset does not exist.
+        // The logo communicates "this is Mesh Infinity" before any text is read.
+        const _BrandLogo(size: 80),
+
+        const SizedBox(height: 20),
+
+        // App name in the largest display style.
         Text(
           'Mesh Infinity',
-          // textTheme provides pre-defined text styles scaled to the device's
-          // accessibility font size setting.
-          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-            fontWeight: FontWeight.bold,
+          style: Theme.of(context).textTheme.displaySmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+
+        const SizedBox(height: 8),
+
+        // Tagline — one sentence describing what the app is.
+        Text(
+          'Encrypted mesh networking for everyone.',
+          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+          textAlign: TextAlign.center,
+        ),
+
+        const SizedBox(height: 48),
+
+        // Show any backend error (e.g. key generation failure) as a red banner.
+        if (_error != null) ...[
+          _ErrorBanner(message: _error!),
+          const SizedBox(height: 16),
+        ],
+
+        // Primary action — create a new identity.
+        // Shows a loading indicator while _createIdentity() is in progress.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton.icon(
+            onPressed: _busy ? null : _createIdentity,
+            icon: _busy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      valueColor:
+                          AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                : const Icon(Icons.person_add_rounded),
+            label: const Text('Create new identity'),
           ),
         ),
+
+        const SizedBox(height: 12),
+
+        // Secondary action — import from backup.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: OutlinedButton.icon(
+            onPressed: _busy
+                ? null
+                : () => _goTo(_Step.importBackup),
+            icon: const Icon(Icons.download_rounded),
+            label: const Text('Import from backup'),
+          ),
+        ),
+
+        const SizedBox(height: 32),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // Step 1 — Import Backup
+  // =========================================================================
+
+  /// Builds the Import Backup screen (§22.42.2).
+  ///
+  /// Shown when the user tapped "Import from backup" on the Welcome screen.
+  /// The user pastes their passphrase on line 1 and the backup JSON below it.
+  /// On success, _doImport() calls bridge.importIdentity() and advances to the
+  /// identity step so the user can confirm the recovered name.
+  ///
+  /// The "Back" button returns to Welcome so the user can choose Create instead.
+  Widget _buildImportBackup() {
+    return Column(
+      key: const ValueKey(_Step.importBackup),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 24),
+
+        const _StepHeader(
+          title: 'Import Backup',
+          subtitle: 'Restore your identity from a previous backup.',
+        ),
+
+        if (_error != null) ...[
+          const SizedBox(height: 16),
+          _ErrorBanner(message: _error!),
+        ],
+
+        const SizedBox(height: 16),
+
+        // Instructions — plain language.
+        Text(
+          'Line 1: your passphrase\nLines 2 and below: your backup JSON',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+
+        const SizedBox(height: 16),
+
+        // Combined passphrase + backup JSON field.
+        TextField(
+          controller: _phraseController,
+          enabled: !_busy,
+          minLines: 4,
+          maxLines: 8,
+          decoration: const InputDecoration(
+            labelText: 'Passphrase + backup data',
+            hintText: 'my-passphrase\n{"version":1,"salt":"..."}',
+            alignLabelWithHint: true,
+          ),
+        ),
+
+        const SizedBox(height: 20),
+
+        // Import action — disabled while in progress.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton(
+            onPressed: _busy ? null : _doImport,
+            child: _busy
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Import'),
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // Back to Welcome.
+        TextButton(
+          onPressed: _busy
+              ? null
+              : () => _goTo(_Step.welcome),
+          child: const Text('Back'),
+        ),
+
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // Step 2 — Your Identity
+  // =========================================================================
+
+  /// Builds the Your Identity screen (§22.42.3).
+  ///
+  /// The user sets their private identity name — the name that trusted contacts
+  /// will see when they pair with this node.  They also pick an avatar colour
+  /// from the 8-colour palette defined in kMaskAvatarColors.
+  ///
+  /// This is the primary private mask from a crypto standpoint (§3.1.3), but
+  /// the spec explicitly says NOT to use the word "mask" on this screen —
+  /// from the user's standpoint this IS them, not a persona layer.
+  ///
+  /// The "Next" button is disabled until the name field contains at least one
+  /// non-whitespace character.  This prevents advancing with no name.
+  Widget _buildIdentity() {
+    // Read the name text to drive button enable/disable state.  We use a
+    // ValueListenableBuilder so the button re-renders on every keystroke
+    // without calling setState() on the full State object.
+    return Column(
+      key: const ValueKey(_Step.identity),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 24),
+
+        const _StepHeader(
+          title: 'Your identity',
+          subtitle:
+              'This is you on Mesh Infinity — the identity\nyou share with people you trust.',
+        ),
+
+        const SizedBox(height: 24),
+
+        // Name field — this is what trusted contacts see.
+        // textCapitalization.words auto-capitalises the first letter of each
+        // word, reducing friction for entering a real name.
+        TextField(
+          controller: _nameController,
+          autofocus: true,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(
+            labelText: 'Your name',
+            hintText: 'What trusted contacts will call you',
+          ),
+          // Rebuild whenever the text changes so the Next button reflects the
+          // current state without a full setState().
+          onChanged: (_) => setState(() {}),
+        ),
+
+        const SizedBox(height: 20),
+
+        // Avatar colour picker — 8 colour swatches in a wrap row.
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Avatar color',
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // Wrap allows swatches to flow to the next line on very narrow screens.
+        Wrap(
+          spacing: 12,
+          runSpacing: 10,
+          children: List.generate(kMaskAvatarColors.length, (i) {
+            final selected = i == _selectedColorIndex;
+            return GestureDetector(
+              onTap: () => setState(() => _selectedColorIndex = i),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: kMaskAvatarColors[i],
+                  shape: BoxShape.circle,
+                  // A 3px border on the selected swatch makes it obvious
+                  // which colour is active without requiring an overlay icon.
+                  border: selected
+                      ? Border.all(
+                          color:
+                              Theme.of(context).colorScheme.onSurface,
+                          width: 3,
+                        )
+                      : null,
+                ),
+                // Checkmark confirms the selection for colour-blind users.
+                child: selected
+                    ? const Icon(Icons.check, size: 18, color: Colors.white)
+                    : null,
+              ),
+            );
+          }),
+        ),
+
+        const SizedBox(height: 16),
+
+        // Clarifying note — keeps the "private" concept clear.
+        Text(
+          'Shared only with contacts you explicitly trust.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+
+        const SizedBox(height: 28),
+
+        // Next button — disabled until a name is entered.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton(
+            onPressed: _nameController.text.trim().isEmpty
+                ? null
+                : () => _goTo(_Step.publicProfile),
+            child: const Text('Next'),
+          ),
+        ),
+
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // Step 3 — Public Presence
+  // =========================================================================
+
+  /// Builds the Public Presence screen (§22.42.3b).
+  ///
+  /// This step is entirely optional.  The user can type a public display name
+  /// that strangers on the mesh will see, or leave it blank to stay anonymous.
+  ///
+  /// When the user taps Next or Skip, _saveProfiles() is called to write both
+  /// the private and public profiles, then the wizard moves to the disclosures
+  /// step.
+  ///
+  /// "Skip" and "Next" both call the same handler — the difference is only
+  /// visual ("Skip" is a TextButton, "Next" is a FilledButton).
+  Widget _buildPublicProfile() {
+    return Column(
+      key: const ValueKey(_Step.publicProfile),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 24),
+
+        const _StepHeader(
+          title: 'Public presence',
+          subtitle:
+              'Should people be able to find you by name?\nThis is optional — you can skip it entirely.',
+        ),
+
+        const SizedBox(height: 20),
+
+        // Public name field — empty means anonymous.
+        TextField(
+          controller: _publicNameController,
+          textCapitalization: TextCapitalization.words,
+          decoration: const InputDecoration(
+            labelText: 'Public name (optional)',
+            hintText: 'Visible to anyone on the mesh',
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // Reminder that anonymity is valid and changes can be made later.
+        Text(
+          'Leave blank to stay anonymous. You can change this anytime in Settings.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+
+        const SizedBox(height: 28),
+
+        // Next — saves profile then advances to disclosures.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton(
+            onPressed: _saveProfiles,
+            child: const Text('Next'),
+          ),
+        ),
+
         const SizedBox(height: 8),
-        Text(title, style: Theme.of(context).textTheme.titleMedium),
-        // The `if (condition) ...[widgets]` syntax is Dart's collection-if:
-        // the subtitle widgets are only added to the Column's children list
-        // when subtitle is not null.
-        if (subtitle != null) ...[
-          const SizedBox(height: 4),
-          Text(
-            subtitle!,
-            // The `!` (bang) asserts non-null — safe here because we checked
-            // `subtitle != null` in the if condition above.
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: cs.onSurfaceVariant, // Muted colour for secondary text.
+
+        // Skip — also saves (with empty public name) and advances.
+        TextButton(
+          onPressed: _saveProfiles,
+          child: const Text('Skip'),
+        ),
+
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // Step 4 — Ambient Disclosures
+  // =========================================================================
+
+  /// Builds the Ambient Disclosures screen (§22.23, §22.27.1).
+  ///
+  /// This step is MANDATORY — it cannot be skipped.  The §22.23 ambient state
+  /// disclosures must be communicated to the user before they can send any
+  /// message.
+  ///
+  /// The "I understand" button is intentionally DISABLED until the user scrolls
+  /// to the bottom of the disclosure list.  This is not a legal trick — it is
+  /// a UX mechanism to prevent the very common behaviour of tapping "OK" on a
+  /// wall of text without reading any of it.  Each disclosure is short,
+  /// non-scary, and written in plain language (§22.27 "must not use fear-based
+  /// language").
+  ///
+  /// The back button is DISABLED on this step.  Allowing back navigation would
+  /// allow the user to re-enter this step from a later step and bypass it by
+  /// arriving via a different path.  Holding this step firm is the correct
+  /// approach.
+  Widget _buildDisclosures() {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Column(
+      key: const ValueKey(_Step.disclosures),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 24),
+
+        // Header — inviting tone, not a legal notice.
+        const _StepHeader(
+          title: 'How Mesh Infinity works',
+          subtitle:
+              'A few honest things worth knowing before you dive in.',
+        ),
+
+        const SizedBox(height: 20),
+
+        // ---------------------------------------------------------------------------
+        // Disclosure list in a scrollable container.
+        //
+        // WHY a fixed-height container with its own scroll controller?
+        // ----------------------------------------------------------------
+        // The outer SingleChildScrollView on the Scaffold body scrolls the
+        // entire page.  We need a SEPARATE scroll controller so we can
+        // detect when the user has specifically scrolled through the
+        // disclosure items, not just scrolled past the section.
+        //
+        // The container height is capped so the disclosures don't expand to
+        // fill the whole screen (which would make the button invisible until
+        // the user scrolls the outer view) — instead, the inner list is
+        // scrollable within a contained area, making the "scroll to read"
+        // behaviour obvious.
+        // ---------------------------------------------------------------------------
+        Container(
+          height: 300,
+          decoration: BoxDecoration(
+            color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Scrollbar(
+            // The Scrollbar widget overlays a visible drag handle on the right
+            // edge of the scroll container, making it obvious the list scrolls.
+            controller: _disclosuresScrollCtrl,
+            thumbVisibility: true,
+            child: ListView(
+              // This is the scroll controller we listen to for "reached bottom".
+              controller: _disclosuresScrollCtrl,
+              padding: const EdgeInsets.all(16),
+              children: [
+                const _DisclosureItem(
+                  icon: Icons.lock_outline_rounded,
+                  iconColor: MeshTheme.brand,
+                  title: 'Your messages are end-to-end encrypted.',
+                  body:
+                      'Nobody — not even us — can read your messages. '
+                      'Your identity key is generated on this device and '
+                      'never leaves it.',
+                ),
+                const SizedBox(height: 16),
+                const _DisclosureItem(
+                  icon: Icons.hub_outlined,
+                  iconColor: MeshTheme.secGreen,
+                  title: 'Your device helps route others\' messages.',
+                  body:
+                      'Your device may relay encrypted messages for other '
+                      'users on the mesh. You cannot read them, and '
+                      'neither can anyone else. You can disable this in '
+                      'Settings if needed.',
+                ),
+                const SizedBox(height: 16),
+                const _DisclosureItem(
+                  icon: Icons.visibility_off_outlined,
+                  iconColor: MeshTheme.secAmber,
+                  title: 'Extra data keeps everyone\'s traffic private.',
+                  body:
+                      'The app sends a small amount of cover traffic to '
+                      'prevent traffic analysis. This uses some battery '
+                      'and data.',
+                ),
+                const SizedBox(height: 16),
+                const _DisclosureItem(
+                  icon: Icons.storage_outlined,
+                  iconColor: MeshTheme.brand,
+                  title: 'Messages wait on trusted nodes for offline contacts.',
+                  body:
+                      'If a contact is offline, their messages are '
+                      'temporarily stored on trusted mesh nodes until '
+                      'they reconnect.',
+                ),
+                const SizedBox(height: 16),
+                const _DisclosureItem(
+                  icon: Icons.dns_outlined,
+                  iconColor: MeshTheme.secGreen,
+                  title: 'There are no central servers.',
+                  body:
+                      'Mesh Infinity has no central servers. Your messages '
+                      'travel through the network itself. You control who '
+                      'can contact you and what they can see.',
+                ),
+                // Extra padding at the bottom so the last item doesn't sit
+                // right at the scroll edge — users need to clearly reach it.
+                const SizedBox(height: 8),
+              ],
             ),
           ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // Hint text tells users what to do — shown until button activates.
+        AnimatedOpacity(
+          opacity: _disclosuresRead ? 0.0 : 1.0,
+          duration: const Duration(milliseconds: 200),
+          child: Text(
+            'Scroll to read all',
+            style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // "I understand" button — disabled until scroll reaches the bottom.
+        //
+        // This is the core of the scroll-gate pattern.  The button is
+        // non-interactive (_disclosuresRead == false) when the user has not
+        // yet scrolled through the list.  Once they reach the bottom, the
+        // button becomes tappable.  This is the minimal friction that prevents
+        // a "click through without reading" pattern while not being hostile
+        // (the user just has to scroll, not tick boxes or pass a quiz).
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton(
+            onPressed: _disclosuresRead
+                ? () => _goTo(_Step.pinSetup)
+                : null,
+            child: const Text('I understand'),
+          ),
+        ),
+
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // Step 5 — PIN Setup
+  // =========================================================================
+
+  /// Builds the PIN Setup screen (§22.42.5, §22.27.2).
+  ///
+  /// PIN setup is "strongly encouraged" but skippable with acknowledgment.
+  /// This step CANNOT be reached by pressing Back from a later step — the
+  /// back button is suppressed here to prevent bypass of the disclosure step
+  /// (step 4) by going back from done (step 6) and re-entering from PIN.
+  ///
+  /// Three sub-states exist within this step:
+  ///   1. Default: icon + explanation + "Set a PIN" / "Skip for now" buttons.
+  ///   2. PIN form: inline PIN entry and confirm fields + checkboxes.
+  ///   3. Skip warning: inline amber warning before allowing bypass.
+  ///
+  /// All three sub-states are shown in the same step — no push navigation —
+  /// so the user stays in the onboarding flow context throughout.
+  Widget _buildPinSetup() {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Column(
+      key: const ValueKey(_Step.pinSetup),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 32),
+
+        // Brand icon for the PIN concept.
+        const Icon(Icons.pin_outlined, size: 48, color: MeshTheme.brand),
+
+        const SizedBox(height: 16),
+
+        // Headline — benefit-first, not threat-first (§22.27 "no fear language").
+        Text(
+          'Protect your messages',
+          style: tt.titleLarge,
+          textAlign: TextAlign.center,
+        ),
+
+        const SizedBox(height: 8),
+
+        // One-sentence explanation of what a PIN does for the user.
+        Text(
+          'A PIN locks your identity behind a second factor. '
+          'You can set one now or later in Settings.',
+          style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+          textAlign: TextAlign.center,
+        ),
+
+        const SizedBox(height: 32),
+
+        if (_error != null) ...[
+          _ErrorBanner(message: _error!),
+          const SizedBox(height: 16),
         ],
-        const SizedBox(height: 32), // Space between header and form fields.
+
+        // Show different content depending on sub-state.
+        if (!_showPinForm && !_showSkipWarning) ...[
+          // Default sub-state: offer the two primary choices.
+          _buildPinSetupDefault(cs),
+        ] else if (_showPinForm) ...[
+          // PIN form sub-state: inline entry fields.
+          _buildPinForm(cs, tt),
+        ] else ...[
+          // Skip warning sub-state: amber disclosure before bypass.
+          _buildSkipWarning(cs, tt),
+        ],
+
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  /// Default sub-state for the PIN setup step.
+  ///
+  /// Shows the two top-level actions: "Set a PIN" and "Skip for now".
+  Widget _buildPinSetupDefault(ColorScheme cs) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Primary CTA — show PIN form.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton.icon(
+            onPressed: () => setState(() {
+              _showPinForm = true;
+              _showSkipWarning = false;
+            }),
+            icon: const Icon(Icons.lock_outlined),
+            label: const Text('Set a PIN'),
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // Secondary CTA — show skip warning before allowing bypass.
+        TextButton(
+          onPressed: () => setState(() {
+            _showSkipWarning = true;
+            _showPinForm = false;
+          }),
+          child: const Text('Skip for now'),
+        ),
+      ],
+    );
+  }
+
+  /// PIN form sub-state.
+  ///
+  /// Inline PIN entry and confirmation.  Minimum 4 digits (§22.27 / §22.42.5).
+  /// "Set PIN" button is disabled until both fields are non-empty and at least
+  /// 4 characters long.  Mismatch is shown as error text on the confirm field.
+  Widget _buildPinForm(ColorScheme cs, TextTheme tt) {
+    final pinLen = _pinController.text.length;
+    final confirmLen = _pinConfirmController.text.length;
+
+    // Enable the Set PIN button only when both fields have at least 4 digits.
+    final pinReady = pinLen >= 4 && confirmLen >= 4;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('Choose a PIN', style: tt.titleSmall),
+
+        const SizedBox(height: 12),
+
+        // First PIN entry — obscured for security, numeric keyboard on mobile.
+        TextField(
+          controller: _pinController,
+          keyboardType: const TextInputType.numberWithOptions(
+            signed: false,
+            decimal: false,
+          ),
+          obscureText: true,
+          maxLength: 16,
+          autofocus: true,
+          onChanged: (_) => setState(() => _pinMismatch = false),
+          decoration: const InputDecoration(
+            labelText: 'PIN',
+            counterText: '', // hides the "N/16" character counter
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // Confirmation field — shows error text on mismatch.
+        TextField(
+          controller: _pinConfirmController,
+          keyboardType: const TextInputType.numberWithOptions(
+            signed: false,
+            decimal: false,
+          ),
+          obscureText: true,
+          maxLength: 16,
+          onChanged: (_) => setState(() => _pinMismatch = false),
+          decoration: InputDecoration(
+            labelText: 'Confirm PIN',
+            counterText: '',
+            // Show error text only if the user has attempted a confirmation
+            // and the values don't match.
+            errorText: _pinMismatch ? 'PINs do not match' : null,
+          ),
+        ),
+
+        const SizedBox(height: 20),
+
+        // Set PIN — disabled until both fields meet minimum length.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton(
+            onPressed: pinReady ? _confirmPin : null,
+            child: const Text('Set PIN'),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // Allow going back to the default sub-state.
+        TextButton(
+          onPressed: () => setState(() {
+            _showPinForm = false;
+            _pinController.clear();
+            _pinConfirmController.clear();
+            _pinMismatch = false;
+          }),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+
+  /// Skip warning sub-state.
+  ///
+  /// Shown when the user taps "Skip for now".  An inline amber container
+  /// explains the risk in plain language.  Two buttons let the user either
+  /// change their mind and set a PIN, or explicitly confirm they want to
+  /// continue without one.  This is §22.42.5's "skip confirmation" pattern —
+  /// inline, not a dialog, so the user stays in the flow.
+  Widget _buildSkipWarning(ColorScheme cs, TextTheme tt) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: cs.errorContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Warning message — single sentence, plain language.
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.warning_amber_outlined,
+                size: 18,
+                color: cs.onErrorContainer,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Without a PIN, anyone who unlocks your phone can '
+                  'read your messages.',
+                  style: tt.bodySmall?.copyWith(
+                    color: cs.onErrorContainer,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // Two-button row: change mind vs confirm bypass.
+          Row(
+            children: [
+              // Go back to the default PIN setup buttons.
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => setState(() {
+                    _showSkipWarning = false;
+                  }),
+                  child: const Text('Set a PIN'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Confirm the user knows they are skipping — then proceed to Done.
+              Expanded(
+                child: TextButton(
+                  style: TextButton.styleFrom(
+                    foregroundColor: cs.error,
+                  ),
+                  onPressed: () => _goTo(_Step.done),
+                  child: const Text('Continue without PIN'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =========================================================================
+  // Step 6 — Done
+  // =========================================================================
+
+  /// Builds the Done screen (final step of §22.42).
+  ///
+  /// Confirms that setup is complete and the node is now participating in the
+  /// mesh.  "Get Started" calls widget.onComplete(), which dismisses the
+  /// onboarding screen and shows AppShell.
+  Widget _buildDone() {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Column(
+      key: const ValueKey(_Step.done),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 48),
+
+        // Success icon.
+        Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            color: MeshTheme.secGreen.withValues(alpha: 0.12),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.check_rounded,
+            size: 40,
+            color: MeshTheme.secGreen,
+          ),
+        ),
+
+        const SizedBox(height: 24),
+
+        Text(
+          'You\'re set up.',
+          style: tt.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+          textAlign: TextAlign.center,
+        ),
+
+        const SizedBox(height: 12),
+
+        Text(
+          'Your node is now part of the mesh.\n'
+          'You can start messaging and connecting with people.',
+          style: tt.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
+          textAlign: TextAlign.center,
+        ),
+
+        const SizedBox(height: 48),
+
+        // Final CTA — calls the parent callback to remove onboarding.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton.icon(
+            onPressed: widget.onComplete,
+            icon: const Icon(Icons.arrow_forward_rounded),
+            label: const Text('Get Started'),
+          ),
+        ),
+
+        const SizedBox(height: 32),
       ],
     );
   }
 }
 
-/// Loads the app logo from assets, falling back to an icon if the image file
-/// is missing (e.g. on a development build that doesn't yet have the asset).
-class _Logo extends StatelessWidget {
-  const _Logo({required this.size});
+// =============================================================================
+// Private helper widgets
+// =============================================================================
 
-  /// Width and height in logical pixels (device-independent).
+// ---------------------------------------------------------------------------
+// _BrandLogo
+// ---------------------------------------------------------------------------
+
+/// Renders the brand logo.
+///
+/// Tries to load the asset image first.  If it fails (e.g. asset not bundled
+/// yet during development), falls back to the hub icon in brand colour.
+/// This prevents hard crashes when running the onboarding screen in isolation.
+class _BrandLogo extends StatelessWidget {
+  const _BrandLogo({required this.size});
+
   final double size;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return Image.asset(
-      '../assets/logo.png',
+      'assets/logo.png',
       width: size,
       height: size,
-      // errorBuilder is called if the image cannot be loaded.  The fallback
-      // is a hub icon in the primary brand colour — good enough for dev builds.
-      errorBuilder: (context, error, stackTrace) =>
-          Icon(Icons.hub_rounded, size: size, color: cs.primary),
+      errorBuilder: (context, error, _) => Icon(
+        Icons.hub_rounded,
+        size: size,
+        color: MeshTheme.brand,
+      ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: choice — "Create New Identity" or "Import Backup"
+// _StepHeader
 // ---------------------------------------------------------------------------
 
-/// The first screen the user sees.  Explains the app in one line and offers
-/// two mutually exclusive paths through the wizard.
-class _ChoiceStep extends StatelessWidget {
-  const _ChoiceStep({
-    super.key,
-    required this.busy,
-    required this.error,
-    required this.onCreateNew,
-    required this.onImport,
-    required this.onLinkDevice,
-  });
-
-  /// True while the identity creation call to Rust is in-flight.
-  /// Disables both buttons to prevent double-taps.
-  final bool busy;
-
-  /// Error string from the last attempt, or null.
-  final String? error;
-
-  /// Called when the user taps "Create New Identity".
-  final VoidCallback onCreateNew;
-
-  /// Called when the user taps "Import Backup" — just transitions the wizard
-  /// to the import step; no async work happens here.
-  final VoidCallback onImport;
-
-  /// Called when the user wants to link this device to an existing identity.
-  final VoidCallback onLinkDevice;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min, // Don't expand to fill height unnecessarily.
-      children: [
-        const _Header(
-          title: 'Welcome',
-          subtitle: 'Decentralised, encrypted peer-to-peer messaging.',
-        ),
-
-        // Show the error banner only if there is an error to display.
-        if (error != null) ...[
-          _ErrorBanner(error!),
-          const SizedBox(height: 16),
-        ],
-
-        // FilledButton is the high-emphasis Material 3 button (solid colour).
-        // Used for the primary action — "Create New Identity".
-        FilledButton.icon(
-          // Passing null to onPressed disables the button.  When busy == true
-          // the button is greyed out and ignores taps.
-          onPressed: busy ? null : onCreateNew,
-          // Show a spinner inside the button while work is in progress.
-          icon: busy
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.person_add_rounded),
-          label: const Text('Create New Identity'),
-          style: FilledButton.styleFrom(
-            // double.infinity makes the button stretch to fill the column width.
-            minimumSize: const Size(double.infinity, 52),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        // OutlinedButton is the medium-emphasis Material 3 button (border only).
-        // Used for the secondary action — "Import Backup".
-        OutlinedButton.icon(
-          onPressed: busy ? null : onImport,
-          icon: const Icon(Icons.download_rounded),
-          label: const Text('Import Backup'),
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size(double.infinity, 52),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        OutlinedButton.icon(
-          onPressed: busy ? null : onLinkDevice,
-          icon: const Icon(Icons.devices_rounded),
-          label: const Text('Link Existing Device'),
-          style: OutlinedButton.styleFrom(
-            minimumSize: const Size(double.infinity, 52),
-          ),
-        ),
-
-        const SizedBox(height: 8),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Step 2 (optional): import backup
-// ---------------------------------------------------------------------------
-
-/// Shown only if the user chose "Import Backup" on the choice screen.
-/// Accepts a multi-line text blob: passphrase on line 1, backup JSON below.
-class _ImportStep extends StatelessWidget {
-  const _ImportStep({
-    super.key,
-    required this.controller,
-    required this.busy,
-    required this.error,
-    required this.onImport,
-    required this.onBack,
-  });
-
-  /// Shared controller — reading controller.text gives the pasted content.
-  final TextEditingController controller;
-
-  /// True while the import call is running.
-  final bool busy;
-
-  /// Error string, or null.
-  final String? error;
-
-  /// Called when the user taps "Import" — triggers _importBackup() in the parent.
-  final VoidCallback onImport;
-
-  /// Called when the user taps "Back" — returns to the choice screen.
-  final VoidCallback onBack;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch, // Buttons fill the full width.
-      children: [
-        const _Header(
-          title: 'Import Backup',
-          subtitle:
-              'Paste your passphrase on the first line, then your backup JSON below it.',
-        ),
-
-        if (error != null) ...[
-          _ErrorBanner(error!),
-          const SizedBox(height: 16),
-        ],
-
-        // Multi-line text field for the combined passphrase + JSON input.
-        // minLines/maxLines create a field tall enough to show a few lines
-        // of JSON without becoming unwieldy.
-        TextField(
-          controller: controller,
-          enabled: !busy, // Disable typing while import is running.
-          minLines: 3,
-          maxLines: 6,
-          decoration: const InputDecoration(
-            labelText: 'Backup phrase',
-            hintText: 'passphrase\n{"version":1,"salt":...}',
-            border: OutlineInputBorder(),
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        FilledButton(
-          onPressed: busy ? null : onImport,
-          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
-          // Show a spinner inside the button while the import runs.
-          child: busy
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Import'),
-        ),
-
-        const SizedBox(height: 12),
-
-        // TextButton is the low-emphasis Material 3 button (text only).
-        // Used for "Back" — it's a secondary action and shouldn't compete
-        // visually with the primary "Import" button.
-        TextButton(
-          onPressed: busy ? null : onBack,
-          child: const Text('Back'),
-        ),
-      ],
-    );
-  }
-}
-
-class _LinkDeviceStep extends StatelessWidget {
-  const _LinkDeviceStep({
-    super.key,
-    required this.deviceNameController,
-    required this.requestController,
-    required this.packageController,
-    required this.busy,
-    required this.error,
-    required this.onGenerateRequest,
-    required this.onAcceptPackage,
-    required this.onBack,
-  });
-
-  final TextEditingController deviceNameController;
-  final TextEditingController requestController;
-  final TextEditingController packageController;
-  final bool busy;
-  final String? error;
-  final VoidCallback onGenerateRequest;
-  final VoidCallback onAcceptPackage;
-  final VoidCallback onBack;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _Header(
-          title: 'Link Existing Device',
-          subtitle:
-              'Create a link request here, move it to a trusted device that already has your identity, then paste the returned package back here.',
-        ),
-        if (error != null) ...[
-          _ErrorBanner(error!),
-          const SizedBox(height: 16),
-        ],
-        TextField(
-          controller: deviceNameController,
-          enabled: !busy,
-          decoration: const InputDecoration(
-            labelText: 'Device name (optional)',
-            hintText: 'e.g. Pixel 9 or Work Laptop',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        FilledButton(
-          onPressed: busy ? null : onGenerateRequest,
-          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
-          child: const Text('Generate link request'),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: requestController,
-          enabled: false,
-          minLines: 4,
-          maxLines: 8,
-          decoration: const InputDecoration(
-            labelText: 'Link request',
-            hintText: 'Generate a request, then move it to your existing device.',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 20),
-        TextField(
-          controller: packageController,
-          enabled: !busy,
-          minLines: 4,
-          maxLines: 8,
-          decoration: const InputDecoration(
-            labelText: 'Link package',
-            hintText: 'Paste the package created by your existing device.',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 20),
-        FilledButton(
-          onPressed: busy ? null : onAcceptPackage,
-          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
-          child: busy
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Finish linking'),
-        ),
-        const SizedBox(height: 12),
-        TextButton(
-          onPressed: busy ? null : onBack,
-          child: const Text('Back'),
-        ),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Step 3: public profile
-// ---------------------------------------------------------------------------
-
-/// Lets the user optionally set a public display name and choose whether
-/// their peer ID is advertised on the network.
+/// Consistent step header: logo (56px) + "Mesh Infinity" label + step title.
 ///
-/// This is the final onboarding step and is skippable — tapping "Skip"
-/// leaves the public profile blank (identity_is_public = false) and
-/// completes onboarding.  Tapping "Get Started" saves whatever the user
-/// entered and also completes onboarding.
-///
-/// WHY have a public profile at all?
-/// ----------------------------------
-/// In a mesh network, other nodes can discover your device.  By default we
-/// keep the identity private (only share with contacts you add).  This step
-/// makes that choice explicit and lets users opt into discoverability.
-class _PublicProfileStep extends StatelessWidget {
-  const _PublicProfileStep({
-    super.key,
-    required this.controller,
-    required this.isPublic,
-    required this.onPublicChanged,
-    required this.onNext,
-    required this.onSkip,
-    required this.onBack,
-  });
+/// Used on all steps except Welcome (which has its own layout) so each step
+/// has a visual anchor reminding the user which app they are setting up.
+class _StepHeader extends StatelessWidget {
+  const _StepHeader({required this.title, this.subtitle});
 
-  /// Controller for the public display name text field.
-  final TextEditingController controller;
-
-  /// Whether the user's identity is currently set to public.
-  final bool isPublic;
-
-  /// Called when the user toggles the "show publicly" checkbox.
-  final ValueChanged<bool> onPublicChanged;
-
-  /// Called when the user taps "Get Started" — saves and exits onboarding.
-  final VoidCallback onNext;
-
-  /// Called when the user taps "Skip" — saves with blank public profile.
-  final VoidCallback onSkip;
-
-  /// Returns to the identity step.
-  final VoidCallback onBack;
+  final String title;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
     final cs = Theme.of(context).colorScheme;
+
     return Column(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const _Header(
-          title: 'Public Profile',
-          subtitle:
-              'Optional — let the network know you\'re here.\n'
-              'Leave blank to stay private.',
-        ),
-
-        // Optional public display name — shown to other peers if discoverable.
-        TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'Public display name (optional)',
-            hintText: 'e.g. Alice',
-            border: OutlineInputBorder(),
-          ),
-        ),
-
-        const SizedBox(height: 8),
-
-        Card(
-          margin: EdgeInsets.zero,
-          child: CheckboxListTile(
-            // The checkbox tracks "show publicly" directly.
-            value: isPublic,
-            onChanged: (v) => onPublicChanged(v ?? false),
-            title: const Text('Show my identity publicly'),
-            subtitle: Text(
-              'Other nodes on the mesh can discover and contact you.',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: cs.onSurfaceVariant,
-              ),
-            ),
-            controlAffinity: ListTileControlAffinity.leading,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          ),
-        ),
-
-        const SizedBox(height: 24),
-
-        FilledButton.icon(
-          onPressed: onNext,
-          icon: const Icon(Icons.arrow_forward_rounded),
-          label: const Text('Get Started'),
-          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
-        ),
-
-        const SizedBox(height: 12),
-
-        // "Skip" saves with an empty public profile and goes straight to the app.
-        TextButton(
-          onPressed: onSkip,
-          child: const Text('Skip'),
-        ),
-
-        TextButton(
-          onPressed: onBack,
-          child: const Text('Back'),
-        ),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Step 3: identity — primary private identity ("Your Identity")
-// ---------------------------------------------------------------------------
-
-/// Collects the user's private identity name and an optional bio.
-///
-/// This is the user's primary mask — the "self" they present to trusted
-/// contacts.  From a UX perspective this IS the user; from a crypto
-/// perspective it is the primary mask derived from the root key pair.
-///
-/// The name and bio are stored device-only and shared only with contacts
-/// the user explicitly trusts.  They are never transmitted publicly.
-class _IdentityStep extends StatelessWidget {
-  const _IdentityStep({
-    super.key,
-    required this.nameController,
-    required this.bioController,
-    required this.onNext,
-  });
-
-  /// Controller for the private identity name field.
-  final TextEditingController nameController;
-
-  /// Controller for the optional bio / personal notes field.
-  final TextEditingController bioController;
-
-  /// Advances to the optional public profile step.
-  final VoidCallback onNext;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _Header(
-          title: 'Your identity',
-          subtitle:
-              'This is you on Mesh Infinity — the private identity\n'
-              'you share with people you trust.',
-        ),
-
-        // The user's chosen name for trusted contacts.
-        TextField(
-          controller: nameController,
-          decoration: const InputDecoration(
-            labelText: 'Your name',
-            hintText: 'What trusted contacts will call you',
-            border: OutlineInputBorder(),
-          ),
-        ),
-
-        const SizedBox(height: 16),
-
-        // Optional bio — personal notes that never leave the device.
-        TextField(
-          controller: bioController,
-          minLines: 3,
-          maxLines: 6,
-          decoration: const InputDecoration(
-            labelText: 'About me (optional)',
-            hintText: 'Notes for yourself…',
-            border: OutlineInputBorder(),
+        // Compact logo for interior steps — smaller than the Welcome logo.
+        Image.asset(
+          'assets/logo.png',
+          width: 56,
+          height: 56,
+          errorBuilder: (context, error, _) => const Icon(
+            Icons.hub_rounded,
+            size: 56,
+            color: MeshTheme.brand,
           ),
         ),
 
         const SizedBox(height: 8),
 
         Text(
-          'You can update this at any time in Settings.',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: cs.onSurfaceVariant,
+          'Mesh Infinity',
+          style: tt.labelLarge?.copyWith(color: cs.onSurfaceVariant),
+        ),
+
+        const SizedBox(height: 12),
+
+        Text(
+          title,
+          style: tt.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+          textAlign: TextAlign.center,
+        ),
+
+        if (subtitle != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            subtitle!,
+            style: tt.bodyMedium?.copyWith(color: cs.onSurfaceVariant),
+            textAlign: TextAlign.center,
           ),
-        ),
-
-        const SizedBox(height: 24),
-
-        FilledButton(
-          onPressed: onNext,
-          style: FilledButton.styleFrom(minimumSize: const Size(double.infinity, 52)),
-          child: const Text('Next'),
-        ),
+        ],
       ],
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Shared error banner
+// _ErrorBanner
 // ---------------------------------------------------------------------------
 
-/// A styled red box that displays a warning icon and an error message.
-/// Shown above the action buttons on any step where a backend call failed.
+/// Red error banner shown above action buttons when a backend call fails.
 ///
-/// WHY use a dedicated widget instead of a plain Text?
-/// ----------------------------------------------------
-/// Error messages need to stand out clearly.  A plain Text in the normal
-/// body colour is easy to miss.  The coloured container with a warning icon
-/// is instantly recognisable as an error, matching user expectations from
-/// native mobile apps.
+/// Uses the theme's errorContainer / onErrorContainer colours so it adapts
+/// correctly to both light and dark themes without hard-coded colours.
 class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner(this.message);
+  const _ErrorBanner({required this.message});
 
-  /// The human-readable error text, typically from bridge.getLastError().
   final String message;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        // errorContainer is the Material 3 semantic colour for error
-        // backgrounds — typically a light red that pairs with onErrorContainer.
         color: cs.errorContainer,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         children: [
-          // Warning icon in the error foreground colour.
-          Icon(Icons.warning_amber_rounded, color: cs.onErrorContainer, size: 20),
+          Icon(Icons.error_outline_rounded, size: 18, color: cs.onErrorContainer),
           const SizedBox(width: 8),
-          // Expanded fills remaining row width so long messages wrap correctly
-          // instead of overflowing off-screen.
           Expanded(
             child: Text(
               message,
-              style: TextStyle(color: cs.onErrorContainer),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: cs.onErrorContainer,
+                  ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _DisclosureItem
+// ---------------------------------------------------------------------------
+
+/// A single disclosure row in the §22.23 disclosures step.
+///
+/// Layout: coloured icon in a rounded container on the left; title and body
+/// text on the right.  This is the _FactRow layout from §22.42.4.
+/// Reused here for the mandatory disclosures so the visual language is
+/// consistent between the disclosure step and any other explainer screens.
+class _DisclosureItem extends StatelessWidget {
+  const _DisclosureItem({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.body,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    final tt = Theme.of(context).textTheme;
+    final cs = Theme.of(context).colorScheme;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Icon container — coloured background at 12% opacity keeps the
+        // brand colours readable without overpowering the text.
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: iconColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, size: 22, color: iconColor),
+        ),
+
+        const SizedBox(width: 14),
+
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 2),
+              Text(title, style: tt.titleSmall),
+              const SizedBox(height: 4),
+              Text(
+                body,
+                style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

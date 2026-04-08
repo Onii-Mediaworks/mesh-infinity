@@ -1,3 +1,36 @@
+// debug_screen.dart
+//
+// DebugScreen — developer diagnostics visible only in debug and profile builds.
+//
+// WHAT THIS SHOWS:
+// ----------------
+// Two sections:
+//   Inspect — navigates to _StateInspectorScreen, which dumps the full live
+//     backend state (identity, settings, network stats, diagnostic report).
+//   Runtime — quick key/value pairs for build mode, platform, backend
+//     availability, context address (the FFI memory pointer to the Rust
+//     AppContext), and the last backend error string.
+//
+// The app bar turns error-container red in debug mode as a visual reminder
+// that this is not a production screen.  The banner at the top reinforces
+// that this screen is stripped from production builds.
+//
+// ANDROID-SPECIFIC DIAGNOSTICS:
+// ------------------------------
+// When running on Android, an additional _AndroidPlatformDiagnostics widget
+// loads keystore availability and proximity capabilities (NFC, WiFi Direct)
+// asynchronously via FutureBuilder.  These are loaded lazily to avoid
+// blocking the debug screen paint for slow hardware checks.
+//
+// CONTEXT ADDRESS:
+// ----------------
+// bridge.contextAddress is the raw memory address of the Rust AppContext
+// struct passed via FFI.  It appears as a hex string (e.g. 0x7f3c2a0) and is
+// useful for correlating Rust log output ("context=0x7f3c2a0") with the
+// running Flutter session.
+//
+// Reached from: Settings → Developer Options (only in debug/profile builds).
+
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -7,6 +40,11 @@ import '../../../platform/android_keystore_bridge.dart';
 import '../../../platform/android_proximity_bridge.dart';
 import '../../../platform/android_proximity_sync.dart';
 
+/// Developer diagnostics screen.
+///
+/// Reads all values synchronously from [BackendBridge] at build time — no
+/// subscriptions needed because the user can refresh by navigating away and
+/// back.
 class DebugScreen extends StatelessWidget {
   const DebugScreen({super.key});
 
@@ -19,12 +57,16 @@ class DebugScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Developer Options'),
+        // Error-container tint in debug mode serves as a persistent visual
+        // reminder that this is an internal screen — prevents accidentally
+        // screen-sharing it during demos.
         backgroundColor: kDebugMode ? cs.errorContainer : null,
         foregroundColor: kDebugMode ? cs.onErrorContainer : null,
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // Warning banner — reinforces that this screen is not in production.
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -47,6 +89,8 @@ class DebugScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+
+          // ── Inspect section ─────────────────────────────────────────────
           const _SectionHeader('Inspect'),
           ListTile(
             leading: const Icon(Icons.manage_search_outlined),
@@ -55,6 +99,7 @@ class DebugScreen extends StatelessWidget {
               'Identity, routing, settings, and network stats',
             ),
             trailing: const Icon(Icons.chevron_right),
+            // Navigate to the full state inspector sub-screen.
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -62,17 +107,29 @@ class DebugScreen extends StatelessWidget {
               ),
             ),
           ),
+
+          // Android-specific hardware / platform diagnostics, shown only when
+          // running on Android so iOS / desktop don't see irrelevant entries.
           if (defaultTargetPlatform == TargetPlatform.android)
             _AndroidPlatformDiagnostics(bridge: bridge),
+
           const Divider(height: 1),
+
+          // ── Runtime section ─────────────────────────────────────────────
           const _SectionHeader('Runtime'),
+          // Build mode: "debug" or "release" (kDebugMode is a compile-time constant).
           const _KV('Build mode', kDebugMode ? 'debug' : 'release'),
+          // Platform: the Flutter runtime platform name (android, ios, macos, …).
           _KV('Platform', defaultTargetPlatform.name),
+          // Whether the FFI backend responded to the health check on startup.
           _KV('Backend available', bridge.isAvailable ? 'yes' : 'no'),
+          // Rust AppContext pointer — useful for correlating Rust log lines.
           _KV(
             'Context address',
             '0x${bridge.contextAddress.toRadixString(16)}',
           ),
+          // Last error recorded by the backend, or "(none)" if no error has
+          // occurred in this session.
           _KV('Last backend error', bridge.getLastError() ?? '(none)'),
           const SizedBox(height: 24),
         ],
@@ -81,6 +138,16 @@ class DebugScreen extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Android-specific platform diagnostics
+// ---------------------------------------------------------------------------
+
+/// Loads Android keystore availability and proximity capabilities and renders
+/// them as two ListTiles.
+///
+/// Uses [FutureBuilder] because both checks involve async platform-channel
+/// calls that may block for a few milliseconds — we don't want to block the
+/// debug screen paint waiting for them.
 class _AndroidPlatformDiagnostics extends StatelessWidget {
   const _AndroidPlatformDiagnostics({required this.bridge});
 
@@ -92,6 +159,9 @@ class _AndroidPlatformDiagnostics extends StatelessWidget {
       future: _loadSnapshot(),
       builder: (context, snapshot) {
         final data = snapshot.data;
+
+        // While loading (or on error), show a placeholder tile so the section
+        // header isn't followed by empty space.
         if (data == null) {
           return const ListTile(
             leading: Icon(Icons.developer_board_outlined),
@@ -99,6 +169,7 @@ class _AndroidPlatformDiagnostics extends StatelessWidget {
             subtitle: Text('Loading keystore and proximity state'),
           );
         }
+
         return Column(
           children: [
             ListTile(
@@ -123,9 +194,15 @@ class _AndroidPlatformDiagnostics extends StatelessWidget {
     );
   }
 
+  /// Runs both platform-channel checks in parallel and wraps the results in
+  /// a [_AndroidPlatformSnapshot].
+  ///
+  /// If proximitySync returns an empty map (unsupported device), capabilities
+  /// is null so the summary shows "Not supported on this platform".
   Future<_AndroidPlatformSnapshot> _loadSnapshot() async {
     final keystoreAvailable = await AndroidKeystoreBridge.instance.isAvailable();
     final state = await AndroidProximitySync.syncCurrentState(bridge);
+    // An empty map means proximity APIs are not available on this device.
     final proximityCapabilities = state.isEmpty
         ? null
         : AndroidProximityCapabilities.fromMap(Map<Object?, Object?>.from(state));
@@ -135,10 +212,15 @@ class _AndroidPlatformDiagnostics extends StatelessWidget {
     );
   }
 
+  /// Formats the NFC + WiFi Direct availability into a single-line summary
+  /// for display in the ListTile subtitle.
   String _buildProximitySummary(AndroidProximityCapabilities? caps) {
+    // Null means the platform-channel returned no data — device doesn't
+    // support the proximity APIs used for QR-less pairing.
     if (caps == null) {
       return 'Not supported on this platform';
     }
+    // Each transport gets one of three states: unavailable / off / ready.
     final nfc = caps.nfcAvailable
         ? (caps.nfcEnabled ? 'NFC ready' : 'NFC off')
         : 'No NFC';
@@ -149,16 +231,29 @@ class _AndroidPlatformDiagnostics extends StatelessWidget {
   }
 }
 
+/// Holds the results of the two async Android diagnostics checks so they can
+/// be returned together from a single Future.
 class _AndroidPlatformSnapshot {
   const _AndroidPlatformSnapshot({
     required this.keystoreAvailable,
     required this.proximityCapabilities,
   });
 
+  /// Whether the Android Keystore is accessible to this app.
   final bool keystoreAvailable;
+
+  /// Proximity transport capabilities, or null if not supported.
   final AndroidProximityCapabilities? proximityCapabilities;
 }
 
+// ---------------------------------------------------------------------------
+// Shared key/value row widget
+// ---------------------------------------------------------------------------
+
+/// A two-column key / value display row used in the Runtime section.
+///
+/// [label] is left-aligned in regular weight; [value] is right-aligned in
+/// monospace to make hex addresses and numbers easy to scan.
 class _KV extends StatelessWidget {
   const _KV(this.label, this.value);
 
@@ -177,6 +272,8 @@ class _KV extends StatelessWidget {
         children: [
           Expanded(child: Text(label, style: tt.bodyMedium)),
           const SizedBox(width: 16),
+          // Flexible (not Expanded) so the value shrinks rather than
+          // overflowing when the label and value together exceed one line.
           Flexible(
             child: Text(
               value,
@@ -193,6 +290,11 @@ class _KV extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Section header widget
+// ---------------------------------------------------------------------------
+
+/// A small coloured label that separates groups of list rows.
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader(this.title);
 
@@ -213,6 +315,15 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
+// ---------------------------------------------------------------------------
+// State Inspector screen
+// ---------------------------------------------------------------------------
+
+/// Full backend state dump — identity, settings, network stats, and the
+/// diagnostic report from the Rust backend.
+///
+/// All data is fetched synchronously at build time via direct bridge calls.
+/// The inspector is read-only — no mutations happen here.
 class _StateInspectorScreen extends StatelessWidget {
   const _StateInspectorScreen({required this.bridge});
 
@@ -220,13 +331,19 @@ class _StateInspectorScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final identity = bridge.fetchLocalIdentity();
-    final settings = bridge.fetchSettings();
-    final stats = bridge.getNetworkStats();
+    // Fetch all state synchronously — these are all cheap in-memory reads on
+    // the Rust side (no I/O), so blocking the UI thread is acceptable here.
+    final identity    = bridge.fetchLocalIdentity();
+    final settings    = bridge.fetchSettings();
+    final stats       = bridge.getNetworkStats();
     final diagnostics = bridge.getDiagnosticReport();
-    final routing_diagnostics = diagnostics?['routing_stats'];
-    final identity_diagnostics = diagnostics?['identity_status'];
-    final memory_diagnostics = diagnostics?['memory_usage'];
+
+    // Pull sub-sections from the diagnostic report map. Each is typed
+    // dynamically because the Rust diagnostic serialisation can change —
+    // we guard each access with an `is Map` / `is List` check below.
+    final routing_diagnostics   = diagnostics?['routing_stats'];
+    final identity_diagnostics  = diagnostics?['identity_status'];
+    final memory_diagnostics    = diagnostics?['memory_usage'];
     final transport_diagnostics = diagnostics?['transport_status'];
 
     return Scaffold(
@@ -234,9 +351,11 @@ class _StateInspectorScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // ── Identity ────────────────────────────────────────────────────
           _InspectorSection(
             'Identity',
             entries: [
+              // peerId is empty string when no identity is loaded yet.
               _InspectorEntry(
                 'Peer ID',
                 identity?.peerId.isEmpty ?? true ? '(none)' : identity!.peerId,
@@ -245,11 +364,16 @@ class _StateInspectorScreen extends StatelessWidget {
               _InspectorEntry('Public key', identity?.publicKey ?? '(none)'),
             ],
           ),
+
+          // ── Settings ────────────────────────────────────────────────────
           _InspectorSection(
             'Settings',
             entries: [
+              // nodeMode: 0=standard, 1=relay, 2=storage — int from backend.
               _InspectorEntry('Node mode', '${settings?.nodeMode ?? 0}'),
+              // Threat context: the current operational security level (0–3).
               _InspectorEntry('Threat context', '${bridge.getThreatContext()}'),
+              // activeTier: which trust tier the user is currently operating in.
               _InspectorEntry('Active tier', '${settings?.activeTier ?? 0}'),
               _InspectorEntry(
                 'Bandwidth profile',
@@ -271,6 +395,8 @@ class _StateInspectorScreen extends StatelessWidget {
               ),
             ],
           ),
+
+          // ── Network stats ───────────────────────────────────────────────
           _InspectorSection(
             'Network stats',
             entries: [
@@ -286,12 +412,15 @@ class _StateInspectorScreen extends StatelessWidget {
                 'Routing entries',
                 '${stats?['routingEntries'] ?? 0}',
               ),
+              // gossipMapSize: number of entries in the local gossip mesh map.
               _InspectorEntry(
                 'Gossip map size',
                 '${stats?['gossipMapSize'] ?? 0}',
               ),
             ],
           ),
+
+          // ── Diagnostic report ───────────────────────────────────────────
           _InspectorSection(
             'Diagnostic report',
             entries: [
@@ -299,6 +428,8 @@ class _StateInspectorScreen extends StatelessWidget {
                 'Timestamp',
                 '${diagnostics?['timestamp'] ?? 0}',
               ),
+              // transport_diagnostics is a List of transport descriptors;
+              // guard with `is List` because the type is dynamic.
               _InspectorEntry(
                 'Transport entries',
                 transport_diagnostics is List
@@ -317,6 +448,7 @@ class _StateInspectorScreen extends StatelessWidget {
                     ? '${routing_diagnostics['direct_peers'] ?? 0}'
                     : '0',
               ),
+              // vault_unlocked: whether the identity vault is currently open.
               _InspectorEntry(
                 'Vault unlocked',
                 identity_diagnostics is Map
@@ -329,6 +461,7 @@ class _StateInspectorScreen extends StatelessWidget {
                     ? '${identity_diagnostics['onboarding_complete'] ?? false}'
                     : 'false',
               ),
+              // rss_bytes: resident set size of the Rust process in bytes.
               _InspectorEntry(
                 'RSS bytes',
                 memory_diagnostics is Map
@@ -344,6 +477,10 @@ class _StateInspectorScreen extends StatelessWidget {
   }
 }
 
+/// A collapsible card showing a named group of [_InspectorEntry] key/value rows.
+///
+/// Collapsed by default so the screen is scannable. Each group expands on tap
+/// to show the full entries.
 class _InspectorSection extends StatelessWidget {
   const _InspectorSection(this.title, {required this.entries});
 
@@ -357,6 +494,7 @@ class _InspectorSection extends StatelessWidget {
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
+      // Clip so the ExpansionTile animation stays within the card's rounded corners.
       clipBehavior: Clip.antiAlias,
       child: ExpansionTile(
         title: Text(title, style: tt.titleSmall),
@@ -389,6 +527,7 @@ class _InspectorSection extends StatelessWidget {
   }
 }
 
+/// A single key/value pair in an inspector section.
 class _InspectorEntry {
   const _InspectorEntry(this.key, this.value);
 

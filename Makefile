@@ -46,7 +46,8 @@ BACKEND_FEATURE_FLAGS     := --features $(BACKEND_REQUIRED_FEATURES)
         linux-debug linux-release \
         windows-rust-debug windows-rust-release \
         windows-bundle-debug windows-bundle-release \
-        windows-debug windows-release
+        windows-debug windows-release \
+        quality clippy fmt-check flutter-analyze flutter-test fuzz-smoke
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 
@@ -654,3 +655,51 @@ windows-bundle-debug windows-bundle-release: windows-bundle-%:
 windows-debug windows-release: windows-%:
 	$(MAKE) windows-rust-$*
 	$(MAKE) windows-bundle-$*
+
+# ── Quality gates ─────────────────────────────────────────────────────────────
+#
+# These targets mirror the CI quality.yml workflow jobs so that developers can
+# run the same checks locally before pushing.  Each sub-target is also usable
+# independently (e.g. `make clippy` to check just the Rust lints).
+#
+# Usage:
+#   make quality          — run all quality gates (clippy, fmt, analyze, test)
+#   make clippy           — Rust lint only
+#   make fmt-check        — Rust format check only
+#   make flutter-analyze  — Flutter static analysis only
+#   make flutter-test     — Flutter unit/widget tests only
+#   make fuzz-smoke       — 30-second libFuzzer smoke run for all fuzz targets
+
+# quality: umbrella target — runs every quality gate in sequence.
+# Fails fast: if clippy fails, the subsequent steps are skipped.
+quality: clippy fmt-check flutter-analyze flutter-test
+
+# clippy: run cargo clippy with warnings-as-errors on all targets.
+# `--all-targets` includes lib, bins, tests, examples, and build scripts.
+clippy:
+	cargo clippy --all-targets -- -D warnings
+
+# fmt-check: verify that all Rust source files match rustfmt's canonical format.
+# This does NOT modify any files; it exits non-zero if any file differs.
+fmt-check:
+	cargo fmt --check
+
+# flutter-analyze: run the Dart/Flutter static analyzer over the frontend.
+# Uses the system Flutter at /opt/flutter for local Linux development;
+# the CI workflow uses the flutter-action-installed Flutter instead.
+flutter-analyze:
+	cd "$(FRONTEND_DIR)" && /opt/flutter/bin/flutter analyze
+
+# flutter-test: run all Dart/Flutter unit and widget tests.
+flutter-test:
+	cd "$(FRONTEND_DIR)" && /opt/flutter/bin/flutter test
+
+# fuzz-smoke: run each libFuzzer fuzz target for 30 seconds.
+# Requires: cargo-fuzz installed (`cargo install cargo-fuzz`)
+#           nightly Rust toolchain (`rustup install nightly`)
+# This is a smoke test — it catches obvious regressions but is not a
+# substitute for the extended 24h+ fuzzing runs described in §21.2.3.
+fuzz-smoke:
+	cd "$(ROOT_DIR)/fuzz" && cargo +nightly fuzz run fuzz_nfc_ndef -- -max_total_time=30
+	cd "$(ROOT_DIR)/fuzz" && cargo +nightly fuzz run fuzz_pairing_payload -- -max_total_time=30
+	cd "$(ROOT_DIR)/fuzz" && cargo +nightly fuzz run fuzz_message_frame -- -max_total_time=30
