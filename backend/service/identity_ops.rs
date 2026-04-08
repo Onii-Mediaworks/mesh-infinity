@@ -508,7 +508,7 @@ impl MeshRuntime {
             && has_active_transport;
     }
 
-    fn sync_tunnel_gossip_identity(&self) {
+    pub(crate) fn sync_tunnel_gossip_identity(&self) {
         let mesh_pub = self
             .mesh_identity
             .lock()
@@ -520,7 +520,7 @@ impl MeshRuntime {
             crate::routing::tunnel_gossip::TunnelGossipProcessor::new(mesh_pub);
     }
 
-    fn sync_announcement_processor_identity(&self) {
+    pub(crate) fn sync_announcement_processor_identity(&self) {
         let our_address = self
             .mesh_identity
             .lock()

@@ -84,6 +84,42 @@ object NativeLayer1Bridge {
         contextPointer = 0L
     }
 
+    // Bootstrap all Layer 1 subsystems by calling mi_bootstrap_layer1() on
+    // the existing MeshContext.
+    //
+    // This must be called after startLayer1() has returned a non-zero context
+    // pointer.  It drives the deeper subsystem startup that goes beyond transport
+    // reconciliation:
+    //
+    //   1. Verifies the Layer 1 WireGuard keypair is in memory.
+    //   2. Syncs the tunnel gossip processor with the mesh public key so the
+    //      node can participate in coverage-request/response gossip (§6.10).
+    //   3. Syncs the announcement processor for routing-table propagation.
+    //   4. Refreshes cover traffic parameters for the current activity state.
+    //   5. Queues a Layer1Ready event for any attached Flutter UI.
+    //
+    // Returns:
+    //   0  — bootstrap succeeded; Layer 1 is now fully active.
+    //  -1  — bootstrap deferred; the mesh identity keypair is not yet readable
+    //         (direct-boot mode before first unlock).  Retry on USER_UNLOCKED.
+    @Synchronized
+    fun bootstrapLayer1(): Int {
+        if (!libLoaded) return -1
+        if (contextPointer == 0L) return -1
+        return nativeBootstrapLayer1(contextPointer)
+    }
+
+    // Query whether Layer 1 participation is currently active.
+    //
+    // Returns true if the mesh identity keypair is loaded AND at least one
+    // transport type is active.  Safe to call frequently — no side effects.
+    @Synchronized
+    fun isLayer1Ready(): Boolean {
+        if (!libLoaded) return false
+        if (contextPointer == 0L) return false
+        return nativeIsLayer1Ready(contextPointer) != 0
+    }
+
     // JNI declaration matching the Rust symbol
     //   Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeStartLayer1
     //
@@ -98,4 +134,16 @@ object NativeLayer1Bridge {
     //
     // Releases the startup service's ownership of the shared MeshContext.
     private external fun nativeStopLayer1()
+
+    // JNI declaration matching the Rust symbol mi_bootstrap_layer1.
+    //
+    // ctx:     MeshContext pointer (cast to Long / jlong).
+    // Returns: 0 on success, -1 if the mesh identity is not yet available.
+    private external fun nativeBootstrapLayer1(ctx: Long): Int
+
+    // JNI declaration matching the Rust symbol mi_is_layer1_ready.
+    //
+    // ctx:     MeshContext pointer (cast to Long / jlong).
+    // Returns: 1 if Layer 1 is active, 0 otherwise.
+    private external fun nativeIsLayer1Ready(ctx: Long): Int
 }

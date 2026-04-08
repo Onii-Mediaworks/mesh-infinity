@@ -505,6 +505,81 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
     maybe_drop_headless_layer1();
 }
 
+/// Android JNI entry point called by `NativeLayer1Bridge.bootstrapLayer1()`.
+///
+/// Receives the `MeshContext` pointer as a `jlong` (the same value returned by
+/// `nativeStartLayer1`) and calls `bootstrap_layer1()` on it to drive deeper
+/// Layer 1 subsystem startup:
+///
+///   1. Verifies the Layer 1 WireGuard keypair is present in memory.
+///   2. Syncs the tunnel gossip processor and announcement processor with the
+///      mesh public key so WireGuard handshakes and gossip can proceed.
+///   3. Refreshes cover traffic parameters for the current activity state.
+///   4. Pushes a `Layer1Ready` event for any attached Flutter UI.
+///
+/// Returns `0` on success, `-1` if the mesh identity keypair is not yet
+/// readable (direct-boot mode before first unlock).
+///
+/// # Safety
+///
+/// The `ctx` argument must be the exact value previously returned by
+/// `nativeStartLayer1`.  Passing any other `jlong` is undefined behaviour.
+/// The JVM guarantees the value is not modified between calls.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeBootstrapLayer1(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx: jni::sys::jlong,
+) -> jni::sys::jint {
+    // Guard: a zero pointer means the runtime was never allocated.
+    if ctx == 0 {
+        return -1;
+    }
+    // SAFETY: ctx is the pointer returned by nativeStartLayer1 and stored in
+    // NativeLayer1Bridge.contextPointer.  It is valid for the lifetime of the
+    // startup service, and only freed after both the service and all Flutter
+    // attachments have detached (coordinated via HEADLESS_LAYER1_PTR CAS).
+    let runtime = unsafe { &*(ctx as *const MeshContext) };
+    match runtime.bootstrap_layer1() {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("[Layer1] nativeBootstrapLayer1 deferred: {e}");
+            -1
+        }
+    }
+}
+
+/// Android JNI entry point called by `NativeLayer1Bridge.isLayer1Ready()`.
+///
+/// Returns `1` if the Layer 1 mesh identity keypair is loaded AND at least
+/// one transport type is active.  Returns `0` otherwise.
+///
+/// This is a lightweight read-only query with no side effects, suitable for
+/// polling from the startup service without risk of spurious event emission.
+///
+/// # Safety
+///
+/// Same ownership contract as `nativeBootstrapLayer1` above.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeIsLayer1Ready(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx: jni::sys::jlong,
+) -> jni::sys::jint {
+    if ctx == 0 {
+        return 0;
+    }
+    // SAFETY: same as nativeBootstrapLayer1.
+    let runtime = unsafe { &*(ctx as *const MeshContext) };
+    if runtime.is_layer1_ready() {
+        1
+    } else {
+        0
+    }
+}
+
 /// Destroy the context and free all resources.
 ///
 /// Must be called exactly once at app shutdown.  After this call, `ctx` is
@@ -2473,6 +2548,78 @@ pub unsafe extern "C" fn mi_android_startup_update_state(
             ctx.set_error(&error);
             -1
         }
+    }
+}
+
+/// Bootstrap all Layer 1 subsystems (§3.1.1) after device unlock.
+///
+/// This is the FFI entry point called by `AndroidStartupService` immediately
+/// after `nativeStartLayer1()` returns a valid context pointer.  It is also
+/// called by `mi_android_startup_update_state` indirectly (via
+/// `reconcile_layer1_runtime`) when the mesh identity keypair becomes
+/// available for the first time.
+///
+/// # What this does
+///
+/// 1. Verifies the Layer 1 mesh identity keypair is loaded (device-unlock
+///    accessible key material; stored without `UserAuthenticationRequired`).
+/// 2. Initialises the Layer 1 WireGuard interface by syncing the gossip and
+///    announcement processors with the mesh public key.
+/// 3. Starts cover traffic emission by refreshing participation state, which
+///    picks the correct `CoverTrafficParams` for the current activity state.
+/// 4. Starts tunnel-coordination gossip participation.
+/// 5. Pushes a `Layer1Ready` event to the event queue so the Flutter UI (if
+///    attached) can update its network status display without polling.
+///
+/// # Return value
+///
+/// Returns `0` on success.  Returns `-1` if the mesh identity keypair is not
+/// yet available — this occurs in direct-boot mode before the first user
+/// unlock when device-protected storage has not been unlocked yet.  The
+/// caller should retry on the next `USER_UNLOCKED` intent.
+///
+/// # Safety
+/// `ctx` must be non-null and must have been returned by `mesh_init` or
+/// `nativeStartLayer1`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_bootstrap_layer1(ctx: *mut MeshContext) -> i32 {
+    // Guard: null context is always an error.
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    match ctx.bootstrap_layer1() {
+        Ok(()) => 0,
+        Err(error) => {
+            // Store the error so the caller can retrieve it via `mi_last_error`.
+            ctx.set_error(&error);
+            -1
+        }
+    }
+}
+
+/// Query whether all Layer 1 subsystems are up and participating.
+///
+/// Returns `1` if the mesh identity keypair is loaded AND at least one
+/// transport type is currently active.  Returns `0` otherwise.
+///
+/// This is a lightweight, lock-based query with no side effects.  It is safe
+/// to call repeatedly from the startup service polling loop without risk of
+/// spurious event emission.
+///
+/// # Safety
+/// `ctx` must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn mi_is_layer1_ready(ctx: *mut MeshContext) -> i32 {
+    // Guard: null context → not ready.
+    if ctx.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &*ctx };
+    if ctx.is_layer1_ready() {
+        1
+    } else {
+        0
     }
 }
 
@@ -6296,5 +6443,241 @@ mod tests {
             "android.intent.action.LOCKED_BOOT_COMPLETED"
         );
         unsafe { mesh_destroy(ctx) };
+    }
+
+    // -----------------------------------------------------------------------
+    // bootstrap_layer1 / is_layer1_ready tests (§3.1.1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bootstrap_layer1_on_fresh_context_succeeds() {
+        // mesh_init() calls initialize_startup_state() which always loads or
+        // creates the mesh identity keypair.  Even without an explicit
+        // mi_create_identity() call, the Layer 1 WireGuard keypair is present.
+        //
+        // A fresh context without an active transport will have
+        // layer1_participation_started = false, so bootstrap_layer1 will
+        // attempt the gossip/announcement sync steps.  Without a transport,
+        // the event is NOT pushed (participation_started stays false after
+        // refresh_layer1_participation_state), but the function still returns
+        // Ok(()) — success means "subsystems synced", not "transports active".
+        //
+        // (The -1 scenario only occurs in the headless JNI path where
+        // nativeStartLayer1 failed to load the identity because device-
+        // protected storage was not yet readable before first unlock.)
+        let (ctx, _dir) = make_ctx();
+        // No active transport — clearnet is disabled in make_ctx().
+        let result = unsafe { mi_bootstrap_layer1(ctx) };
+        assert_eq!(
+            result, 0,
+            "bootstrap_layer1 must return 0 when the mesh identity is loaded \
+             (even if no transport is active yet)"
+        );
+        // is_layer1_ready is 0 because no active transport.
+        assert_eq!(
+            unsafe { mi_is_layer1_ready(ctx) },
+            0,
+            "is_layer1_ready must be 0 when no transport is active"
+        );
+        unsafe { mesh_destroy(ctx) };
+    }
+
+    #[test]
+    fn test_is_layer1_ready_false_before_identity() {
+        // Without a loaded identity, is_layer1_ready must return 0.
+        let (ctx, _dir) = make_ctx();
+        assert_eq!(
+            unsafe { mi_is_layer1_ready(ctx) },
+            0,
+            "is_layer1_ready must be 0 before any identity is loaded"
+        );
+        unsafe { mesh_destroy(ctx) };
+    }
+
+    #[test]
+    fn test_bootstrap_layer1_succeeds_after_identity_created() {
+        // After creating an identity (which loads the mesh identity keypair and
+        // starts transport listeners), bootstrap_layer1 must succeed and
+        // is_layer1_ready must return 1.
+        let dir = TempDir::new().unwrap();
+        let dir_str = CString::new(dir.path().to_str().unwrap()).unwrap();
+        // Enable clearnet so that at least one transport is active, which is
+        // required for layer1_participation_started to become true.
+        let config = FfiMeshConfig {
+            config_path: dir_str.as_ptr(),
+            log_level: 0,
+            enable_tor: 0,
+            enable_clearnet: 1,
+            mesh_discovery: 1,
+            allow_relays: 1,
+            enable_i2p: 0,
+            enable_bluetooth: 0,
+            enable_rf: 0,
+            wireguard_port: 0,
+            max_peers: 100,
+            max_connections: 100,
+            node_mode: 0,
+        };
+        let ctx = unsafe { mesh_init(&config as *const FfiMeshConfig) };
+        assert!(!ctx.is_null());
+
+        // Bind to a random port so the clearnet listener can actually start.
+        let test_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|a| a.port())
+            .unwrap_or(7234);
+        assert_eq!(unsafe { mi_set_clearnet_port(ctx, test_port) }, 0);
+
+        // Create the identity — this loads the mesh identity keypair.
+        let name = CString::new("Bootstrap Test User").unwrap();
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
+
+        // bootstrap_layer1 must now succeed.
+        let result = unsafe { mi_bootstrap_layer1(ctx) };
+        assert_eq!(
+            result, 0,
+            "bootstrap_layer1 must return 0 after identity is loaded"
+        );
+
+        // is_layer1_ready must return 1.
+        assert_eq!(
+            unsafe { mi_is_layer1_ready(ctx) },
+            1,
+            "is_layer1_ready must return 1 after successful bootstrap"
+        );
+
+        unsafe { mesh_destroy(ctx) };
+    }
+
+    #[test]
+    fn test_bootstrap_layer1_emits_layer1_ready_event() {
+        // After a successful bootstrap, the event queue must contain a
+        // Layer1Ready event so the Flutter UI can react without polling.
+        let dir = TempDir::new().unwrap();
+        let dir_str = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let config = FfiMeshConfig {
+            config_path: dir_str.as_ptr(),
+            log_level: 0,
+            enable_tor: 0,
+            enable_clearnet: 1,
+            mesh_discovery: 1,
+            allow_relays: 1,
+            enable_i2p: 0,
+            enable_bluetooth: 0,
+            enable_rf: 0,
+            wireguard_port: 0,
+            max_peers: 100,
+            max_connections: 100,
+            node_mode: 0,
+        };
+        let ctx = unsafe { mesh_init(&config as *const FfiMeshConfig) };
+        assert!(!ctx.is_null());
+        let test_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|a| a.port())
+            .unwrap_or(7234);
+        assert_eq!(unsafe { mi_set_clearnet_port(ctx, test_port) }, 0);
+
+        let name = CString::new("Layer1 Event Test User").unwrap();
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
+
+        // Drain any events already in the queue (SettingsUpdated etc.).
+        loop {
+            let ptr = unsafe { mi_poll_events(ctx) };
+            assert!(!ptr.is_null());
+            let s = unsafe { CStr::from_ptr(ptr).to_str().unwrap() };
+            if s == "[]" {
+                break;
+            }
+        }
+
+        // Call bootstrap_layer1 — this should queue a Layer1Ready event.
+        assert_eq!(unsafe { mi_bootstrap_layer1(ctx) }, 0);
+
+        // Poll events — the next batch must include Layer1Ready.
+        let ptr = unsafe { mi_poll_events(ctx) };
+        assert!(!ptr.is_null());
+        let events_json = unsafe { CStr::from_ptr(ptr).to_str().unwrap() };
+        let events: Vec<serde_json::Value> = serde_json::from_str(events_json).unwrap();
+        let has_layer1_ready = events
+            .iter()
+            .any(|event| event["type"] == "Layer1Ready");
+        assert!(
+            has_layer1_ready,
+            "bootstrap_layer1 must queue a Layer1Ready event; got: {events_json}"
+        );
+
+        // The Layer1Ready event must say participating = true.
+        let layer1_event = events
+            .iter()
+            .find(|event| event["type"] == "Layer1Ready")
+            .unwrap();
+        assert_eq!(layer1_event["data"]["participating"], true);
+        assert_eq!(layer1_event["data"]["headless"], false); // identity_unlocked = true
+
+        unsafe { mesh_destroy(ctx) };
+    }
+
+    #[test]
+    fn test_bootstrap_layer1_callable_twice() {
+        // Calling mi_bootstrap_layer1 twice must return 0 both times.
+        // Duplicate-event suppression is the caller's responsibility:
+        // the Android startup service uses its own `layer1Bootstrapped` flag
+        // to ensure it calls mi_bootstrap_layer1 at most once per service
+        // lifetime.  This test verifies the Rust function doesn't panic or
+        // corrupt state when called more than once.
+        let dir = TempDir::new().unwrap();
+        let dir_str = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let config = FfiMeshConfig {
+            config_path: dir_str.as_ptr(),
+            log_level: 0,
+            enable_tor: 0,
+            enable_clearnet: 1,
+            mesh_discovery: 1,
+            allow_relays: 1,
+            enable_i2p: 0,
+            enable_bluetooth: 0,
+            enable_rf: 0,
+            wireguard_port: 0,
+            max_peers: 100,
+            max_connections: 100,
+            node_mode: 0,
+        };
+        let ctx = unsafe { mesh_init(&config as *const FfiMeshConfig) };
+        assert!(!ctx.is_null());
+        let test_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|a| a.port())
+            .unwrap_or(7234);
+        assert_eq!(unsafe { mi_set_clearnet_port(ctx, test_port) }, 0);
+
+        let name = CString::new("Double Bootstrap User").unwrap();
+        assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
+
+        // First call must succeed.
+        assert_eq!(unsafe { mi_bootstrap_layer1(ctx) }, 0, "first call must return 0");
+        // Second call must also return 0 — no panic, no corruption.
+        assert_eq!(unsafe { mi_bootstrap_layer1(ctx) }, 0, "second call must also return 0");
+
+        // State must still be consistent — is_layer1_ready must be 1.
+        assert_eq!(
+            unsafe { mi_is_layer1_ready(ctx) },
+            1,
+            "is_layer1_ready must remain 1 after two bootstrap calls"
+        );
+
+        unsafe { mesh_destroy(ctx) };
+    }
+
+    #[test]
+    fn test_null_ctx_bootstrap_returns_error() {
+        // Null context must not crash — must return -1.
+        assert_eq!(unsafe { mi_bootstrap_layer1(ptr::null_mut()) }, -1);
+    }
+
+    #[test]
+    fn test_null_ctx_is_layer1_ready_returns_zero() {
+        // Null context must not crash — must return 0.
+        assert_eq!(unsafe { mi_is_layer1_ready(ptr::null_mut()) }, 0);
     }
 }
