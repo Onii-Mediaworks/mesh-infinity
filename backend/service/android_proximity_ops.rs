@@ -145,4 +145,73 @@ impl MeshRuntime {
         })
         .to_string()
     }
+
+    /// Accept a Wi-Fi Direct socket file descriptor from the Kotlin bridge and
+    /// transfer ownership to Rust.
+    ///
+    /// # Why Rust takes the fd
+    ///
+    /// Until this call the Kotlin bridge owned both sides of the socket.
+    /// Ownership transfer closes the gap identified in the Android proximity
+    /// transport audit: the native bridge managed the socket lifecycle, so Rust
+    /// could not control send ordering, implement flow control, or react to
+    /// socket errors without bouncing through JNI on every frame.
+    ///
+    /// After this call:
+    /// - Rust owns the fd exclusively via a `TcpStream`.
+    /// - Kotlin MUST NOT close, read, or write the fd or its wrapping `Socket`.
+    /// - Kotlin calls `mi_wifi_direct_drain_session` in a tight coroutine loop
+    ///   to flush frames Rust has queued for the peer.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer_mac` — MAC address string from `WifiP2pDevice.deviceAddress`.
+    /// * `fd`       — Connected socket file descriptor (from
+    ///               `socket.fileDescriptor.fd` via reflection, or from a
+    ///               `ParcelFileDescriptor.detachFd()` call).
+    #[cfg(target_os = "android")]
+    pub fn register_wifi_direct_session_fd(
+        &self,
+        peer_mac: &str,
+        fd: i32,
+    ) -> Result<(), String> {
+        // Guard: peer_mac must be a non-empty string to be a usable key.
+        if peer_mac.trim().is_empty() {
+            return Err("peer_mac must not be empty".into());
+        }
+        // Guard: fd must be a plausible file descriptor value.
+        // The lowest valid fd is 0 (stdin), but a connected socket is
+        // always >= 3 because 0/1/2 are pre-opened by the process.
+        if fd < 0 {
+            return Err(format!("invalid file descriptor: {fd}"));
+        }
+        // Delegate to the transport layer.  The transport function validates
+        // adapter state before wrapping the fd, so we do not double-check here.
+        crate::transport::wifi_direct::register_wifi_direct_session_fd(peer_mac, fd)?;
+        self.push_event(
+            "AndroidWiFiDirectSessionFdRegistered",
+            serde_json::json!({ "peerMac": peer_mac }),
+        );
+        Ok(())
+    }
+
+    /// Drain the outbound frame queue for a Rust-owned Wi-Fi Direct session.
+    ///
+    /// Called by the Kotlin drain coroutine in a tight loop after registering
+    /// a session via `mi_wifi_direct_session_fd`.  Returns the number of frames
+    /// flushed to the socket, or an error string on socket failure.
+    ///
+    /// The coroutine pattern on the Kotlin side should be:
+    ///
+    /// ```kotlin
+    /// while (sessionActive) {
+    ///     val n = MeshInfinityJni.wifiDirectDrainSession(ctxPtr, peerMac)
+    ///     if (n < 0) break   // error — remove session
+    ///     if (n == 0) delay(5)  // nothing to send — yield briefly
+    /// }
+    /// ```
+    #[cfg(target_os = "android")]
+    pub fn drain_wifi_direct_session(&self, peer_mac: &str) -> Result<usize, String> {
+        crate::transport::wifi_direct::drain_wifi_direct_session(peer_mac)
+    }
 }

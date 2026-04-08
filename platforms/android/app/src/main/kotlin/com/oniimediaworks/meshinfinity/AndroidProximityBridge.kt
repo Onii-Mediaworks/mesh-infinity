@@ -23,6 +23,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import android.os.ParcelFileDescriptor
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
@@ -32,6 +33,7 @@ import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AndroidProximityBridge(
     private val activity: MainActivity,
@@ -65,6 +67,19 @@ class AndroidProximityBridge(
     private var wifiPairingServer: ServerSocket? = null
     private var pendingWifiPermissionResult: MethodChannel.Result? = null
     private val ioExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
+    // Dedicated single-thread executor for the Wi-Fi Direct fd drain loop and
+    // the NFC outbound drain loop.  Separate from ioExecutor so pairing I/O
+    // and drain polling do not block each other.
+    private val drainExecutor: ExecutorService = Executors.newCachedThreadPool()
+
+    // Set to true while an NFC LLCP session is active so the outbound drain
+    // loop knows whether to keep polling for frames to send.
+    private val nfcSessionActive: AtomicBoolean = AtomicBoolean(false)
+
+    // Buffer reused by the NFC drain loop.  Size matches NFC_MAX_FRAME_BYTES (244)
+    // plus a small margin so oversized frames are never silently dropped.
+    private val nfcDrainBuf: ByteArray = ByteArray(256)
 
     private val wifiReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -111,7 +126,11 @@ class AndroidProximityBridge(
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
         closeWifiPairingServer()
+        // Stop the NFC drain loop before shutting down the executor so the
+        // loop thread can exit cleanly rather than being interrupted mid-write.
+        stopNfcOutboundDrainLoop()
         ioExecutor.shutdownNow()
+        drainExecutor.shutdownNow()
         unregisterWifiReceiver()
         pendingWifiPermissionResult = null
     }
@@ -453,6 +472,8 @@ class AndroidProximityBridge(
 
     private fun startWifiPairingServer(payloadJson: String, result: MethodChannel.Result) {
         closeWifiPairingServer()
+        // Capture peer MAC at call time so the fd-handoff lambda has a stable reference.
+        val peerMac = wifiConnectedDeviceAddress ?: ""
         ioExecutor.execute {
             var started = false
             try {
@@ -462,7 +483,16 @@ class AndroidProximityBridge(
                 activity.runOnUiThread { result.success(true) }
                 server.use { listener ->
                     val socket = listener.accept()
+                    // Exchange the pairing payload first (this is the one-shot
+                    // credential exchange; after it completes the socket is ready
+                    // for ongoing session traffic).
                     handleWifiPairingSocket(socket, payloadJson)
+                    // After the pairing exchange, transfer socket ownership to Rust.
+                    // Rust will drive all subsequent send/receive for this peer.
+                    // peerMac identifies the session in the Rust registry.
+                    if (peerMac.isNotBlank()) {
+                        handOffSocketToRust(socket, peerMac)
+                    }
                 }
             } catch (e: Exception) {
                 closeWifiPairingServer()
@@ -491,10 +521,14 @@ class AndroidProximityBridge(
             )
             return
         }
+        val peerMac = wifiConnectedDeviceAddress ?: ""
         ioExecutor.execute {
             try {
-                Socket(host, WIFI_DIRECT_PAIRING_PORT).use { socket ->
-                    handleWifiPairingSocket(socket, payloadJson)
+                val socket = Socket(host, WIFI_DIRECT_PAIRING_PORT)
+                handleWifiPairingSocket(socket, payloadJson)
+                // Transfer socket ownership to Rust after the pairing exchange.
+                if (peerMac.isNotBlank()) {
+                    handOffSocketToRust(socket, peerMac)
                 }
                 activity.runOnUiThread { result.success(true) }
             } catch (e: Exception) {
@@ -511,6 +545,7 @@ class AndroidProximityBridge(
 
     private fun startWifiSessionServer(frameBytes: ByteArray, result: MethodChannel.Result) {
         closeWifiPairingServer()
+        val peerMac = wifiConnectedDeviceAddress ?: ""
         ioExecutor.execute {
             var started = false
             try {
@@ -521,6 +556,10 @@ class AndroidProximityBridge(
                 server.use { listener ->
                     val socket = listener.accept()
                     handleWifiSessionSocket(socket, frameBytes)
+                    // Transfer socket ownership to Rust after the initial frame exchange.
+                    if (peerMac.isNotBlank()) {
+                        handOffSocketToRust(socket, peerMac)
+                    }
                 }
             } catch (e: Exception) {
                 closeWifiPairingServer()
@@ -549,10 +588,14 @@ class AndroidProximityBridge(
             )
             return
         }
+        val peerMac = wifiConnectedDeviceAddress ?: ""
         ioExecutor.execute {
             try {
-                Socket(host, WIFI_DIRECT_PAIRING_PORT).use { socket ->
-                    handleWifiSessionSocket(socket, frameBytes)
+                val socket = Socket(host, WIFI_DIRECT_PAIRING_PORT)
+                handleWifiSessionSocket(socket, frameBytes)
+                // Transfer socket ownership to Rust after the initial frame exchange.
+                if (peerMac.isNotBlank()) {
+                    handOffSocketToRust(socket, peerMac)
                 }
                 activity.runOnUiThread { result.success(true) }
             } catch (e: Exception) {
@@ -719,4 +762,207 @@ class AndroidProximityBridge(
         activity.unregisterReceiver(wifiReceiver)
         wifiReceiverRegistered = false
     }
+
+    // -------------------------------------------------------------------------
+    // Wi-Fi Direct fd handoff to Rust (§5.8 socket ownership transfer)
+    // -------------------------------------------------------------------------
+    //
+    // After WifiP2pManager establishes a P2P group and the TCP socket is
+    // connected (or accepted), this method detaches the file descriptor from
+    // the JVM and hands it to Rust via mi_wifi_direct_session_fd.
+    //
+    // OWNERSHIP CONTRACT (critical — read before modifying):
+    //
+    //   1. We call ParcelFileDescriptor.fromSocket(socket).detachFd().
+    //      detachFd() transfers ownership of the underlying OS file descriptor
+    //      to the caller and marks the ParcelFileDescriptor as closed so the
+    //      JVM's garbage collector will NOT call close(fd) when the object is
+    //      finalized.
+    //
+    //   2. nativeWifiDirectSessionFd(ctxPtr, peerMac, fd) hands the raw fd to
+    //      Rust, which wraps it in a TcpStream via from_raw_fd().  After this
+    //      point Rust owns the fd exclusively.
+    //
+    //   3. We MUST NOT use `socket` or `fd` for any further I/O after step 2.
+    //      The socket reference is abandoned; the JVM object is effectively dead.
+    //
+    //   4. We start drainWifiDirectSession() on drainExecutor.  This calls
+    //      nativeWifiDirectDrainSession in a loop, which flushes Rust's outbound
+    //      queue to the socket without re-entering the JVM for each frame.
+    //
+    // If the context pointer is 0 (backend not yet initialised) the handoff is
+    // skipped and the socket remains Kotlin-managed for this session only.
+    private fun handOffSocketToRust(socket: Socket, peerMac: String) {
+        val ctxPtr = NativeLayer1Bridge.contextPointer
+        if (ctxPtr == 0L) {
+            // Backend not yet started — skip the fd handoff for this session.
+            // The socket will be used via the existing frame-queue path instead.
+            return
+        }
+        try {
+            // detachFd() extracts the raw fd and severs the JVM's ownership.
+            // After this call the JVM will NOT close the fd on GC.
+            val pfd = ParcelFileDescriptor.fromSocket(socket)
+            val fd = pfd.detachFd()
+            // Hand the fd to Rust.  From this point on Rust owns the fd and
+            // will close it when the session struct is dropped.
+            val result = nativeWifiDirectSessionFd(ctxPtr, peerMac, fd)
+            if (result != 0) {
+                // Handoff failed (e.g. adapter not available).  The fd is now
+                // in limbo — close it manually to avoid a leak.
+                try {
+                    android.system.Os.close(android.system.Os.open("/proc/self/fd/$fd", android.system.OsConstants.O_RDONLY, 0))
+                } catch (_: Exception) {
+                    // Best-effort close; ignore errors.
+                }
+                return
+            }
+            // Start the drain loop so Rust-authored frames reach the socket.
+            startWifiDirectDrainLoop(peerMac)
+        } catch (e: Exception) {
+            // If detachFd or the JNI call fails we leave the socket in Kotlin's
+            // hands.  The existing frame-queue bridge will continue to function.
+        }
+    }
+
+    // Drain loop that flushes Rust's Wi-Fi Direct outbound queue to the fd-owned
+    // socket.  Runs on drainExecutor (a separate thread from the UI thread).
+    //
+    // The loop terminates when:
+    //   - nativeWifiDirectDrainSession returns < 0 (socket error), or
+    //   - the Wi-Fi Direct session disconnects (wifiConnected becomes false).
+    //
+    // A 5 ms yield when no frames are pending keeps CPU impact negligible while
+    // still flushing within one tick of a frame being queued by Rust.
+    private fun startWifiDirectDrainLoop(peerMac: String) {
+        drainExecutor.execute {
+            val ctxPtr = NativeLayer1Bridge.contextPointer
+            if (ctxPtr == 0L) return@execute
+            while (wifiConnected) {
+                val n = nativeWifiDirectDrainSession(ctxPtr, peerMac)
+                when {
+                    n < 0 -> break              // socket error — exit drain loop
+                    n == 0 -> Thread.sleep(5)   // nothing to send — yield briefly
+                    // n > 0 — frames were flushed; loop immediately for more
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // NFC outbound drain loop (§5.9 backend-driven send path)
+    // -------------------------------------------------------------------------
+    //
+    // The NFC transport audit identified that the native bridge was not draining
+    // backend-authored outbound frames.  This loop closes that gap.
+    //
+    // The loop calls mi_nfc_pop_outbound_frame in a tight poll and writes each
+    // returned frame to the active LLCP connection via nfcLlcpWrite().
+    //
+    // Call startNfcOutboundDrainLoop() when an LLCP session is established.
+    // Call stopNfcOutboundDrainLoop() when the session ends (tag out of range,
+    // link dropped, etc.).
+    //
+    // The nfcSessionActive flag is the loop's stop signal.  Setting it to false
+    // causes the loop to exit cleanly after its current iteration completes.
+    fun startNfcOutboundDrainLoop(
+        // Callback invoked for each outbound frame Rust produces.
+        // The implementation should write `frameBytes` to the active LLCP link.
+        // Returns true if the write succeeded, false otherwise (causes loop exit).
+        onFrame: (frameBytes: ByteArray) -> Boolean,
+    ) {
+        nfcSessionActive.set(true)
+        drainExecutor.execute {
+            val ctxPtr = NativeLayer1Bridge.contextPointer
+            if (ctxPtr == 0L) {
+                nfcSessionActive.set(false)
+                return@execute
+            }
+            while (nfcSessionActive.get()) {
+                val n = nativeNfcPopOutboundFrame(ctxPtr, nfcDrainBuf, nfcDrainBuf.size)
+                when {
+                    n < 0 -> {
+                        // Error from the backend (adapter gone, buffer too small, etc.).
+                        nfcSessionActive.set(false)
+                        break
+                    }
+                    n == 0 -> {
+                        // Queue empty — yield for 5 ms before polling again.
+                        // 5 ms is short enough to be imperceptible on any NFC exchange
+                        // and avoids burning CPU in a tight spin while idle.
+                        Thread.sleep(5)
+                    }
+                    else -> {
+                        // n bytes were copied into nfcDrainBuf.  Hand a copy to the
+                        // callback so the LLCP layer can transmit them.
+                        val frame = nfcDrainBuf.copyOf(n)
+                        val ok = onFrame(frame)
+                        if (!ok) {
+                            // Write failed — LLCP link is broken.  Stop the drain loop.
+                            nfcSessionActive.set(false)
+                            break
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Stop the NFC outbound drain loop (e.g. when the NFC tag moves away or
+    // the LLCP session is torn down).
+    fun stopNfcOutboundDrainLoop() {
+        nfcSessionActive.set(false)
+    }
+
+    // -------------------------------------------------------------------------
+    // JNI declarations — new fd-session and NFC drain FFI functions
+    // -------------------------------------------------------------------------
+    //
+    // These external functions map directly to Rust #[no_mangle] symbols in
+    // backend/ffi/lib.rs.  The naming convention matches the JNI auto-generated
+    // symbol for functions NOT declared as JNI functions — they are looked up
+    // by symbol name via System.loadLibrary, so no package prefix is needed.
+    //
+    // mi_wifi_direct_session_fd:
+    //   Accepts a detached socket fd and registers it as a Rust-owned session.
+    //   Returns 0 on success, -1 on error.
+    //
+    // mi_wifi_direct_drain_session:
+    //   Writes queued outbound frames to the Rust-owned session socket.
+    //   Returns frame count (>= 0) or -1 on socket error.
+    //
+    // mi_nfc_pop_outbound_frame:
+    //   Pops one Rust-authored NFC outbound frame into `buf`.
+    //   Returns actual frame length, 0 if no frame pending, -1 on error.
+    //
+    // mi_nfc_push_inbound_frame:
+    //   Pushes an inbound NFC frame (received from LLCP link or NDEF read)
+    //   into the Rust backend's inbound queue.
+    //   Returns 0 on success, -1 on error.
+    //
+    // Note: these symbols are only present in the Android build of the Rust
+    // library (guarded by #[cfg(target_os = "android")] in Rust for the Wi-Fi
+    // Direct functions; unconditional for the NFC functions).
+    private external fun nativeWifiDirectSessionFd(
+        ctxPtr: Long,
+        peerMac: String,
+        fd: Int,
+    ): Int
+
+    private external fun nativeWifiDirectDrainSession(
+        ctxPtr: Long,
+        peerMac: String,
+    ): Int
+
+    private external fun nativeNfcPopOutboundFrame(
+        ctxPtr: Long,
+        buf: ByteArray,
+        bufLen: Int,
+    ): Int
+
+    private external fun nativeNfcPushInboundFrame(
+        ctxPtr: Long,
+        data: ByteArray,
+        dataLen: Int,
+    ): Int
 }

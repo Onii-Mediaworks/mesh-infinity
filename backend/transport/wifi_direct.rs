@@ -66,6 +66,9 @@ use std::{
 use std::{net::TcpListener, time::Instant};
 
 // libc::socketpair is used in the Android session-bridge implementation.
+// FromRawFd + HashMap are used for the fd-handoff session registry.
+#[cfg(target_os = "android")]
+use std::collections::HashMap;
 #[cfg(target_os = "android")]
 use std::os::unix::io::FromRawFd;
 
@@ -323,6 +326,50 @@ struct AndroidWifiDirectAdapterState {
     outbound_session_frames: VecDeque<Vec<u8>>,
 }
 
+/// A Wi-Fi Direct session where Rust owns the TCP socket.
+///
+/// # Ownership contract
+///
+/// The session is created when Kotlin calls `mi_wifi_direct_session_fd` with a
+/// connected socket file descriptor.  From that point forward:
+///
+/// - **Kotlin relinquishes** — Kotlin must not call `close()`, `read()`, or
+///   `write()` on the file descriptor or the wrapping `Socket` object after the
+///   JNI call returns.  The JVM's garbage collector may finalize the `Socket`
+///   object and close the fd underneath Rust if Kotlin keeps a reference.
+///   To prevent this, Kotlin must call `socket.fd = null` (or use
+///   `ParcelFileDescriptor.adoptFd(fd)` and then detach) so the JVM no longer
+///   owns the underlying fd.
+///
+/// - **Rust owns** — the `TcpStream` inside this struct is the sole owner.
+///   When this struct is dropped the `TcpStream` destructor runs
+///   `libc::close(fd)`, cleanly releasing the kernel file-descriptor slot.
+///
+/// - **Outbound queue** — frames authored by Rust higher layers (routing,
+///   sessions, gossip) are placed in `outbound` via
+///   `queue_android_wifi_direct_fd_session_frame`.  The Kotlin drain coroutine
+///   calls `mi_wifi_direct_drain_session` in a tight loop; each call writes
+///   as many pending frames as possible directly to the socket without
+///   returning to the Kotlin side between frames.
+#[cfg(target_os = "android")]
+pub struct AndroidWifiDirectSession {
+    /// The Rust-owned TCP stream backed by the fd handed off from Kotlin.
+    ///
+    /// Created with `TcpStream::from_raw_fd(fd)` — the fd is now inside
+    /// the `TcpStream`'s `OwnedFd` and will be closed on drop.
+    pub stream: TcpStream,
+    /// The MAC address of the remote peer, as reported by `WifiP2pDevice`.
+    pub peer_mac: String,
+    /// Frames authored by Rust that are waiting to be written to the socket.
+    ///
+    /// Each entry is a complete application frame (not framed with a length
+    /// prefix at this layer — framing is applied on write so the remote end
+    /// can re-assemble).
+    pub outbound: VecDeque<Vec<u8>>,
+    /// Timestamp of session creation (when the fd was handed off from Kotlin).
+    pub established: std::time::Instant,
+}
+
 /// Return the global Android Wi-Fi Direct adapter state.
 fn android_wifi_direct_adapter_state() -> &'static Mutex<AndroidWifiDirectAdapterState> {
     static STATE: OnceLock<Mutex<AndroidWifiDirectAdapterState>> = OnceLock::new();
@@ -438,6 +485,173 @@ fn android_wifi_direct_snapshot() -> AndroidWifiDirectAdapterState {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Android fd-session registry
+// ────────────────────────────────────────────────────────────────────────────
+//
+// This registry holds sessions where Rust owns the TCP socket file descriptor
+// after a handoff from the Kotlin bridge via `mi_wifi_direct_session_fd`.
+//
+// The registry is intentionally separate from `AndroidWifiDirectAdapterState`
+// because `TcpStream` does not implement `Clone` (sockets cannot be
+// duplicated without an OS call) and the adapter-state struct is regularly
+// snapshot-cloned for capability reads.  Keeping the two apart avoids
+// a design constraint that would otherwise force expensive `dup(2)` calls or
+// a complete refactor of the snapshot pattern.
+
+#[cfg(target_os = "android")]
+pub struct AndroidWifiDirectSession {
+    /// The Rust-owned TCP stream backed by the fd handed off from Kotlin.
+    ///
+    /// Created with `TcpStream::from_raw_fd(fd)`.  The fd is now owned by this
+    /// `TcpStream` and will be closed by the OS when the struct is dropped.
+    ///
+    /// Kotlin MUST NOT use the fd or the `java.net.Socket` object after calling
+    /// `mi_wifi_direct_session_fd`.  If the JVM's garbage collector finalizes
+    /// the `Socket` object it will call `close(fd)` underneath Rust, causing a
+    /// use-after-close.  Kotlin should detach the fd from the JVM object before
+    /// calling the FFI (e.g. via `ParcelFileDescriptor.adoptFd(fd).detachFd()`).
+    pub stream: TcpStream,
+    /// MAC address of the remote peer as reported by `WifiP2pDevice`.
+    pub peer_mac: String,
+    /// Frames authored by Rust that are waiting to be written to the socket.
+    ///
+    /// Each entry is a complete application-layer frame.  A 4-byte big-endian
+    /// length prefix is prepended on write so the remote end can re-assemble
+    /// frames from the raw TCP byte stream.
+    pub outbound: VecDeque<Vec<u8>>,
+    /// Wall-clock time at which the fd was handed off from Kotlin.
+    pub established: std::time::Instant,
+}
+
+/// Return the global fd-session registry for Android Wi-Fi Direct.
+///
+/// The registry is a `Mutex<HashMap<peer_mac, AndroidWifiDirectSession>>`.
+/// All access goes through this function so there is a single, authoritative
+/// global instance — matching the pattern used by `android_wifi_direct_adapter_state`.
+#[cfg(target_os = "android")]
+fn android_wifi_direct_session_registry()
+-> &'static Mutex<HashMap<String, AndroidWifiDirectSession>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, AndroidWifiDirectSession>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register a new fd-backed session from the Kotlin bridge.
+///
+/// # Safety
+///
+/// `fd` must be a valid, connected, open TCP socket file descriptor.
+/// After this call, **Rust owns the fd**.  The caller (Kotlin) must not
+/// close, read from, or write to the fd or its wrapping `Socket` object.
+///
+/// Returns `Err` if the adapter reports Wi-Fi Direct is unavailable or if
+/// the fd wrapping fails.
+#[cfg(target_os = "android")]
+pub fn register_wifi_direct_session_fd(peer_mac: &str, fd: i32) -> Result<(), String> {
+    // Verify the adapter still reports the transport as active before
+    // accepting a new session.  A stale fd would otherwise be silently
+    // admitted into the registry.
+    let state = android_wifi_direct_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !state.available {
+        return Err("android wifi direct is not available".into());
+    }
+    drop(state); // release lock before taking the registry lock
+
+    // SAFETY: the caller guarantees `fd` is a valid connected socket.
+    // `TcpStream::from_raw_fd` wraps the fd in an `OwnedFd` so the fd
+    // is closed exactly once when the `TcpStream` is dropped.
+    let stream = unsafe { TcpStream::from_raw_fd(fd) };
+
+    let session = AndroidWifiDirectSession {
+        stream,
+        peer_mac: peer_mac.to_owned(),
+        outbound: VecDeque::new(),
+        established: std::time::Instant::now(),
+    };
+
+    android_wifi_direct_session_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(peer_mac.to_owned(), session);
+
+    Ok(())
+}
+
+/// Drain the outbound frame queue for a session identified by `peer_mac`,
+/// writing each pending frame to the Rust-owned socket.
+///
+/// Each frame is sent with a 4-byte big-endian length prefix so the remote
+/// end can re-assemble frames from the raw TCP byte stream.
+///
+/// Returns the number of frames written, or `Err` if:
+/// - No session is registered for `peer_mac`.
+/// - A socket write fails (session should be removed by the caller).
+#[cfg(target_os = "android")]
+pub fn drain_wifi_direct_session(peer_mac: &str) -> Result<usize, String> {
+    use std::io::Write;
+
+    let mut registry = android_wifi_direct_session_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    let session = registry
+        .get_mut(peer_mac)
+        .ok_or_else(|| format!("no fd session registered for peer mac {peer_mac}"))?;
+
+    // Drain every pending frame in a single pass.  Each frame is wrapped in a
+    // 4-byte big-endian length prefix so the receiver can reassemble the
+    // message boundary from the TCP byte stream.
+    let mut written = 0usize;
+    while let Some(frame) = session.outbound.pop_front() {
+        if frame.is_empty() {
+            continue;
+        }
+        // Encode the frame length as a 4-byte big-endian prefix.
+        let len_bytes = (frame.len() as u32).to_be_bytes();
+        // Write the header and body in two syscalls.  Both must succeed;
+        // if either fails we return an error and let the caller remove
+        // the session from the registry.
+        session
+            .stream
+            .write_all(&len_bytes)
+            .map_err(|e| format!("wifi direct fd write header failed: {e}"))?;
+        session
+            .stream
+            .write_all(&frame)
+            .map_err(|e| format!("wifi direct fd write body failed: {e}"))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Queue a frame for delivery over the Rust-owned fd session for `peer_mac`.
+///
+/// The frame will be written to the socket on the next call to
+/// `drain_wifi_direct_session` from the Kotlin drain coroutine.
+#[cfg(target_os = "android")]
+pub fn queue_wifi_direct_fd_session_frame(peer_mac: &str, frame: &[u8]) {
+    let mut registry = android_wifi_direct_session_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(session) = registry.get_mut(peer_mac) {
+        session.outbound.push_back(frame.to_vec());
+    }
+}
+
+/// Remove the fd session for `peer_mac` from the registry, closing the socket.
+///
+/// After this call the associated `TcpStream` is dropped and the OS reclaims
+/// the file descriptor.  Kotlin can safely remove its (now detached) reference.
+#[cfg(target_os = "android")]
+pub fn remove_wifi_direct_session(peer_mac: &str) {
+    android_wifi_direct_session_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer_mac);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2104,5 +2318,71 @@ mod tests {
         let mut buf = Vec::new();
         write_u32(&mut buf, 0x12345678);
         assert_eq!(buf, [0x12, 0x34, 0x56, 0x78]);
+    }
+
+    // ── Android fd-session registry ───────────────────────────────────────
+    //
+    // These tests exercise the session registry functions that are compiled
+    // only on Android (`#[cfg(target_os = "android")]`).  They are guarded
+    // by the same cfg flag so the test binary compiles on all platforms.
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn test_wifi_direct_fd_session_drain_no_session_returns_err() {
+        // Draining a non-existent session must return an error, not panic.
+        let result = drain_wifi_direct_session("de:ad:be:ef:00:01");
+        assert!(
+            result.is_err(),
+            "drain_wifi_direct_session should return Err when no session is registered"
+        );
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn test_wifi_direct_fd_session_invalid_fd_returns_err() {
+        // Adapter must be available for register_wifi_direct_session_fd to proceed.
+        update_android_adapter_state(
+            true, true, true, false, true,
+            Some("client".to_string()),
+            Some("192.168.49.1".to_string()),
+            Some("de:ad:be:ef:00:02".to_string()),
+            Vec::new(),
+        );
+        // fd = -1 is always invalid; the function must reject it gracefully.
+        let result = register_wifi_direct_session_fd("de:ad:be:ef:00:02", -1);
+        assert!(
+            result.is_err(),
+            "register_wifi_direct_session_fd should reject negative fd"
+        );
+        update_android_adapter_state(false, false, false, false, false, None, None, None, vec![]);
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn test_wifi_direct_fd_session_unavailable_adapter_returns_err() {
+        // When the adapter is not available, fd registration must be rejected.
+        update_android_adapter_state(false, false, false, false, false, None, None, None, vec![]);
+        // fd = 3 looks plausible but the adapter is off — must fail.
+        let result = register_wifi_direct_session_fd("cc:dd:ee:ff:00:03", 3);
+        assert!(
+            result.is_err(),
+            "register_wifi_direct_session_fd must reject fd when adapter is unavailable"
+        );
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn test_wifi_direct_fd_session_queue_frame_no_session_is_noop() {
+        // Queuing a frame for an unknown peer must not panic.
+        queue_wifi_direct_fd_session_frame("ff:ff:ff:ff:ff:ff", b"hello");
+        // No assertion needed — absence of panic is the test.
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn test_wifi_direct_fd_session_remove_nonexistent_is_noop() {
+        // Removing a session that does not exist must not panic.
+        remove_wifi_direct_session("00:11:22:33:44:55");
+        // No assertion needed — absence of panic is the test.
     }
 }

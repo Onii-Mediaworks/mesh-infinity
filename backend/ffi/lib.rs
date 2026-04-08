@@ -33,7 +33,7 @@
 //!   until the next FFI call that writes to `last_response`.
 
 use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use crate::service::MeshRuntime;
@@ -578,6 +578,192 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
     } else {
         0
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JNI entry points for AndroidProximityBridge (Android only)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These symbols are called by AndroidProximityBridge.kt via Kotlin `external fun`
+// declarations.  The JNI naming convention is:
+//
+//   Java_<package_path>_<ClassName>_<methodName>
+//
+// where dots in the package path are replaced with underscores.
+//
+// The `ctx` parameter is the MeshContext pointer cast to `jlong` (64-bit),
+// exactly as stored in `NativeLayer1Bridge.contextPointer`.
+
+/// JNI entry for `AndroidProximityBridge.nativeWifiDirectSessionFd`.
+///
+/// Receives a connected Wi-Fi Direct TCP socket file descriptor from Kotlin
+/// after `WifiP2pManager` establishes a P2P group, and registers it with Rust.
+/// After this call Rust exclusively owns the fd — Kotlin must relinquish it.
+///
+/// # Safety
+///
+/// `ctx` must be the value returned by `nativeStartLayer1`.
+/// `peer_mac` must be a valid non-null JNI string.
+/// `fd` must be a valid open connected socket fd detached from the JVM via
+/// `ParcelFileDescriptor.fromSocket(socket).detachFd()`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeWifiDirectSessionFd(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx: jni::sys::jlong,
+    peer_mac: jni::objects::JString,
+    fd: jni::sys::jint,
+) -> jni::sys::jint {
+    if ctx == 0 {
+        return -1;
+    }
+    // Convert JString → Rust &str under a short-lived JavaStr borrow.
+    let peer_mac_str = match env.get_string(&peer_mac) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let peer_mac_ref: &str = match peer_mac_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    // SAFETY: ctx is the pointer returned by nativeStartLayer1.
+    let runtime = unsafe { &*(ctx as *const MeshContext) };
+    match runtime.register_wifi_direct_session_fd(peer_mac_ref, fd) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// JNI entry for `AndroidProximityBridge.nativeWifiDirectDrainSession`.
+///
+/// Flushes pending outbound frames from Rust's per-session queue to the
+/// Rust-owned socket.  Called in a tight loop by the Kotlin drain coroutine.
+///
+/// Returns the number of frames flushed (>= 0) or -1 on error.
+///
+/// # Safety
+///
+/// `ctx` must be the value returned by `nativeStartLayer1`.
+/// `peer_mac` must be a valid non-null JNI string.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeWifiDirectDrainSession(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx: jni::sys::jlong,
+    peer_mac: jni::objects::JString,
+) -> jni::sys::jint {
+    if ctx == 0 {
+        return -1;
+    }
+    let peer_mac_str = match env.get_string(&peer_mac) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let peer_mac_ref: &str = match peer_mac_str.to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    // SAFETY: ctx is the pointer returned by nativeStartLayer1.
+    let runtime = unsafe { &*(ctx as *const MeshContext) };
+    match runtime.drain_wifi_direct_session(peer_mac_ref) {
+        Ok(n) => n as jni::sys::jint,
+        Err(_) => -1,
+    }
+}
+
+/// JNI entry for `AndroidProximityBridge.nativeNfcPopOutboundFrame`.
+///
+/// Pops one NFC outbound frame from Rust's queue into `buf`.  Called in a
+/// tight loop by the Kotlin `nfcOutboundDrainLoop`.
+///
+/// Returns the number of bytes copied (> 0), 0 if no frame is pending,
+/// or -1 on error.
+///
+/// # Safety
+///
+/// `ctx` must be the value returned by `nativeStartLayer1`.
+/// `buf` must be a valid non-null JNI byte array of at least `buf_len` bytes.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeNfcPopOutboundFrame(
+    env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx: jni::sys::jlong,
+    buf: jni::sys::jbyteArray,
+    buf_len: jni::sys::jint,
+) -> jni::sys::jint {
+    if ctx == 0 || buf.is_null() || buf_len <= 0 {
+        return -1;
+    }
+    // Allocate a temporary Rust buffer of the requested size.
+    let mut rust_buf = vec![0u8; buf_len as usize];
+    let n = match crate::transport::nfc::pop_outbound_frame(&mut rust_buf) {
+        Some(n) => n,
+        None => return 0, // no frame pending
+    };
+    // Copy the frame bytes into the JVM byte array.
+    // SAFETY: `buf` is a valid JNI byte array of at least `buf_len` bytes.
+    let copy_result = unsafe {
+        env.set_byte_array_region(
+            jni::objects::JByteArray::from_raw(buf),
+            0,
+            std::slice::from_raw_parts(rust_buf.as_ptr() as *const jni::sys::jbyte, n),
+        )
+    };
+    if copy_result.is_err() {
+        return -1;
+    }
+    n as jni::sys::jint
+}
+
+/// JNI entry for `AndroidProximityBridge.nativeNfcPushInboundFrame`.
+///
+/// Pushes one inbound NFC frame (received from an LLCP link or NDEF read)
+/// into the Rust backend's inbound queue.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `ctx` must be the value returned by `nativeStartLayer1`.
+/// `data` must be a valid non-null JNI byte array.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeNfcPushInboundFrame(
+    env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    ctx: jni::sys::jlong,
+    data: jni::sys::jbyteArray,
+    data_len: jni::sys::jint,
+) -> jni::sys::jint {
+    if ctx == 0 || data.is_null() || data_len <= 0 {
+        return -1;
+    }
+    // Copy the JVM byte array into a Rust Vec.
+    let mut frame = vec![0i8; data_len as usize];
+    let copy_result = unsafe {
+        env.get_byte_array_region(
+            jni::objects::JByteArray::from_raw(data),
+            0,
+            &mut frame,
+        )
+    };
+    if copy_result.is_err() {
+        return -1;
+    }
+    // Cast i8 → u8 (JNI signed bytes → Rust unsigned bytes).
+    let frame_u8: Vec<u8> = frame.into_iter().map(|b| b as u8).collect();
+    // `enqueue_android_inbound_frame` guards on adapter state (available && enabled).
+    crate::transport::nfc::enqueue_android_inbound_frame(frame_u8);
+    // SAFETY: ctx is the pointer returned by nativeStartLayer1.
+    let runtime = unsafe { &*(ctx as *const MeshContext) };
+    runtime.push_event(
+        "AndroidNfcInboundFrameReceived",
+        serde_json::json!({ "byteLength": data_len }),
+    );
+    0
 }
 
 /// Destroy the context and free all resources.
@@ -2791,6 +2977,249 @@ pub unsafe extern "C" fn mi_android_wifi_direct_dequeue_session_frame(
     ctx.set_response(&ctx.dequeue_android_wifi_direct_session_frame_json())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Android Wi-Fi Direct — fd-session handoff (§5.8)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These two functions implement the "Rust owns the socket" contract described
+// in the Android proximity transport audit.  The flow is:
+//
+//   1. Kotlin establishes a Wi-Fi Direct P2P group using `WifiP2pManager`.
+//   2. Kotlin connects (or accepts) a TCP socket on the group interface.
+//   3. Kotlin detaches the fd from the JVM:
+//        val pfd = ParcelFileDescriptor.fromSocket(socket)
+//        val fd  = pfd.detachFd()   // JVM no longer owns the fd
+//   4. Kotlin calls `mi_wifi_direct_session_fd(ctx, peerMac, fd)`.
+//        - Rust wraps the fd in a `TcpStream` via `from_raw_fd`.
+//        - Ownership is now exclusively with Rust.
+//        - Kotlin MUST NOT touch the socket or fd after this call.
+//   5. Kotlin starts a drain coroutine that repeatedly calls
+//      `mi_wifi_direct_drain_session(ctx, peerMac)`.
+//        - Each call flushes pending outbound frames from Rust's queue
+//          directly to the socket without returning to Kotlin between frames.
+//        - Returns the frame count flushed (>= 0) or -1 on socket error.
+
+/// Hand a connected Wi-Fi Direct socket file descriptor to Rust.
+///
+/// After this call Rust owns the fd exclusively — Kotlin must not close,
+/// read, or write the fd or the wrapping `java.net.Socket` object.
+///
+/// # Arguments
+///
+/// * `ctx`          — non-null `MeshContext` pointer.
+/// * `peer_mac_ptr` — null-terminated UTF-8 MAC address string
+///                    (`WifiP2pDevice.deviceAddress`, e.g. `"aa:bb:cc:dd:ee:ff"`).
+/// * `fd`           — connected TCP socket file descriptor obtained by
+///                    `ParcelFileDescriptor.fromSocket(socket).detachFd()`.
+///
+/// # Return value
+///
+/// Returns `0` on success, `-1` on error.
+///
+/// # Safety
+///
+/// `ctx` must be non-null.  `peer_mac_ptr` must be a valid null-terminated
+/// UTF-8 string.  `fd` must be a valid open connected socket fd; Rust takes
+/// ownership and will close it on drop — the caller must not close it.
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub unsafe extern "C" fn mi_wifi_direct_session_fd(
+    ctx: *mut MeshContext,
+    peer_mac_ptr: *const c_char,
+    fd: c_int,
+) -> c_int {
+    if ctx.is_null() || peer_mac_ptr.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    // Convert the peer MAC C string to a Rust &str.
+    let peer_mac = match unsafe { std::ffi::CStr::from_ptr(peer_mac_ptr) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            ctx.set_error("mi_wifi_direct_session_fd: peer_mac is not valid UTF-8");
+            return -1;
+        }
+    };
+    match ctx.register_wifi_direct_session_fd(peer_mac, fd) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Drain pending outbound frames to a Rust-owned Wi-Fi Direct session socket.
+///
+/// Intended to be called from a Kotlin coroutine loop after registering a
+/// session via `mi_wifi_direct_session_fd`:
+///
+/// ```text
+/// while (sessionActive) {
+///     val n = mi_wifi_direct_drain_session(ctxPtr, peerMacCStr)
+///     if (n < 0) break          // socket error — stop draining
+///     if (n == 0) delay(5)      // nothing queued — yield briefly
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// * `ctx`          — non-null `MeshContext` pointer.
+/// * `peer_mac_ptr` — null-terminated UTF-8 MAC address of the registered session.
+///
+/// # Return value
+///
+/// Returns the number of frames flushed (`>= 0`) or `-1` on socket error or
+/// if no session is registered for the given MAC.
+///
+/// # Safety
+///
+/// `ctx` must be non-null.  `peer_mac_ptr` must be a valid null-terminated
+/// UTF-8 string.
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub unsafe extern "C" fn mi_wifi_direct_drain_session(
+    ctx: *mut MeshContext,
+    peer_mac_ptr: *const c_char,
+) -> c_int {
+    if ctx.is_null() || peer_mac_ptr.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let peer_mac = match unsafe { std::ffi::CStr::from_ptr(peer_mac_ptr) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            ctx.set_error("mi_wifi_direct_drain_session: peer_mac is not valid UTF-8");
+            return -1;
+        }
+    };
+    match ctx.drain_wifi_direct_session(peer_mac) {
+        Ok(n) => n as c_int,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Android NFC — backend-driven outbound drain + inbound push (§5.9)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The NFC transport audit identified that the native bridge was not draining
+// backend-authored outbound frames — only ingesting inbound frames.  These two
+// functions close that loop:
+//
+//   mi_nfc_push_inbound_frame  — Kotlin → Rust (inbound NFC data)
+//   mi_nfc_pop_outbound_frame  — Rust → Kotlin (outbound NFC data to send)
+//
+// The Kotlin `nfcOutboundDrainLoop()` coroutine calls `mi_nfc_pop_outbound_frame`
+// in a tight loop, writing each returned frame to the active LLCP connection.
+// This makes the NFC transport fully backend-driven: Rust decides what to send
+// and when; Kotlin is a thin I/O driver.
+
+/// Push one inbound NFC frame (received from an LLCP peer or NDEF tag read)
+/// into the Rust backend's inbound queue.
+///
+/// The backend's NFC poll loop and higher layers consume frames from this
+/// queue via `NfcTransport::recv()` / `read_ndef_tag()`.
+///
+/// # Arguments
+///
+/// * `ctx`     — non-null `MeshContext` pointer.
+/// * `data`    — pointer to the raw frame bytes.
+/// * `data_len`— byte count (must be > 0).
+///
+/// # Return value
+///
+/// Returns `0` on success, `-1` on error (null pointer, zero length).
+///
+/// # Safety
+///
+/// `ctx` must be non-null.  `data` must point to at least `data_len` readable
+/// bytes.  The bytes are copied into Rust-owned memory before this function
+/// returns; the caller may free `data` immediately after the call.
+#[no_mangle]
+pub unsafe extern "C" fn mi_nfc_push_inbound_frame(
+    ctx: *mut MeshContext,
+    data: *const u8,
+    data_len: c_int,
+) -> c_int {
+    if ctx.is_null() || data.is_null() || data_len <= 0 {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    // SAFETY: `data` is a valid readable pointer to `data_len` bytes per caller contract.
+    let frame = unsafe { std::slice::from_raw_parts(data, data_len as usize) };
+    // `enqueue_android_inbound_frame` guards on adapter state (available && enabled)
+    // before queuing, so we do not need a separate availability check here.
+    crate::transport::nfc::enqueue_android_inbound_frame(frame.to_vec());
+    // Emit an event so the Flutter event bus can react to inbound NFC activity.
+    ctx.push_event(
+        "AndroidNfcInboundFrameReceived",
+        serde_json::json!({ "byteLength": data_len }),
+    );
+    0
+}
+
+/// Pop the next outbound NFC frame Rust wants to send over an LLCP link or
+/// NDEF write, copying its bytes into the caller-supplied buffer.
+///
+/// The Kotlin `nfcOutboundDrainLoop()` coroutine calls this in a loop:
+///
+/// ```text
+/// val buf = ByteArray(256)
+/// while (nfcActive) {
+///     val n = mi_nfc_pop_outbound_frame(ctxPtr, buf, buf.size)
+///     when {
+///         n < 0  -> break                    // error
+///         n == 0 -> delay(5)                 // queue empty — yield and retry
+///         else   -> nfcLlcpWrite(buf, 0, n)  // send `n` bytes on LLCP link
+///     }
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// * `ctx`    — non-null `MeshContext` pointer.
+/// * `buf`    — caller-allocated buffer to receive the frame bytes.
+/// * `buf_len`— size of `buf` in bytes.  Must be at least `NFC_MAX_FRAME_BYTES`
+///              (244) to guarantee all queued frames can be popped.
+///
+/// # Return value
+///
+/// - `> 0` — actual frame length copied into `buf`.
+/// - `0`   — no frame is pending; caller should yield and retry.
+/// - `-1`  — error (null pointer or zero-length buffer).
+///
+/// # Safety
+///
+/// `ctx` must be non-null.  `buf` must point to at least `buf_len` writable
+/// bytes.  Frame bytes are copied into `buf` before this function returns.
+#[no_mangle]
+pub unsafe extern "C" fn mi_nfc_pop_outbound_frame(
+    ctx: *mut MeshContext,
+    buf: *mut u8,
+    buf_len: c_int,
+) -> c_int {
+    if ctx.is_null() || buf.is_null() || buf_len <= 0 {
+        return -1;
+    }
+    // `ctx` is not used beyond the null check here — the NFC queue is module-global.
+    // The parameter is present so the call site is consistent with all other FFI
+    // functions (callers always hold a ctx pointer) and for future per-context
+    // transport isolation.
+    let _ctx = unsafe { &*ctx };
+    // SAFETY: `buf` is a valid writable pointer to `buf_len` bytes per caller contract.
+    let buf_slice = unsafe { std::slice::from_raw_parts_mut(buf, buf_len as usize) };
+    match crate::transport::nfc::pop_outbound_frame(buf_slice) {
+        // A frame was copied — return its length.
+        Some(n) => n as c_int,
+        // No frame pending — return 0 (not an error; caller should retry after yield).
+        None => 0,
+    }
+}
+
 /// Return the local pairing payload as JSON.
 ///
 /// The payload contains our public keys, a fresh pairing token, and transport hints.
@@ -4111,6 +4540,85 @@ pub unsafe extern "C" fn mi_set_app_connector_config(
             -1
         }
     }
+}
+
+/// Evaluate App Connector selector rules against a connection 4-tuple.
+///
+/// Given a package name, destination IP (as a dotted-decimal or IPv6 string),
+/// destination port, and an optional pre-resolved domain name, this function
+/// walks the active `AppConnectorConfig` rules in priority order and returns
+/// the routing decision for the packet.
+///
+/// Return values:
+///   0 — block (drop the packet; denylist rule matched)
+///   1 — allow_direct (bypass the mesh; packet takes the normal IP path)
+///   2 — route_via_mesh (forward the packet through the active mesh tunnel)
+///  -1 — invalid arguments (null ctx, unparseable IP string)
+///
+/// # Parameters
+///
+/// - `ctx`           — non-null opaque context handle from `mesh_init`.
+/// - `package_ptr`   — NUL-terminated UTF-8 Android package name (e.g.
+///                     `"com.example.browser"`).  Must not be null.
+/// - `dst_ip_ptr`    — NUL-terminated IP address string in dotted-decimal
+///                     (IPv4) or colon-hex (IPv6) notation.  Must not be null.
+/// - `dst_port`      — destination port as a C int (0–65535).  Values outside
+///                     that range are clamped to `u16::MAX`.
+/// - `dst_domain_ptr`— optional NUL-terminated domain name (e.g.
+///                     `"sub.example.com"`).  Pass null when no domain is
+///                     available (most non-DNS packets).
+///
+/// # Safety
+///
+/// `ctx` must be non-null and originate from `mesh_init`.  All non-null
+/// string pointers must point to valid NUL-terminated UTF-8 sequences.
+#[no_mangle]
+pub unsafe extern "C" fn mi_connector_evaluate(
+    ctx: *mut MeshContext,
+    package_ptr: *const c_char,
+    dst_ip_ptr: *const c_char,
+    dst_port: std::os::raw::c_int,
+    dst_domain_ptr: *const c_char,
+) -> std::os::raw::c_int {
+    // Guard: null context is always an error.
+    if ctx.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees ctx is non-null and from mesh_init.
+    let ctx = unsafe { &*ctx };
+
+    // Parse the package name — required field, null or empty is an error.
+    let package = match unsafe { c_str_to_str(package_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+
+    // Parse the destination IP address string.
+    // We reject null and unparseable strings with -1 (invalid args).
+    let dst_ip_str = match unsafe { c_str_to_str(dst_ip_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let dst_ip: std::net::IpAddr = match dst_ip_str.parse() {
+        Ok(ip) => ip,
+        Err(_) => return -1,
+    };
+
+    // Clamp the port to u16.  Callers should always pass 0–65535 but we
+    // handle out-of-range values gracefully rather than panicking.
+    let dst_port_u16: u16 = dst_port.clamp(0, u16::MAX as std::os::raw::c_int) as u16;
+
+    // The domain pointer is optional — null means no domain available.
+    // An empty string is also treated as absent so Kotlin callers can pass ""
+    // instead of null without triggering spurious domain-pattern mismatches.
+    let dst_domain: Option<&str> = unsafe { c_str_to_str(dst_domain_ptr) }
+        .filter(|s| !s.is_empty());
+
+    // Retrieve the current App Connector config and run the selector engine.
+    let action = ctx.evaluate_connector_connection(package, dst_ip, dst_port_u16, dst_domain);
+
+    // Return the integer encoding: 0=block, 1=allow_direct, 2=route_via_mesh.
+    action.as_ffi_int()
 }
 
 // ---------------------------------------------------------------------------

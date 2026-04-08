@@ -395,11 +395,67 @@ pub fn enqueue_android_pairing_payload(payload_json: &str) {
 }
 
 /// Remove the next outbound NFC frame queued for Android-native transmission.
+///
+/// This is the low-level queue accessor used internally and by the
+/// `dequeue_android_outbound_frame`-style path.  The public FFI surface
+/// uses `pop_outbound_frame` (see below) which copies into a caller-supplied
+/// buffer so the data crosses the FFI boundary without an allocation.
 pub fn dequeue_android_outbound_frame() -> Option<Vec<u8>> {
     let mut state = android_nfc_adapter_state()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     state.outbound.pop_front()
+}
+
+/// Pop the next outbound NFC frame into a caller-supplied buffer.
+///
+/// This is the backend-driven outbound drain interface for the Kotlin
+/// `nfcOutboundDrainLoop()` coroutine.  The coroutine calls this function
+/// in a tight loop:
+///
+/// ```kotlin
+/// while (nfcActive) {
+///     val n = MeshInfinityJni.nfcPopOutboundFrame(ctxPtr, buf, buf.size)
+///     when {
+///         n < 0  -> break          // error — transport gone
+///         n == 0 -> delay(5)       // nothing queued — yield briefly
+///         else   -> nfcWrite(buf, n)  // write `n` bytes to LLCP link
+///     }
+/// }
+/// ```
+///
+/// # Arguments
+///
+/// * `buf` — mutable byte slice provided by the caller.  If the next queued
+///            frame fits within `buf.len()`, its bytes are copied into `buf`
+///            and the function returns the frame length.
+///
+/// # Return value
+///
+/// - `Some(n)` — `n` bytes were copied into `buf`.  `n` is always `>= 1`.
+/// - `None`    — no frame is pending; the caller should yield and retry.
+///
+/// If the next frame is larger than `buf`, it is **not** popped from the
+/// queue and `None` is returned so the caller can supply a larger buffer.
+/// Frames larger than `NFC_MAX_FRAME_BYTES` should not exist in the queue
+/// (the `send` / `queue_outbound` methods reject oversized frames), but the
+/// guard is defensive.
+pub fn pop_outbound_frame(buf: &mut [u8]) -> Option<usize> {
+    let mut state = android_nfc_adapter_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    // Peek at the front frame before deciding to pop.
+    let frame_len = state.outbound.front()?.len();
+    if frame_len > buf.len() {
+        // The caller's buffer is too small.  Leave the frame in the queue.
+        return None;
+    }
+
+    // Safe to pop — the buffer is large enough.
+    let frame = state.outbound.pop_front()?;
+    buf[..frame.len()].copy_from_slice(&frame);
+    Some(frame.len())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1257,5 +1313,113 @@ mod tests {
         assert_eq!(r, r2);
         let dbg = format!("{r:?}");
         assert!(dbg.contains("NdefRecord"));
+    }
+
+    // -----------------------------------------------------------------------
+    // pop_outbound_frame — backend-driven NFC outbound drain (§5.9)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pop_outbound_frame_empty_queue_returns_none() {
+        // Enable the adapter so the queue is live.
+        update_android_adapter_state(true, true);
+        // Drain any leftover frames from previous tests running in the same process.
+        let mut drain_buf = [0u8; 256];
+        while pop_outbound_frame(&mut drain_buf).is_some() {}
+        // Now the queue should be empty — pop_outbound_frame returns None.
+        let result = pop_outbound_frame(&mut drain_buf);
+        assert!(
+            result.is_none(),
+            "pop_outbound_frame must return None on empty queue"
+        );
+        update_android_adapter_state(false, false);
+    }
+
+    #[test]
+    fn pop_outbound_frame_returns_queued_frame() {
+        // Enable the adapter and queue a frame via the internal outbound path.
+        update_android_adapter_state(true, true);
+        // Use dequeue_android_outbound_frame's inverse: manually push a frame
+        // by calling into the module-level queue function.
+        enqueue_android_inbound_frame(b"pop_test".to_vec()); // inbound — different queue
+        // Queue an outbound frame via the public module function used by NfcTransport.
+        {
+            let mut state = android_nfc_adapter_state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            state.outbound.push_back(b"outbound_frame".to_vec());
+        }
+        let mut buf = [0u8; 256];
+        let n = pop_outbound_frame(&mut buf);
+        assert_eq!(
+            n,
+            Some(b"outbound_frame".len()),
+            "pop_outbound_frame must return the frame length"
+        );
+        assert_eq!(
+            &buf[..b"outbound_frame".len()],
+            b"outbound_frame",
+            "frame bytes must match what was queued"
+        );
+        // Clean up — drain inbound frame added above.
+        {
+            let mut state = android_nfc_adapter_state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            state.inbound.clear();
+        }
+        update_android_adapter_state(false, false);
+    }
+
+    #[test]
+    fn pop_outbound_frame_buffer_too_small_leaves_frame_in_queue() {
+        update_android_adapter_state(true, true);
+        // Push a 10-byte frame into the outbound queue.
+        {
+            let mut state = android_nfc_adapter_state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            state.outbound.push_back(b"0123456789".to_vec());
+        }
+        // Supply a 5-byte buffer — too small for the 10-byte frame.
+        let mut small_buf = [0u8; 5];
+        let result = pop_outbound_frame(&mut small_buf);
+        assert!(
+            result.is_none(),
+            "pop_outbound_frame must not pop the frame when the buffer is too small"
+        );
+        // The frame must still be in the queue (not dropped).
+        let mut big_buf = [0u8; 256];
+        let n = pop_outbound_frame(&mut big_buf);
+        assert_eq!(
+            n,
+            Some(10),
+            "frame must still be in queue after too-small-buffer attempt"
+        );
+        update_android_adapter_state(false, false);
+    }
+
+    #[test]
+    fn pop_outbound_frame_fifo_ordering() {
+        // Frames must be dequeued in FIFO order — first in, first out.
+        update_android_adapter_state(true, true);
+        {
+            let mut state = android_nfc_adapter_state()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            state.outbound.clear(); // ensure clean slate
+            state.outbound.push_back(b"first".to_vec());
+            state.outbound.push_back(b"second".to_vec());
+        }
+        let mut buf = [0u8; 256];
+        let n1 = pop_outbound_frame(&mut buf).expect("first frame must be present");
+        assert_eq!(&buf[..n1], b"first", "first pop must return the first frame");
+        let n2 = pop_outbound_frame(&mut buf).expect("second frame must be present");
+        assert_eq!(&buf[..n2], b"second", "second pop must return the second frame");
+        assert!(
+            pop_outbound_frame(&mut buf).is_none(),
+            "queue must be empty after two pops"
+        );
+        update_android_adapter_state(false, false);
     }
 }
