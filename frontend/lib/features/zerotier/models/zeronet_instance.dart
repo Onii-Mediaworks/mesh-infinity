@@ -49,6 +49,9 @@ import 'package:flutter/foundation.dart';
 // features to avoid duplication.
 import '../../network/network_state.dart';
 
+import 'zeronet_network.dart';
+import 'zeronet_member.dart';
+
 // ---------------------------------------------------------------------------
 // ZeroNetInstance
 // ---------------------------------------------------------------------------
@@ -125,6 +128,21 @@ class ZeroNetInstance {
   /// plane (API key, network membership).
   final bool preferMeshRelay;
 
+  /// Full list of ZeroTier networks this instance has joined.
+  ///
+  /// Each entry carries network ID, name, assigned IP, auth status, and member
+  /// count.  Populated from the `networks` array in `zerotierListInstances`.
+  /// Used by [ZeroNetNetworksPage] to render per-network rows.
+  final List<ZeroNetNetwork> networks;
+
+  /// Full list of network members visible to this instance.
+  ///
+  /// Only meaningful when this node is the controller for at least one network.
+  /// Regular members can see authorised peers but NOT the full roster.
+  /// Populated from the `members` array in `zerotierListInstances`.
+  /// Used by [ZeroNetMembersPage] to render member rows with auth toggles.
+  final List<ZeroNetMember> members;
+
   // ---------------------------------------------------------------------------
   // Constructor
   // ---------------------------------------------------------------------------
@@ -142,6 +160,8 @@ class ZeroNetInstance {
     required this.networkCount,
     required this.memberCount,
     required this.preferMeshRelay,
+    required this.networks,
+    required this.members,
   });
 
   // ---------------------------------------------------------------------------
@@ -168,6 +188,23 @@ class ZeroNetInstance {
   /// }
   /// ```
   factory ZeroNetInstance.fromJson(Map<String, dynamic> json) {
+    // Parse the full networks array if present; fall back to empty list.
+    // Each element is a Map with: networkId, name, assignedIp, authStatus,
+    // memberCount — matching ZeroNetNetwork.fromJson.
+    final rawNetworks = json['networks'] as List<dynamic>? ?? const [];
+    final networks = rawNetworks
+        .whereType<Map<String, dynamic>>()
+        .map(ZeroNetNetwork.fromJson)
+        .toList();
+
+    // Parse the full members array if present; fall back to empty list.
+    // Only non-empty when this node is the network controller.
+    final rawMembers = json['members'] as List<dynamic>? ?? const [];
+    final members = rawMembers
+        .whereType<Map<String, dynamic>>()
+        .map(ZeroNetMember.fromJson)
+        .toList();
+
     return ZeroNetInstance(
       // id is required — an instance without an ID cannot be operated on.
       id: json['id'] as String? ?? '',
@@ -182,12 +219,20 @@ class ZeroNetInstance {
       nodeId: json['nodeId'] as String?,
       controller: json['controller'] as String?,
 
-      // Counts default to zero if absent — safe for display.
-      networkCount: (json['networkCount'] as num?)?.toInt() ?? 0,
-      memberCount: (json['memberCount'] as num?)?.toInt() ?? 0,
+      // Prefer the actual array lengths over the count fields for consistency.
+      // If networks/members arrays are present they are the ground truth.
+      networkCount: networks.isNotEmpty
+          ? networks.length
+          : (json['networksCount'] as num?)?.toInt() ?? 0,
+      memberCount: members.isNotEmpty
+          ? members.length
+          : (json['membersCount'] as num?)?.toInt() ?? 0,
 
       // preferMeshRelay defaults to false — vendor relay is the safe default.
       preferMeshRelay: json['preferMeshRelay'] as bool? ?? false,
+
+      networks: networks,
+      members: members,
     );
   }
 

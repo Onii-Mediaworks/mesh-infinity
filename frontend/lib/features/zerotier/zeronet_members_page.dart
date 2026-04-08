@@ -36,6 +36,9 @@ import 'package:provider/provider.dart';
 import '../../backend/backend_bridge.dart';
 // BackendBridge — for the authorize/deauthorize bridge call.
 
+import 'models/zeronet_instance.dart';
+// ZeroNetInstance — typed model returned by ZeroTierState.instanceById.
+
 import 'models/zeronet_member.dart';
 // ZeroNetMember — data model for one network member.
 
@@ -260,9 +263,10 @@ class _ZeroNetMembersPageState extends State<ZeroNetMembersPage> {
   /// When the backend is updated this method will be updated to parse the
   /// members array from the ZeroNetInstance model.
   List<ZeroNetMember> _parseMembers(dynamic instance) {
-    if (instance == null) return const [];
-    // Future: parse instance.members when the backend includes the full list.
-    // The ZeroNetInstance model currently carries memberCount (summary) only.
+    // ZeroNetInstance carries the full members list — populated from the
+    // `members` array in zerotierListInstances (§5.23).  We accept `dynamic`
+    // to keep the call-site flexible, but cast safely here.
+    if (instance is ZeroNetInstance) return instance.members;
     return const [];
   }
 }

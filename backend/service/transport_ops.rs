@@ -3797,6 +3797,33 @@ impl MeshRuntime {
             .zeronets
             .iter()
             .map(|z| {
+                // Serialize all joined networks with their full detail so the
+                // ZeroNetNetworksPage can display them without a separate call.
+                let networks: Vec<serde_json::Value> = z.networks.iter().map(|n| {
+                    serde_json::json!({
+                        "networkId":   n.network_id,
+                        "name":        n.name,
+                        "assignedIp":  n.assigned_ip,
+                        // One of: "authorized", "awaitingauthorization", "unauthorized".
+                        "authStatus":  format!("{:?}", n.auth_status).to_lowercase()
+                            .replace("awaitingauthorization", "awaitingauthorization"),
+                        "memberCount": n.member_count,
+                    })
+                }).collect();
+
+                // Serialize all visible members so ZeroNetMembersPage can display
+                // them.  Only available when this device controls the network.
+                let members: Vec<serde_json::Value> = z.members.iter().map(|m| {
+                    serde_json::json!({
+                        "networkId":  m.network_id,
+                        "nodeId":     m.node_id,
+                        "name":       m.name,
+                        "ips":        m.ips,
+                        "authorized": m.authorized,
+                        "lastSeen":   m.last_seen,
+                    })
+                }).collect();
+
                 serde_json::json!({
                     // Stable id — used to address this instance in all other calls.
                     "id":             z.id,
@@ -3808,9 +3835,13 @@ impl MeshRuntime {
                     "nodeId":         z.node_id,
                     // API base URL of the controller (Central or self-hosted).
                     "controller":     z.credentials.as_ref().map(|c| c.controller.api_base_url()),
-                    // Number of networks this instance has joined.
+                    // Full list of joined networks with per-network detail.
+                    "networks":        networks,
+                    // Count kept for quick access without iterating the array.
                     "networksCount":  z.networks.len(),
-                    // Number of visible members across all joined networks.
+                    // Full list of visible members (controller view only).
+                    "members":         members,
+                    // Count kept for quick access.
                     "membersCount":   z.members.len(),
                     // Whether mesh relay is preferred over ZeroTier PLANET/MOON relay.
                     "preferMeshRelay": z.prefer_mesh_relay,

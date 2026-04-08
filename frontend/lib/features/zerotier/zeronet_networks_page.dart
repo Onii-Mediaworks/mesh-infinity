@@ -37,6 +37,7 @@ import 'package:provider/provider.dart';
 import '../../backend/backend_bridge.dart';
 // BackendBridge — for the join-network bridge call.
 
+import 'models/zeronet_instance.dart';
 import 'models/zeronet_network.dart';
 // ZeroNetNetwork + ZeroNetAuthStatus — data model for one network.
 
@@ -285,21 +286,10 @@ class _ZeroNetNetworksPageState extends State<ZeroNetNetworksPage> {
   ///
   /// Falls back to an empty list if the data is missing or malformed.
   List<ZeroNetNetwork> _parseNetworks(dynamic instance) {
-    if (instance == null) return const [];
-
-    // The instance's overlay data is stored as JSON in a per-instance field.
-    // We access it through a dedicated bridge call in a future iteration;
-    // for now, the ZeroNetInstance model carries networkCount only.
-    // The full list will be returned by zerotierListInstances once the backend
-    // serialises it — this parse handles both the future rich format and the
-    // current summary-only format gracefully.
-    //
-    // TODO(backend): extend zerotierListInstances to include the full networks
-    // array per instance, then remove this comment.
-
-    // If instance has a networks field (future rich format):
-    // Temporarily return empty; networks will populate once the backend
-    // serialises the full array into the instance JSON.
+    // ZeroNetInstance now carries the full networks list directly — populated
+    // from the `networks` array in zerotierListInstances (§5.23).  We accept
+    // `dynamic` to keep the call-site flexible, but cast safely here.
+    if (instance is ZeroNetInstance) return instance.networks;
     return const [];
   }
 }
