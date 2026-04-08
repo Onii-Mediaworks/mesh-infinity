@@ -3347,7 +3347,7 @@ impl MeshRuntime {
     ///
     /// Each element contains the key display fields needed by the UI instances
     /// list:  id, label, status, controller, deviceIp, deviceName,
-    /// tailnetName, keyExpiryUnixMs, peersCount, preferMeshRelay, activeExitNode.
+    /// tailnetName, keyExpiryUnixMs, peerCount, peers[], preferMeshRelay, activeExitNode.
     ///
     /// Never fails — returns an empty JSON array when no instances exist.
     pub fn tailscale_list_instances(&self) -> String {
@@ -3375,12 +3375,34 @@ impl MeshRuntime {
                     "tailnetName":    t.device_info.as_ref().map(|d| d.tailnet_name.as_str()),
                     // Key expiry in Unix milliseconds; 0 = not available.
                     "keyExpiryUnixMs": t.key_expiry_ms,
-                    // Number of visible peers on this tailnet.
-                    "peersCount":     t.peers.len(),
+                    // Number of visible peers on this tailnet.  Must match the
+                    // Dart model key "peerCount" in TailnetInstance.fromJson().
+                    "peerCount":      t.peers.len(),
+                    // Full peer list — each entry matches TailnetPeer.fromJson().
+                    // name:      MagicDNS short hostname.
+                    // ip:        Tailscale virtual IP (100.x.x.x or fd7a:...).
+                    // online:    Whether the peer is reachable right now.
+                    // isExitNode: Whether the peer advertises exit-node capability.
+                    // os:        Reported OS string (e.g. "linux", "windows", "iOS").
+                    // lastSeen:  Unix timestamp (seconds) of last keepalive, or 0.
+                    "peers": t.peers.iter().map(|p| serde_json::json!({
+                        "name":       p.name,
+                        "ip":         p.ip,
+                        "online":     p.online,
+                        "isExitNode": p.is_exit_node,
+                        "os":         p.os,
+                        "lastSeen":   p.last_seen,
+                    })).collect::<Vec<_>>(),
                     // Whether mesh relay is preferred over Tailscale DERP.
                     "preferMeshRelay": t.prefer_mesh_relay,
                     // Currently active exit node peer name, or null.
                     "activeExitNode": t.active_exit_node,
+                    // Current relay posture: "direct", "derp", "mesh_preferred", or "".
+                    // "derp"          — Tailscale DERP relay is active (no direct path).
+                    // "mesh_preferred" — mesh relay preferred; DERP used as fallback.
+                    // "direct"        — peer-to-peer WireGuard, no relay needed.
+                    // ""              — not yet determined (pre-sync).
+                    "relayMode":      t.relay_mode,
                     // Whether this is the priority instance for routing conflicts.
                     "isPriority":     overlay.priority_tailnet_id.as_deref() == Some(t.id.as_str()),
                 })
@@ -3845,6 +3867,13 @@ impl MeshRuntime {
                     "membersCount":   z.members.len(),
                     // Whether mesh relay is preferred over ZeroTier PLANET/MOON relay.
                     "preferMeshRelay": z.prefer_mesh_relay,
+                    // Current relay posture: "direct", "planet", "moon", "mesh_preferred", or "".
+                    // "planet"         — ZeroTier PLANET root relay is active.
+                    // "moon"           — ZeroTier MOON relay is active.
+                    // "mesh_preferred" — mesh relay preferred; PLANET used as fallback.
+                    // "direct"         — peer-to-peer, no relay needed.
+                    // ""               — not yet determined (pre-sync).
+                    "relayMode":      z.relay_mode,
                     // Whether this is the priority instance for routing conflicts.
                     "isPriority":     overlay.priority_zeronet_id.as_deref() == Some(z.id.as_str()),
                 })
@@ -4019,6 +4048,42 @@ impl MeshRuntime {
             if !creds.network_ids.iter().any(|entry| entry == network_id) {
                 creds.network_ids.push(network_id.to_string());
             }
+        }
+        self.save_overlay_state();
+        self.sync_zerotier_client(instance_id)
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Leave (un-join) a network on a specific ZeroTier instance.
+    ///
+    /// Removes [network_id] from the instance's credential network list and
+    /// re-syncs the ZeroTier client so the network is torn down immediately.
+    /// If the network was not joined, this is a no-op (returns Ok).
+    ///
+    /// `instance_id`: opaque UUID of the ZeroTier instance.
+    /// `network_id`:  16-char hex ZeroTier network ID to leave.
+    pub fn zerotier_leave_network_instance(
+        &self,
+        instance_id: &str,
+        network_id: &str,
+    ) -> anyhow::Result<()> {
+        if network_id.len() != 16 || !network_id.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            anyhow::bail!("network_id must be exactly 16 hex characters");
+        }
+        {
+            let mut overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
+            let instance = overlay
+                .zeronet_by_id_mut(instance_id)
+                .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?;
+            let creds = instance
+                .credentials
+                .as_mut()
+                .ok_or_else(|| anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured"))?;
+            // Remove the network from the joined list.
+            creds.network_ids.retain(|id| id != network_id);
+            // Also remove any cached network entry from the display list so the
+            // UI no longer shows the network after the next reload.
+            instance.networks.retain(|n| n.network_id != network_id);
         }
         self.save_overlay_state();
         self.sync_zerotier_client(instance_id)

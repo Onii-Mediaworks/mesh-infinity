@@ -2041,6 +2041,22 @@ class BackendBridge {
     return result == 0;
   }
 
+  /// Leave (un-join) a network on a specific ZeroTier instance.
+  ///
+  /// Removes [networkId] from the instance's joined network list and tears
+  /// down the ZeroTier connection to that network immediately.
+  /// Returns true on success, false on failure (check [getLastError()]).
+  bool zerotierLeaveNetworkInstance(String instanceId, String networkId) {
+    if (!isAvailable) return false;
+    final idPtr = instanceId.toNativeUtf8();
+    final netPtr = networkId.toNativeUtf8();
+    final result =
+        _bindings!.zerotierLeaveNetworkInstance(_context, idPtr, netPtr);
+    calloc.free(idPtr);
+    calloc.free(netPtr);
+    return result == 0;
+  }
+
   /// Toggle mesh relay preference for a specific ZeroTier instance.
   bool zerotierSetPreferMeshRelayInstance(String instanceId, bool enabled) {
     if (!isAvailable) return false;
@@ -3226,6 +3242,10 @@ class _BackendBindings {
         ZeroTierJoinNetworkInstanceNative,
         ZeroTierJoinNetworkInstanceDart
       >('mi_zerotier_join_network_instance'),
+      zerotierLeaveNetworkInstance = _lib.lookupFunction<
+        ZeroTierLeaveNetworkInstanceNative,
+        ZeroTierLeaveNetworkInstanceDart
+      >('mi_zerotier_leave_network_instance'),
       zerotierSetPreferMeshRelayInstance = _lib.lookupFunction<
         ZeroTierSetPreferMeshRelayInstanceNative,
         ZeroTierSetPreferMeshRelayInstanceDart
@@ -3534,6 +3554,7 @@ class _BackendBindings {
   final ZeroTierRefreshInstanceDart zerotierRefreshInstance;
   final ZeroTierDisconnectInstanceDart zerotierDisconnectInstance;
   final ZeroTierJoinNetworkInstanceDart zerotierJoinNetworkInstance;
+  final ZeroTierLeaveNetworkInstanceDart zerotierLeaveNetworkInstance;
   final ZeroTierSetPreferMeshRelayInstanceDart zerotierSetPreferMeshRelayInstance;
   final ZeroTierSetMemberAuthorizedInstanceDart zerotierSetMemberAuthorizedInstance;
   final OverlayStatusDart overlayStatus;
@@ -4349,6 +4370,12 @@ typedef ZeroTierDisconnectInstanceDart =
 typedef ZeroTierJoinNetworkInstanceNative =
     Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 typedef ZeroTierJoinNetworkInstanceDart =
+    int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+
+// mi_zerotier_leave_network_instance(ctx, instance_id, network_id) -> i32
+typedef ZeroTierLeaveNetworkInstanceNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
+typedef ZeroTierLeaveNetworkInstanceDart =
     int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 
 // mi_zerotier_set_prefer_mesh_relay_instance(ctx, instance_id, enabled) -> i32

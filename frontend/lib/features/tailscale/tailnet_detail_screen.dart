@@ -73,6 +73,9 @@ import 'tailnet_peers_page.dart';
 import 'tailnet_exit_node_page.dart';
 // TailnetExitNodePage — the exit-node picker sub-page (used in Exit Nodes tab).
 
+import 'tailnet_acl_page.dart';
+// TailnetAclPage — the ACL information + admin console link tab.
+
 // ---------------------------------------------------------------------------
 // TailnetDetailScreen
 // ---------------------------------------------------------------------------
@@ -111,9 +114,9 @@ class TailnetDetailScreen extends StatelessWidget {
       );
     }
 
-    // DefaultTabController manages the tab index state.  Three tabs.
+    // DefaultTabController manages the tab index state.  Four tabs.
     return DefaultTabController(
-      length: 3,
+      length: 4,
       child: Scaffold(
         appBar: AppBar(
           // The AppBar title is the user-chosen label so the user always knows
@@ -137,10 +140,14 @@ class TailnetDetailScreen extends StatelessWidget {
           // The TabBar sits at the bottom of the AppBar, beneath the title.
           // This is the standard Material 3 pattern for tabbed content screens.
           bottom: const TabBar(
+            // isScrollable allows all four tab labels to fit without crowding.
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
             tabs: [
               Tab(icon: Icon(Icons.info_outline),      text: 'Overview'),
               Tab(icon: Icon(Icons.people_outline),    text: 'Peers'),
               Tab(icon: Icon(Icons.route_outlined),    text: 'Exit Nodes'),
+              Tab(icon: Icon(Icons.policy_outlined),   text: 'ACL'),
             ],
           ),
         ),
@@ -155,6 +162,9 @@ class TailnetDetailScreen extends StatelessWidget {
 
             // Tab 2: Exit Nodes — dropdown picker for the active exit node.
             TailnetExitNodePage(instance: instance),
+
+            // Tab 3: ACL — admin console link and ACL workflow explanation.
+            TailnetAclPage(instance: instance),
           ],
         ),
       ),
@@ -257,7 +267,44 @@ class _OverviewTab extends StatelessWidget {
 
         // Status card — shows connection state, device IP, controller, etc.
         TailnetStatusCard(instance: instance),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
+
+        // Relay-active warning banner — amber when DERP is in use.
+        // DERP (Designated Encrypted Relay for Packets) servers are operated
+        // by Tailscale Inc and can observe connection metadata (which devices
+        // are communicating, how much data, when).  Users who prefer not to
+        // use Tailscale relay infrastructure should enable the mesh relay
+        // toggle below, or check their NAT/firewall configuration.
+        if (instance.relayMode == 'derp') ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.5)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded,
+                    size: 18, color: Colors.amber),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Traffic is relayed via Tailscale DERP — not direct. '
+                    'Enable Prefer mesh relay below to use Mesh Infinity '
+                    'relay infrastructure instead.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.amber.shade800,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+
+        const SizedBox(height: 4),
 
         // Relay preference toggle.
         //

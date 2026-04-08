@@ -5956,6 +5956,43 @@ pub unsafe extern "C" fn mi_zerotier_join_network_instance(
     }
 }
 
+/// Leave (un-join) a network on a specific ZeroTier instance.
+///
+/// Removes the network from the instance's joined list and re-syncs the
+/// ZeroTier client so the network is torn down immediately.  If the network
+/// was not joined, this is a no-op and returns 0.
+/// Returns 0 on success, -1 on failure (error available via mi_get_last_error).
+///
+/// # Safety
+/// `ctx` must be non-null.  Both string pointers must be valid UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_zerotier_leave_network_instance(
+    ctx: *mut MeshContext,
+    instance_id_ptr: *const c_char,
+    // 16-char hex network ID to leave.
+    network_id_ptr: *const c_char,
+) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let instance_id = match unsafe { c_str_to_str(instance_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    let network_id = match unsafe { c_str_to_str(network_id_ptr) } {
+        Some(s) => s,
+        None => return -1,
+    };
+    match ctx.zerotier_leave_network_instance(instance_id, network_id) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e.to_string());
+            -1
+        }
+    }
+}
+
 /// Toggle mesh-relay preference for a specific ZeroTier instance.
 ///
 /// `enabled`: non-zero = prefer mesh relay; 0 = prefer PLANET/MOON relay.

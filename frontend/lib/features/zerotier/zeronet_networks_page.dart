@@ -35,7 +35,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../backend/backend_bridge.dart';
-// BackendBridge — for the join-network bridge call.
+// BackendBridge — for join-network and leave-network bridge calls.
 
 import 'models/zeronet_instance.dart';
 import 'models/zeronet_network.dart';
@@ -191,7 +191,8 @@ class _ZeroNetNetworksPageState extends State<ZeroNetNetworksPage> {
           ),
 
         // ---- Network list -------------------------------------------------
-        for (final network in networks) _NetworkRow(network: network),
+        for (final network in networks)
+          _NetworkRow(network: network, instanceId: widget.instanceId),
 
         const SizedBox(height: 24),
         const Divider(),
@@ -298,13 +299,77 @@ class _ZeroNetNetworksPageState extends State<ZeroNetNetworksPage> {
 // _NetworkRow (private)
 // ---------------------------------------------------------------------------
 
-/// A single row in the networks list showing name, ID, IP, auth chip, and
-/// member count.
+/// A single row in the networks list showing name, ID, IP, auth chip,
+/// member count, and a leave-network action button.
 class _NetworkRow extends StatelessWidget {
   /// The network to display.
   final ZeroNetNetwork network;
 
-  const _NetworkRow({required this.network});
+  /// The opaque backend ID of the ZeroNet instance that joined this network.
+  /// Needed for the leave-network bridge call.
+  final String instanceId;
+
+  const _NetworkRow({required this.network, required this.instanceId});
+
+  // ---------------------------------------------------------------------------
+  // _confirmLeave
+  // ---------------------------------------------------------------------------
+
+  /// Shows a confirmation dialog and leaves the network if confirmed.
+  ///
+  /// Leaving is irreversible from the UI's perspective (the user must re-join
+  /// using the join form below).  We require explicit confirmation to prevent
+  /// accidental leaves on long-tap or mis-tap.
+  Future<void> _confirmLeave(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Leave network?'),
+        content: Text(
+          'This will remove your device from "${network.displayName}" '
+          '(${network.networkId}).  You can re-join later using the '
+          'Join Another Network form.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Leave'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !context.mounted) return;
+
+    final bridge = context.read<BackendBridge>();
+    final state  = context.read<ZeroTierState>();
+
+    final ok = bridge.zerotierLeaveNetworkInstance(instanceId, network.networkId);
+    // Reload the instance list so the UI reflects the departed network.
+    await state.loadAll();
+
+    if (!context.mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(bridge.getLastError() ?? 'Could not leave network'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // build
+  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -362,7 +427,7 @@ class _NetworkRow extends StatelessWidget {
             ),
           ),
 
-          // Trailing: auth status chip + member count.
+          // Trailing: auth status chip + member count + leave button.
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -372,6 +437,22 @@ class _NetworkRow extends StatelessWidget {
                 '${network.memberCount} members',
                 style: tt.labelSmall
                     ?.copyWith(color: cs.onSurfaceVariant),
+              ),
+              const SizedBox(height: 4),
+              // Leave button — small to keep the row compact.
+              SizedBox(
+                height: 28,
+                child: TextButton.icon(
+                  style: TextButton.styleFrom(
+                    foregroundColor: cs.error,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    textStyle: tt.labelSmall,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () => _confirmLeave(context),
+                  icon: const Icon(Icons.exit_to_app, size: 14),
+                  label: const Text('Leave'),
+                ),
               ),
             ],
           ),

@@ -8,33 +8,38 @@
 //   - A stable Tailscale-assigned IP address (100.x.x.x or fd7a:... IPv6).
 //   - An optional exit-node capability flag.
 //   - An online/offline status based on recent WireGuard keepalives.
+//   - An OS identifier (linux, windows, macOS, iOS, android).
+//   - A last-seen timestamp used to display recency for offline peers.
 //
-// The peer list here is the same set of peers returned by the backend's
-// tailscaleListInstances() call — the TailnetInstance model already carries
-// them.  We do not make a separate bridge call from this page; the parent
-// TailscaleState.loadAll() keeps the list fresh.
+// SEARCH / FILTER
+// ---------------
+// A search bar at the top of the list lets users filter by name, IP, or OS.
+// The filter is purely local (no bridge call) — it operates on the peer list
+// already held in TailnetInstance.  Typing is instant.
 //
-// WHY A PAGE WIDGET AND NOT A SCREEN?
-// ------------------------------------
-// "Page" in this codebase means a widget that is embedded inside a TabBarView
-// rather than pushed onto the navigator stack.  It receives its data via
-// constructor arguments (the parent TailnetDetailScreen resolves the
-// TailnetInstance and passes it in) rather than reading TailscaleState itself.
-// This keeps the widget stateless and easy to unit-test.
+// COPY IP
+// -------
+// Long-pressing or tapping the trailing copy button on any row copies the
+// peer's Tailscale IP to the clipboard.  This is the primary use-case for
+// looking up a peer's IP when SSH-ing or curl-ing directly.
 //
-// EMPTY STATE
+// DATA SOURCE
 // -----------
-// A newly enrolled device that has not yet synced its peer map shows zero
-// peers.  We show an informative empty state with an icon and a message
-// rather than a blank white screen, which could be mistaken for a loading
-// failure.
+// The peer list is embedded in the TailnetInstance passed by TailnetDetailScreen.
+// No separate bridge call is needed.  TailscaleState.loadAll() keeps the list
+// fresh; the parent TailnetDetailScreen rebuilds this page on each loadAll().
+//
+// Spec reference: §5.22 (multi-instance Tailscale overlay peer visibility)
 
 import 'package:flutter/material.dart';
-// Material widgets: ListView, ListTile, Icon, Text, Center, Column.
+// Material widgets: ListView, ListTile, TextField, Icon, Text.
+
+import 'package:flutter/services.dart';
+// Clipboard.setData() — for copy IP to clipboard.
 
 import 'models/tailnet_instance.dart';
 // TailnetInstance — carries the peer list this page renders.
-// TailnetPeer — the individual peer model.
+// TailnetPeer — the individual peer model (now includes os + lastSeen).
 
 // ---------------------------------------------------------------------------
 // TailnetPeersPage
@@ -42,78 +47,199 @@ import 'models/tailnet_instance.dart';
 
 /// The Peers tab content shown inside [TailnetDetailScreen].
 ///
-/// Renders a scrollable list of all peers visible in [instance].  Each row
-/// shows the peer's online status, name, IP address, and an exit-node icon
-/// when applicable.
+/// Renders a filterable, scrollable list of all peers visible in [instance].
+/// Each row shows the peer's online status, name, IP address, OS icon, last-
+/// seen label (for offline peers), and an exit-node icon when applicable.
+/// The copy button on each row copies the IP to the clipboard.
 ///
-/// This widget is stateless — it receives a pre-resolved [TailnetInstance]
-/// from its parent and renders it.  State mutation (e.g. "refresh peers")
-/// is handled by the Overview tab's Refresh button, which calls
-/// TailscaleState.refresh() and triggers a rebuild of the whole detail screen.
+/// This widget is stateful only for the search query — all peer data arrives
+/// via the immutable [instance] argument.
 ///
-/// Spec reference: §5.22 (multi-instance overlay peer visibility)
-class TailnetPeersPage extends StatelessWidget {
+/// Spec reference: §5.22 (multi-instance Tailscale overlay peer visibility)
+class TailnetPeersPage extends StatefulWidget {
   /// Creates a [TailnetPeersPage] for the given [instance].
   const TailnetPeersPage({super.key, required this.instance});
 
   /// The tailnet instance whose peer list to display.
-  ///
-  /// Passed by [TailnetDetailScreen] so this widget does not need to resolve
-  /// the instance itself via TailscaleState.
   final TailnetInstance instance;
+
+  @override
+  State<TailnetPeersPage> createState() => _TailnetPeersPageState();
+}
+
+class _TailnetPeersPageState extends State<TailnetPeersPage> {
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+
+  /// Current search query.  Empty string means "show all".
+  String _query = '';
+
+  /// Controller for the search text field so we can clear it programmatically.
+  final _searchCtrl = TextEditingController();
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  /// Returns the subset of [peers] that match [_query].
+  ///
+  /// Matching is case-insensitive and spans the name, IP, and OS fields.
+  /// An empty query always returns all peers.
+  List<TailnetPeer> _filtered(List<TailnetPeer> peers) {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return peers;
+    return peers.where((p) {
+      return p.name.toLowerCase().contains(q) ||
+          p.ip.toLowerCase().contains(q) ||
+          (p.os?.toLowerCase().contains(q) ?? false);
+    }).toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // build
+  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
-    final peers = instance.peers;
+    final allPeers  = widget.instance.peers;
+    final peers     = _filtered(allPeers);
 
-    // Empty state — shown when the backend has not yet delivered a peer map
-    // or the tailnet genuinely has no other enrolled devices.
-    if (peers.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            // shrink-wrap so the column sits in the vertical centre of the tab.
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.people_outline,
-                size: 56,
-                // Dim the icon slightly — it is decoration, not actionable.
-                color: cs.onSurfaceVariant.withValues(alpha: 0.5),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'No peers yet',
-                style: tt.titleMedium?.copyWith(color: cs.onSurfaceVariant),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Peers appear here once other devices are enrolled in this '
-                'tailnet and the device map has been synced. '
-                'Use Refresh on the Overview tab to force a sync.',
-                style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-                textAlign: TextAlign.center,
-              ),
-            ],
+    return Column(
+      children: [
+        // ---- Search bar ---------------------------------------------------
+        // Always shown — even for an empty list — because the user may not
+        // yet know whether peers are absent or merely filtered.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+          child: TextField(
+            controller: _searchCtrl,
+            decoration: InputDecoration(
+              hintText: 'Filter by name, IP, or OS',
+              prefixIcon: const Icon(Icons.search, size: 20),
+              isDense: true,
+              border: const OutlineInputBorder(),
+              // Clear button — only visible when there is text to clear.
+              suffixIcon: _query.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, size: 18),
+                      tooltip: 'Clear filter',
+                      onPressed: () {
+                        _searchCtrl.clear();
+                        setState(() => _query = '');
+                      },
+                    )
+                  : null,
+            ),
+            onChanged: (v) => setState(() => _query = v),
           ),
         ),
-      );
-    }
 
-    // Non-empty: render a scrollable list of peer rows.
-    return ListView.separated(
-      // Consistent padding with the Overview and Exit Nodes tabs.
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: peers.length,
-      // A subtle divider between rows improves scannability in long peer lists.
-      separatorBuilder: (_, _) => const Divider(height: 1, indent: 56),
-      itemBuilder: (context, index) {
-        final peer = peers[index];
-        return _PeerRow(peer: peer);
-      },
+        // ---- Online / total count ----------------------------------------
+        if (allPeers.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Row(
+              children: [
+                Icon(Icons.circle,
+                    size: 10,
+                    color: cs.primary.withValues(alpha: 0.8)),
+                const SizedBox(width: 6),
+                Text(
+                  // Show how many are online and how many are visible after
+                  // filtering.
+                  '${allPeers.where((p) => p.online).length} online'
+                  '${_query.isNotEmpty ? ' · ${peers.length} of ${allPeers.length} shown' : ' · ${allPeers.length} total'}',
+                  style: tt.labelSmall
+                      ?.copyWith(color: cs.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+
+        // ---- List or empty state ------------------------------------------
+        Expanded(
+          child: allPeers.isEmpty
+              ? _EmptyState(cs: cs, tt: tt, hasFilter: false)
+              : peers.isEmpty
+                  ? _EmptyState(cs: cs, tt: tt, hasFilter: true)
+                  : ListView.separated(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      itemCount: peers.length,
+                      separatorBuilder: (_, _) =>
+                          const Divider(height: 1, indent: 56),
+                      itemBuilder: (context, index) {
+                        return _PeerRow(peer: peers[index]);
+                      },
+                    ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _EmptyState — private helper
+// ---------------------------------------------------------------------------
+
+/// Centered message shown when there are no peers (or no filter matches).
+class _EmptyState extends StatelessWidget {
+  const _EmptyState({
+    required this.cs,
+    required this.tt,
+    required this.hasFilter,
+  });
+
+  /// True when the empty state is due to a filter returning no matches.
+  /// False when the peer list itself is empty.
+  final bool hasFilter;
+
+  final ColorScheme cs;
+  final TextTheme tt;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              hasFilter ? Icons.search_off : Icons.people_outline,
+              size: 56,
+              color: cs.onSurfaceVariant.withValues(alpha: 0.5),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              hasFilter ? 'No peers match' : 'No peers yet',
+              style: tt.titleMedium?.copyWith(color: cs.onSurfaceVariant),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              hasFilter
+                  ? 'Try a different name, IP, or OS.'
+                  : 'Peers appear here once other devices are enrolled in this '
+                      'tailnet and the device map has been synced. '
+                      'Use Refresh on the Overview tab to force a sync.',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -124,59 +250,130 @@ class TailnetPeersPage extends StatelessWidget {
 
 /// A single row in the peer list showing one [TailnetPeer].
 ///
-/// Kept private because it is only used within [TailnetPeersPage].
-/// Extracting it to a named widget (even a private one) gives Flutter a
-/// useful element identity for incremental rebuilds when the peer list
-/// changes length.
+/// Shows:
+///   • Online/offline status indicator (filled vs outlined circle)
+///   • Peer name (or IP when name is empty)
+///   • IP address in monospace + copy button
+///   • Last-seen label when the peer is offline and a timestamp is available
+///   • OS icon (phone/laptop/desktop based on OS string)
+///   • Exit-node route icon when applicable
 class _PeerRow extends StatelessWidget {
   const _PeerRow({required this.peer});
 
-  /// The peer data to display.
   final TailnetPeer peer;
+
+  // ---------------------------------------------------------------------------
+  // OS icon helper
+  // ---------------------------------------------------------------------------
+
+  /// Returns a small icon that represents the peer's reported OS.
+  ///
+  /// Falls back to a generic laptop icon for unknown OS strings.
+  IconData _osIcon() {
+    final os = peer.os?.toLowerCase() ?? '';
+    if (os == 'ios' || os == 'android') return Icons.smartphone;
+    if (os == 'macos' || os == 'windows' || os == 'linux') {
+      return Icons.laptop;
+    }
+    return Icons.devices_other;
+  }
+
+  // ---------------------------------------------------------------------------
+  // _copyIp
+  // ---------------------------------------------------------------------------
+
+  /// Copies the peer's IP to the clipboard and shows a brief snackbar.
+  void _copyIp(BuildContext context) {
+    Clipboard.setData(ClipboardData(text: peer.ip));
+    // Show a brief snackbar so the user gets feedback.
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${peer.ip}'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        width: 220,
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // build
+  // ---------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
 
-    // Online indicator: filled circle (green) when online, outlined (grey)
-    // when offline.  The same icon pair is used in TailscaleSetupScreen's
-    // peer list for visual consistency.
+    // Online indicator: filled circle (primary colour) = online,
+    //                   outlined circle (grey)          = offline.
     final onlineIcon = peer.online
         ? Icon(Icons.circle, size: 14, color: cs.primary)
         : Icon(Icons.circle_outlined, size: 14, color: cs.outline);
+
+    // Build subtitle: IP address + optional "last seen" for offline peers.
+    final lastSeenStr = peer.lastSeenLabel; // null when online or ts=0
+    final subtitleText = lastSeenStr != null
+        ? '${peer.ip}  ·  $lastSeenStr'
+        : peer.ip;
 
     return ListTile(
       // Leading: online status indicator.
       leading: onlineIcon,
 
-      // Title: peer hostname.  Falls back to the IP address if the name is
-      // empty (can happen for newly enrolled peers whose MagicDNS record has
-      // not yet propagated).
-      title: Text(
-        peer.name.isNotEmpty ? peer.name : peer.ip,
-        style: const TextStyle(fontWeight: FontWeight.w500),
+      // Title: peer hostname or IP fallback.
+      title: Row(
+        children: [
+          // OS icon — subtle visual cue about the device type.
+          Icon(_osIcon(),
+              size: 14,
+              color: cs.onSurfaceVariant.withValues(alpha: 0.7)),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              peer.name.isNotEmpty ? peer.name : peer.ip,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
       ),
 
-      // Subtitle: IP address (always shown) — allows copy-paste for
-      // direct-connect use cases.
+      // Subtitle: IP (monospace) + optional last-seen.
       subtitle: Text(
-        peer.ip,
-        style: TextStyle(
-          fontSize: 12,
+        subtitleText,
+        style: tt.bodySmall?.copyWith(
           color: cs.onSurfaceVariant,
           fontFamily: 'monospace',
-          // Monospace font makes IP addresses easier to read and compare.
+          fontSize: 12,
         ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
 
-      // Trailing: exit-node capability icon, if applicable.
-      // Routes the UI by icon rather than text to keep the row compact.
-      trailing: peer.isExitNode
-          ? Tooltip(
+      // Trailing: exit-node icon and/or copy-IP button.
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Exit-node badge — only when the peer advertises that capability.
+          if (peer.isExitNode)
+            Tooltip(
               message: 'Exit node — can route internet traffic',
-              child: Icon(Icons.route_outlined, color: cs.secondary),
-            )
-          : null,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Icon(Icons.route_outlined,
+                    size: 18, color: cs.secondary),
+              ),
+            ),
+          // Copy-IP button — always shown so the user can quickly grab the IP.
+          IconButton(
+            icon: Icon(Icons.copy, size: 16, color: cs.onSurfaceVariant),
+            tooltip: 'Copy IP address',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => _copyIp(context),
+          ),
+        ],
+      ),
     );
   }
 }

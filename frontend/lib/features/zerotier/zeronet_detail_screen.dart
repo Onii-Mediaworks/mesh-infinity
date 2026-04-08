@@ -341,6 +341,43 @@ class _OverviewTab extends StatelessWidget {
         ZeroNetStatusCard(instance: instance),
         const SizedBox(height: 16),
 
+        // ---- Relay-active warning banner ----------------------------------
+        // Shown in amber when ZeroTier PLANET or MOON relay is in use.
+        // PLANET/MOON relay nodes are operated by ZeroTier Inc, which means
+        // ZeroTier can observe which peers are communicating and when.
+        // Users who care about this should enable Prefer Mesh Relay below.
+        if (instance.relayMode == 'planet' || instance.relayMode == 'moon') ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              // Use the amber/warn surface tone — distinct from error (red).
+              color: Colors.amber.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.amber.withValues(alpha: 0.5)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded,
+                    size: 18, color: Colors.amber),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    instance.relayMode == 'moon'
+                        ? 'Traffic is relayed via ZeroTier MOON — not direct. '
+                            'Enable Prefer Mesh Relay to avoid ZeroTier relay infrastructure.'
+                        : 'Traffic is relayed via ZeroTier PLANET — not direct. '
+                            'Enable Prefer Mesh Relay to avoid ZeroTier relay infrastructure.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.amber.shade800,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+
         if (isConfigured) ...[
           // ---- Relay preference toggle -----------------------------------
           // Prefer mesh relay: routes relayed traffic through Mesh Infinity

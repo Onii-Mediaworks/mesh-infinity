@@ -95,9 +95,15 @@ class TailnetStatusCard extends StatelessWidget {
 
       // Relay preference — always shown because it directly affects privacy.
       if (instance.preferMeshRelay)
-        'Relay: Mesh relay preferred (avoids Tailscale DERP)'
+        'Relay preference: Mesh relay (avoids Tailscale DERP)'
       else
-        'Relay: Tailscale DERP (default)',
+        'Relay preference: Tailscale DERP (default)',
+
+      // Actual relay mode as last reported by the backend.  Shows what is
+      // currently in use, which may differ from preference when a direct path
+      // is available or when DERP is the only option regardless of preference.
+      if (instance.relayMode.isNotEmpty)
+        'Relay active: ${_relayModeLabel(instance.relayMode)}',
 
       // Active exit node — only shown when set.
       if (instance.activeExitNode != null &&
@@ -159,6 +165,16 @@ String _statusLine(OverlayClientStatus status) => switch (status) {
   OverlayClientStatus.connected     => 'Status: Connected',
   OverlayClientStatus.disconnected  => 'Status: Disconnected',
   OverlayClientStatus.error         => 'Status: Error',
+};
+
+/// Convert a backend relay mode string to a human-readable label.
+///
+/// The backend emits one of: "direct", "derp", "mesh_preferred", or "".
+String _relayModeLabel(String mode) => switch (mode) {
+  'direct'         => 'Direct (no relay)',
+  'derp'           => 'Tailscale DERP relay',
+  'mesh_preferred' => 'Mesh relay (DERP fallback)',
+  _                => mode,
 };
 
 /// Format a Unix timestamp (milliseconds) as a human-readable local date/time.

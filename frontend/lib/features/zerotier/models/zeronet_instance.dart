@@ -117,6 +117,18 @@ class ZeroNetInstance {
   /// Only meaningful when this node is a controller for at least one network.
   final int memberCount;
 
+  /// The current relay posture for the overlay path on this zeronet instance.
+  ///
+  /// Possible values (from the backend):
+  ///   "direct"         — peer-to-peer, no relay hop needed.
+  ///   "planet"         — ZeroTier PLANET relay is active.
+  ///   "moon"           — ZeroTier MOON relay is active.
+  ///   "mesh_preferred" — mesh relay preferred; PLANET used as fallback.
+  ///   ""               — not yet determined (pre-sync or never connected).
+  ///
+  /// The UI shows an amber indicator when "planet" or "moon" is active.
+  final String relayMode;
+
   /// Whether this instance prefers mesh relay over ZeroTier's own relay nodes.
   ///
   /// When true the backend routes relayed traffic through Mesh Infinity relay
@@ -162,6 +174,7 @@ class ZeroNetInstance {
     required this.preferMeshRelay,
     required this.networks,
     required this.members,
+    this.relayMode = '',
   });
 
   // ---------------------------------------------------------------------------
@@ -230,6 +243,9 @@ class ZeroNetInstance {
 
       // preferMeshRelay defaults to false — vendor relay is the safe default.
       preferMeshRelay: json['preferMeshRelay'] as bool? ?? false,
+
+      // relayMode: "direct", "planet", "moon", "mesh_preferred", or "" (pre-sync).
+      relayMode: json['relayMode'] as String? ?? '',
 
       networks: networks,
       members: members,

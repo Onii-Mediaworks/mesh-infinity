@@ -69,12 +69,26 @@ class TailnetPeer {
   /// peers where this is true should appear in the exit node picker.
   final bool isExitNode;
 
+  /// The operating system of the peer as reported by the Tailscale daemon.
+  ///
+  /// Examples: "linux", "windows", "macOS", "iOS", "android".
+  /// Null when the OS string was not present in the backend response.
+  final String? os;
+
+  /// Unix timestamp (seconds) of the last keepalive received from this peer.
+  ///
+  /// Zero means not available (e.g. a peer that has never connected).
+  /// The UI uses this to display "last seen N minutes ago" for offline peers.
+  final int lastSeen;
+
   /// Constructs a [TailnetPeer] with all fields.
   const TailnetPeer({
     required this.name,
     required this.ip,
     required this.online,
     required this.isExitNode,
+    this.os,
+    this.lastSeen = 0,
   });
 
   /// Parse a [TailnetPeer] from the JSON object returned in the "peers" array
@@ -93,7 +107,26 @@ class TailnetPeer {
       online:     json['online']     as bool? ?? false,
       // Only true when the peer explicitly advertises exit-node capability.
       isExitNode: json['isExitNode'] as bool? ?? false,
+      // OS string reported by the Tailscale daemon; absent → null.
+      os:         json['os'] as String?,
+      // lastSeen in Unix seconds; absent → 0 (never seen).
+      lastSeen:   (json['lastSeen'] as num?)?.toInt() ?? 0,
     );
+  }
+
+  /// Human-readable "last seen" string for display next to offline peers.
+  ///
+  /// Returns null when [online] is true or [lastSeen] is zero (not available).
+  /// Examples: "just now", "5 min ago", "2 h ago", "3 days ago".
+  String? get lastSeenLabel {
+    // Only show for offline peers with a valid timestamp.
+    if (online || lastSeen <= 0) return null;
+    final diff = DateTime.now()
+        .difference(DateTime.fromMillisecondsSinceEpoch(lastSeen * 1000));
+    if (diff.inSeconds < 60)  return 'just now';
+    if (diff.inMinutes < 60)  return '${diff.inMinutes} min ago';
+    if (diff.inHours < 24)    return '${diff.inHours} h ago';
+    return '${diff.inDays} days ago';
   }
 }
 
@@ -195,6 +228,18 @@ class TailnetInstance {
   /// through a peer's connection).
   final String? activeExitNode;
 
+  /// The current relay posture for the WireGuard path on this tailnet.
+  ///
+  /// Possible values (from the backend):
+  ///   "direct"         — peer-to-peer WireGuard, no relay hop needed.
+  ///   "derp"           — Tailscale DERP relay is active (no direct path available).
+  ///   "mesh_preferred" — mesh relay is preferred; DERP used as fallback only.
+  ///   ""               — not yet determined (pre-sync or never connected).
+  ///
+  /// The UI shows an amber indicator when "derp" is active so the user knows
+  /// that relay infrastructure is involved in their traffic path.
+  final String relayMode;
+
   /// Full list of peers visible in this tailnet.
   ///
   /// Populated only when the backend includes peer data in the list response
@@ -215,6 +260,7 @@ class TailnetInstance {
     this.deviceName,
     this.tailnetName,
     this.activeExitNode,
+    this.relayMode = '',
     this.peers = const [],
   });
 
@@ -263,6 +309,8 @@ class TailnetInstance {
       peerCount:       (json['peerCount']       as num?)?.toInt() ?? 0,
       preferMeshRelay: json['preferMeshRelay']  as bool? ?? false,
       activeExitNode:  json['activeExitNode']   as String?,
+      // relayMode: "direct", "derp", "mesh_preferred", or "" (pre-sync).
+      relayMode:       json['relayMode']        as String? ?? '',
       peers:           peers,
     );
   }
