@@ -556,11 +556,76 @@ rand_chacha = "0.9"
 # Using rustls-tls (pure Rust) to avoid OpenSSL conflicts.
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
+# axum — HTTP server framework for the Node Management Interface WebUI (§17.12).
+#
+# Used by the clientless build profile (§17.16) to serve the local HTTPS WebUI
+# that replaces the Flutter UI.  axum is chosen for its first-class tokio
+# integration: it runs on the same tokio runtime as the mesh backend, so no
+# second runtime is needed.
+axum = { version = "0.8", features = ["http2", "macros"] }
+
+# rcgen — X.509 certificate generation for the local HTTPS WebUI.
+#
+# On first run the clientless binary generates a self-signed TLS certificate
+# for its local HTTPS server (§17.12 "locally generated and added to the local
+# trust store at setup").  rcgen creates the certificate in pure Rust with no
+# external tooling required.
+rcgen = "0.13"
+
+# tokio-rustls — async TLS acceptor that wraps tokio sockets with rustls.
+#
+# Provides the TLS layer for axum's HTTPS server.  Pure Rust; consistent with
+# the rest of the dependency graph's rustls preference over native-tls.
+tokio-rustls = "0.26"
+
+# rustls — TLS implementation used by the WebUI HTTPS server.
+rustls = { version = "0.23", features = ["ring"] }
+
+# rustls-pemfile — parse PEM-encoded certificates and private keys.
+# Used by the clientless WebUI TLS module to load persisted certificates.
+rustls-pemfile = "2"
+
+# hyper — HTTP/1.1 and HTTP/2 implementation used directly in the clientless
+# WebUI's TLS accept loop (service_fn adaptor, Request<Incoming>).
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+
+# hyper-util — connection utilities for hyper 1.x used in the clientless
+# WebUI's manual TLS accept loop (Builder::new, TokioExecutor, TokioIo).
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+
+# tower — service abstraction layer used by axum's into_make_service().
+tower = "0.5"
+
+# tracing-subscriber — formats and routes tracing events to stdout/journald.
+# Used by the clientless binary entry point to initialise structured logging.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 # libp2p — modular networking stack for GossipSub + Rendezvous + AutoNAT (§5.24).
 libp2p = { version = "0.54", features = ["gossipsub", "rendezvous", "tcp", "noise", "yamux", "autonat", "tokio", "macros"] }
 
 # reed-solomon-erasure — Reed-Solomon error correction for telephone subchannel (§5.16).
 reed-solomon-erasure = "6"
+
+# =============================================================================
+# [[bin]] — binary targets
+# =============================================================================
+#
+# The [lib] target (above) produces libmesh_infinity.so/.a/.rlib for Flutter.
+# These [[bin]] targets produce standalone executables for the clientless build
+# profile (§17.16) — full mesh nodes with no embedded Flutter UI.
+
+[[bin]]
+# Clientless node entry point.
+#
+# Starts the full Rust backend and serves the Node Management Interface WebUI
+# (§17.12) over local HTTPS.  On desktop platforms this binary is launched by
+# a tray icon wrapper; on headless Linux/BSD targets it runs directly from the
+# shell or as a systemd/init service.
+#
+# Application identity: com.oniimediaworks.meshinfinity-clientless[-debug]
+# See §17.16 Build identity for the full scheme.
+name = "mesh-infinity-clientless"
+path = "src/bin/clientless/main.rs"
 
 # =============================================================================
 # Platform-conditional dependencies

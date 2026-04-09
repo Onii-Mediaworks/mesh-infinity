@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mesh Infinity — Node Management</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #1a1a2e; }
+    h1 { color: #2c6ee2; }
+    .card { border: 1px solid #dde; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
+    .status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #ccc; margin-right: 6px; }
+    .status.ok { background: #2ecc71; }
+    a { color: #2c6ee2; }
+    code { background: #f4f4f8; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>Mesh Infinity Node Management</h1>
+  <p>Node Management Interface — <a href="/api/health">API health check</a></p>
+
+  <div class="card" id="health-card">
+    <h2><span class="status" id="status-dot"></span>Node status</h2>
+    <p id="status-text">Checking…</p>
+  </div>
+
+  <div class="card">
+    <h2>API endpoints</h2>
+    <ul>
+      <li><a href="/api/health"><code>GET /api/health</code></a> — health check</li>
+      <li><a href="/api/status"><code>GET /api/status</code></a> — mesh connectivity</li>
+      <li><a href="/api/transports"><code>GET /api/transports</code></a> — transport states</li>
+      <li><a href="/api/peers"><code>GET /api/peers</code></a> — connected peers</li>
+      <li><a href="/api/identity"><code>GET /api/identity</code></a> — node identity</li>
+      <li><a href="/api/modules"><code>GET /api/modules</code></a> — module states</li>
+      <li><a href="/api/storage"><code>GET /api/storage</code></a> — storage metrics</li>
+      <li><a href="/api/updates"><code>GET /api/updates</code></a> — pending updates</li>
+    </ul>
+  </div>
+
+  <script>
+    fetch('/api/health')
+      .then(r => r.json())
+      .then(data => {
+        document.getElementById('status-dot').className = 'status ok';
+        document.getElementById('status-text').textContent =
+          'Running — version ' + data.version;
+      })
+      .catch(() => {
+        document.getElementById('status-text').textContent = 'Could not reach backend.';
+      });
+  </script>
+</body>
+</html>

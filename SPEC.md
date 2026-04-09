@@ -10274,7 +10274,7 @@ The architecture must be implementable **consistently across all supported platf
 
 ### 17.1 Single-Bundle, Separable-Subsystem Architecture
 
-Mesh Infinity is one application bundle with one authoritative Rust backend and one canonical Flutter UI, but its internal subsystems must be designed so they can be separated where the platform supports stronger isolation.
+Mesh Infinity is one codebase with one authoritative Rust backend, producing two build profiles: a full-client build embedding the canonical Flutter UI, and a clientless build with a minimal native shell (§17.16). Both profiles compile the same Rust backend; internal subsystems must be designed so they can be separated where the platform supports stronger isolation.
 
 **Design principle:** The previous Mesh Infinity architecture treated iOS as the ceiling — because iOS could not support a capability, no platform was permitted to use it. That constraint is rejected. The current model is: Mesh Infinity must be secure on iOS *and* maximally secure on every other platform, sharing as much cross-platform Rust code as possible, but building to the richest security context each platform permits. iOS operates under its own restrictions. Other platforms do not inherit those restrictions.
 
@@ -10289,6 +10289,7 @@ Mesh Infinity is one application bundle with one authoritative Rust backend and 
 | macOS | Expanded | Risky subsystems **must** prefer OS-level isolated worker processes |
 | Windows | Expanded | Risky subsystems **must** prefer OS-level isolated worker processes |
 | iOS / iPadOS | Baseline | Multiprocess workers unavailable — in-process logical isolation only |
+| Headless Linux / BSD / OpenWrt | Expanded (no shell) | Same worker model as Linux; no UI surface present |
 
 #### 17.1.2 iOS Baseline Architecture
 
@@ -10496,7 +10497,7 @@ assets/            -- shared assets: logo.png, icons
 
 ### 17.4 Runtime Modes
 
-The application is always built as a single binary bundle. The mode is determined at startup:
+Mesh Infinity is one codebase producing two build profiles — full-client and clientless (§17.16). Within a given build profile, the runtime mode is determined at startup:
 
 | Startup Condition | Default Mode |
 |------------------|--------------|
@@ -10510,7 +10511,7 @@ Modes:
 - **Dual**: Full UI plus active mesh routing; relays messages for other peers. Contributes to the mesh as both a user node and a routing node.
 - **Server**: No UI; runs as a mesh infrastructure node. Can be configured with any combination of: directory caching, store-and-forward, offline inbox, exit node, hosted services, wrapper node.
 
-Mode can be toggled at runtime via `mi_set_node_mode`. Switching from Client to Server mode requires UI confirmation and disables the UI session.
+Mode can be toggled at runtime via `mi_set_node_mode`. Switching from Client to Server mode requires UI confirmation and disables the UI session. **Clientless builds (§17.16) are permanently in Server mode** — there is no UI to toggle and `mi_set_node_mode` is not available on that build profile.
 
 ### 17.5 FFI Boundary
 
@@ -11085,7 +11086,7 @@ Server-mode nodes expose a management interface for node-level administration: p
 | Plugins | Install, enable, disable, uninstall, permissions review |
 | Services | Hosted service status, port assignments, access logs |
 | Storage | Vault sizes, retention policy configuration, manual pruning |
-| Identity | Node mode (Client/Dual/Server), mesh identity display, relay reputation |
+| Identity | Node mode (Client/Dual/Server), mesh identity display, relay reputation — clientless builds show Server mode only (not togglable) |
 | Updates | Pending update status, apply update |
 | Health | CPU/memory/bandwidth usage, tunnel count, S&F queue depth |
 
@@ -11493,6 +11494,17 @@ Additional basic config file fields (node name, start-on-boot) may be surfaced i
 **Build relationship:** One codebase. Official primary-platform full-client binaries (Android APK, iOS, Linux desktop, macOS, Windows) and official clientless binaries are built from the same Rust backend. A supported platform can target either profile — a Linux machine can be a full client or a dedicated infrastructure node depending on which binary is deployed. Clientless is a supported deployment of the same software serving a different role, not a community port or reduced build.
 
 **Target hardware:** Old Android phones used as dedicated nodes, Raspberry Pi and SBCs, repurposed desktops and laptops, OpenWrt routers, pfSense/OPNsense appliances, any Linux/BSD host where Rust cross-compiles.
+
+**Build identity:** The canonical application identifier is `com.oniimediaworks.meshinfinity`. Variants append suffixes in order:
+
+| Build | Identifier |
+|---|---|
+| Full client, release | `com.oniimediaworks.meshinfinity` |
+| Full client, debug | `com.oniimediaworks.meshinfinity-debug` |
+| Clientless, release | `com.oniimediaworks.meshinfinity-clientless` |
+| Clientless, debug | `com.oniimediaworks.meshinfinity-clientless-debug` |
+
+This scheme applies to Android application IDs, Apple bundle identifiers, and binary names. The base name is always the root identifier; `-clientless` is always appended before `-debug`.
 
 ---
 

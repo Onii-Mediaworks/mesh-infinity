@@ -56,6 +56,12 @@ android {
     }
 
     buildTypes {
+        // Debug builds append "-debug" to the application ID so debug and
+        // release builds can be installed side-by-side on the same device.
+        // Scheme: com.oniimediaworks.meshinfinity[-clientless]-debug (§17.16)
+        debug {
+            applicationIdSuffix = "-debug"
+        }
         release {
             signingConfig = if (rootProject.file("key.properties").exists())
                 signingConfigs.getByName("release")
