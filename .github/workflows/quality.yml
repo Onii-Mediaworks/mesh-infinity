@@ -134,6 +134,23 @@ jobs:
             ninja-build \
             pkg-config
 
+      # Install the Rust stable toolchain.  The Rust library must be compiled
+      # before `flutter test` runs so that BackendBridge.open() succeeds and
+      # the app-level assert(bridge.isAvailable) does not fire in the widget test.
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cache the Cargo registry and build artefacts so that successive CI runs
+      # do not re-download or re-compile the full dependency graph.
+      - uses: Swatinem/rust-cache@v2
+
+      # Build the Rust shared library in debug mode.
+      #
+      # This produces `target/debug/libmesh_infinity.so`, which
+      # DynamicLibrary.open('libmesh_infinity.so') will find at runtime via
+      # LD_LIBRARY_PATH (set on the flutter test step below).
+      - name: cargo build (shared library for flutter test)
+        run: cargo build -p mesh-infinity
+
       # Install Flutter using the official flutter-action.
       # `channel: stable` matches the toolchain used by the build.yml workflow.
       # We do not pin to a specific version so that the toolchain tracks the
@@ -157,10 +174,13 @@ jobs:
       # ── Step 2: flutter test ──────────────────────────────────────────────
       #
       # Runs all Dart/Flutter unit and widget tests in `frontend/test/`.
-      # These tests do not require a display server — they run headlessly via
-      # the flutter_test framework's in-memory widget environment.
+      # The widget test boots the full MeshInfinityApp against the real backend
+      # library built above.  LD_LIBRARY_PATH points the dynamic linker at the
+      # debug build output so DynamicLibrary.open('libmesh_infinity.so') resolves.
       - name: flutter test
         working-directory: frontend
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
         run: flutter test
 
   # ── Fuzz smoke: 30-second libFuzzer run for each target ──────────────────
