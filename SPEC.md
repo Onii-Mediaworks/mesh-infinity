@@ -1419,7 +1419,7 @@ endpoint validation per transport type:
   Mixnet:      endpoint must be a Sphinx address (base58-encoded public key) or None
 ```
 
-All validation is performed in Rust before the FFI boundary. Flutter receives only pre-validated, display-safe data.
+All validation is performed in Rust before the FFI boundary. On full-client builds, Flutter receives only pre-validated, display-safe data.
 
 **Sybil and storage-exhaustion defense:**
 
@@ -9289,6 +9289,8 @@ Garden operators using direct IP exposure can link their hosting costs to the do
 
 ## 14. Notifications
 
+**Scope:** §14 describes the notification model for full-client builds (Android, iOS, Linux, macOS, Windows) where a Flutter UI and OS notification APIs are present. Clientless/server-mode nodes do not deliver push notifications to end users — they are infrastructure nodes, not user endpoints. Server-mode nodes do emit events via the event queue (§17.14) and log to the system journal, but do not register with push services or display notifications.
+
 Notification delivery in Mesh Infinity follows the same privacy-first, opt-in philosophy as every other subsystem. Notifications are **delivery hints**, not messages. The actual message content always travels via the mesh, always encrypted via the four-layer scheme (§7.1). A notification that fails to deliver does not affect message delivery -- the message is stored via store-and-forward (§6.8) and delivered when the app next connects.
 
 Notification delivery is completely separate from message security.
@@ -9533,7 +9535,7 @@ The definition is not structural -- it does not matter whether something is labe
 
 **FFI boundary -- explicit prohibition:**
 
-Key material never crosses the FFI boundary to Flutter under any circumstances. The only key-derived data that may cross FFI is public key material for display purposes only (pairing QR codes, verification display codes, peer ID display). No private key material, no derived secrets, no intermediate values. This is a hard architectural rule enforced by the Rust backend. Flutter receives only pre-validated, display-safe data derived from public key material.
+Key material never crosses the FFI boundary to Flutter under any circumstances. The only key-derived data that may cross FFI is public key material for display purposes only (pairing QR codes, verification display codes, peer ID display). No private key material, no derived secrets, no intermediate values. This is a hard architectural rule enforced by the Rust backend. On full-client builds, Flutter receives only pre-validated, display-safe data derived from public key material. On clientless builds there is no FFI boundary to Flutter; the same prohibition applies at the WebUI API layer — no key material in JSON responses.
 
 **Memory locking -- per platform:**
 
@@ -10189,7 +10191,7 @@ This is the ideal state — the user's own activity actively strengthens the mes
 
 - Flutter may never initiate a security-critical operation directly -- it requests; Rust decides and executes.
 - If Flutter and Rust disagree on state, Rust wins -- always.
-- Flutter receives only pre-validated, display-safe data across the FFI boundary.
+- On full-client builds, Flutter receives only pre-validated, display-safe data across the FFI boundary. On clientless builds there is no Flutter layer; the WebUI (§17.12) is driven directly from Rust with the same data constraints.
 - No security property depends on Flutter behaving correctly -- a compromised or buggy UI cannot compromise security.
 - This principle is the source of: FFI key material prohibition (§15.1), PIN input bypassing Flutter (§3.10), all validation in Rust before FFI.
 
@@ -10515,7 +10517,7 @@ Mode can be toggled at runtime via `mi_set_node_mode`. Switching from Client to 
 
 ### 17.5 FFI Boundary
 
-The FFI layer exposes a C ABI consumed by Flutter via `dart:ffi`. Core design rules:
+The FFI layer exposes a C ABI consumed by Flutter via `dart:ffi` on full-client builds. On clientless builds, the same Rust backend is driven directly through the native Rust API (`MeshRuntime` service methods) — the FFI layer is not compiled into the clientless binary. Core design rules:
 
 - Rust is the source of truth for all state.
 - Flutter is treated as untrusted: it issues intent-based commands and receives display-safe data.
@@ -11110,7 +11112,7 @@ This is distinct from the UI Feature Tier Model (§22.28), which controls what s
 
 #### 17.13.1 Invariant Core
 
-The following are always active in Client and Dual modes. They cannot be disabled without switching to Server mode (which disables the UI entirely):
+The following are always active in Client and Dual modes. They cannot be disabled without switching to Server mode (which disables the Flutter UI on full-client builds; clientless builds are always in Server mode and never had a UI to disable):
 
 | Component | Why invariant |
 |-----------|--------------|
@@ -11310,7 +11312,7 @@ agentic.mislp              = false
 plugins.runtime_enabled    = false
 ```
 
-The user configures modules from Settings → Features (§22.28, updated below).
+On full-client builds, the user configures modules from Settings → Features (§22.28). On clientless builds, module enable/disable is performed through the WebUI Modules panel (§17.12).
 
 ---
 
@@ -11504,11 +11506,22 @@ Additional basic config file fields (node name, start-on-boot) may be surfaced i
 | Clientless, release | `com.oniimediaworks.meshinfinity-clientless` |
 | Clientless, debug | `com.oniimediaworks.meshinfinity-clientless-debug` |
 
-This scheme applies to Android application IDs, Apple bundle identifiers, and binary names. The base name is always the root identifier; `-clientless` is always appended before `-debug`.
+This scheme applies consistently across all toolchains:
+
+| Toolchain | Where applied |
+|---|---|
+| Android Gradle | `applicationId` in `build.gradle.kts`; debug variant uses `applicationIdSuffix = "-debug"` |
+| Apple (iOS / macOS) | `PRODUCT_BUNDLE_IDENTIFIER` in `project.pbxproj` |
+| Cargo binary | `[[bin]] name` in `Cargo.toml` (e.g. `mesh-infinity-clientless`) |
+| Linux / Windows installer | Package name / AppImage / MSI product name |
+
+The base name is always the root identifier; `-clientless` is always appended before `-debug`.
 
 ---
 
 ## 18. Plugin System
+
+**Scope:** Unless noted otherwise, §18 describes plugin behaviour in full-client builds where a Flutter UI is present. On clientless builds, plugin management (install, enable, disable, uninstall, permissions review) is performed through the Node Management Interface WebUI (§17.12) rather than through Flutter Settings screens. The underlying plugin runtime, permission model, WASM sandbox, and distribution channels are identical across both build profiles; only the management surface differs.
 
 
 
@@ -11579,7 +11592,7 @@ max_open_handles = 256               # max concurrent open file/network handles
 **Resource enforcement (non-negotiable):**
 - **Memory:** `wasmtime::Config::max_memory_size` set to `max_memory_mb × 1024 × 1024`. Plugin exceeding this limit is **immediately killed** — the host process continues unaffected. The user sees: *"Plugin [name] was stopped: memory limit exceeded."*
 - **CPU time:** Each `on_message` / `on_event` callback is wrapped in a `wasmtime::Store::epoch_deadline_callback`. If the callback does not return within `max_cpu_ms_per_call` (default 100ms), the instance is **forcibly interrupted**. Three consecutive timeouts → plugin is disabled automatically with notification to user.
-- **Init crash:** If `init()` traps (WASM trap, panic, OOM), the plugin is marked as **failed** and not enabled. The user sees: *"Plugin [name] failed to start."* Crash-loop detection: if a plugin fails `init()` 3 times consecutively, it is moved to a **quarantined** state requiring manual re-enable in Settings → Plugins. The host process is never affected by a plugin crash — WASM traps are caught by wasmtime and do not propagate.
+- **Init crash:** If `init()` traps (WASM trap, panic, OOM), the plugin is marked as **failed** and not enabled. On full-client builds the user sees: *"Plugin [name] failed to start."* On clientless builds the failure is recorded in the WebUI plugin list (§17.12) and the system log. Crash-loop detection: if a plugin fails `init()` 3 times consecutively, it is moved to a **quarantined** state requiring manual re-enable (Settings → Plugins on full-client; WebUI Plugins panel on clientless). The host process is never affected by a plugin crash — WASM traps are caught by wasmtime and do not propagate.
 - **Shutdown timeout:** The `shutdown()` entrypoint has a hard **5-second deadline**. If it doesn't return, the WASM instance is destroyed without waiting. No data loss — the plugin's vault state was last persisted at the previous successful API call.
 - **Storage:** Writes exceeding `max_storage_mb` fail with `StorageQuotaExceeded` error. No data loss — existing data is preserved; only the new write is rejected.
 - **Handles:** Open file/network handles beyond `max_open_handles` are rejected with `HandleLimitExceeded`.
@@ -11621,7 +11634,7 @@ Uninstall:
 
 Plugins are distributed through three channels:
 
-1. **Mesh distribution** (preferred) — plugins published to a mesh-hosted service index (§12.5, same gossip-propagated infrastructure as Garden discovery §10.2.13). Index entries are signed by the plugin author. Users browse and install from within the app (Settings → Plugins → Browse). **Not available on iOS / iPadOS.**
+1. **Mesh distribution** (preferred) — plugins published to a mesh-hosted service index (§12.5, same gossip-propagated infrastructure as Garden discovery §10.2.13). Index entries are signed by the plugin author. On full-client builds, users browse and install from Settings → Plugins → Browse. On clientless builds, browsing and installation are performed through the WebUI Plugins panel (§17.12). **Not available on iOS / iPadOS.**
 
 2. **File import** — `.miplugin` file (ZIP containing manifest.toml + WASM binary + signature). Can be shared via mesh file transfer, USB, or any other channel. Treated as untrusted until signature verified. **Not available on iOS / iPadOS for third-party executable plugins.**
 
@@ -22515,6 +22528,8 @@ Onboarding must not:
 ---
 
 ### 22.28 Feature Tier Model
+
+**Scope:** §22.28 describes the feature tier model for full-client builds where the Flutter UI is present. Clientless builds have no feature tiers and no navigation rail or section visibility controls — all enabled modules are managed uniformly through the WebUI (§17.12, §17.13).
 
 #### 22.28.1 Overview
 
