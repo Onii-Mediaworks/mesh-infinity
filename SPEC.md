@@ -208,6 +208,7 @@
   - [17.13 Module System](#1713-module-system)
   - [17.14 Async Runtime Model](#1714-async-runtime-model)
   - [17.15 Bootstrap Protocol](#1715-bootstrap-protocol)
+  - [17.16 Clientless Build Profile](#1716-clientless-build-profile)
 - [18. Plugin System](#18-plugin-system)
   - [18.0 Plugin API Versioning](#180-plugin-api-versioning)
   - [18.1 Three Tiers of Building on Mesh Infinity](#181-three-tiers-of-building-on-mesh-infinity)
@@ -10258,7 +10259,7 @@ The architecture must be implementable **consistently across all supported platf
 
 **Section overview:**
 
-- **§17.1 Single-Bundle, Separable-Subsystem Architecture** -- core-bundle rule; isolation strategy; rationale
+- **§17.1 Single-Bundle, Separable-Subsystem Architecture** -- platform security philosophy; iOS baseline vs. expanded platform model
 - **§17.2 Self/Mask Identity Model** -- three-layer model; self vs masks; backend data model
 - **§17.3 Rust Backend Module Structure** -- full module tree
 - **§17.4 Runtime Modes** -- Client / Dual / Server; startup conditions
@@ -10269,16 +10270,37 @@ The architecture must be implementable **consistently across all supported platf
 - **§17.9 Encrypted Vault Storage** -- XChaCha20-Poly1305 blobs; HKDF-derived per-collection keys; atomic writes
 - **§17.10 Mesh-Delivered Updates** -- signed releases over mesh; manifest, verification, rollback rules
 - **§17.11 Mesh DNS System** -- four namespaces; resolver architecture; clearnet accessibility
+- **§17.16 Clientless Build Profile** -- infrastructure node without client UI; minimal shell; WebUI as control surface
 
 ### 17.1 Single-Bundle, Separable-Subsystem Architecture
 
 Mesh Infinity is one application bundle with one authoritative Rust backend and one canonical Flutter UI, but its internal subsystems must be designed so they can be separated where the platform supports stronger isolation.
 
-**Rationale:** iOS process restrictions should not dictate the maximum security posture of Android, Linux, macOS, or Windows. The design must therefore remain secure when co-located, while also allowing defense-in-depth through isolated workers on platforms that support them.
+**Design principle:** The previous Mesh Infinity architecture treated iOS as the ceiling — because iOS could not support a capability, no platform was permitted to use it. That constraint is rejected. The current model is: Mesh Infinity must be secure on iOS *and* maximally secure on every other platform, sharing as much cross-platform Rust code as possible, but building to the richest security context each platform permits. iOS operates under its own restrictions. Other platforms do not inherit those restrictions.
 
 **Normative consequence:** Any architecture that requires a persistent third-party helper, localhost control socket, sidecar daemon, companion app, or external CLI to provide core Mesh Infinity behavior is non-compliant. Internal subsystems may communicate across a narrow internal ABI when Mesh Infinity itself launches and controls both sides. That ABI must be capability-minimal, fail closed, and preserve the same authority limits in both isolated and co-located deployment.
 
-**Deployment modes:** On restrictive platforms such as iOS, subsystems may be co-located in one process. On platforms with better isolation facilities, risky subsystems should prefer isolated worker processes. The security model must not change between those modes; only the amount of hardening changes.
+#### 17.1.1 Platform Process Isolation Matrix
+
+| Platform | Isolation model | Normative rule |
+|---|---|---|
+| Android | Expanded | Risky subsystems **must** prefer OS-level isolated worker processes |
+| Linux | Expanded | Risky subsystems **must** prefer OS-level isolated worker processes |
+| macOS | Expanded | Risky subsystems **must** prefer OS-level isolated worker processes |
+| Windows | Expanded | Risky subsystems **must** prefer OS-level isolated worker processes |
+| iOS / iPadOS | Baseline | Multiprocess workers unavailable — in-process logical isolation only |
+
+#### 17.1.2 iOS Baseline Architecture
+
+iOS and iPadOS run the **baseline architecture**: single-process, Rust backend and Flutter UI co-located in one OS process, subsystem boundaries enforced at the Rust module level only. This is the architecture Mesh Infinity was originally built around and it remains fully correct and secure within iOS's constraints.
+
+The baseline is the floor, not a degraded mode. Every capability limit, authority check, and fail-closed rule applies equally. iOS subsystems must not gain broader access merely because they are co-located — the narrow internal ABI is the enforcement mechanism, not the OS process boundary.
+
+#### 17.1.3 Expanded Platform Security Context
+
+On Android, Linux, macOS, and Windows, Mesh Infinity deploys a richer security context built on top of the baseline. Risky, untrusted, or externally-facing subsystems must be launched as isolated worker processes that Mesh Infinity itself spawns and controls. The worker communicates through the same capability-minimal internal ABI as the baseline co-located case; the OS process boundary provides additional hardening — a compromised worker cannot directly read the main process's memory, keys, or transport authority.
+
+The expanded model is additive. Baseline design constraints (narrow ABI, capability limits, fail-closed) are prerequisites, not alternatives. A subsystem that is not safe in-process is not safe in a worker either.
 
 ### 17.2 Self/Mask Identity Model
 
@@ -11436,6 +11458,41 @@ See §4.1.3 for the full bootstrap integrity model. Summary:
 - Pinned public key prevents substitution attacks
 - Cross-validation against trusted-peer map after first pairing detects poisoned bootstrap maps
 - Users who configure a bootstrap node explicitly accept Level-0 trust for that node
+
+### 17.16 Clientless Build Profile
+
+A first-class build profile that compiles the full Rust backend but replaces the Flutter client UI with a minimal native shell. The resulting node is not second-class: it holds a full mesh identity, participates in routing and forwarding, supports all transports, and runs all enabled modules. The difference is deployment intent — infrastructure over end-user interaction.
+
+**Shell per platform:**
+
+| Platform | Shell |
+|---|---|
+| Android | APK with adaptive minimal UI + foreground service notification |
+| Linux / macOS / Windows | System tray icon + adaptive settings popover |
+| Headless Linux / BSD / OpenWrt | No shell — WebUI and mesh control plane only |
+
+The shell UI is adaptive: the same layout serves Android touch and desktop pointer/keyboard without separate implementations.
+
+**Shell UI contents — bootstrap config only:**
+
+The shell is not a management interface. It exposes the minimum set of configuration file primitives needed to make the WebUI reachable in the first place. All further administration happens inside the WebUI.
+
+| Element | Type | Purpose |
+|---|---|---|
+| WebUI address | Read-only display | Shows the current `https://host:port` so the operator knows where to connect |
+| HTTPS port | Number input | Changes the port the WebUI listens on |
+| WebUI accessibility | Toggle | **Localhost only** ↔ **Network-accessible** — the most critical control; a freshly deployed node defaults to localhost-only, and this toggle is how the operator unlocks remote access before the WebUI itself is reachable |
+| Open WebUI | Button | Opens the displayed address in the system browser |
+
+Additional basic config file fields (node name, start-on-boot) may be surfaced in the shell following the same pattern: toggle or plain text input only, no derived state, no management logic.
+
+**Control surface:** The §17.12 Node Management Interface (local HTTPS WebUI + mesh control plane) is the primary and complete management interface for all clientless deployments. The shell is a launcher, status indicator, and bootstrap config surface — nothing more.
+
+**Runtime mode:** Clientless nodes always start in Server mode. There is no UI to toggle this.
+
+**Build relationship:** One codebase. Official primary-platform full-client binaries (Android APK, iOS, Linux desktop, macOS, Windows) and official clientless binaries are built from the same Rust backend. A supported platform can target either profile — a Linux machine can be a full client or a dedicated infrastructure node depending on which binary is deployed. Clientless is a supported deployment of the same software serving a different role, not a community port or reduced build.
+
+**Target hardware:** Old Android phones used as dedicated nodes, Raspberry Pi and SBCs, repurposed desktops and laptops, OpenWrt routers, pfSense/OPNsense appliances, any Linux/BSD host where Rust cross-compiles.
 
 ---
 
