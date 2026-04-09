@@ -978,7 +978,7 @@ mod tests {
         // We fabricate a frame with USB_SERIAL_MAX_FRAME + 1 non-special bytes.
         let mut frame = Vec::with_capacity(USB_SERIAL_MAX_FRAME + 3);
         frame.push(SLIP_END);
-        frame.extend(std::iter::repeat(0x41u8).take(USB_SERIAL_MAX_FRAME + 1));
+        frame.extend(std::iter::repeat_n(0x41u8, USB_SERIAL_MAX_FRAME + 1));
         frame.push(SLIP_END);
         assert!(
             slip_decode(&frame).is_none(),

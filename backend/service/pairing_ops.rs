@@ -1400,7 +1400,7 @@ impl MeshRuntime {
 
         // Register the connection for reuse.
         let peer_id_hex_clone = peer_id_hex.clone();
-        if let Ok(_) = stream.set_nonblocking(true) {
+        if stream.set_nonblocking(true).is_ok() {
             self.clearnet_connections
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

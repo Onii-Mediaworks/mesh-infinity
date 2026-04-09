@@ -547,6 +547,12 @@ pub struct DeliveredMessageCache {
     rooms: std::collections::HashMap<String, LruCache<String, ()>>,
 }
 
+impl Default for DeliveredMessageCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DeliveredMessageCache {
     /// Create a new, empty deduplication cache.
     ///

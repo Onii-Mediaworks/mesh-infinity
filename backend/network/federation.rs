@@ -1386,7 +1386,7 @@ mod tests {
         // Text should be preserved verbatim.
         assert_eq!(json["text"].as_str().expect("text"), "Hello from Matrix!");
         // The bridged flag must be true for the audit log.
-        assert_eq!(json["bridged"].as_bool().expect("bridged"), true);
+        assert!(json["bridged"].as_bool().expect("bridged"));
         // Timestamp should be the original value.
         assert_eq!(json["timestamp"].as_u64().expect("timestamp"), 1700000000);
         // Attachments should be an empty array.

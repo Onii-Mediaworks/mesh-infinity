@@ -1141,7 +1141,7 @@ mod tests {
         let engine = JitterEngine::new(10, 50);
         for _ in 0..1000 {
             let d = engine.next_delay_ms();
-            assert!(d >= 10 && d <= 60, "delay {d} out of [10, 60]");
+            assert!((10..=60).contains(&d), "delay {d} out of [10, 60]");
         }
     }
 
@@ -1150,7 +1150,7 @@ mod tests {
         let engine = JitterEngine::new_with_distribution(5, 100, JitterDistribution::Gaussian);
         for _ in 0..1000 {
             let d = engine.next_delay_ms();
-            assert!(d >= 5 && d <= 105, "gaussian delay {d} out of [5, 105]");
+            assert!((5..=105).contains(&d), "gaussian delay {d} out of [5, 105]");
         }
     }
 

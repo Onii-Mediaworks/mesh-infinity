@@ -410,11 +410,11 @@ impl AppConnectorConfig {
     /// # Parameters
     ///
     /// - `package`    — Android package name (or iOS bundle ID) of the app
-    ///                  that originated the packet.
+    ///   that originated the packet.
     /// - `dst_ip`     — destination IP parsed from the raw IP header.
     /// - `dst_port`   — destination port parsed from the TCP/UDP header.
     /// - `dst_domain` — optional domain name extracted from a DNS question or
-    ///                  SNI field; `None` when not available (most packets).
+    ///   SNI field; `None` when not available (most packets).
     pub fn evaluate_connection(
         &self,
         package: &str,

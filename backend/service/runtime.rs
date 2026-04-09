@@ -889,6 +889,7 @@ pub fn try_random_fill(dest: &mut [u8]) -> bool {
 ///
 /// Called whenever any transport flag, node mode, or threat context changes
 /// so Flutter's `SettingsState` receives an up-to-date snapshot.
+#[allow(clippy::too_many_arguments)] // Settings snapshot requires all transport/node fields
 pub fn build_settings_json(
     flags: &TransportFlags,
     node_mode: u8,

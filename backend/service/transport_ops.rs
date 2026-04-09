@@ -2658,6 +2658,7 @@ impl MeshRuntime {
     ///
     /// Used by `get_settings` and `emit_settings_updated`.  Factored out so
     /// it can be called without holding any locks.
+    #[allow(clippy::too_many_arguments)] // Settings snapshot requires all transport/node fields
     pub fn build_settings_json(
         flags: &TransportFlags,
         node_mode: u8,
@@ -3476,15 +3477,14 @@ impl MeshRuntime {
 
         // If the removed instance was the priority, clear it.  The routing solver
         // will fall back to the first connected instance automatically.
-        if removed {
-            if overlay
+        if removed
+            && overlay
                 .priority_tailnet_id
                 .as_deref()
                 .is_some_and(|p| p == instance_id)
             {
                 overlay.priority_tailnet_id = None;
             }
-        }
         drop(overlay);
         self.save_overlay_state();
         Ok(())
@@ -3827,8 +3827,7 @@ impl MeshRuntime {
                         "name":        n.name,
                         "assignedIp":  n.assigned_ip,
                         // One of: "authorized", "awaitingauthorization", "unauthorized".
-                        "authStatus":  format!("{:?}", n.auth_status).to_lowercase()
-                            .replace("awaitingauthorization", "awaitingauthorization"),
+                        "authStatus":  format!("{:?}", n.auth_status).to_lowercase(),
                         "memberCount": n.member_count,
                     })
                 }).collect();
@@ -3955,15 +3954,14 @@ impl MeshRuntime {
         let before = overlay.zeronets.len();
         overlay.zeronets.retain(|z| z.id != instance_id);
         let removed = overlay.zeronets.len() < before;
-        if removed {
-            if overlay
+        if removed
+            && overlay
                 .priority_zeronet_id
                 .as_deref()
                 .is_some_and(|p| p == instance_id)
             {
                 overlay.priority_zeronet_id = None;
             }
-        }
         drop(overlay);
         self.save_overlay_state();
         Ok(())

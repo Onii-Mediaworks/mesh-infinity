@@ -1033,7 +1033,7 @@ mod tests {
         )
         .unwrap();
         assert!(path.exists());
-        assert!(path.extension().map_or(false, |e| e == "mib"));
+        assert!(path.extension().is_some_and(|e| e == "mib"));
         // File must be parseable.
         let data = std::fs::read(&path).unwrap();
         parse_bundle(&data).expect("exported bundle must be valid");
@@ -1057,7 +1057,7 @@ mod tests {
 
         let found = scan_dir_for_bundles(dir.path());
         assert_eq!(found.len(), 1);
-        assert!(found[0].extension().map_or(false, |e| e == "mib"));
+        assert!(found[0].extension().is_some_and(|e| e == "mib"));
     }
 
     #[test]

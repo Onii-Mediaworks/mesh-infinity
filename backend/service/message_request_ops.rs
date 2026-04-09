@@ -155,9 +155,7 @@ impl MeshRuntime {
             Ok(k) => k,
             Err(_) => return false,
         };
-        let signature = match Signature::from_bytes(&sig_bytes) {
-            sig => sig,
-        };
+        let signature = Signature::from_bytes(&sig_bytes);
         let msg_id_bytes = match hex::decode(msg_id) {
             Ok(b) if b.len() == 16 => b,
             // Non-16-byte msg_id: fall back to raw UTF-8 bytes of the id string.

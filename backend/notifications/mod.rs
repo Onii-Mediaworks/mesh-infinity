@@ -863,8 +863,7 @@ mod tests {
 
     #[test]
     fn test_threat_suppression() {
-        let mut config = NotificationConfig::default();
-        config.tier = NotificationTier::RichPush;
+        let config = NotificationConfig { tier: NotificationTier::RichPush, ..Default::default() };
 
         // Not suppressed in Normal context.
         assert!(!config.is_suppressed_by_threat(ThreatContext::Normal));
@@ -886,15 +885,17 @@ mod tests {
 
     #[test]
     fn test_threat_suppression_with_unified_push() {
-        let mut config = NotificationConfig::default();
-        config.tier = NotificationTier::SilentPush;
-        config.push_relay = Some(PushRelayConfig {
-            relay_address: RelayAddress::UnifiedPush {
-                endpoint: "https://ntfy.example.com/topic".to_string(),
-            },
-            device_token: vec![0x01; 32],
-            platform: PushPlatform::UnifiedPush,
-        });
+        let config = NotificationConfig {
+            tier: NotificationTier::SilentPush,
+            push_relay: Some(PushRelayConfig {
+                relay_address: RelayAddress::UnifiedPush {
+                    endpoint: "https://ntfy.example.com/topic".to_string(),
+                },
+                device_token: vec![0x01; 32],
+                platform: PushPlatform::UnifiedPush,
+            }),
+            ..Default::default()
+        };
 
         // Falls back to UnifiedPush (Tier 2) when Elevated.
         assert_eq!(
@@ -986,8 +987,7 @@ mod tests {
 
     #[test]
     fn test_dispatcher_threat_suppression() {
-        let mut config = NotificationConfig::default();
-        config.tier = NotificationTier::RichPush;
+        let config = NotificationConfig { tier: NotificationTier::RichPush, ..Default::default() };
         let mut dispatcher = NotificationDispatcher::new(config);
         dispatcher.set_threat_context(ThreatContext::Critical);
 
@@ -1009,15 +1009,17 @@ mod tests {
     /// under threat suppression — it should fall all the way back to MeshTunnel.
     #[test]
     fn test_threat_suppression_mesh_service_relay_falls_to_tier1() {
-        let mut config = NotificationConfig::default();
-        config.tier = NotificationTier::SilentPush;
-        config.push_relay = Some(PushRelayConfig {
-            relay_address: RelayAddress::MeshService {
-                service_id: [0x42; 16],
-            },
-            device_token: vec![0xAB; 32],
-            platform: PushPlatform::FCM,
-        });
+        let config = NotificationConfig {
+            tier: NotificationTier::SilentPush,
+            push_relay: Some(PushRelayConfig {
+                relay_address: RelayAddress::MeshService {
+                    service_id: [0x42; 16],
+                },
+                device_token: vec![0xAB; 32],
+                platform: PushPlatform::FCM,
+            }),
+            ..Default::default()
+        };
 
         // MeshService is not UnifiedPush — must fall back to MeshTunnel, not UnifiedPush.
         assert_eq!(
@@ -1034,15 +1036,17 @@ mod tests {
     /// A ClearnetUrl relay must also fall back to MeshTunnel under threat suppression.
     #[test]
     fn test_threat_suppression_clearnet_url_relay_falls_to_tier1() {
-        let mut config = NotificationConfig::default();
-        config.tier = NotificationTier::SilentPush;
-        config.push_relay = Some(PushRelayConfig {
-            relay_address: RelayAddress::ClearnetUrl {
-                url: "https://relay.example.com".into(),
-            },
-            device_token: vec![],
-            platform: PushPlatform::APNs,
-        });
+        let config = NotificationConfig {
+            tier: NotificationTier::SilentPush,
+            push_relay: Some(PushRelayConfig {
+                relay_address: RelayAddress::ClearnetUrl {
+                    url: "https://relay.example.com".into(),
+                },
+                device_token: vec![],
+                platform: PushPlatform::APNs,
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(
             config.effective_tier(ThreatContext::Elevated),

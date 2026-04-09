@@ -591,6 +591,16 @@ mod stub {
 #[cfg(target_os = "linux")]
 pub use linux::Layer2Transport;
 
+// Expose `try_decode_frame` for tests on Linux (it is `fn`, so we cannot
+// use `#[cfg(test)]` on the method itself without duplicating it).  We add
+// a thin test-only wrapper here rather than making the real method `pub`.
+#[cfg(all(target_os = "linux", test))]
+impl linux::Layer2Transport {
+    pub fn try_decode_frame_pub(raw: &[u8]) -> Option<Layer2Frame> {
+        Self::try_decode_frame(raw)
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 pub use stub::Layer2Transport;
 
@@ -822,15 +832,5 @@ mod tests {
         assert_eq!(frame.payload.as_slice(), &inner_payload[..]);
         assert!(frame.dst_mac.is_broadcast());
         assert_eq!(frame.src_mac.to_string(), "aa:bb:cc:dd:ee:ff");
-    }
-}
-
-// Expose `try_decode_frame` for tests on Linux (it is `fn`, so we cannot
-// use `#[cfg(test)]` on the method itself without duplicating it).  We add
-// a thin test-only wrapper here rather than making the real method `pub`.
-#[cfg(all(target_os = "linux", test))]
-impl linux::Layer2Transport {
-    pub fn try_decode_frame_pub(raw: &[u8]) -> Option<Layer2Frame> {
-        Self::try_decode_frame(raw)
     }
 }

@@ -1234,6 +1234,12 @@ pub struct PluginRegistry {
     hooks: HashMap<String, Vec<[u8; 16]>>,
 }
 
+impl Default for PluginRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PluginRegistry {
     /// Create a new, empty plugin registry.
     ///
@@ -1548,9 +1554,9 @@ impl PluginRegistry {
     /// 2. **WASM execution** — `PluginSandbox::run_hook()` is called with:
     ///    - A clone of the plugin's permissions (captured in the Store)
     ///    - The hook name and serialized JSON input
-    ///    The sandbox creates a fresh wasmtime `Store`, sets the epoch deadline
-    ///    to `MAX_CPU_PER_CALLBACK_MS` ticks, instantiates the module, and calls
-    ///    `hook_dispatch(hook_name_ptr, hook_name_len, input_ptr, input_len) -> i64`.
+    ///      The sandbox creates a fresh wasmtime `Store`, sets the epoch deadline
+    ///      to `MAX_CPU_PER_CALLBACK_MS` ticks, instantiates the module, and calls
+    ///      `hook_dispatch(hook_name_ptr, hook_name_len, input_ptr, input_len) -> i64`.
     ///
     /// 3. **Timeout handling** — if the plugin's epoch deadline is exceeded,
     ///    the sandbox increments `timeout_count`. When `timeout_count` reaches
@@ -1676,7 +1682,7 @@ impl PluginRegistry {
                         // Suspend the plugin; the user will see a notification in the UI.
                         tracing::warn!(
                             "auto-suspending plugin {:?}: {} consecutive timeouts",
-                            hex::encode(&pid),
+                            hex::encode(pid),
                             timeout_count
                         );
                         // Suspend via the registry; future invocations will skip it.
@@ -1686,7 +1692,7 @@ impl PluginRegistry {
                         // Three consecutive crashes — move to Failed/quarantine state.
                         tracing::error!(
                             "quarantining plugin {:?}: {} consecutive crashes",
-                            hex::encode(&pid),
+                            hex::encode(pid),
                             crash_count
                         );
                         // Mark as Failed so the UI shows the quarantine badge.

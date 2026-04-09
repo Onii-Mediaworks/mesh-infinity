@@ -48,17 +48,11 @@ impl MeshRuntime {
 
         // ---- Receive: drain all pending packets (non-blocking). ----
         let mut buf = [0u8; 1024];
-        loop {
-            match socket.recv_from(&mut buf) {
-                Ok((len, src_addr)) => {
-                    // Process each packet; ignore errors (malformed packets are
-                    // simply dropped — an attacker cannot cause a crash).
-                    let _ = self.handle_lan_presence_packet(&buf[..len], src_addr);
-                }
-                // WouldBlock means the socket is drained; any other error is also
-                // non-fatal since presence packets are best-effort.
-                Err(_) => break,
-            }
+        while let Ok((len, src_addr)) = socket.recv_from(&mut buf) {
+            // Process each packet; ignore errors (malformed packets are
+            // simply dropped — an attacker cannot cause a crash).
+            let _ = self.handle_lan_presence_packet(&buf[..len], src_addr);
+            // WouldBlock or any other error exits the while-let naturally.
         }
 
         // ---- Send: broadcast our presence every 5 seconds. ----

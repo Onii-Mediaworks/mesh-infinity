@@ -499,7 +499,7 @@ mod tests {
             .chars()
             .all(|c| c.is_ascii_digit() || c == ' ' || c == '\n'));
         // Should have groups of 5
-        let groups: Vec<&str> = numeric.split(|c: char| c == ' ' || c == '\n').collect();
+        let groups: Vec<&str> = numeric.split([' ', '\n']).collect();
         for g in &groups {
             assert_eq!(g.len(), 5, "Each group should be 5 digits: {}", g);
         }

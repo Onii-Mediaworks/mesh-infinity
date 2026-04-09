@@ -377,6 +377,7 @@ fn android_wifi_direct_adapter_state() -> &'static Mutex<AndroidWifiDirectAdapte
 }
 
 /// Update the backend-owned Android Wi-Fi Direct adapter snapshot.
+#[allow(clippy::too_many_arguments)] // All params are distinct adapter state fields; no sensible grouping
 pub fn update_android_adapter_state(
     available: bool,
     enabled: bool,

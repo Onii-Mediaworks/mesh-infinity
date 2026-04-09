@@ -502,7 +502,7 @@ mod tests {
         let src = ZtNodeId::from_ed25519(&test_pubkey());
         let pkt = ZtPacket::hello(src, 1234567890, &test_pubkey());
         // Verb is at byte 34 (after dest(8) + src(8) + packet_id(8) + flags(1) + cipher(1) + mac(8)).
-        assert_eq!(pkt.len() > 34, true);
+        assert!(pkt.len() > 34);
         assert_eq!(pkt[34], ZT_VERB_HELLO);
     }
 

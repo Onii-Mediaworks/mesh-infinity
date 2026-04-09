@@ -155,6 +155,7 @@ impl MeshRuntime {
         Some(ring)
     }
 
+    #[allow(clippy::too_many_arguments)] // All params are distinct message metadata fields
     fn persist_room_message(
         &self,
         room_id_hex: &str,
@@ -2772,200 +2773,6 @@ impl MeshRuntime {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::crypto::ring_sig::ring_sign;
-    use crate::crypto::sender_keys::SenderKey;
-    use crate::groups::group::{Group, GroupKeys, GroupPublicProfile, NetworkType};
-    use crate::pairing::contact::{ContactRecord, ContactStore};
-    use crate::pairing::methods::PairingMethod;
-    use crate::service::runtime::MeshRuntime;
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_private_group_message_sk_hides_sender_in_outer_frame() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut runtime = MeshRuntime::new(temp_dir.path().to_string_lossy().into_owned());
-        {
-            let mut flags = runtime
-                .transport_flags
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            flags.clearnet = false;
-            flags.mesh_discovery = false;
-        }
-        runtime
-            .create_identity(Some("Recipient".to_string()))
-            .unwrap();
-
-        let (recipient_peer_id, recipient_ed25519_pub) = {
-            let guard = runtime
-                .identity
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let identity = guard.as_ref().unwrap();
-            (identity.peer_id(), identity.ed25519_pub)
-        };
-        let sender_identity =
-            crate::identity::self_identity::SelfIdentity::generate(Some("Sender".to_string()));
-
-        let mut contacts = ContactStore::new();
-        contacts.upsert(ContactRecord::new(
-            sender_identity.peer_id(),
-            sender_identity.ed25519_pub,
-            sender_identity.x25519_pub.to_bytes(),
-            PairingMethod::QrCode,
-            1,
-        ));
-        *runtime
-            .contacts
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = contacts;
-
-        let group_id = [0x33; 32];
-        let symmetric_key = [0x44; 32];
-        let members = vec![sender_identity.peer_id(), recipient_peer_id];
-        let group = Group::new_as_member(
-            group_id,
-            GroupPublicProfile {
-                group_id,
-                display_name: "Secret Group".to_string(),
-                description: String::new(),
-                avatar_hash: None,
-                network_type: NetworkType::Private,
-                member_count: None,
-                created_at: 1,
-                signed_by: sender_identity.peer_id().0,
-                signature: vec![],
-            },
-            GroupKeys {
-                ed25519_public: [0x55; 32],
-                ed25519_private: None,
-                x25519_public: [0x66; 32],
-                symmetric_key,
-            },
-            recipient_peer_id,
-            (members.clone(), vec![sender_identity.peer_id()]),
-            1,
-            1,
-        );
-        runtime
-            .groups
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(group);
-
-        let room = Room::new_group("Secret Group", members.clone());
-        let room_id_hex = hex::encode(room.id);
-        runtime
-            .rooms
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(room);
-
-        let sender_key = SenderKey::generate();
-        let sender_key_chain = *sender_key.chain_key_bytes();
-        let sender_key_signing_key = sender_key.signing_key_bytes();
-        let sender_key_seed = GroupSenderKeySeedWire {
-            chain_key: hex::encode(sender_key_chain),
-            iteration: sender_key.iteration,
-            verifying_key: hex::encode(sender_key.verifying_key().to_bytes()),
-        };
-        let sender_sig_message = build_group_inner_signature_message(
-            &group_id,
-            &room_id_hex,
-            "msg-1",
-            "hidden sender message",
-            100,
-            &sender_identity.peer_id().0,
-        );
-        let sender_sig = sender_identity.ed25519_signing.sign(&sender_sig_message);
-        let plaintext = GroupMessageSkWire {
-            iteration: 0,
-            ciphertext: String::new(),
-            signature: String::new(),
-            sender_key_seed: sender_key_seed.clone(),
-            sender: sender_identity.peer_id().to_hex(),
-            room_id: room_id_hex.clone(),
-            msg_id: "msg-1".to_string(),
-            text: "hidden sender message".to_string(),
-            timestamp: 100,
-            sender_sig: hex::encode(sender_sig.to_bytes()),
-        };
-        let plaintext_bytes = serde_json::to_vec(&plaintext).unwrap();
-        let mut sender_key = SenderKey::from_parts(
-            sender_key_chain,
-            sender_key_seed.iteration,
-            &sender_key_signing_key,
-        )
-        .unwrap();
-        let sender_key_message = sender_key.encrypt(&plaintext_bytes).unwrap();
-
-        let wrapped_inner = serde_json::json!({
-            "iteration": sender_key_message.iteration,
-            "ciphertext": hex::encode(&sender_key_message.ciphertext),
-            "signature": hex::encode(&sender_key_message.signature),
-            "sender_key_seed": sender_key_seed,
-        });
-        let wrapped_inner_bytes = serde_json::to_vec(&wrapped_inner).unwrap();
-        let nonce_bytes = [0x77; 12];
-        let symmetric_cipher = ChaCha20Poly1305::new_from_slice(&symmetric_key).unwrap();
-        let wrapped = symmetric_cipher
-            .encrypt(
-                chacha20poly1305::Nonce::from_slice(&nonce_bytes),
-                wrapped_inner_bytes.as_ref(),
-            )
-            .unwrap();
-        let ring = vec![sender_identity.ed25519_pub, recipient_ed25519_pub];
-        let ring_message = build_group_ring_signature_message(&group_id, 1, &nonce_bytes, &wrapped);
-        let ring_sig = ring_sign(
-            &sender_identity.ed25519_signing.to_bytes(),
-            &ring,
-            &ring_message,
-        )
-        .unwrap();
-
-        let frame = serde_json::json!({
-            "type": "group_message_sk",
-            "groupId": hex::encode(group_id),
-            "epoch": 1,
-            "nonce": hex::encode(nonce_bytes),
-            "wrapped": hex::encode(&wrapped),
-            "ring_sig": ring_sig,
-        });
-
-        assert!(frame.get("sender").is_none());
-        assert!(runtime.process_group_message_sk_frame(&frame));
-
-        let stored_messages = runtime
-            .messages
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let room_messages = stored_messages.get(&room_id_hex).unwrap();
-        assert_eq!(room_messages.len(), 1);
-        assert_eq!(
-            room_messages[0]["sender"],
-            sender_identity.peer_id().to_hex()
-        );
-        assert_eq!(room_messages[0]["authStatus"], "authenticated");
-        drop(stored_messages);
-
-        let groups = runtime
-            .groups
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let stored_group = groups
-            .iter()
-            .find(|group| group.group_id == group_id)
-            .unwrap();
-        assert!(stored_group
-            .peer_sender_keys
-            .contains_key(&sender_identity.peer_id().0));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Room and message management operations
 // ---------------------------------------------------------------------------
@@ -3814,5 +3621,199 @@ impl crate::service::runtime::MeshRuntime {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::ring_sig::ring_sign;
+    use crate::crypto::sender_keys::SenderKey;
+    use crate::groups::group::{Group, GroupKeys, GroupPublicProfile, NetworkType};
+    use crate::pairing::contact::{ContactRecord, ContactStore};
+    use crate::pairing::methods::PairingMethod;
+    use crate::service::runtime::MeshRuntime;
+    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit};
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_private_group_message_sk_hides_sender_in_outer_frame() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut runtime = MeshRuntime::new(temp_dir.path().to_string_lossy().into_owned());
+        {
+            let mut flags = runtime
+                .transport_flags
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            flags.clearnet = false;
+            flags.mesh_discovery = false;
+        }
+        runtime
+            .create_identity(Some("Recipient".to_string()))
+            .unwrap();
+
+        let (recipient_peer_id, recipient_ed25519_pub) = {
+            let guard = runtime
+                .identity
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let identity = guard.as_ref().unwrap();
+            (identity.peer_id(), identity.ed25519_pub)
+        };
+        let sender_identity =
+            crate::identity::self_identity::SelfIdentity::generate(Some("Sender".to_string()));
+
+        let mut contacts = ContactStore::new();
+        contacts.upsert(ContactRecord::new(
+            sender_identity.peer_id(),
+            sender_identity.ed25519_pub,
+            sender_identity.x25519_pub.to_bytes(),
+            PairingMethod::QrCode,
+            1,
+        ));
+        *runtime
+            .contacts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = contacts;
+
+        let group_id = [0x33; 32];
+        let symmetric_key = [0x44; 32];
+        let members = vec![sender_identity.peer_id(), recipient_peer_id];
+        let group = Group::new_as_member(
+            group_id,
+            GroupPublicProfile {
+                group_id,
+                display_name: "Secret Group".to_string(),
+                description: String::new(),
+                avatar_hash: None,
+                network_type: NetworkType::Private,
+                member_count: None,
+                created_at: 1,
+                signed_by: sender_identity.peer_id().0,
+                signature: vec![],
+            },
+            GroupKeys {
+                ed25519_public: [0x55; 32],
+                ed25519_private: None,
+                x25519_public: [0x66; 32],
+                symmetric_key,
+            },
+            recipient_peer_id,
+            (members.clone(), vec![sender_identity.peer_id()]),
+            1,
+            1,
+        );
+        runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(group);
+
+        let room = Room::new_group("Secret Group", members.clone());
+        let room_id_hex = hex::encode(room.id);
+        runtime
+            .rooms
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(room);
+
+        let sender_key = SenderKey::generate();
+        let sender_key_chain = *sender_key.chain_key_bytes();
+        let sender_key_signing_key = sender_key.signing_key_bytes();
+        let sender_key_seed = GroupSenderKeySeedWire {
+            chain_key: hex::encode(sender_key_chain),
+            iteration: sender_key.iteration,
+            verifying_key: hex::encode(sender_key.verifying_key().to_bytes()),
+        };
+        let sender_sig_message = build_group_inner_signature_message(
+            &group_id,
+            &room_id_hex,
+            "msg-1",
+            "hidden sender message",
+            100,
+            &sender_identity.peer_id().0,
+        );
+        let sender_sig = sender_identity.ed25519_signing.sign(&sender_sig_message);
+        let plaintext = GroupMessageSkWire {
+            iteration: 0,
+            ciphertext: String::new(),
+            signature: String::new(),
+            sender_key_seed: sender_key_seed.clone(),
+            sender: sender_identity.peer_id().to_hex(),
+            room_id: room_id_hex.clone(),
+            msg_id: "msg-1".to_string(),
+            text: "hidden sender message".to_string(),
+            timestamp: 100,
+            sender_sig: hex::encode(sender_sig.to_bytes()),
+        };
+        let plaintext_bytes = serde_json::to_vec(&plaintext).unwrap();
+        let mut sender_key = SenderKey::from_parts(
+            sender_key_chain,
+            sender_key_seed.iteration,
+            &sender_key_signing_key,
+        )
+        .unwrap();
+        let sender_key_message = sender_key.encrypt(&plaintext_bytes).unwrap();
+
+        let wrapped_inner = serde_json::json!({
+            "iteration": sender_key_message.iteration,
+            "ciphertext": hex::encode(&sender_key_message.ciphertext),
+            "signature": hex::encode(&sender_key_message.signature),
+            "sender_key_seed": sender_key_seed,
+        });
+        let wrapped_inner_bytes = serde_json::to_vec(&wrapped_inner).unwrap();
+        let nonce_bytes = [0x77; 12];
+        let symmetric_cipher = ChaCha20Poly1305::new_from_slice(&symmetric_key).unwrap();
+        let wrapped = symmetric_cipher
+            .encrypt(
+                chacha20poly1305::Nonce::from_slice(&nonce_bytes),
+                wrapped_inner_bytes.as_ref(),
+            )
+            .unwrap();
+        let ring = vec![sender_identity.ed25519_pub, recipient_ed25519_pub];
+        let ring_message = build_group_ring_signature_message(&group_id, 1, &nonce_bytes, &wrapped);
+        let ring_sig = ring_sign(
+            &sender_identity.ed25519_signing.to_bytes(),
+            &ring,
+            &ring_message,
+        )
+        .unwrap();
+
+        let frame = serde_json::json!({
+            "type": "group_message_sk",
+            "groupId": hex::encode(group_id),
+            "epoch": 1,
+            "nonce": hex::encode(nonce_bytes),
+            "wrapped": hex::encode(&wrapped),
+            "ring_sig": ring_sig,
+        });
+
+        assert!(frame.get("sender").is_none());
+        assert!(runtime.process_group_message_sk_frame(&frame));
+
+        let stored_messages = runtime
+            .messages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let room_messages = stored_messages.get(&room_id_hex).unwrap();
+        assert_eq!(room_messages.len(), 1);
+        assert_eq!(
+            room_messages[0]["sender"],
+            sender_identity.peer_id().to_hex()
+        );
+        assert_eq!(room_messages[0]["authStatus"], "authenticated");
+        drop(stored_messages);
+
+        let groups = runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let stored_group = groups
+            .iter()
+            .find(|group| group.group_id == group_id)
+            .unwrap();
+        assert!(stored_group
+            .peer_sender_keys
+            .contains_key(&sender_identity.peer_id().0));
     }
 }

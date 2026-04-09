@@ -3443,7 +3443,7 @@ pub unsafe extern "C" fn mi_nfc_push_inbound_frame(
 /// * `ctx`    — non-null `MeshContext` pointer.
 /// * `buf`    — caller-allocated buffer to receive the frame bytes.
 /// * `buf_len`— size of `buf` in bytes.  Must be at least `NFC_MAX_FRAME_BYTES`
-///              (244) to guarantee all queued frames can be popped.
+///   (244) to guarantee all queued frames can be popped.
 ///
 /// # Return value
 ///
@@ -4818,14 +4818,14 @@ pub unsafe extern "C" fn mi_set_app_connector_config(
 ///
 /// - `ctx`           — non-null opaque context handle from `mesh_init`.
 /// - `package_ptr`   — NUL-terminated UTF-8 Android package name (e.g.
-///                     `"com.example.browser"`).  Must not be null.
+///   `"com.example.browser"`).  Must not be null.
 /// - `dst_ip_ptr`    — NUL-terminated IP address string in dotted-decimal
-///                     (IPv4) or colon-hex (IPv6) notation.  Must not be null.
+///   (IPv4) or colon-hex (IPv6) notation.  Must not be null.
 /// - `dst_port`      — destination port as a C int (0–65535).  Values outside
-///                     that range are clamped to `u16::MAX`.
+///   that range are clamped to `u16::MAX`.
 /// - `dst_domain_ptr`— optional NUL-terminated domain name (e.g.
-///                     `"sub.example.com"`).  Pass null when no domain is
-///                     available (most non-DNS packets).
+///   `"sub.example.com"`).  Pass null when no domain is
+///   available (most non-DNS packets).
 ///
 /// # Safety
 ///

@@ -220,7 +220,6 @@ jobs:
       # of how many iterations it has completed.
       - name: fuzz smoke — fuzz_nfc_ndef (30s)
         run: cargo +nightly fuzz run fuzz_nfc_ndef -- -max_total_time=30
-        working-directory: fuzz
 
       # ── Fuzz target 2: Pairing payload parser ────────────────────────────
       #
@@ -228,7 +227,6 @@ jobs:
       # 30 seconds.
       - name: fuzz smoke — fuzz_pairing_payload (30s)
         run: cargo +nightly fuzz run fuzz_pairing_payload -- -max_total_time=30
-        working-directory: fuzz
 
       # ── Fuzz target 3: MeshPacket frame parser ───────────────────────────
       #
@@ -236,4 +234,3 @@ jobs:
       # 30 seconds.
       - name: fuzz smoke — fuzz_message_frame (30s)
         run: cargo +nightly fuzz run fuzz_message_frame -- -max_total_time=30
-        working-directory: fuzz

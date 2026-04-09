@@ -1522,6 +1522,7 @@ pub fn cycle_v6_for_member(
 // Errors are propagated to the caller via Result.
 // Perform the 'evaluate acl' operation.
 // Errors are propagated to the caller via Result.
+#[allow(clippy::too_many_arguments)] // ACL evaluation inherently requires many packet-header fields
 pub fn evaluate_acl(
     // Process the current step in the protocol.
     // Execute this protocol step.

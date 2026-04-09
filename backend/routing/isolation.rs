@@ -437,8 +437,7 @@ mod tests {
 
     #[test]
     fn test_add_allowed_peer_idempotent() {
-        let mut config = NetworkIsolationConfig::default();
-        config.enabled = true;
+        let mut config = NetworkIsolationConfig { enabled: true, ..Default::default() };
 
         config.add_allowed_peer(addr(0xAA));
         config.add_allowed_peer(addr(0xAA)); // Duplicate — should be ignored.

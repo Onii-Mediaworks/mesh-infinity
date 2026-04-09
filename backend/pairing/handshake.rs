@@ -50,8 +50,8 @@ use crate::identity::peer_id::PeerId;
 /// proof message) before deserialization. Handshake messages are small
 /// (challenge: 32-byte nonce + PeerId + timestamp; proof: 32-byte nonce
 /// + 64-byte signature + PeerId + optional 32-byte counter-challenge).
-/// 4 KiB is generous and prevents multi-GB OOM attacks from malicious
-/// peers sending oversized payloads.
+///   4 KiB is generous and prevents multi-GB OOM attacks from malicious
+///   peers sending oversized payloads.
 pub const MAX_HANDSHAKE_FRAME_SIZE: usize = 4096;
 
 /// Maximum number of pairing handshake attempts allowed per IP address
@@ -1117,6 +1117,12 @@ pub struct PairingRateLimiter {
     /// The window starts when the first attempt from that IP is recorded.
     /// After `RATE_LIMIT_WINDOW_SECS` seconds, the entry is reset.
     entries: HashMap<IpAddr, (u32, Instant)>,
+}
+
+impl Default for PairingRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PairingRateLimiter {

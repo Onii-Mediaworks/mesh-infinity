@@ -427,8 +427,8 @@ pub fn dequeue_android_outbound_frame() -> Option<Vec<u8>> {
 /// # Arguments
 ///
 /// * `buf` — mutable byte slice provided by the caller.  If the next queued
-///            frame fits within `buf.len()`, its bytes are copied into `buf`
-///            and the function returns the frame length.
+///   frame fits within `buf.len()`, its bytes are copied into `buf`
+///   and the function returns the frame length.
 ///
 /// # Return value
 ///

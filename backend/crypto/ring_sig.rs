@@ -174,7 +174,7 @@ fn secret_to_public_point(secret_key: &[u8; 32]) -> (Scalar, EdwardsPoint) {
     let scalar = Scalar::from_bytes_mod_order(scalar_bytes);
 
     // Compute the public key point: P = scalar * G.
-    let public_point = &*ED25519_BASEPOINT_TABLE * &scalar;
+    let public_point = ED25519_BASEPOINT_TABLE * &scalar;
 
     (scalar, public_point)
 }
@@ -266,7 +266,7 @@ pub fn ring_sign(
     let alpha = Scalar::random(&mut rand_core::OsRng);
 
     // L_s = alpha * G  (left commitment at signer's position)
-    let l_signer = &*ED25519_BASEPOINT_TABLE * &alpha;
+    let l_signer = ED25519_BASEPOINT_TABLE * &alpha;
 
     // --- Initialize challenge and response arrays ---------------------------
     let mut c_scalars: Vec<Scalar> = vec![Scalar::ZERO; n];
@@ -292,7 +292,7 @@ pub fn ring_sign(
         // This is the verification equation for position i.
         // We know both r_i (we just chose it) and c_i (computed from the
         // previous position's hash), so we can compute L_i directly.
-        let l_i = &*ED25519_BASEPOINT_TABLE * &r_i + c_scalars[current] * ring_points[current];
+        let l_i = ED25519_BASEPOINT_TABLE * &r_i + c_scalars[current] * ring_points[current];
 
         // Derive the challenge for the next position from this position's commitments.
         let next = (current + 1) % n;
@@ -374,6 +374,7 @@ pub fn ring_verify(ring: &[[u8; 32]], message: &[u8], signature: &RingSignature)
 
     let mut current_c = c_0;
 
+    #[allow(clippy::needless_range_loop)] // i indexes multiple arrays (r, c, ring_points)
     for i in 0..n {
         // Parse the response scalar for this position.
         let r_i = Scalar::from_bytes_mod_order(signature.r[i]);
@@ -389,7 +390,7 @@ pub fn ring_verify(ring: &[[u8; 32]], message: &[u8], signature: &RingSignature)
         }
 
         // Reconstruct L_i = r_i * G + c_i * P_i
-        let l_i = &*ED25519_BASEPOINT_TABLE * &r_i + current_c * ring_points[i];
+        let l_i = ED25519_BASEPOINT_TABLE * &r_i + current_c * ring_points[i];
 
         // Compute the next challenge from this position's commitments.
         current_c = challenge_hash(message, &l_i);
@@ -503,6 +504,7 @@ mod tests {
         let (secrets, publics) = generate_ring(5);
         let message = b"test all positions";
 
+        #[allow(clippy::needless_range_loop)] // i indexes both secrets and publics
         for i in 0..5 {
             let sig = ring_sign(&secrets[i], &publics, message)
                 .unwrap_or_else(|e| panic!("signing failed at position {}: {}", i, e));

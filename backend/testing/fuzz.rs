@@ -580,7 +580,7 @@ mod tests {
             data.push('{');
             data.push_str("\"a\":");
         }
-        data.push_str("1");
+        data.push('1');
         for _ in 0..128 {
             data.push('}');
         }

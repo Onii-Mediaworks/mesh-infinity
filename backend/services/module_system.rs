@@ -232,6 +232,6 @@ mod tests {
         let config = ModuleConfig::default();
         let json = serde_json::to_string(&config).unwrap();
         let recovered: ModuleConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(recovered.social.file_sharing, true);
+        assert!(recovered.social.file_sharing);
     }
 }

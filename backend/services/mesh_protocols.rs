@@ -1531,7 +1531,7 @@ pub fn create_content_session(
     } else {
         // Integer ceiling division: (total + chunk_size - 1) / chunk_size.
         // Handles the case where total_size is not evenly divisible.
-        ((total_size + chunk_size as u64 - 1) / chunk_size as u64) as usize
+        total_size.div_ceil(chunk_size as u64) as usize
     };
 
     // Initialize all chunks as unavailable (false). As chunks are received

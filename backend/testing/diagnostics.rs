@@ -455,11 +455,11 @@ fn collect_memory_usage() -> MemoryDiagnostic {
         let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
         let rss_bytes = parse_proc_status_kib(&status, "VmRSS").unwrap_or(0) * 1024;
         let vms_bytes = parse_proc_status_kib(&status, "VmSize").unwrap_or(0) * 1024;
-        return MemoryDiagnostic {
+        MemoryDiagnostic {
             rss_bytes,
             vms_bytes,
             allocation_count: 0,
-        };
+        }
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "android")))]

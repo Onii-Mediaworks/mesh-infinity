@@ -415,7 +415,7 @@ mod tests {
         };
         let json = serde_json::to_string(&caps).unwrap();
         let recovered: PeerCapabilities = serde_json::from_str(&json).unwrap();
-        assert_eq!(recovered.can_be_wrapper_node, true);
-        assert_eq!(recovered.can_be_exit_node, false);
+        assert!(recovered.can_be_wrapper_node);
+        assert!(!recovered.can_be_exit_node);
     }
 }

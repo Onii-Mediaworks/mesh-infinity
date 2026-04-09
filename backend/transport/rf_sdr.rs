@@ -1660,13 +1660,12 @@ mod tests {
 
     #[test]
     fn test_sdr_driver_capabilities() {
-        assert_eq!(
+        assert!(
             SdrDriverType::LoRaChip {
                 model: LoRaChipModel::Sx1276
             }
             .capabilities()
-            .has_lora_modem,
-            true
+            .has_lora_modem
         );
         assert_eq!(SdrDriverType::RtlSdr.capabilities().tx_channels, 0);
         assert_eq!(SdrDriverType::LimeSdr.capabilities().rx_channels, 2);

@@ -1536,7 +1536,7 @@ mod tests {
         );
         assert!(result.is_err(), "duplicate vote should be rejected");
         // Verify the error message mentions the duplicate.
-        let err_msg = result.err().expect("checked above").to_string();
+        let err_msg = result.expect_err("checked above").to_string();
         assert!(
             err_msg.contains("already cast"),
             "error should mention duplicate: {}",

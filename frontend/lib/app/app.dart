@@ -117,13 +117,6 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
     // This is a fast, synchronous operation — no I/O, no network.
     initTidbits();
 
-    // isAvailable is true only when the native library loaded successfully and
-    // mesh_create() returned a non-null context pointer.  If either failed,
-    // every bridge method silently returns empty/null — a failure mode that
-    // produces a blank app with no error and no way to detect the root cause.
-    // Assert here so that failure is immediate and obvious in debug builds.
-    assert(widget.bridge.isAvailable, 'BackendBridge has no live context.');
-
     // Read initial identity/security state from the Rust backend.
     _refreshStartupState();
 

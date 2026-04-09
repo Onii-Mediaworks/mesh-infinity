@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn sphinx_header_build_single_hop() {
         let mut rng = seeded_rng();
-        let secret = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let pubkey = X25519PublicKey::from(&secret);
         let addr = [0u8; 14];
         let result = sphinx_build_header(&[pubkey], &[addr], &mut rng);
@@ -887,7 +887,7 @@ mod tests {
         let mut rng = seeded_rng();
         let keys: Vec<X25519PublicKey> = (0..MAX_HOPS + 1)
             .map(|_| {
-                let s = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+                let s = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
                 X25519PublicKey::from(&s)
             })
             .collect();
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn sphinx_build_peel_round_trip_single_hop() {
         // Build a header for a single hop and verify peel recovers the routing info.
-        let node_secret = x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng);
+        let node_secret = x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng);
         let node_pubkey = X25519PublicKey::from(&node_secret);
         let node_privkey_bytes: [u8; 32] = node_secret.to_bytes();
 
@@ -923,10 +923,10 @@ mod tests {
         // Build a 3-hop header and verify each successive peel recovers the correct hop.
         let mut rng = seeded_rng();
         let secrets: Vec<x25519_dalek::StaticSecret> = (0..3)
-            .map(|_| x25519_dalek::StaticSecret::random_from_rng(&mut rand_core::OsRng))
+            .map(|_| x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng))
             .collect();
         let pubkeys: Vec<X25519PublicKey> =
-            secrets.iter().map(|s| X25519PublicKey::from(s)).collect();
+            secrets.iter().map(X25519PublicKey::from).collect();
         let addrs: Vec<[u8; 14]> = (0u8..3)
             .map(|i| {
                 let mut a = [0u8; 14];

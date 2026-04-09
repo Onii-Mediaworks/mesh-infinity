@@ -719,7 +719,7 @@ impl GardenRole {
     /// Returns the numeric privilege level for hierarchy comparisons.
     /// Higher values indicate more privilege: Owner(4) > Admin(3) > Moderator(2)
     /// > Member(1) > Guest(0). Used to enforce "cannot manage someone at or
-    /// above your own level" rules throughout the permission system.
+    /// > above your own level" rules throughout the permission system.
     fn privilege_level(self) -> u8 {
         // Map each role to a numeric level for comparison.
         // Owner is highest at 4; Guest is lowest at 0.
@@ -1109,7 +1109,7 @@ pub fn remove_member(
 /// Returns `MeshError::Internal` if:
 /// - The target member is the Owner (cannot change Owner's role).
 /// - The new_role is Owner (cannot promote to Owner).
-/// Returns `MeshError::NotFound` if the target peer is not a member.
+///   Returns `MeshError::NotFound` if the target peer is not a member.
 pub fn change_member_role(
     garden: &mut Garden,
     peer_id: &crate::identity::peer_id::PeerId,
@@ -1247,12 +1247,10 @@ mod tests {
     #[test]
     fn test_permission_count() {
         // Verify we have all 34 permissions.
-        let perms = vec![
-            Permission::ViewChannel,
+        let perms = [Permission::ViewChannel,
             Permission::SendMessages,
             Permission::Administrator,
-            Permission::MentionEveryone,
-        ];
+            Permission::MentionEveryone];
         assert_eq!(perms.len(), 4); // Spot check.
     }
 
