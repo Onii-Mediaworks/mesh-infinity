@@ -205,10 +205,13 @@
   - [17.10 Mesh-Delivered Updates](#1710-mesh-delivered-updates)
   - [17.11 Mesh DNS System](#1711-mesh-dns-system)
   - [17.12 Node Management Interface](#1712-node-management-interface)
+    - [17.12.1 Authentication](#17121-authentication)
+    - [17.12.2 Management API](#17122-management-api)
   - [17.13 Module System](#1713-module-system)
   - [17.14 Async Runtime Model](#1714-async-runtime-model)
   - [17.15 Bootstrap Protocol](#1715-bootstrap-protocol)
   - [17.16 Clientless Build Profile](#1716-clientless-build-profile)
+    - [17.16.1 Startup and Vault Unlock](#17161-startup-and-vault-unlock)
 - [18. Plugin System](#18-plugin-system)
   - [18.0 Plugin API Versioning](#180-plugin-api-versioning)
   - [18.1 Three Tiers of Building on Mesh Infinity](#181-three-tiers-of-building-on-mesh-infinity)
@@ -11076,7 +11079,7 @@ Server-mode nodes expose a management interface for node-level administration: p
 
 **Two access paths:**
 
-**Path 1 — Local HTTPS:** A web interface bound to `127.0.0.1` (configurable to a trusted subnet). Credential-authenticated. Available even when mesh connectivity is unavailable or being configured. Certificate is locally generated and added to the local trust store at setup (same model as the mesh proxy in §12.2.2). This is the primary interface for initial node setup and emergency administration.
+**Path 1 — Local HTTPS:** A web interface bound to `127.0.0.1` (configurable to a trusted subnet). Authentication is required on all endpoints except the health probe; see §17.12.1 for the full authentication model. Available even when mesh connectivity is unavailable or being configured. Certificate is locally generated and added to the local trust store at setup (same model as the mesh proxy in §12.2.2). This is the primary interface for initial node setup and emergency administration.
 
 **Path 2 — Mesh control plane:** Trusted admin mesh identities (specified in node configuration) can reach the management interface via a dedicated mesh service on the node management port block (§12.1.1, block 70). ACL-gated to the configured admin identity list. This enables remote node administration without requiring local network access.
 
@@ -11092,7 +11095,74 @@ Server-mode nodes expose a management interface for node-level administration: p
 | Updates | Pending update status, apply update |
 | Health | CPU/memory/bandwidth usage, tunnel count, S&F queue depth |
 
-**Security model:** The management interface is a privileged surface. Local HTTPS is protected by credentials (password or client certificate). Mesh access is protected by the mesh ACL and WireGuard authentication. No management action is possible without authentication on either path. The interface never exposes key material — it operates at the same FFI boundary level as the Flutter UI.
+**Security model:** The management interface is a privileged admin control surface. All endpoints require authentication except where noted. The interface never exposes key material — it operates at the same data boundary as the Flutter FFI layer: public keys and display-safe derived data only.
+
+---
+
+#### 17.12.1 Authentication
+
+**Supported authentication methods — one or more may be active per deployment:**
+
+| Method | Description | Use case |
+|---|---|---|
+| Username/password | Argon2id-hashed credentials stored in a dedicated admin credential collection in the node vault, available pre-identity-unlock. Multiple admin accounts supported. | Direct and small deployments |
+| Client certificate (mTLS) | The HTTPS listener requires a client certificate issued by a configured CA. The CA certificate is stored in node config. | Automated tooling, high-assurance deployments |
+| OAuth 2.0 / OIDC | The node acts as an OAuth 2.0 relying party and delegates authentication to an external identity provider. Authorization Code flow with PKCE only. The IdP URL, client ID, and client secret are stored in node config. | Enterprise SSO |
+| LDAP / Active Directory | The node binds to a configured LDAP or LDAPS server to verify credentials. Server URL, bind DN, and search base are stored in node config. | Enterprise directory authentication |
+
+Multiple methods may be active simultaneously. A request authenticated by any active method is accepted.
+
+**Session management:** Successful authentication issues a cryptographically random 256-bit session token transmitted as an `HttpOnly`, `Secure`, `SameSite=Strict` cookie. Sessions are stored server-side. Session lifetime is configurable; default 8 hours idle / 24 hours absolute. Sessions are invalidated on password change, account disable, or explicit logout. Maximum concurrent sessions per account is configurable; default 5. Exceeding the limit invalidates the oldest session.
+
+**Rate limiting and lockout:** Failed authentication attempts are counted per account. Rate limiting is applied before credential verification to prevent timing oracle attacks. After 5 failed attempts within a 15-minute window the account enters a 15-minute lockout. Lockout state is logged and surfaced in the WebUI audit log.
+
+**First-run credential setup:** On first run with no admin accounts configured, the node prints a one-time setup token to stdout as `WEBUI_SETUP_TOKEN=<hex>`. This token authorises only `POST /api/auth/setup` (initial admin account creation) and is invalidated permanently after one use. It is never written to log files or the vault.
+
+**Exempt endpoints:** `GET /api/health` is unauthenticated. It returns only liveness status and current version; no configuration or identity data. Suitable for monitoring probes and shell UI liveness checks. `GET /api/unlock-status` and `POST /api/unlock` are also available without authentication when the node is in locked state (§17.16.1) since authentication cannot complete until the vault is open.
+
+**Audit log:** All authentication events (success, failure, lockout, logout, session expiry) and all management actions performed through the WebUI are written to the audit log with the authenticated identity, source address, and timestamp. The audit log is stored in the vault and is not accessible without authentication.
+
+**Mesh path authentication:** Mesh control plane access (Path 2) is protected by the mesh ACL and WireGuard authentication. The ACL is a list of admin mesh identities stored in node config. No additional credential is required on the mesh path — WireGuard authentication and ACL membership together constitute the credential.
+
+---
+
+#### 17.12.2 Management API
+
+All requests and responses use `application/json`. All mutation endpoints (`POST`) require the `Content-Type: application/json` header. All endpoints except those listed as exempt in §17.12.1 require a valid session cookie. Unknown resource IDs return `404 {"error": "not_found"}`. Requests with invalid JSON bodies return `400 {"error": "bad_request"}`. Unauthenticated requests return `401 {"error": "unauthenticated"}` with a `WWW-Authenticate` header indicating the active auth methods.
+
+**Endpoint table:**
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| GET | `/api/health` | No | Liveness check |
+| GET | `/api/unlock-status` | No | Vault lock state |
+| POST | `/api/unlock` | No | Unlock vault with passphrase |
+| POST | `/api/auth/setup` | Setup token only | First-run admin account creation |
+| POST | `/api/auth/login` | No (provides auth) | Credential login |
+| POST | `/api/auth/logout` | Yes | Invalidate current session |
+| GET | `/api/status` | Yes | Mesh connectivity summary |
+| GET | `/api/transports` | Yes | List transports and enabled state |
+| POST | `/api/transports/:id/enable` | Yes | Enable a transport |
+| POST | `/api/transports/:id/disable` | Yes | Disable a transport |
+| GET | `/api/peers` | Yes | List known peers |
+| GET | `/api/identity` | Yes | Node identity and mode |
+| GET | `/api/modules` | Yes | List modules and enabled state |
+| POST | `/api/modules/:id/enable` | Yes | Enable a module |
+| POST | `/api/modules/:id/disable` | Yes | Disable a module |
+| GET | `/api/storage` | Yes | Vault and message store sizes |
+| GET | `/api/updates` | Yes | Pending update status |
+
+**Transport IDs** map directly to `TransportFlags` fields: `tor`, `clearnet`, `clearnet_fallback`, `i2p`, `bluetooth`, `rf`, `mesh_discovery`, `allow_relays`. Enable/disable response: `{"id":"<id>","enabled":<bool>}`. Changes are applied to the runtime immediately and persisted to the vault.
+
+**Module IDs** use dot notation matching the `ModuleConfig` hierarchy: `social.gardens`, `social.file_sharing`, `social.store_forward`, `social.notifications`, `network.infinet`, `network.exit_nodes`, `network.vpn_mode`, `network.app_connector`, `network.funnel`, `protocols.mnrdp_server`, `protocols.mnsp_server`, `protocols.mnfp_server`, `protocols.api_gateway`, `protocols.screen_share`, `protocols.clipboard_sync`, `protocols.print_service`, `agentic.mislp`, `plugins.runtime`. Enable/disable response: `{"id":"<id>","enabled":<bool>}`. Changes are applied immediately and persisted to the vault.
+
+**Identity response fields:** `mode` (always `"Server"` on clientless), `meshPubkey` (hex-encoded WireGuard public key — display-safe; null before vault unlock), `relayReputation` (numeric reputation score or null), `webuiPort`, `webuiLocalOnly`. No private key material is ever included.
+
+**Storage response fields:** `vaultBytes` (total encrypted vault size on disk), `messageStoreBytes` (message store collection size), `retentionDays` (configured retention or null for no limit). Values are read from the filesystem at request time; no cached values.
+
+**Peers response:** Array of peer objects. Each peer: `{"address":"<hex>","hops":<int>,"direct":<bool>,"latencyMs":<int|null>}`. Addresses are mesh public keys (display-safe). The list reflects the current state of the public routing plane.
+
+**Status response fields:** `connected` (bool — true if at least one direct peer is reachable), `peerCount` (total entries in public routing plane), `directPeerCount` (local plane entries), `transports` (array of `{"id":"<id>","enabled":<bool>}` for all transports), `natStatus` (`"open"`, `"restricted"`, or `"unknown"`).
 
 ---
 
@@ -11516,6 +11586,30 @@ This scheme applies consistently across all toolchains:
 | Linux / Windows installer | Package name / AppImage / MSI product name |
 
 The base name is always the root identifier; `-clientless` is always appended before `-debug`.
+
+---
+
+#### 17.16.1 Startup and Vault Unlock
+
+Clientless builds carry the full vault infrastructure — the same encrypted vault used by full-client builds. The vault holds identity keys, transport settings, module config, message store, and peer data. There is no architectural difference between a clientless and a full-client vault.
+
+**Vault open sequence:** On startup the node first attempts to open the vault directly without a key. If the vault carries no key requirement it opens immediately and the node starts normally. A warning is logged to the system log and surfaced as a persistent banner in the WebUI: the vault is unprotected. This is a valid deployment posture — it mirrors full-client behaviour on platforms that have a keystore but no configured PIN — but it is not recommended for nodes exposed to a network.
+
+If the vault is protected (has a key requirement), unlock is attempted in priority order using the first method that succeeds:
+
+1. **GPG keystore** — the vault master key is decrypted using a GPG key whose fingerprint matches the value configured in `clientless.json`. Requires a running GPG agent accessible to the process. Suitable for server deployments with existing GPG key management.
+2. **SSH key** — the vault master key is derived from an SSH key whose public key fingerprint matches the configured value, sourced from `ssh-agent` or a key file path specified in config. Suitable for server deployments with existing SSH key infrastructure.
+3. **Systemd credential** — if the process is running under systemd and a credential named `mesh-infinity-vault-key` is present (configured via `LoadCredential=` in the unit file), its content is used directly as the vault master key. This is the recommended method for production systemd deployments: the key is managed by the init system and never written to disk by the node.
+4. **Interactive passphrase** — if a TTY is attached to the process, the node prompts for the vault passphrase on stdin. Suitable for operator-managed nodes and development.
+5. **Environment variable** — `MESH_INFINITY_VAULT_KEY=<hex>` supplies the master key. Accepted in development and CI builds only; rejected at startup in production builds (compiled with `--features production`). Never log or persist this value.
+
+**Locked state:** If the vault is protected and no unlock method succeeds, the node enters locked state. In locked state:
+- `GET /api/health` and `GET /api/unlock-status` (`{"locked":true}`) are served normally.
+- All other WebUI endpoints return `503 {"error":"vault_locked"}`.
+- `POST /api/unlock` accepts `{"passphrase":"<str>"}` and attempts vault unlock. On success the node transitions immediately to normal operation. On failure the attempt is rate-limited identically to WebUI login failures (§17.12.1). The passphrase is never logged.
+- The node does not participate in mesh routing while locked: it holds no identity and cannot authenticate WireGuard sessions.
+
+**First-run vault initialisation:** If no vault exists at the configured data directory, the node creates a new vault on first startup. If a keystore method is configured (GPG fingerprint or SSH key fingerprint present in `clientless.json`), the vault is initialised with that key as the protector. If no keystore is configured and a TTY is attached, the node prompts for a passphrase. If neither is available, the vault is initialised unprotected with the warning described above. Operators should configure a keystore method before exposing the node to a network.
 
 ---
 
