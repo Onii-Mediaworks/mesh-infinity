@@ -444,9 +444,12 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
     }
 
     // Convert the Java String to a Rust &str.
-    let dir: String = match env.get_string(&data_dir) {
-        Ok(s) => s.into(),
-        Err(_) => return 0,
+    let dir: String = match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(env.get_string(&data_dir)?.into()) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(dir) => dir,
+        _ => return 0,
     };
 
     // Create the data directory if it does not already exist.
@@ -619,17 +622,16 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
         return -1;
     }
     // Convert JString → Rust &str under a short-lived JavaStr borrow.
-    let peer_mac_str = match env.get_string(&peer_mac) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-    let peer_mac_ref: &str = match peer_mac_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
+    let peer_mac: String = match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(env.get_string(&peer_mac)?.into()) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(peer_mac) => peer_mac,
+        _ => return -1,
     };
     // SAFETY: ctx is the pointer returned by nativeStartLayer1.
     let runtime = unsafe { &*(ctx as *const MeshContext) };
-    match runtime.register_wifi_direct_session_fd(peer_mac_ref, fd) {
+    match runtime.register_wifi_direct_session_fd(&peer_mac, fd) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -657,17 +659,16 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
     if ctx == 0 {
         return -1;
     }
-    let peer_mac_str = match env.get_string(&peer_mac) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-    let peer_mac_ref: &str = match peer_mac_str.to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
+    let peer_mac: String = match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(env.get_string(&peer_mac)?.into()) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(peer_mac) => peer_mac,
+        _ => return -1,
     };
     // SAFETY: ctx is the pointer returned by nativeStartLayer1.
     let runtime = unsafe { &*(ctx as *const MeshContext) };
-    match runtime.drain_wifi_direct_session(peer_mac_ref) {
+    match runtime.drain_wifi_direct_session(&peer_mac) {
         Ok(n) => n as jni::sys::jint,
         Err(_) => -1,
     }
@@ -705,14 +706,19 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
     };
     // Copy the frame bytes into the JVM byte array.
     // SAFETY: `buf` is a valid JNI byte array of at least `buf_len` bytes.
-    let copy_result = unsafe {
-        env.set_byte_array_region(
-            jni::objects::JByteArray::from_raw(buf),
-            0,
-            std::slice::from_raw_parts(rust_buf.as_ptr() as *const jni::sys::jbyte, n),
-        )
-    };
-    if copy_result.is_err() {
+    let copy_result = env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let buf = unsafe { jni::objects::JByteArray::from_raw(env, buf) };
+            // The JNI API exposes byte arrays as signed bytes, but the bit pattern
+            // is preserved, so this cast only changes the type interpretation.
+            let frame = unsafe {
+                std::slice::from_raw_parts(rust_buf.as_ptr() as *const jni::sys::jbyte, n)
+            };
+            buf.set_region(env, 0, frame)?;
+            Ok(())
+        })
+        .into_outcome();
+    if !matches!(copy_result, jni::Outcome::Ok(())) {
         return -1;
     }
     n as jni::sys::jint
@@ -742,15 +748,21 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
         return -1;
     }
     // Copy the JVM byte array into a Rust Vec.
-    let mut frame = vec![0i8; data_len as usize];
-    let copy_result = unsafe {
-        env.get_byte_array_region(jni::objects::JByteArray::from_raw(data), 0, &mut frame)
+    let frame_u8 = match env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let data = unsafe { jni::objects::JByteArray::from_raw(env, data) };
+            let mut frame = vec![0i8; data_len as usize];
+            data.get_region(env, 0, &mut frame)?;
+            Ok(frame
+                .into_iter()
+                .map(|byte| byte as u8)
+                .collect::<Vec<u8>>())
+        })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(frame_u8) => frame_u8,
+        _ => return -1,
     };
-    if copy_result.is_err() {
-        return -1;
-    }
-    // Cast i8 → u8 (JNI signed bytes → Rust unsigned bytes).
-    let frame_u8: Vec<u8> = frame.into_iter().map(|b| b as u8).collect();
     // `enqueue_android_inbound_frame` guards on adapter state (available && enabled).
     crate::transport::nfc::enqueue_android_inbound_frame(frame_u8);
     // SAFETY: ctx is the pointer returned by nativeStartLayer1.
@@ -2974,9 +2986,12 @@ pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1B
     }
 
     // Retrieve the byte array length before copying.
-    let len = match env.get_array_length(&data) {
-        Ok(n) => n,
-        Err(_) => return -1,
+    let len = match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(data.len(env)?) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(len) => len,
+        _ => return -1,
     };
     // Only 32-byte secrets are valid.
     if len != 32 {
@@ -2986,10 +3001,17 @@ pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1B
     // Copy the JVM-managed bytes into a local stack buffer.  We use a signed
     // slice first (jbyte = i8) then transmute to [u8; 32] — the bit patterns
     // are identical; we just change the type interpretation.
-    let mut buf = [0i8; 32];
-    if env.get_byte_array_region(&data, 0, &mut buf).is_err() {
-        return -1;
-    }
+    let mut buf = match env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let mut buf = [0i8; 32];
+            data.get_region(env, 0, &mut buf)?;
+            Ok(buf)
+        })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(buf) => buf,
+        _ => return -1,
+    };
     // SAFETY: i8 and u8 have the same size and alignment; all bit patterns are
     // valid for both types.  This transmute does not produce undefined behaviour.
     let secret: [u8; 32] = unsafe { std::mem::transmute(buf) };
@@ -3047,21 +3069,13 @@ pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1B
     // Allocate a new Java byte[] and copy the secret into it.
     // The JVM garbage-collects the array when the Kotlin caller loses the
     // reference — fill(0) in Kotlin ensures it is zeroed before GC.
-    let arr = match env.new_byte_array(32) {
-        Ok(a) => a,
-        Err(_) => return null_obj,
-    };
-    // Reinterpret [u8; 32] as [i8; 32] for the JNI API (jbyte = i8).
-    // SAFETY: same size, alignment, and all bit patterns valid for both types.
-    let signed: [i8; 32] = unsafe { std::mem::transmute(secret) };
-    if env.set_byte_array_region(&arr, 0, &signed).is_err() {
-        return null_obj;
+    match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(env.byte_array_from_slice(&secret)?) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(arr) => arr.into_raw() as jni::sys::jobject,
+        _ => null_obj,
     }
-
-    // Return a raw jobject.  The JVM owns the array; the Kotlin caller must
-    // zero it with `.fill(0)` after use to minimise secret dwell time in GC.
-    // SAFETY: JByteArray is a transparent wrapper around jobject.
-    unsafe { jni::objects::JObject::from(arr).as_raw() }
 }
 
 /// Submit a pairing payload received over Android NFC or Wi-Fi Direct.

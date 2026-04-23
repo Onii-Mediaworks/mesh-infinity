@@ -701,7 +701,9 @@ fn storage_capacity_bytes(path: &str) -> Option<u64> {
     }
 
     let stats = unsafe { stats.assume_init() };
-    Some(stats.f_blocks.saturating_mul(stats.f_frsize))
+    let block_count = stats.f_blocks as u64;
+    let block_size = stats.f_frsize as u64;
+    Some(block_count.saturating_mul(block_size))
 }
 
 #[cfg(not(unix))]
