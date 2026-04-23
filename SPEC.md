@@ -34,6 +34,7 @@
   - [4.1 Bootstrapping and Network Map Propagation](#41-bootstrapping-and-network-map-propagation)
   - [4.2 Network Map Data Structure](#42-network-map-data-structure)
   - [4.3 Server-Mode Directory Nodes](#43-server-mode-directory-nodes)
+  - [4.3.1 Strategic Helper Infrastructure](#431-strategic-helper-infrastructure)
   - [4.4 Anonymization: Wrapper Nodes](#44-anonymization-wrapper-nodes)
   - [4.5 Map Update Authentication](#45-map-update-authentication)
   - [4.6 Key Change Validation via Web of Trust](#46-key-change-validation-via-web-of-trust)
@@ -80,6 +81,7 @@
   - [6.3 Trust-Weighted Path Selection](#63-trust-weighted-path-selection)
   - [6.4 Two-Plane Routing Model](#64-two-plane-routing-model)
   - [6.5 Persistent Tunnels and Cover Traffic](#65-persistent-tunnels-and-cover-traffic)
+  - [6.5.1 Pre-Authentication Abuse Controls](#651-pre-authentication-abuse-controls)
   - [6.6 Loop Prevention](#66-loop-prevention)
   - [6.7 Fast Routing Mode (Opt-in, Reduced Privacy)](#67-fast-routing-mode-opt-in-reduced-privacy)
   - [6.8 Store-and-Forward](#68-store-and-forward)
@@ -110,6 +112,8 @@
 - [9. Social Profile](#9-social-profile)
   - [9.0 Overview](#90-overview)
   - [9.1 Global Public Profile (Opt-In)](#91-global-public-profile-opt-in)
+  - [9.1.1 Public Searchability Controls](#911-public-searchability-controls)
+  - [9.1.2 Global Public Profile Erasure](#912-global-public-profile-erasure)
   - [9.2 Public Paired Profile](#92-public-paired-profile)
   - [9.3 Global Private Profile](#93-global-private-profile)
   - [9.4 Per-Context and Per-Group Profiles](#94-per-context-and-per-group-profiles)
@@ -124,6 +128,8 @@
   - [10.2 Garden](#102-garden)
   - [10.3 Relay](#103-relay)
   - [10.4 Proximity Share](#104-proximity-share)
+  - [10.5 Commons](#105-commons)
+  - [10.6 Wiki](#106-wiki)
 - [11. File Sharing](#11-file-sharing)
   - [11.0 Overview](#110-overview)
   - [11.1 Direct File Transfer](#111-direct-file-transfer)
@@ -131,6 +137,7 @@
   - [11.3 Public File Hosting](#113-public-file-hosting)
   - [11.4 Private File Sharing](#114-private-file-sharing)
   - [11.5 Storage Backend Adapter Interface](#115-storage-backend-adapter-interface)
+  - [11.6 MeshTorrent Closed-Swarm Distribution](#116-meshtorrent-closed-swarm-distribution)
 - [12. Hosted Services](#12-hosted-services)
   - [12.0 Overview](#120-overview)
   - [12.1 Service Addressing](#121-service-addressing)
@@ -138,6 +145,8 @@
   - [12.3 TCP and UDP Tunneling](#123-tcp-and-udp-tunneling)
   - [12.4 Service Registration, Exposure, and Announcement](#124-service-registration-exposure-and-announcement)
   - [12.5 Service Indexes](#125-service-indexes)
+  - [12.5.1 Global Discovery Index](#1251-global-discovery-index)
+  - [12.5.2 Index Garbage Collection](#1252-index-garbage-collection)
   - [12.6 Service Access Model](#126-service-access-model)
   - [12.7 Access Control Enforcement](#127-access-control-enforcement)
   - [12.8 Service Health and Availability](#128-service-health-and-availability)
@@ -199,6 +208,10 @@
   - [17.4 Runtime Modes](#174-runtime-modes)
   - [17.5 FFI Boundary](#175-ffi-boundary)
   - [17.6 Mesh Address Format](#176-mesh-address-format)
+  - [17.6.1 Address Header](#1761-address-header)
+  - [17.6.2 Embedded IP Payloads](#1762-embedded-ip-payloads)
+  - [17.6.3 Mesh Address Text Form](#1763-mesh-address-text-form)
+  - [17.6.4 IPv4 Helper Input Forms](#1764-ipv4-helper-input-forms)
   - [17.7 Mesh URL Scheme](#177-mesh-url-scheme)
   - [17.8 Flutter UI Layer](#178-flutter-ui-layer)
   - [17.9 Encrypted Vault Storage](#179-encrypted-vault-storage)
@@ -397,6 +410,7 @@ The following assumptions underpin every design decision in this specification. 
 
 - Everyone who is not an explicitly trusted contact is a potential adversary.
 - A device belonging to a trusted contact can only be trusted with *that contact's* data and capabilities — not with the full trust surface of the network.
+- Trusted contacts are a survival asset, not a liability to be designed away. The network exists because people can and must rely on people they love. Trust is scoped and graduated so that one trusted relationship can carry messages, warnings, custody, relay, and recovery without automatically exposing unrelated masks, groups, contacts, locations, histories, or operational contexts.
 - Anyone who has not been granted access is assumed to have hostile intent toward the user.
 - The system is designed for situations where rule of law has broken down or has been turned against the people it was meant to protect.
 - The weakest link is always the human — no technical system survives physical coercion.
@@ -431,6 +445,8 @@ The following principles govern every design and implementation decision. When t
 
 6. **Trust is explicit and user-controlled.** No system makes automatic trust decisions on behalf of the user. Trust levels are set by the user; propagated trust is advisory and always overridable.
 
+6a. **Trust is scoped survival infrastructure.** A friend is not a stranger, and the system must not flatten trusted relationships into anonymous public routing. Trusted peers may be preferred for delivery, relay, store-and-forward, emergency warning, key-change corroboration, profile exchange, and recovery because that is the core web-of-trust model. The constraint is scope: a capability granted in one relationship or context must not imply access to unrelated identities, masks, groups, locations, histories, or future capabilities.
+
 7. **The node always participates fully, regardless of UI tier or authentication state.** Once Layer 1 (mesh identity) is active — which happens at device unlock, before any app interaction — the node is a full mesh participant: routing, relaying, cover traffic, and tunnel coordination. Feature tiers (§1.2.5) control what the UI exposes. Authentication state (whether the user has entered their PIN) controls whether Layers 2/3 are active. Neither changes what Layer 1 does. Any implementation that allows a node to opt out of mesh participation while Layer 1 is initialized violates this principle.
 
 8. **Participation in anonymizing infrastructure is reciprocal. Parasitism is penalised.** Consuming anonymity without contributing degrades the network for everyone. When a node uses an anonymizing network (Tor, I2P, the native mixnet tier, Katzenpost), relay participation on that network is enabled by default and expected. The only routine configuration is bandwidth — how much you contribute, not whether you do. Opting out is permitted but carries real consequences enforced by the network, not by policy:
@@ -440,11 +456,27 @@ The following principles govern every design and implementation decision. When t
    - **Peer deprioritisation:** Nodes that contribute relay are preferred as routing peers over nodes that do not. A non-contributing node may find itself with fewer willing hops, higher latency paths, and reduced redundancy.
    - **Visible disclosure:** The UI displays an honest status: *"You are not contributing relay capacity. Your anonymity and routing quality are reduced as a result."* This is not a warning to dismiss — it is an accurate description of the node's standing in the network.
 
-   Exit node participation is always opt-in with explicit legal and operational warnings — that gate requires informed consent because it exposes the operator to real legal risk. But relay (not exit) carries no such exposure, and declining it is a choice to take from the network without giving back. The network remembers.
+   Exit node participation is always opt-in with explicit legal and operational warnings — that gate requires informed consent because it exposes the operator to real legal risk. Relay (not exit) carries lower exposure, but never zero exposure in a world where participation itself may be punished. Safety policy can therefore narrow relay scope without moralising the user's choice: in `ThreatContext::Critical`, or when the user marks their environment as hostile, relay defaults to trusted-relationship relay and cover-preserving mesh participation rather than public allied-network relay. Nodes that cannot safely contribute still send cover traffic and can contribute through trusted S&F custody, offline bundle carriage, local proximity mesh, or later relay when conditions improve. The network values survival over purity.
 
 9. **Relay activity is cover traffic.** A node that is actively relaying traffic for others on a given transport needs significantly less synthetic cover traffic on that transport — the relay traffic itself provides plausible deniability for every byte the node sends. The transport solver accounts for relay status when calculating cover traffic obligations. The diversity floor (§5.10.5) still applies regardless of relay activity — relay on one transport does not substitute for transport diversity.
 
-10. **We expand allied networks, not just consume them.** Mesh Infinity is not the only network trying to give people secure, private, censorship-resistant communication. Where another network's protocol and ours are compatible, we run both — not as an interoperability feature, but as an obligation. When Bluetooth is active, we are a full Briar node. When Tor is active, we are a Tor relay. The measure of success is not the size of the Mesh Infinity network alone — it is the aggregate reach of all the networks we participate in. Our infrastructure exists to help as many people as possible, including people who will never know Mesh Infinity exists but benefit from the Briar relay we ran for them.
+10. **We expand allied networks where doing so does not endanger the user.** Mesh Infinity is not the only network trying to give people secure, private, censorship-resistant communication. Where another network's protocol and ours are compatible, we can run both — not as an interoperability feature, but as solidarity. When Bluetooth is active, we can participate in Briar-compatible local exchange. When Tor is active, capable and safe nodes can relay. The measure of success is not the size of the Mesh Infinity network alone — it is the aggregate reach of all the networks we help without turning the user's device into evidence against them. The order is: keep the user and their loved ones alive, preserve their anonymity, then contribute surplus capacity.
+
+11. **Moral reality and abuse tradeoff.** Mesh Infinity is built for a world where legality is not a reliable proxy for morality. The platform must support safe access to information that may be illegal in some jurisdictions, including journalism, banned books, medical information, anti-censorship tools, organizing materials, evidence of state violence, labor organizing, and minority-community resources.
+
+   The same privacy properties can be abused. This is an unavoidable tradeoff of building a real privacy and anonymity network. There is no cryptographic design that grants anonymity only to morally deserving users. The protections that keep journalists, dissidents, abuse victims, queer communities, whistleblowers, workers, families, and ordinary people safe can also be used by bad actors.
+
+   This tradeoff is accepted because the alternative is worse. A network that can selectively deny privacy to disfavored people is a network that hostile authorities can weaponize. People who need this protection most are often exactly the people those authorities call illegal, dangerous, or immoral. Mesh Infinity therefore refuses to make legality, popularity, or institutional approval a prerequisite for communication, publication, or access to knowledge.
+
+   Mesh Infinity cannot provide global content policing without breaking the privacy and decentralization properties it exists to protect. The project does not claim to prevent misuse of the network. Instead, Mesh Infinity provides governance and moderation tools that hosts, organizers, Commons board maintainers, Wiki maintainers, index operators, node operators, and individual users can apply under their own rules and moral judgment.
+
+   These tools include local blocking, reporting, trust scoring, rate limits, application and community moderation queues, role-based permissions, service-index curation, node storage refusal, mirror refusal, and client-side filters chosen by the user or community. These mechanisms are local and plural. They help communities govern their own spaces; they do not create a central authority over the network.
+
+   Mesh Infinity asks users and operators to use this power to protect people, preserve knowledge, resist oppression, and sustain communities, not to harm others. The protocol cannot enforce that moral choice globally. The people running spaces inside the network must make and enforce their own choices.
+
+12. **Operator responsibility under US law.** Mesh Infinity is software and protocol infrastructure, not a promise of legal immunity. Operators who host, mirror, index, cache, publish, expose, or otherwise make content available are responsible for understanding and complying with the laws that apply to them, including United States law where applicable. In the US, intermediary protections and obligations are context-dependent; for example, 47 U.S.C. § 230 distinguishes providers/users of interactive computer services from the speakers of third-party information in many civil contexts, while 17 U.S.C. § 512 defines conditional copyright safe harbors for qualifying service providers. These statutes do not eliminate all liability, do not cover every claim, and do not make every hosting decision safe.
+
+   Mesh Infinity therefore treats hosting and publication as explicit operator choices. A node operator, Garden host, Commons board operator, Wiki maintainer, service-index operator, exit-node operator, mirror operator, or helper-server operator chooses what they store, serve, list, route, expose, or refuse. The project provides tools for local governance and refusal; it does not assume responsibility for content or services that independent operators choose to run.
 
 ### 2.2 Known Limitations and Accepted Tradeoffs
 
@@ -964,13 +996,17 @@ Argon2id parameters below the minimum are rejected on import with an explicit er
 
 Cloud backup is **permitted** if and only if the backup is encrypted client-side before leaving the device. The app must enforce this — there is no unencrypted cloud destination.
 
-**Rationale for permitting cloud:** The original prohibition was based on the assumption that cloud providers could read the backup. Client-side encryption before upload makes the provider's access irrelevant — a subpoena returns ciphertext the provider cannot decrypt. Prohibiting cloud entirely meant most users would have no backup at all, which is a worse outcome than a well-encrypted cloud backup.
+**Rationale for permitting cloud:** The original prohibition was based on the assumption that cloud providers could read the backup. Client-side encryption before upload means the provider should receive ciphertext, not plaintext. Prohibiting cloud entirely would leave many users with no backup at all, which can destroy their ability to reconnect with trusted people after loss or flight.
+
+**Hostile-state caveat:** Cloud backup is never treated as metadata-free or seizure-proof. A cloud-accessible backup is a durable offline target, and the provider account, backup timing, backup size, and recovery flow can all become evidence even when the payload is encrypted. Extended cloud backup is therefore disabled in `ThreatContext::Critical` and requires an explicit high-risk warning in `ThreatContext::Elevated`. Standard cloud backup may remain available in Elevated mode because preserving the trust graph can be survival-critical after device loss, but the UI must state that the provider can know a backup exists.
 
 **Implementation requirements:**
 - Encryption is applied before any network transmission, in Rust, with no intermediary
 - The passphrase is entered locally and used only for Argon2id derivation; it is zeroed from memory after use and never transmitted
 - The app may offer cloud storage destinations (iCloud, Google Drive, Dropbox, etc.) but must display: *"This backup is encrypted on your device. Your passphrase is never uploaded."*
 - The app must never offer an "unencrypted" or "sync my passphrase" option
+- Extended cloud backups require a passphrase generated or measured at 96 bits of estimated entropy or stronger. User-memorized short phrases are allowed only for local-only extended backups.
+- In `ThreatContext::Critical`, cloud backup creation and restore are hidden behind manual recovery import/export flows; no automatic cloud sync runs.
 
 **Recommended but not required:** Local physical media (USB drive, local network storage). Users in high-threat environments should prefer local-only.
 
@@ -1461,6 +1497,19 @@ DirectoryEntry {
 
 **Consensus model (Tor-inspired):** A querying node that receives conflicting current entries for the same peer_id from different directory nodes resolves by signature and sequence: highest sequence with valid signature wins. To prevent a single compromised directory node from serving a poisoned entry, nodes should query at least 3 directory nodes and require majority agreement (same sequence + same signature) before treating an entry as canonical. Entry divergence across directory nodes triggers a warning.
 
+**Availability anti-eclipse rule:** Signatures prove entry integrity, but they do not prove that a directory or cache returned everything it knows. Directory, bootstrap, service-index, and cold-start lookups MUST therefore avoid early termination on a single negative, stale, or empty response.
+
+Lookup requirements:
+
+1. Query at least three independently selected sources when available: one trusted-peer source if present, one directory/cache source, and one random or rotating source from the current map.
+2. Treat `not_found`, empty result sets, and stale sequences as advisory only until the diversified query set has failed.
+3. Prefer the newest valid self-signed sequence over any majority of older entries. A majority can confirm freshness, but it cannot override a valid newer self-signed entry.
+4. On divergence, retry through a different route determinant or transport family where possible so a single overlay region cannot fully suppress the lookup.
+5. Cache negative results for at most 60 seconds and never gossip them. Negative cache entries are local hints, not network facts.
+6. Surface persistent divergence as degraded availability, not as proof that the target disappeared.
+
+This rule is mandatory for user experience as well as security: a malicious or broken cache should not be able to make a valid peer, service, Garden, or Infinet member appear permanently unreachable merely by omission.
+
 **Directory roles:**
 - Periodically re-request entries from connected peers to detect stale entries
 - Accept voluntary entry publications from client nodes
@@ -1468,6 +1517,69 @@ DirectoryEntry {
 - May be configured as a **bootstrap node**: address hardcoded or user-configured as the first-connection target for new nodes
 
 Directory nodes are not a privileged position in the network. They cache more entries but have no routing or trust authority. Multiple directory nodes may exist; a client can query any of them.
+
+### 4.3.1 Strategic Helper Infrastructure
+
+Mesh Infinity uses optional helper infrastructure to recover the practical benefits that centralization usually provides — fast onboarding, reliable discovery, offline delivery, NAT traversal, abuse throttling, and public profile search — without making any server mandatory or authoritative.
+
+Strategic Helper Infrastructure is the design purpose of **Server mode** (§17.4) and the **clientless build profile** (§17.16). A clientless node is the deployable infrastructure form of Mesh Infinity: durable, headless or minimally shelled, operator-managed, and intended to run helper roles continuously.
+
+Helper roles are still protocol capabilities, not build-profile privileges. Server-mode and clientless deployments are the primary supported way to run durable helper infrastructure. Dual nodes, and carefully configured full-client nodes, may provide limited helper roles when the user explicitly enables them and the local device, battery, bandwidth, threat context, and platform policy can support the role.
+
+**Core rule:** a helper server is a convenience layer, not a dependency. A user with no helper servers must still be able to pair, chat, route, and participate through direct mesh paths, local discovery, trusted-peer introductions, QR/link exchange, removable media, or any other available transport. Helper servers make these flows faster and more survivable under hostile network conditions; they do not define identity, trust, or truth.
+
+Any user, organization, newsroom, mutual-aid group, school, workplace, or household can stand up helper servers. The protocol does not contain a privileged first-party server role. A client may ship with an editable starter list, but the list is only bootstrap configuration. Users can remove it, replace it, add community servers, add servers run by friends, or run with no helper servers.
+
+**Helper roles:**
+- `DirectoryCache` — stores current self-signed network-map entries (§4.3)
+- `BootstrapRendezvous` — provides first-contact introductions and current helper lists
+- `ProfileResolver` — resolves opt-in public usernames and searchable identifier tokens (§9.1.1)
+- `StoreAndForward` — holds sealed messages for intermittently online recipients (§6.10, §14.8)
+- `OfflineInbox` — stores recipient-addressed sealed envelopes with recipient-defined retention
+- `NatRelay` — relays encrypted transport when direct paths fail (§6.11)
+- `WrapperNode` — recipient-configured privacy routing (§4.4)
+- `GardenCache` — caches encrypted Garden state for members only (§10.2)
+- `AbuseThrottle` — issues blind or capability-scoped rate tokens to slow spam and DoS without learning message content
+
+A server may implement any subset of roles. It advertises a signed `HelperServerDescriptor`:
+
+```rust
+HelperServerDescriptor {
+    helper_id:       [u8; 32],       // long-term helper identity key hash
+    roles:           Vec<HelperRole>,
+    endpoints:       Vec<TransportHint>,
+    policy_hash:     [u8; 32],       // hash of human-readable retention/abuse policy
+    limits:          HelperLimits,   // max object size, TTLs, rate windows
+    operator_note:   Option<String>, // optional user-facing description, max 256 bytes
+    sequence:        u64,
+    expires_at:      u64,
+    signature:       [u8; 64],
+}
+```
+
+**Non-authority requirements:**
+1. All identity, address, profile, service, and Garden records served by helpers are self-signed by the owning identity or by a delegated capability key.
+2. Helpers cannot create, modify, or revoke user identities. They can only cache, relay, or refuse service.
+3. Negative answers are never authoritative. Clients apply the anti-eclipse lookup rule (§4.3) before concluding that a person, profile, service, or Garden cannot be found.
+4. Clients query diversified helpers when possible: at least one user-configured helper, one trusted-peer-recommended helper, and one rotating helper from the current map.
+5. A helper's descriptor is self-reported metadata. Clients treat it as a routing and UX hint, then verify behavior cryptographically and operationally.
+6. Helper selection is portable. Users can export, import, and share helper sets as signed bundles without changing identity keys.
+
+**Privacy requirements:**
+- Helpers never receive private keys, trust graph plaintext, message plaintext, or unencrypted profile tiers.
+- Helpers store the minimum data needed for their declared role and publish retention limits in the descriptor.
+- Profile and address records are served as current state unless a role explicitly requires sealed offline storage.
+- Phone/email discovery uses opt-in resolver records (§9.1.1). Raw address books, raw phone numbers, and raw email addresses MUST NOT be uploaded to helpers.
+- Clients SHOULD use Tor, wrapper nodes, or other route determinants when querying helpers in hostile modes.
+- Helper use is compartmentalized by mask/profile context. A helper used for one public identity is not automatically used for another.
+
+**User-facing configuration:**
+- `Automatic helpers` — default for ordinary users; uses the starter list plus trusted-peer recommendations, with health checks and diversity rules
+- `Community helpers` — use helper bundles shared by a Garden, newsroom, school, workplace, family, or mutual-aid group
+- `My helper server` — add and prioritize user-run infrastructure
+- `No helper servers` — direct mesh, local discovery, and trusted-peer introductions only
+
+The UI should describe these as reliability and reachability choices, not as ideological architecture. The practical promise is: "You can use the shared network, your community's servers, your own servers, or none."
 
 **Retention policy:**
 
@@ -1764,7 +1876,7 @@ In `ThreatContext::Elevated`:
 
 In `ThreatContext::Normal`:
 - All mechanisms **available**, defaults reflect operational context
-- mDNS: enabled by default on LAN interfaces, disabled on untrusted interfaces
+- mDNS: enabled only on trusted or user-designated LAN interfaces; unknown LANs require one-tap enable with disclosure
 - Clearnet mechanisms: enabled with ambient notification
 
 #### 4.8.3 Trusted Contexts
@@ -2799,6 +2911,8 @@ When `FailureReason == ConstraintsTooTight`, `relaxable_constraints` lists which
 
 **Store-and-forward as solver failure path:** When `queue_eligible = true`, the message is handed to the S&F subsystem (§6.8) rather than returned as a failure to the application. The application sees a `Queued` status, not a failure.
 
+`Queued` is not a delivery claim. It means the local node has accepted responsibility for continued attempts using policy-allowed paths. The application MUST continue exposing the message as pending until a recipient-signed delivery receipt arrives, or until all live, S&F, and offline-transfer attempts permitted by policy are exhausted. A message that is only queued, deposited with S&F, or sent to one relay is still operationally undelivered.
+
 #### 5.10.7 Per-Peer Transport Preferences
 
 Stored locally, updated by direct peer preference signals and by observation.
@@ -3392,225 +3506,437 @@ Katzenpost uses SPHINCS+ for post-quantum signatures and a slightly different pa
 
 **Relay participation:** Katzenpost relay enabled by default when Katzenpost is enabled in experimental menu. Same relay_cover_reduction applies.
 
-### 5.26 Traffic Obfuscation
+### 5.26 Traffic Camouflage and Primary Carriers
 
-Traffic obfuscation addresses a distinct problem from anonymization: not *who* is communicating but *what protocol* they're using. Deep packet inspection (DPI) can identify WireGuard traffic by its handshake pattern and packet characteristics, enabling protocol-based blocking even when the content is encrypted. In some environments (censored networks, hostile ISPs), being identified as a WireGuard user is itself a risk.
+Traffic camouflage addresses a distinct problem from anonymization: not *who* is communicating but *what protocol* appears to be in use. In hostile environments, being identified as a VPN user, or specifically as a WireGuard user, is itself dangerous. Therefore the requirement for Mesh Infinity primary carriers is stronger than "encrypted" and stronger than "obfuscated": **primary carriers MUST NOT be recognizable as VPN traffic at any point on the path.**
 
-Obfuscation wraps WireGuard in a carrier protocol that looks like legitimate traffic. The carrier is not providing security — WireGuard still provides all security. The carrier is providing camouflage.
+This is a hard requirement. When Mesh Infinity controls both ends of a connection, it is unacceptable for the on-path observer to classify the flow as:
+
+- WireGuard
+- generic VPN traffic
+- "unknown encrypted tunnel" with a stable Mesh-specific signature
+
+If a candidate wrapper still presents a recognizable VPN or WireGuard signature, it fails the primary-carrier requirement and MUST NOT be treated as a compliant primary carrier.
+
+The carrier is never the security boundary. All confidentiality, integrity, forward secrecy, replay protection, and authentication come from the Mesh Infinity cryptographic stack. The carrier provides camouflage, survivability, and deniability.
+
+**Cryptographic layering clarification:** The primary tunnel cryptography remains WireGuard-derived link protection as specified elsewhere in §5.2 and §6. The four-layer Mesh Infinity packet/envelope system (§7) remains the payload/security substrate above transport and is also the mandatory substrate for any non-tunnel deniable carrier. The deniable-carrier work in this section and §5.27 changes how those already-defined cryptographic objects are embedded and transported; it does not replace WireGuard as the primary tunnel cryptography and does not replace the four-layer packet system as the non-tunnel sealed-envelope format.
 
 **This section resolves DQ-3 (traffic obfuscation against targeted surveillance).**
 
-#### 5.26.1 Obfuscation Modes
+#### 5.26.1 Primary-Carrier Invariants
 
-**Mode 1 — WireGuard over QUIC (TLS camouflage):**
+Every compliant primary carrier MUST satisfy all of:
 
-QUIC is a UDP-based protocol that uses TLS 1.3 for all communication. WireGuard packets carried inside QUIC look identical to HTTPS traffic from the outside — same port (443 by default), same TLS fingerprint, same UDP characteristics. A DPI system that passes HTTPS traffic cannot selectively block WireGuard-in-QUIC without blocking all QUIC/HTTPS.
+1. **No VPN recognizability:** The carrier MUST NOT expose a recognizable WireGuard handshake, WireGuard packet structure, or stable VPN fingerprint to a passive observer.
+2. **Real protocol behavior:** If the carrier claims to be HTTPS, HTTP/2, HTTP/3, WebSocket, media traffic, or another ordinary protocol family, it MUST implement that family as a valid instance of the protocol rather than emitting fake record headers or static templates.
+3. **No Mesh-distinctive failure signature:** Unauthorized or malformed probes must fail as normal transport failure (timeout, TLS failure, generic application error, dropped request) rather than emitting a Mesh-specific rejection.
+4. **Negotiated camouflage:** Features that affect the visible carrier shape (ALPN, request shape, timing profile, padding regime, stream persistence) MUST be negotiated or locally selected in a way that does not itself create a stable fingerprint.
+5. **Safe fallback:** If a carrier becomes too detectable, the solver MUST fall back to another carrier family or to a degraded secure session state. It MUST NOT silently fall back to recognizable VPN traffic in contexts where camouflage was required.
 
-This is the primary use case for QUIC in Mesh Infinity. QUIC is not used for its transport properties (WireGuard's are superior) — it is used as a TLS-shaped envelope that makes WireGuard traffic indistinguishable from web browsing.
+#### 5.26.2 Compliant Primary Carrier Families
+
+Only real carrier families count as compliant primary carriers.
+
+**Mode 1 — QUIC/HTTP3 camouflage (preferred primary carrier):**
+
+The preferred primary carrier is real QUIC carrying a valid HTTP/3-shaped flow. Mesh Infinity uses this family because it is ordinary, high-bandwidth, and common on the internet. The flow MUST be valid QUIC/TLS/HTTP3 traffic; it is not sufficient to prepend fake TLS-like bytes to another protocol.
+
+Where UDP carriage is needed, the preferred model is HTTP Datagrams / UDP proxying semantics equivalent to RFC 9298 `CONNECT-UDP`: a real HTTP-layer tunnel, not raw WireGuard visible on the wire.
 
 ```
-Obfuscated stack:
+Primary carrier stack:
 Application message
   -> 4-layer application crypto (§7)
-  -> WireGuard encrypt
-  -> QUIC framing (TLS 1.3 handshake, UDP)
-  -> Network (looks like HTTPS traffic)
+  -> WireGuard-protected mesh transport frame
+  -> carrier broker / HTTP datagram tunnel
+  -> QUIC + TLS 1.3 + HTTP/3
+  -> Network
 ```
 
-**Implementation:** Quinn (pure Rust QUIC implementation). The QUIC TLS certificate uses a legitimate-looking self-signed cert or a real domain cert if the node operator has one. The ALPN negotiation advertises `h3` (HTTP/3) to make the traffic fingerprint convincing.
+**Mode 2 — HTTPS WebSocket / HTTP2 extended CONNECT:**
 
-**Mode 2 — WireGuard over WebSocket:**
+When QUIC is blocked or degraded, Mesh Infinity uses valid HTTPS carriers over TCP:
 
-WebSocket connections are initiated as HTTP upgrades and maintained as persistent TCP connections. WireGuard over WebSocket is detectable with deep inspection of the WebSocket payload, but passes shallow inspection and many corporate proxies.
+- WebSocket over HTTPS
+- HTTP/2 extended CONNECT
+- ordinary HTTP request/response streaming where the implementation remains semantically valid HTTP
 
-Better than raw WireGuard for corporate network traversal. Less convincing than QUIC for state-level DPI.
+These are secondary primary carriers. They are acceptable only when implemented as genuine protocol flows, not template-based mimicry.
 
-**Mode 3 — obfs4 (Tor pluggable transport):**
+**Mode 3 — Pluggable transports:**
 
-obfs4 is a Tor pluggable transport that makes traffic look like random noise — no identifiable header structure, no TLS fingerprint, no protocol signature. Requires a bridge node running obfs4proxy on the other end.
+For censorship-resistant bootstrap and high-hostility paths, Mesh Infinity supports real pluggable-transport-style wrappers such as:
 
-Strongest obfuscation against DPI. Requires infrastructure (bridge nodes). Cross-compatible with the Tor bridge network.
+- obfs4-class randomizing transports
+- WebTunnel-class HTTPS-shaped transports
+- other managed pluggable transports that have their own bridge/proxy model
 
-**Mode 4 — Shadowsocks-style AEAD stream:**
+These are specialized primary carriers for censorship resistance. They are not the default when ordinary web carriers are available.
 
-A lightweight stream cipher wrapper that produces traffic indistinguishable from random bytes. No TLS fingerprint. Server-side requires a compatible endpoint. Lower overhead than obfs4.
+**Mode 4 — Domain-fronted or fronted-like bootstrap (conditional only):**
 
-**Mode 5 — meek (domain fronting):**
+Historically, domain fronting and meek-style routing provided strong censorship resistance, but mainstream CDN support is unstable and often intentionally disabled. Therefore:
 
-Traffic is routed through a CDN (Cloudflare, AWS, etc.) that is unlikely to be blocked. The actual destination is hidden behind the CDN's domain. Expensive (CDN egress costs) and slower, but extremely difficult to block without blocking the entire CDN.
+- this family is bootstrap-only or emergency-only
+- it MUST be modeled as conditional infrastructure, not as a guaranteed base path
+- the solver MUST assume many deployments will not permit it
 
-#### 5.26.2 Obfuscation vs Anonymization
+#### 5.26.3 Non-Compliant Mimicry Prohibited
 
-These are orthogonal:
-- **Anonymization** (Tor, mixnet) hides *who* is communicating
-- **Obfuscation** hides *what protocol* is being used
+The following do **not** satisfy the primary-carrier requirement and MUST NOT be presented as compliant primary carriers:
 
-They compose: WireGuard-in-QUIC over Tor is both obfuscated (looks like HTTPS) and anonymized (routed through Tor). The solver can combine them.
+- fake TLS record wrappers without a real TLS handshake and record protection
+- static HTTP header templates with binary bodies and no valid surrounding HTTP behavior
+- fake DNS labels or fake protocol records presented as if they were real session traffic
+- any wrapper whose on-wire signature is more distinctive than the traffic it replaces
 
-#### 5.26.3 Solver Integration
+These techniques may still be used in explicitly marked experimental, degraded, or brokered-mimic contexts (§5.27), but they are not compliant primary carriers.
 
-Obfuscation is a property of the transport wrapper, not a separate transport. The solver accepts an obfuscation preference in `SolverHint`:
+#### 5.26.4 Obfuscation vs Anonymization
+
+These remain orthogonal:
+- **Anonymization** (Tor, mixnet, wrapper nodes) hides *who* is communicating
+- **Camouflage / deniable transport** hides *what traffic family* appears to be in use
+
+They compose. A session can be both anonymized and camouflaged. But camouflage is judged first by whether the traffic avoids presentation as VPN traffic.
+
+#### 5.26.5 Solver Integration
+
+Carrier selection is a property of the transport wrapper, not a separate application-visible transport. The solver accepts a carrier preference in `SolverHint`:
 
 ```rust
 SolverHint {
     ...
-    obfuscation:  Option<ObfuscationMode>,  // None | QuicTls | WebSocket | Obfs4 | Shadowsocks | Meek
+    carrier_family: Option<CarrierFamily>,
 }
 ```
 
-When `obfuscation` is set, the solver selects transports that support the requested wrapper. Not all transports support all wrappers — obfuscation is only meaningful for IP-based transports (clearnet, Tor, I2P). Proximity transports (BLE, NFC, ultrasonic) don't need obfuscation.
+```rust
+CarrierFamily {
+    QuicHttp3,
+    HttpsWebSocket,
+    Http2Connect,
+    PluggableObfs,
+    FrontedBootstrap,
+    DeniableCarrier,     // delegate to §5.27 ladder
+}
+```
+
+When `carrier_family` is unset, the solver selects the strongest compliant primary carrier available for the current threat context. If no compliant primary carrier is available, the solver transitions into the deniable carrier ladder (§5.27) rather than exposing recognizable VPN traffic.
 
 **ThreatContext integration:**
-- `ThreatContext::Critical` — obfuscation strongly preferred; solver defaults to `QuicTls` if no explicit preference and clearnet is in use
-- `ThreatContext::Elevated` — obfuscation available, solver hints toward it but doesn't force
-- `ThreatContext::Normal` — obfuscation available on request, no default preference
+- `ThreatContext::Critical` — a compliant primary carrier or deniable carrier is mandatory; recognizable VPN traffic is forbidden
+- `ThreatContext::Elevated` — a compliant primary carrier is strongly preferred; downgrade requires explicit policy justification
+- `ThreatContext::Normal` — a compliant primary carrier remains the default; direct recognizable VPN presentation is still prohibited for Internet-facing paths
 
-#### 5.26.4 QUIC Implementation Notes
+#### 5.26.6 Bootstrap Ladder
 
-The QUIC wrapper (Mode 1) deserves additional detail since it's the primary obfuscation mode:
-
-- **Port:** 443 by default (matches HTTPS). Configurable.
-- **TLS certificate:** Self-signed with a plausible-looking domain CN, or operator-provided real cert
-- **ALPN:** `h3` advertised — this matches HTTP/3 and makes the handshake fingerprint convincing
-- **0-RTT:** Disabled — 0-RTT data replay is a security risk we don't accept even for camouflage
-- **Connection IDs:** Rotated regularly to prevent QUIC connection tracking
-- **Padding:** QUIC frames padded to consistent sizes to reduce traffic analysis from packet size correlation
-
-**Platform implementation:** Quinn (pure Rust). No external dependency. Available on all platforms including iOS (no App Store restrictions on QUIC).
-
----
-
-### 5.27 Traffic Unidentifiability
-
-§5.26 covers obfuscation — making WireGuard traffic look like HTTPS. This section goes further: making it impossible for a passive observer to build a reliable signature of Mesh Infinity traffic at all, even if they know what to look for. This is an opt-in mode, not a default — it has real performance cost and is appropriate for high-threat contexts.
-
-**Threat model:** A sophisticated passive observer (state-level DPI, ISP-level analysis, exit node operator) watches traffic flows and attempts to identify Mesh Infinity nodes by statistical fingerprint — packet timing distributions, size distributions, handshake patterns, connection lifetimes, protocol byte patterns. §5.26 addresses protocol fingerprinting. §5.27 addresses statistical fingerprinting.
-
-#### 5.27.1 Polymorphic Encryption (Evasion Mode)
-
-Standard encrypted traffic, even with obfuscation, has detectable statistical properties: regular packet sizes (from padding buckets), predictable inter-packet timing, consistent cipher suite negotiation. An observer who has collected enough Mesh Infinity traffic samples can build a classifier.
-
-Polymorphic evasion mode varies these properties per-session in ways that defeat classifier training:
-
-**Per-session cipher suite variation:**
-Rather than always negotiating the same cipher suite, the session negotiates from a diverse menu of equivalent-security options. Different sessions between the same two peers may use different suites:
-- ChaCha20-Poly1305 (standard)
-- AES-256-GCM (hardware-accelerated alternative)
-- XChaCha20-Poly1305 (extended nonce variant)
-
-To an observer, two sessions between Alice and Bob look like they might be from different applications because they negotiate differently. Classifier training requires knowing all variants.
-
-**Per-session padding variation:**
-Standard padding uses fixed buckets (§9 padding policy). In polymorphic mode, the bucket selection algorithm is seeded with a per-session random value, so the same message length produces different on-wire sizes across different sessions. Bucket boundaries shift within a constrained range, making size-based fingerprinting unreliable.
-
-**Timing jitter variation:**
-§5.10 specifies timing jitter ranges. In polymorphic mode, the jitter distribution itself varies per-session — sometimes uniform, sometimes Gaussian, sometimes exponential — with parameters seeded per-session. A classifier trained on one jitter distribution fails on another.
-
-**Handshake polymorphism:**
-The WireGuard handshake has a fixed byte structure. In polymorphic mode, a synthetic preamble of random length (0–512 bytes of random data) is prepended before the handshake. The peer recognises the actual handshake start via a per-session agreed offset derived from the preauth key material. To an observer, the handshake start position is unpredictable.
-
-```rust
-PolymorphicSessionParams {
-    cipher_suite:       CipherSuiteChoice,
-    padding_seed:       [u8; 16],   // per-session seed for bucket variation
-    jitter_distribution: JitterDistribution,
-    handshake_preamble: u16,        // bytes of synthetic preamble
-}
-```
-
-These parameters are negotiated during session setup using the existing preauth key channel, so both sides agree without the negotiation itself being observable.
-
-#### 5.27.2 Memory Obfuscation of Key Material
-
-This addresses a different threat: an adversary with read access to process memory (via kernel exploit, cold boot attack, or memory forensics after a device seizure). The goal is to make key material hard to find and read in memory even with direct access.
-
-**Key material is never in plaintext in heap memory for longer than necessary:**
-
-```
-Standard approach (vulnerable):
-  key_bytes = [1,2,3,...,32]   // plaintext key in heap
-  decrypt(ciphertext, key_bytes)
-  key_bytes zeroed
-
-Obfuscated approach:
-  key_xor_mask = random_32_bytes()
-  stored_key = key_bytes XOR key_xor_mask  // stored form
-  ...
-  live_key = stored_key XOR key_xor_mask   // reconstructed only during use
-  decrypt(ciphertext, live_key)
-  live_key.zeroize()                       // zeroed immediately after use
-```
-
-Keys are stored in an XOR-masked form with a random mask that changes on each access. The plaintext key exists in memory only for the duration of a single cryptographic operation, then is immediately zeroed. This does not protect against an attacker who can observe memory during an active operation, but significantly raises the bar for forensic extraction after the fact.
-
-**Guard pages:** Key storage regions are flanked by guard pages (memory mapped as no-access). Any read or write outside the key storage area triggers a fault, which can be caught and used to zero all sensitive material before the process terminates. This detects buffer overflow exploits attempting to read adjacent key memory.
-
-**mlock and swap prevention:** All memory regions containing key material are locked with `mlock()` / `VirtualLock()` to prevent the OS from swapping them to disk. This is already specified in §10.0.0 and §3 pending pass — the polymorphic mode applies the same requirement to all active session keys at the transport layer.
-
-#### 5.27.3 DPI Resistance for Clearnet Users
-
-Clearnet users accessing Garden or other services via the web bridge have no mesh client — they are using a standard browser. They cannot benefit from WireGuard-level obfuscation. But we can extend meaningful DPI resistance to them through the bridge layer:
-
-**TLS fingerprint normalization:**
-The clearnet bridge presents a TLS fingerprint that matches common legitimate traffic (matching the JA3 fingerprint of popular browsers). This makes the bridge's TLS handshake indistinguishable from a normal web server at the fingerprint level.
-
-**HTTP/2 and HTTP/3 support:**
-The bridge supports HTTP/2 and HTTP/3 (QUIC). H3 traffic is particularly hard to inspect because QUIC encrypts all headers.
-
-**Certificate transparency and legitimate certs:**
-The bridge uses Let's Encrypt or equivalent certificates, so the certificate chain is identical to any other legitimate HTTPS server. There is no self-signed cert that could serve as a fingerprint.
-
-**Response timing normalization:**
-DPI correlation attacks can sometimes identify specific applications by response timing patterns (how long between request and response for different content types). The bridge introduces controlled jitter in response timing to blur these patterns.
-
-**Pluggable transport bootstrapping for censored regions:**
-Users in censored regions attempting to install Mesh Infinity or reach the clearnet bridge may find the bridge itself blocked. The bootstrap problem: how do you get your first connection when the normal path is blocked?
-
-Solutions, in order of strength:
-1. **Domain fronting via clearnet bridge** — bridge domain is fronted behind a CDN that cannot be blocked selectively. Noted in §5.26 Mode 5 (meek). Expensive but effective.
-2. **Mirror domains** — multiple clearnet bridge addresses, any one of which may be unblocked. App ships with a list; tries each.
-3. **Built-in bootstrap nodes** — known mesh nodes that can act as initial relays, reachable via obfs4 or other pluggable transports.
-4. **Community-shared bridges** — users in non-censored regions can share their node as a bootstrap bridge for censored-region users. Opt-in, bandwidth-limited.
-
-The bootstrap process is the hardest part of censorship resistance. Mesh Infinity therefore defines a concrete v1 bootstrap ladder instead of leaving this to a later pass.
+Bootstrap is the hardest censorship-resistance problem. Mesh Infinity therefore defines a concrete bootstrap ladder instead of leaving it to later implementation.
 
 **Mandatory bootstrap ladder:**
-1. **Signed bootstrap manifest** — every build ships with a signed manifest containing mirror domains, fronted endpoints, bootstrap bridge descriptors, and their pinned keys/fingerprints. The manifest is signed by the project release key and may be updated over the mesh via §17.10.
-2. **Transport order** — the client attempts bootstrap in this order unless the user overrides it: `meek/domain-fronted` → `mirror domains over HTTPS` → `obfs4/bootstrap bridge` → `community-shared bridge`.
-3. **Pinned identity** — every bootstrap endpoint is pinned by release-signed descriptor plus endpoint key material. DNS or routing alone must never be sufficient to trust a bootstrap endpoint.
-4. **No silent downgrade** — if obfuscated bootstrap fails and the next available path is materially more detectable, the user must be told exactly which downgrade is about to occur. Automatic fallback may continue only within the same exposure class.
-5. **Failure indistinguishability** — unauthorized or malformed bootstrap probes must fail as timeout, TLS failure, or generic network failure. They must not emit a Mesh-distinctive rejection signature.
-6. **Rotation and retry** — endpoints within the same class are tried in randomized order with exponential backoff and per-endpoint failure budgets to avoid creating a stable retry fingerprint.
-7. **Cache discipline** — successfully used bootstrap descriptors are cached locally with expiry and pinning metadata so a later reinstall or reconnect does not depend on the original distribution channel.
+1. **Signed bootstrap manifest** — every build ships with a signed manifest containing mirror domains, helper descriptors, pluggable bootstrap descriptors, and pinned keys/fingerprints. The manifest is signed by the project release key and may be updated over the mesh via §17.10.
+2. **Transport order** — the client attempts bootstrap in this order unless policy overrides it: `conditional fronted bootstrap` → `mirror domains over ordinary HTTPS` → `pluggable bootstrap bridge` → `community-shared bridge`.
+3. **Pinned identity** — DNS or routing alone must never be sufficient to trust a bootstrap endpoint.
+4. **No silent downgrade** — if the next available path is materially more detectable, the user or policy layer must be informed. Automatic fallback may continue only within the same exposure class.
+5. **Failure indistinguishability** — failed bootstrap attempts must look like ordinary network failure.
+6. **Rotation and retry** — randomized order, exponential backoff, and per-endpoint failure budgets are mandatory to avoid stable retry fingerprints.
+7. **Cache discipline** — working descriptors are cached locally with expiry and pinning metadata.
 
-This bootstrap ladder is part of the core censorship-resistance behavior, not an optional later feature.
+### 5.27 Deniable Carrier Ladder
 
-#### 5.27.4 Hardware Acceleration Integration
+§5.26 defines compliant primary carriers. This section defines what happens when those are unavailable, too risky, blocked, too expensive, or intentionally downgraded for survival. The goal is not invisibility. The goal is to preserve secure communication while making the traffic plausibly interpretable as ordinary infrastructure, media, or application behavior.
 
-Polymorphic mode has CPU cost. To prevent performance from being a barrier to enabling it:
+Unless a subsection explicitly says otherwise, deniable carriers do **not** redefine the core packet format. They carry one of two payload types:
 
-**Hardware detection and fallback:**
-At startup, the crypto module detects available hardware acceleration:
-- AES-NI (x86/x64) — enables AES-256-GCM at near-line-speed
-- ARMv8 Crypto Extensions — enables AES and SHA acceleration on mobile
-- Apple Secure Enclave — key storage and operation offload (already §3.6)
-- AVX2/AVX-512 — enables vectorized ChaCha20
+1. a WireGuard-protected mesh frame, when the session is still using tunnel semantics, or
+2. a four-layer Mesh Infinity sealed envelope (§7), when the carrier is operating in non-tunnel degraded/covert mode.
 
-When hardware acceleration is available, the performance cost of polymorphic variation is negligible — the CPU overhead is dominated by the hardware-accelerated primitive, not the variation overhead. On devices without hardware acceleration, polymorphic mode carries a measurable CPU penalty and is highlighted as such in the UI: *"Unidentifiability mode is active. Older devices may experience slower performance."*
+So the system model is stable:
 
-#### 5.27.5 Activation
+- WireGuard remains the primary tunnel cryptography.
+- The four-layer packet/envelope system remains the non-tunnel payload/security format.
+- The carrier ladder chooses only the embedding and transport surface.
 
-Traffic unidentifiability mode is opt-in via `ThreatContext` and explicit user setting:
+#### 5.27.1 Core Definitions
+
+**Deniable carrier:** Any ordinary network, media, or application traffic surface that can move Mesh Infinity sealed envelopes while preserving plausible innocent interpretation to an outside observer.
+
+**Steganographic broker:** A Mesh Infinity node that observes, classifies, brokers, or synthesizes deniable carriers on behalf of one or more peers.
+
+**Passive assist:** A routing mode in which Mesh Infinity does not take over the full data path, but observes permitted local or transit traffic to derive cover context, peer-presence hints, timing windows, and opportunities to open parallel covert sessions.
+
+**Brokered mimic carrier:** A deniable carrier where Mesh Infinity controls both broker edges and emits traffic shaped like an external protocol or application family, but hidden Mesh Infinity envelopes are consumed by Mesh Infinity before reaching the modeled third-party service under normal operation.
+
+**Pass-through carrier:** A deniable carrier that genuinely traverses third-party infrastructure such as ordinary web hosting, media hosting, or other standard internet middleware.
+
+**Parallel covert session:** A Mesh Infinity session opened adjacent to an existing observed flow, using the observed flow only as cover context or timing context, not as the in-band payload substrate.
+
+#### 5.27.2 Degraded Secure Session States
+
+Every deniable carrier operates in one of four session states:
+
+- `FullSession`
+- `ReducedSession`
+- `CovertSession`
+- `SurvivalSession`
+
+These have the following maximum capabilities:
+
+| State | Allowed scope |
+|---|---|
+| `FullSession` | Standard messaging, files, control traffic, interactive features |
+| `ReducedSession` | Messaging, urgent attachments, control traffic, compact sync, key rotation |
+| `CovertSession` | Tiny sealed envelopes, delayed delivery, heavy redundancy, FEC |
+| `SurvivalSession` | Bootstrap, rendezvous, warnings, revocation, key rotation seeds, emergency notices only |
+
+The solver MUST assign every carrier family a maximum permitted session state. A carrier MUST NOT carry traffic above its validated state. When bandwidth collapses or perturbation increases, capability downgrades before cryptographic guarantees do.
+
+#### 5.27.3 Carrier Families
+
+Mesh Infinity defines the following deniable carrier families:
+
+**Borrowed infrastructure carriers**
+- HTTPS web servers
+- reverse proxies and middleware
+- HTTP/2 and HTTP/3 endpoints
+- media hosting and segmented streaming infrastructure
+- message-oriented middleware and durable queues where permitted by policy
+
+These are preferred deniable carriers because they are common, high-bandwidth, and plausibly multi-purpose.
+
+**Borrowed application carriers**
+- game-session-like flows
+- VoIP/video-call-like flows
+- collaboration and synchronization traffic
+- remote-desktop-like flows
+- other modeled protocol families
+
+These are divided into `PassThroughApplicationCarrier` and `BrokeredMimicApplicationCarrier`. Arbitrary pass-through application embedding is experimental unless explicitly validated. Brokered mimic is preferred when Mesh Infinity controls both broker edges.
+
+**Media-derived deniable carriers**
+- live media paths
+- segmented media playlists and objects
+- captions, subtitles, alternate renditions, and track selection
+- thumbnails, cover images, podcast objects, or other durable media assets
+
+These are optimized for store-and-forward, delayed retrieval, and deniable dead drops.
+
+**Physical / out-of-band carriers**
+- ultrasonic/acoustic links
+- QR and visual transfer
+- removable media
+- local radio and offline transports
+
+These are valid members of the same deniable carrier ladder and use the same sealed-envelope abstraction.
+
+#### 5.27.4 Carrier Security Rules
+
+All deniable carriers obey the following rules:
+
+1. Every deniable carrier moves only authenticated encrypted Mesh Infinity envelopes.
+2. The carrier MUST be treated as hostile, reorderable, delayable, droppable, replayable, and transformable.
+3. Carrier corruption MUST cause retry, downgrade, or discard. It MUST NOT disclose plaintext or weaken authenticity.
+4. A carrier MUST NOT be trusted for metadata privacy beyond what its threat model explicitly supports.
+5. A carrier MUST fail closed: if extraction fails, residual traffic must be plausibly attributable to ordinary noise, padding, timing variation, discardable metadata, or harmless protocol artifacts.
+6. Mesh Infinity MUST NOT claim indistinguishability against an active nation-state adversary unless the carrier family has been validated under active normalization and perturbation.
+7. Deniability is a property of interpretation, not invisibility. The implementation MUST distinguish observer deniability, provider deniability, and counterparty deniability in all threat claims.
+
+#### 5.27.5 Brokered Mimic Carriers
+
+In a brokered mimic carrier, Mesh Infinity controls both broker edges of the visible traffic pattern.
+
+The visible traffic is shaped to resemble a plausible ordinary protocol or application family, but hidden Mesh Infinity envelopes are extracted by Mesh Infinity before third-party application delivery under normal operation.
+
+Normal-operation requirements:
+
+1. Hidden payload MUST NOT need to reach the modeled third-party application or service.
+2. Hidden payload MUST be stripped before forwarding to any third-party application or service in the normal path.
+3. Any residual hidden content that escapes due to failure MUST be semantically ignorable and plausibly attributable to benign noise.
+4. Correctness MUST NOT depend on the tolerance or cooperation of the modeled third-party protocol.
+
+Brokered mimic carriers are preferred over pass-through application carriers because they reduce dependency on external application behavior while preserving plausible protocol shape.
+
+#### 5.27.6 Passive Assist and Parallel Covert Sessions
+
+Passive assist is an optional routing mode in which Mesh Infinity observes permitted local or transit traffic and derives:
+
+- peer IP presence
+- path hints
+- activity windows
+- cover opportunities
+- candidate deniable carrier families
+
+Passive assist does not imply in-band modification.
+
+When Mesh Infinity is not on-path for a flow, it MUST treat observed traffic only as cover context or session-trigger context. It MAY open a parallel covert session correlated with that flow. It MUST NOT assume it can safely embed hidden payloads inside arbitrary third-party traffic that it only observes.
+
+Passive assist is valid on:
+- desktop operating systems with explicit packet-capture privileges
+- Unix hosts
+- routers and middleboxes that already observe transit traffic
+
+Passive assist is limited or unavailable on mobile operating systems except where the platform routes traffic through a VPN or filtering interface.
+
+#### 5.27.7 Routers, Unix Hosts, and Internet Middleware as Steganographic Brokers
+
+Routers, Unix hosts, and internet middleware are first-class Mesh Infinity deployment targets for deniable transport brokering.
+
+These platforms are especially valuable because they already possess:
+
+- many simultaneous ordinary connections
+- high bandwidth
+- continuous uptime
+- natural traffic diversity
+- useful transit position
+- legitimate operational reasons to inspect, route, proxy, or relay traffic
+
+**Router and firewall appliances**
+
+Router appliances, including pfSense-, OPNsense-, OpenWrt-, and similar firewall/router deployments, are ideal steganographic brokers.
+
+A router broker may operate in any subset of these modes:
+
+- `PassiveAssistRouter`
+- `SelectiveBrokerRouter`
+- `FullTunnelRouter`
+- `CoverTrafficRouter`
+
+Capabilities include:
+
+- observing transit flows
+- classifying candidate carriers
+- opening parallel covert sessions
+- selectively brokering chosen flows
+- generating carrier-family-specific cover traffic
+- acting as durable store-and-forward infrastructure
+
+A router broker MUST keep the default fast path available. Steganographic brokering MUST be policy-gated and MUST NOT silently force all traffic through the mesh.
+
+**Unix hosts**
+
+Unix hosts, including Linux and BSD-class systems, are valuable steganographic brokers and passive-assist nodes.
+
+Typical use cases:
+
+- home servers
+- newsroom or mutual-aid relays
+- colocated helper nodes
+- privacy gateways
+- high-bandwidth NAT edge boxes
+- workstation-class passive-assist nodes
+
+Unix hosts may provide:
+
+- packet capture for passive assist
+- transparent interception where policy allows
+- selective brokering
+- helper-server roles
+- media dead-drop hosting
+- deniable transport relaying
+
+**Internet middleware**
+
+Internet middleware is explicitly in scope as a deployment surface, including:
+
+- reverse proxies
+- edge caches
+- HTTP middleware
+- application gateways
+- streaming origins
+- message-oriented infrastructure
+- hosted helper services
+
+A middleware broker is legitimate when it provides ordinary user-visible service even without Mesh Infinity traffic.
+
+**Design preference:** Mesh Infinity prefers deniable carriers hosted on infrastructure that is already useful without Mesh Infinity — routers, firewall appliances, Unix servers, reverse proxies, streaming origins, and middleware nodes. A useful box with many ordinary connections is a better steganographic broker than a purpose-built disguise node with no innocent function.
+
+#### 5.27.8 Cover Traffic in Deniable Carriers
+
+Deniable carriers may themselves be used as cover traffic sources.
+
+Three kinds of cover are recognized:
+
+- `AmbientCover` — ordinary legitimate traffic already occurring
+- `SyntheticCarrierCover` — Mesh Infinity emits plausible carrier activity with no user payload
+- `BorrowedRelayCover` — Mesh Infinity carries another user's sealed envelopes through the same carrier family
+
+Synthetic carrier cover MUST remain behaviorally plausible for that carrier family. Robotic, repetitive, or statistically abnormal synthetic behavior is prohibited because it creates a fingerprint rather than cover.
+
+The solver SHOULD reduce synthetic cover when sufficient ambient or borrowed cover exists.
+
+#### 5.27.9 Carrier Validation Levels
+
+Every deniable carrier profile has one validation level:
+
+- `Verified`
+- `Experimental`
+- `Unsafe`
+
+Verified:
+- tested under realistic passive observation
+- tested under normalization/transformation expected for that carrier
+- assigned a maximum session state
+
+Experimental:
+- plausible but not yet sufficiently validated
+- limited to `CovertSession` or `SurvivalSession` unless elevated by testing
+
+Unsafe:
+- known to be too transformable, too fingerprintable, or too brittle
+- MUST NOT be selected automatically
+
+The solver MUST honor validation level when selecting carriers.
+
+#### 5.27.10 Unidentifiability Enhancements
+
+Standard encrypted traffic, even with compliant carriers, still has detectable statistical properties. The following optional enhancements make classifier training less reliable:
+
+- per-session padding variation
+- per-session jitter-distribution variation
+- carrier-lifecycle variation (stream persistence, burst spacing, idle behavior)
+- cover-budget variation within policy bounds
+
+These parameters are negotiated during session setup using the existing preauth channel or selected locally by the broker. They MUST NOT introduce a new stable Mesh-specific fingerprint.
+
+**Memory hardening of active key material:** Sensitive active-session key material MAY be kept in XOR-masked form in memory between operations, reconstructed only for use, then immediately zeroized. Guard pages and swap prevention (`mlock()` / `VirtualLock()`) apply to active transport-session material as well.
+
+#### 5.27.11 Activation and User Policy
+
+Deniable carriers and passive assist are opt-in via `ThreatContext`, policy, and user settings:
 
 ```rust
-UnidentifiabilityMode {
-    Disabled,           // §5.26 obfuscation only (default)
-    Enabled,            // full §5.27 polymorphic mode
-    Auto,               // enabled when ThreatContext >= Elevated
+DeniableCarrierMode {
+    Disabled,
+    Enabled,
+    Auto,
 }
 ```
 
-This is a per-session setting negotiated between peers — both sides must support and agree to it. If one side doesn't support polymorphic mode, the session falls back gracefully to standard §5.26 obfuscation. Capability is advertised in the session handshake extension.
+```rust
+PassiveAssistMode {
+    Disabled,
+    MetadataOnly,
+    Enabled,
+}
+```
+
+`Auto` enables deniable carriers when `ThreatContext >= Elevated` or when the advanced routing policy explicitly requires them.
+
+The advanced routing surface includes a `Steganographic traffic` toggle. Enabling it does not imply that all device traffic is sent through Mesh Infinity. Instead, it authorizes the solver to:
+
+- use deniable carriers
+- open parallel covert sessions
+- use passive assist where permitted
+- broker selected carrier families
+- emit carrier-family-specific cover traffic
+- downgrade into `ReducedSession`, `CovertSession`, or `SurvivalSession` when necessary
+
+The UI must describe this honestly:
+- can improve deniability
+- can increase CPU/network usage
+- can require elevated privileges on desktop/router platforms
+- is not guaranteed to defeat active nation-state disruption
 
 ---
 
@@ -4210,6 +4536,38 @@ The goal is data poisoning, not invisibility. Make observable traffic always pre
 
 Delivery confirmation: signed `DeliveryReceipt { packet_id, recipient, timestamp, signature }`.
 
+#### 6.5.1 Pre-Authentication Abuse Controls
+
+Mesh Infinity must reject abusive traffic before it performs expensive cryptography, recursive route discovery, relay allocation, service dispatch, DNS resolution, or store-and-forward writes. This is mandatory because anonymous and privacy-preserving paths cannot rely on public IP reputation without weakening the threat model.
+
+The routing layer applies a staged pre-authentication gate to tunnel establishment, service connection attempts, relay requests, store-and-forward deposits, and any packet that would trigger private routing discovery:
+
+1. **Structural validation first:** malformed addresses, unsupported `address_indicator` / `route_determinant` pairs (§17.6.1), invalid compression, impossible scope, invalid packet length, and duplicate packet IDs are dropped without response.
+2. **No amplification before proof:** before a requester proves it can receive replies or has an authenticated relationship, the node's response MUST be no larger than the request and SHOULD usually be silence. Error detail is local-only unless the requester is already authenticated.
+3. **Stateless return proof where locators matter:** clearnet, LAN, Tailscale, ZeroTier, and other locator-bearing route determinants SHOULD use a stateless cookie challenge under load before expensive work. The cookie is computed from a short-lived node secret, the observed return locator, the requested address header, and the request nonce. Cookies expire within 2 minutes and are never stored server-side.
+4. **Relationship proof where anonymity matters:** mesh-native, relay, anonymous rendezvous, and private-plane requests MUST prove knowledge of the destination context before expensive work. Valid proofs include a MAC keyed by a preauth token, a trust-channel capability, a sealed-sender deposit token, or an equivalent relationship-scoped authenticator. The proof must bind the `trust_relationship_id`, packet nonce, and requested service/port.
+5. **Adaptive client puzzles under overload:** public services, relay nodes, rendezvous points, and S&F nodes MAY advertise an optional client puzzle. The puzzle effort is zero during normal operation and rises only when local queues, CPU, memory, or bandwidth cross overload thresholds. Verified puzzle effort gives priority in admission queues but is never treated as identity or trust.
+6. **Bounded queues:** every pre-auth queue is bounded by memory, CPU, bandwidth, and per-route-domain limits. When full, the node drops lowest-priority unauthenticated work first, then lower-trust authenticated work. InnerCircle or trusted peers are not exempt from caps; compromised trusted nodes remain DoS vectors.
+7. **Opaque failure:** unauthenticated failures use indistinguishable drops or coarse retry hints. The node must not reveal whether a destination exists, whether an address is private, whether a service is present, whether an Infinet route exists, or which ACL failed.
+8. **Route-domain accounting:** quotas are tracked separately for route determinants such as clearnet, Infinet, Tailscale, ZeroTier, LAN, relay, RF, and proximity. Flooding one route domain must not starve unrelated domains.
+
+Admission priority is local policy:
+
+```rust
+PreAuthClass {
+    LocalControl,          // local UI, node management, emergency controls
+    EstablishedTrust,      // existing authenticated trust relationship
+    RelationshipProof,     // valid preauth/capability/deposit token
+    ValidCookie,           // return-path cookie verified
+    ValidPuzzle,           // overload puzzle solved
+    Unknown,               // structurally valid but no proof
+}
+```
+
+Privacy rule: admission class is never forwarded as packet metadata. Each hop recomputes its own local class from what it can verify. This prevents a relay from learning more relationship information than it needs for local abuse control.
+
+Implementation note: this follows the same defensive pattern used by datagram protocols and anonymous services: cheap structural drops first, stateless return-path cookies to avoid amplification, and adaptive proof-of-work only when anonymity prevents ordinary rate limits. Proof-of-work is a load-shedding tool, not a trust mechanism, and must not be required during normal operation.
+
 ### 6.6 Loop Prevention
 
 Routing loops are prevented by:
@@ -4437,10 +4795,10 @@ When the active transport between two peers is a **physical proximity transport*
 - Layer 2 / Raw Ethernet (same physical segment) — §5.14
 
 When a paired peer is reachable over any of these transports **and proximity direct is not prohibited** (see override below):
-1. Direct mode is **automatically selected** by the transport solver — no user action needed.
-2. **No confirmation dialog** is shown — proximity is self-authenticating.
+1. Direct mode is **automatically selected** by the transport solver only for trusted peers in `ThreatContext::Normal` and for contexts where proximity direct has not been disabled.
+2. **No confirmation dialog** is shown in Normal mode for an already trusted peer — proximity plus existing trust is sufficient for ordinary use. Proximity alone is not a trust grant.
 3. The WireGuard tunnel runs directly over the proximity transport. The four-layer message encryption (§7.2) still applies — the content is always encrypted. Only the routing indirection is skipped.
-4. **No red banner.** Instead, a subtle transport indicator in the thread AppBar: a small icon showing the active transport (e.g., Bluetooth icon, WiFi Direct icon) with no warning colour. Proximity direct is normal, not dangerous.
+4. **No red banner in Normal mode.** Instead, a subtle transport indicator in the thread AppBar: a small icon showing the active transport (e.g., Bluetooth icon, WiFi Direct icon) with no warning colour. Proximity direct is normal for trusted everyday use.
 5. **Ambient traffic threshold (condition 2 below) does not apply** — there is no network-level anonymity set to worry about on a Bluetooth link.
 
 **Global proximity direct override:** Users can prohibit automatic proximity direct connections system-wide via Settings → Security → "Always route through mesh."
@@ -4458,6 +4816,7 @@ ProximityDirectPolicy {
 When set to `MeshAlways`, proximity transports still function as byte pipes — a Bluetooth link carries WireGuard tunnels that route through the mesh normally. The transport is local but the routing is not direct. This is appropriate when:
 - The device is in a hostile physical environment (e.g., a seized device could be placed near a target to silently establish a direct Bluetooth link)
 - The user's operational security requires that no connection, even physical, bypasses mesh routing
+- `ThreatContext::Elevated` is active for an unverified or newly paired peer — the UI asks before direct proximity routing
 - `ThreatContext::Critical` is active — in Critical mode, `MeshAlways` is **forced automatically** and cannot be overridden. The user can still use proximity transports but all traffic is mesh-routed.
 
 **Settings UI** (§22.10.1, Security section):
@@ -5817,7 +6176,7 @@ The UI presents: membership summary, available tools, recommended approach, and 
 
 This section specifies the profile hierarchy — how identity is presented in different contexts, how profiles are linked or kept separate, and how updates propagate.
 
-- **§9.1 Global Public Profile** — opt-in, network-map visible, erasure mechanism
+- **§9.1 Global Public Profile** — opt-in, network-map visible, public searchability controls, erasure mechanism
 - **§9.2 Public Paired Profile** — delivered at pairing, not searchable, shown to all paired contacts regardless of trust level
 - **§9.3 Global Private Profile** — trusted-peer-only, exchanged via cryptographic escrow
 - **§9.4 Per-Context and Per-Group Profiles** — relationship-specific presentations; §9.4.3 per-Garden profiles
@@ -5839,6 +6198,8 @@ The global public profile is **explicitly opt-in** — many users, especially in
 - `public_bio` (optional string, max 128 bytes) — a short public tagline. Analogous to Discord's profile tagline — a one-liner visible to anyone. Distinct from the full bio in the paired profile (§9.2).
 - `avatar_hash` (optional bytes) — SHA-256 hash of a publicly available avatar image. Fetched separately from the hosting node as a service (§12), via IPFS/content-addressed storage (§11), or any other reachable endpoint. The hash is the content address; the fetch mechanism is flexible.
 - `public_services` (list) — public service advertisements the user wants discoverable (§12).
+- `public_username` (optional string) — an exact-match contact handle for initiating contact without revealing phone or email. It is not the display name and is not shown to existing contacts unless the user explicitly shares it.
+- `searchable_identifiers` (list) — opt-in phone/email/username resolver records (§9.1.1). Searchability is separate from whether the underlying identifier is shown on the profile.
 
 **Address associability — `address_is_associable` per address:**
 
@@ -5854,7 +6215,72 @@ This allows a node to have, for example, one address tied to its social identity
 - Nodes with `identity_is_public = false` have no public profile in the map; their addresses appear without profile data
 - Addresses with `address_is_associable = false` appear in the map with no profile reference, even if the node has `identity_is_public = true`
 
-#### 9.1.1 Global Public Profile Erasure
+#### 9.1.1 Public Searchability Controls
+
+Public profile discovery is designed for ordinary users who expect to find friends by familiar handles, phone numbers, and email addresses, while still allowing high-risk users to remove those links entirely. Searchability and visibility are separate controls:
+
+- **Who can find me by this identifier?** Controls whether a lookup for a phone number, email address, or username can resolve to this Mesh identity.
+- **Who can see this identifier on my profile?** Controls whether the raw phone number or email address is displayed after a relationship exists.
+
+Default settings:
+
+| Identifier | Default findability | Default profile visibility |
+|------------|---------------------|----------------------------|
+| Username | Off until created | Not shown to existing contacts unless shared |
+| Phone number | Contacts-only if verified and imported by the user; otherwise off | Nobody except people who already have it locally |
+| Email address | Off | Nobody |
+
+The user can set each identifier independently:
+
+```rust
+IdentifierKind { Username, PhoneNumber, EmailAddress }
+
+Findability {
+    Off,             // no resolver record exists
+    ExistingPeers,   // paired/trusted peers can merge local records
+    ContactsOnly,    // private contact discovery can confirm known identifiers
+    PublicExactMatch // any user can perform an exact lookup
+}
+
+ProfileVisibility {
+    Nobody,
+    ExistingPeers,
+    TrustedPeers,    // Level 6+
+    Everybody
+}
+
+SearchableIdentifier {
+    kind:              IdentifierKind,
+    display_value:     Option<String>,    // present only when ProfileVisibility permits display
+    resolver_token:    [u8; 32],          // OPRF/PSI-derived token; never raw phone/email
+    verification:      IdentifierVerification,
+    findability:       Findability,
+    profile_visibility: ProfileVisibility,
+    resolver_scope:    Vec<[u8; 32]>,     // helper IDs authorized to serve this record
+    expires_at:        u64,
+    sequence:          u64,
+    signature:         [u8; 64],
+}
+
+IdentifierVerification {
+    Unverified,
+    SelfAsserted,
+    VerifiedByResolver([u8; 32]), // helper_id that completed an email/SMS/link challenge
+    VerifiedByPeer([u8; 32]),     // peer identity that attested the identifier out-of-band
+}
+```
+
+**Resolver behavior:**
+1. Phone and email resolver records are opt-in and scoped to explicit `ProfileResolver` helpers (§4.3.1).
+2. A resolver can confirm that a token maps to a signed public contact route; it cannot assert identity without the user's signature.
+3. Clients MUST NOT upload raw contacts, raw phone numbers, or raw email addresses. Bulk address-book matching requires a private contact discovery protocol based on OPRF or private set intersection. If only exact lookup is available, the UI must present it as exact lookup rather than address-book sync.
+4. Raw phone/email display is never implied by findability. A user may be findable by phone number while still hiding the number from everyone who does not already know it.
+5. If a user disables findability, helpers delete the resolver record and publish a signed tombstone for the old token. Existing paired conversations continue, but new lookup by that identifier fails.
+6. If a lookup by phone/email and a lookup by username resolve to the same identity, the UI may merge the chat only after showing a plain-language notice that both routes reached the same person.
+
+**Abuse controls:** phone/email namespaces are enumerable, so public exact-match search is rate-limited per helper, per route determinant, and per capability token. Repeated failed lookups trigger exponential backoff and may require proof-of-work or a blind rate token. These controls slow scraping and spam but do not create a central account authority.
+
+#### 9.1.2 Global Public Profile Erasure
 
 Erasing a global public profile is a routine privacy tool, not an extreme action. The public and private profiles are cryptographically separate — erasure does not touch private identity or per-context relationships.
 
@@ -6062,14 +6488,16 @@ This means contact hint distribution is naturally scoped — a hint only travels
 
 ## 10. Integrated Social Channels
 
-Mesh Infinity ships four first-party communication channel types, each designed for a distinct communication paradigm:
+Mesh Infinity ships six first-party communication channel types, each designed for a distinct communication paradigm:
 
 - **Chat (§10.1)** — direct and group messaging between paired contacts. Signal-equivalent: persistent E2E encrypted conversations, voice/video calls, file sharing. Requires a completed pairing — not a trusted (Level 5+) relationship. Any paired peer can chat with you.
 - **Garden (§10.2)** — persistent community spaces for organized groups. Discord-equivalent: named channels, roles, message history, moderation, bots. Requires community membership. Hosting requires the Garden plugin (§18).
 - **Relay (§10.3)** — encrypted dead-drop boxes. No trust relationship required. Blind storage nodes hold encrypted payloads for retrieval by anyone with the relay coordinates.
 - **Proximity Share (§10.4)** — rapid local file and content distribution over local mesh transports (BLE/WiFi Direct). AirDrop-equivalent. No persistent relationship or internet connectivity required.
+- **Commons (§10.5)** — Reddit-equivalent: topic boards, posts, comments, voting, scoped reputation, moderation, and searchable public or semi-public archives. Mask-native by design.
+- **Wiki (§10.6)** — durable collaborative knowledge bases with page history, revision review, citations, mirrors, and page-scoped file hosting. Reading can be anonymous or capability-based where policy permits.
 
-These four paradigms cover: people you know (Chat), communities you belong to (Garden), communications where you don't want a persistent relationship (Relay), and rapid local sharing (Proximity Share).
+These six paradigms cover: people you know (Chat), communities you belong to (Garden), communications where you don't want a persistent relationship (Relay), rapid local sharing (Proximity Share), public discussion and discovery (Commons), and durable knowledge preservation (Wiki).
 
 ### 10.0 Common Rules
 
@@ -6079,26 +6507,23 @@ These rules apply to **all** §10.x applications. They are non-negotiable implem
 
 **Encryption:** All social channels use the four-layer scheme (§7.1) for discrete blob payloads by default. Streams (voice, video) use the WireGuard inner tunnel. This is the default — but not an absolute requirement for all content in all contexts.
 
-**Content security tiers:** Not all content requires the same protection level. Some Garden content is intentionally public — an announcement from a public Garden that should be clearnet-readable is not a security failure, it's a design choice. The security tier is set per-channel by Garden admins and cannot be lowered below what the Garden's network type permits:
+**Content security tiers:** Not all content requires the same protection level. Some Garden, Commons, and Wiki content is intentionally public — an announcement from a public Garden, a public Commons board post, or a public Wiki page that should be clearnet-readable is not a security failure, it is a design choice. The security tier is set by the owning context: per-channel for Garden, per-board/post for Commons, and per-wiki/page/attachment for Wiki. It cannot be lowered below what that context's access mode permits:
 
 ```rust
 ChannelSecurityTier {
     Encrypted,       // Default. Full 4-layer encryption. Server-blind.
     PublicPlaintext, // Content is not encrypted at rest. Server can read content.
-                     // Suitable for public announcements intended for clearnet access.
-                     // Available on any Garden — but only meaningful for Public/Open Gardens
-                     // where non-members can actually reach the content. A Closed or Private
-                     // Garden admin may choose PublicPlaintext for specific channels (e.g., a
-                     // public-facing announcements feed) while keeping the rest encrypted.
+                     // Suitable for public announcements, public Commons boards,
+                     // and public Wiki pages intended for clearnet or public mesh access.
                      // Members are always informed visually when posting to PublicPlaintext.
 }
 ```
 
-`PublicPlaintext` channels are visibly marked in the UI — members always know they are posting in a context where content is not encrypted at rest. Chat (§10.1) never uses `PublicPlaintext` — it is only available in Garden (§10.2). Relay (§10.3) is always encrypted.
+`PublicPlaintext` contexts are visibly marked in the UI — members always know they are posting or editing in a context where content is not encrypted at rest. Chat (§10.1) never uses `PublicPlaintext`. Relay (§10.3) is always encrypted. Garden (§10.2), Commons (§10.5), and Wiki (§10.6) may use it only where their access model explicitly permits public content.
 
-**Store-and-forward:** All §10.x applications use the general store-and-forward protocol (§6.8). No application implements its own queueing. Applications register with the S&F layer via `application_id` and receive delivered payloads through it. **Exception: §10.3 Relay** — Relay implements its own deposit/retrieval storage layer because payloads must persist on specific nodes with depositor-controlled expiry. Relay does not use S&F.
+**Store-and-forward:** Real-time §10.x application delivery uses the general store-and-forward protocol (§6.8). No application implements its own chat-style queueing. Applications register with the S&F layer via `application_id` and receive delivered payloads through it. **Exceptions:** §10.3 Relay implements its own deposit/retrieval storage layer because payloads must persist on specific nodes with depositor-controlled expiry. §10.4 Proximity Share is local-live only and does not use S&F. Commons (§10.5) and Wiki (§10.6) use durable content records, service indexes, and §11 storage for posts, pages, revisions, and attachments; they use S&F only for notifications, watch updates, moderation events, and direct delivery of private/capability-scoped updates.
 
-**Trust gating:** All channels respect trust levels and ACLs (§8.8). Messages from peers below the channel's minimum trust threshold are rejected before reaching the application. Minimum trust level is configurable per channel per user. **Exception: §10.3 Relay** — Relay has no trust gating by design. Any mesh node can deposit to any relay node. Access control is handled by the optional `RetrievalGate` (§10.3.1), not by trust levels.
+**Trust gating:** All channels respect trust levels, ACLs (§8.8), and their own access modes where access control is configured. Messages or writes from peers below the context's minimum trust threshold are rejected before reaching the application. Minimum trust level is configurable per channel, board, Wiki, or user where the context is not public. **Exceptions:** §10.3 Relay has no trust gating by design. Any mesh node can deposit to any relay node. Access control is handled by the optional `RetrievalGate` (§10.3.1), not by trust levels. Public Commons boards and public Wiki pages may permit anonymous reading and/or anonymous drafts by policy; that is not a trust-gating failure.
 
 **Profile context:** Each channel uses the correct profile tier (§9) automatically — per-relationship for direct messages, per-group for group channels, per-community for community channels, anonymous when operating under an anonymous profile. Applications do not select profiles — the profile system resolves context based on the communication channel.
 
@@ -6124,7 +6549,7 @@ NSFW channel:             🔞 banner + one-time confirmation required on first 
                            18 or older to access it."
                           Confirmation is local and device-specific; not reported to server.
 
-LoSec active:             Persistent amber/red indicator per §6.7 UI requirements
+LoSec active:             Persistent amber/red indicator per §6.9 UI requirements
 
 Encrypted (default):      No banner — encrypted is the unmarked normal state.
 ```
@@ -6146,6 +6571,8 @@ SocialMessage {
                                           //   GARDEN_APP_ID  = [0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                                           //   RELAY_APP_ID   = [0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                                           //     (reserved; Relay uses its own wire format, not SocialMessage)
+                                          //   COMMONS_APP_ID = [0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                                          //   WIKI_APP_ID    = [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                                           //   Plugin-defined: first byte 0xFF, remaining 15 bytes plugin-assigned
     channel_id:       [u8; 32],          // Room/conversation/channel this belongs to
     sender_profile:   ProfileContext,     // Which profile tier the sender is using
@@ -6174,6 +6601,8 @@ ProfileContext {
     RelationshipMask,    // sender is using their relationship-specific mask for this peer/group
     AnonymousMask,       // sender is using an anonymous mask
     GardenProfile,       // sender is using a per-Garden profile (§9.4.3)
+    CommonsMask,         // sender is using a board/topic-scoped Commons mask (§10.5)
+    WikiContributorMask, // sender is using a wiki-scoped contributor mask (§10.6)
 }
 ```
 
@@ -6234,6 +6663,21 @@ Chat is the bundled direct and group messaging application — the primary user 
 - For initial contact with an unknown peer (e.g., someone found via public profile search), messages are addressed to their **public address**
 - Message delivery confirmation: the recipient sends a delivery receipt (a small signed acknowledgement) on reception
 - Offline delivery: if the recipient is unreachable, the message is passed to store-and-forward server nodes (§6.8)
+
+**Safety-critical delivery semantics:** Mesh Infinity treats message non-reception as a safety failure, not a cosmetic failure. A user who can compose and submit a message but whose recipient never receives it is in the same practical position as a user who could not send at all. Therefore, delivery state is defined by what the recipient has verifiably received, not by what the sender's local node has attempted.
+
+Normative states:
+- `Draft`: local only; not submitted to routing.
+- `Sending`: accepted by the UI and being encrypted or routed locally.
+- `Queued`: no live route succeeded; held for retry, S&F, or offline transfer.
+- `Deposited`: at least one S&F, relay, or offline bundle accepted custody, but the recipient has not acknowledged receipt.
+- `Sent`: a live route accepted the packet for immediate transmission; this is still not delivery.
+- `Delivered`: recipient client verified and emitted a signed receipt for this message ID.
+- `Read`: recipient client emitted a read receipt, if enabled.
+- `AtRisk`: attempts continue, but no policy-allowed path has produced custody or a live send within the current urgency window.
+- `Failed`: all policy-allowed attempts are exhausted or blocked by explicit user/security policy.
+
+The UI MUST NOT collapse `Queued`, `Deposited`, or `Sent` into `Delivered`. For high-urgency messages, the client SHOULD attempt redundant delivery across all policy-allowed independent paths, including live routing, S&F, and offline bundle export, while preserving the user's current threat context. Redundancy must be privacy-aware: adding paths is allowed only when it does not violate route determinant scope, trust policy, or anonymity requirements.
 
 **Contact initiation from QR/link/NFC:** When a user scans a QR code, taps an NFC tag, or opens a pairing link (all specified in §8.3), the pairing handshake completes first (§8.3 Σ-protocol), then Chat automatically opens a new conversation with the newly paired peer. The first message in that conversation is delivered to the peer's trusted-channel address since pairing has already established the trust relationship. The user does not need to search for or find the contact separately — pairing and opening Chat are a single flow.
 
@@ -6365,9 +6809,9 @@ ChatSystemEvent {
 
 **Reactions:** Any peer in a conversation can react to any message with an emoji. Reactions are stored as a list of `(emoji, sender_peer_id)` pairs on the message. Reactions are propagated to all conversation participants. Custom emoji from Garden instances the user belongs to are available.
 
-**Read receipts:** The recipient sends a `MessageReceipt { message_id, status: Delivered | Read, timestamp }` back to the sender. Read receipts are visible per-participant in group chats. **Opt-out, enabled by default.** Read receipts only exist within trusted relationships (Level 6+). Users can disable globally or per-conversation. When disabling: *"Read receipts let your contacts know when you've read their messages. Turning them off also means you won't see theirs."* In ThreatContext::Elevated or Critical, the UI surfaces a reminder that read receipts reveal activity timing.
+**Read receipts:** The recipient sends a `MessageReceipt { message_id, status: Delivered | Read, timestamp }` back to the sender. Read receipts are visible per-participant in group chats. Read receipts only exist within trusted relationships (Level 6+). In `ThreatContext::Normal`, read receipts are opt-out and enabled by default for trusted relationships because friends need useful delivery feedback. In `ThreatContext::Elevated`, read receipts default off for new conversations and remain enabled only for relationships where the user already allowed them. In `ThreatContext::Critical`, read receipts are suppressed unless the user explicitly marks the relationship as a safety-critical trusted contact where read confirmation is more important than activity concealment. Users can disable globally or per-conversation. When disabling: *"Read receipts let your contacts know when you've read their messages. Turning them off also means you won't see theirs."*
 
-**Typing indicators:** A `TypingIndicator { conversation_id, typing: bool }` is sent when the user starts or stops typing. Indicators expire automatically after 10 seconds without a refresh. **Opt-out, enabled by default.** Same trusted-relationship scope as read receipts. When disabling: *"Typing indicators show when you're actively composing — even if you don't send. This reveals when you're using the app."*
+**Typing indicators:** A `TypingIndicator { conversation_id, typing: bool }` is sent when the user starts or stops typing. Indicators expire automatically after 10 seconds without a refresh. Same trusted-relationship scope as read receipts. In `ThreatContext::Normal`, typing indicators are opt-out and enabled by default for trusted relationships. In `ThreatContext::Elevated`, typing indicators default off for new conversations. In `ThreatContext::Critical`, typing indicators are suppressed entirely; they provide convenience but no survival-critical delivery guarantee. When disabling: *"Typing indicators show when you're actively composing — even if you don't send. This reveals when you're using the app."*
 
 **Message requests:** When a peer outside your trusted contacts (below Level 6) initiates a DM, it arrives in a **message requests queue**, not your main inbox. The request shows: who it's from, their public profile (if any), and a preview of the first message. The user accepts (adds to inbox, can choose to promote trust), declines (sender not notified), or blocks. This is user-configurable — advanced users can lower the trust floor for direct delivery or raise it further.
 
@@ -6454,7 +6898,7 @@ End-to-end encrypted voice and video calls:
   - Relay peers are selected from the call's trust graph by the transport solver. No central media server.
 - **Fallback to audio-only** when bandwidth or CPU is insufficient; the UI notifies the user
 - **Call encryption** uses the same session key derivation as file transfer sessions (§7.3), separate from the messaging session key
-- **LoSec for calls**: either party may request LoSec mode (§6.7) during call setup. The `CallSignal` offer includes an optional `losec_requested: bool` field. The remote party's LoSec policy (§6.7 negotiation) governs whether the request is accepted. If accepted, the media WireGuard session is routed via the agreed LoSec path for the duration of the call. The persistent amber or red indicator (§6.7 UI requirements) is displayed in the call UI throughout.
+- **LoSec for calls**: either party may request LoSec mode (§6.9) during call setup. The `CallSignal` offer includes an optional `losec_requested: bool` field. The remote party's LoSec policy (§6.9 negotiation) governs whether the request is accepted. If accepted, the media WireGuard session is routed via the agreed LoSec path for the duration of the call. The persistent amber or red indicator (§6.9 UI requirements) is displayed in the call UI throughout.
 - **Push-to-talk (PTT):** Half-duplex voice mode suitable for walkie-talkie style communication. Operates over BLE connections for local mesh scenarios. Lower bandwidth and latency requirements than full-duplex calls.
 
 #### 10.1.7 Multi-Device Support
@@ -6518,10 +6962,12 @@ Each device increments its own counter on every local state change. On sync, two
 
 #### 10.1.8 Presence and Status
 
-- **Online/Away/Do Not Disturb/Offline** status is propagated to trusted peers over trusted channels
-- **Custom status text** is included alongside the status enum
-- **Last-seen timestamp** is shared with trusted peers, opt-out per-contact or globally
-- Presence updates are pushed; no polling. When the user goes offline, a final `Offline` presence update is sent before disconnect.
+- **Online/Away/Do Not Disturb/Offline** status is propagated to trusted peers over trusted channels in `ThreatContext::Normal`
+- **Custom status text** is included alongside the status enum only in `ThreatContext::Normal`
+- **Last-seen timestamp** is shared with trusted peers in `ThreatContext::Normal`, opt-out per-contact or globally
+- In `ThreatContext::Elevated`, presence is relationship-scoped and coarse: `Reachable`, `MaybeReachable`, or `Unavailable`, with no precise last-seen timestamp and no custom status unless explicitly enabled per trusted contact.
+- In `ThreatContext::Critical`, presence is silent by default. Safety-critical trusted contacts may receive a coarse `Alive` or `NeedsHelp` state only when the user has explicitly configured that relationship for emergency coordination.
+- Presence updates are pushed; no polling. When the user goes offline in Normal mode, a final `Offline` presence update is sent before disconnect. Elevated and Critical modes avoid final-offline beacons unless the relationship's emergency policy explicitly requires one.
 - Presence information is never included in the public network map — it is only shared with trusted peers
 
 ### 10.2 Garden
@@ -7695,6 +8141,411 @@ Default policy: `EveryoneWithCode` — the receiver shows a 4-digit code on scre
 
 The BLE advertisement only broadcasts when Proximity Share is actively open in the app — it is not a background service. Closing the screen stops discovery immediately.
 
+### 10.5 Commons
+
+Commons is the bundled public and semi-public discussion layer — the Reddit-equivalent for Mesh Infinity. It is where users browse topic boards, ask questions, post links, share warnings, discuss public issues, build reputation, and discover communities or resources. Commons is not a chat room and not a Garden. It is an archive-first discussion system whose output should remain useful after the conversation has moved on.
+
+**Product role:** Garden is a place a community inhabits. Commons is the shared discussion and discovery layer across the network. A Garden may have an attached Commons board, but the two are not the same thing.
+
+**What Commons is:**
+- Topic boards with posts and comment trees
+- Public, unlisted, group-scoped, and private boards
+- Voting and reputation scoped to masks, boards, and topics
+- Searchable local archives of boards the user follows or indexes they trust
+- Board moderation, rules, removal reasons, appeals, automod, and anti-brigading controls
+- A discovery path for Gardens, Wikis, services, public files, events, and warnings
+
+**What Commons is NOT:**
+- A direct messaging system — use Chat (§10.1)
+- A Discord/Slack-style community home — use Garden (§10.2)
+- A canonical truth source — use Wiki (§10.6) for maintained reference material
+- A global identity or global social-credit system
+
+#### 10.5.1 Board Model
+
+Boards are the core unit of Commons. A board can be operated by a person, a Garden, a Wiki, an organization, or a loose moderator group.
+
+```rust
+CommonsBoard {
+    board_id:        [u8; 32],
+    slug:            String,          // human-readable, unique within the board's chosen index
+    display_name:    String,
+    description:     Option<String>,
+    tags:            Vec<String>,
+    language:        Option<String>,
+    access_mode:     BoardAccessMode,
+    post_policy:     BoardPostPolicy,
+    reputation_policy: ReputationPolicy,
+    moderator_keys:  Vec<[u8; 32]>,
+    linked_garden:   Option<[u8; 32]>,
+    linked_wiki:     Option<[u8; 32]>,
+    rules_hash:      Option<[u8; 32]>,
+    created_at:      u64,
+    updated_at:      u64,
+    signature:       [u8; 64],
+}
+
+BoardAccessMode {
+    PublicRead,      // anyone can read
+    UnlistedRead,    // anyone with the board address/capability can read
+    GroupRead,       // group/Garden/Infinet capability required
+    PrivateRead,     // explicit reader list
+}
+
+BoardPostPolicy {
+    MaintainersOnly,
+    ApprovedContributors,
+    ReputationGated { min_reputation: i64, scope: ReputationScope },
+    OpenWithModeration,
+    Open,
+}
+```
+
+Public and discoverable boards publish signed board records through service indexes (§12.5) and helper infrastructure (§4.3.1). Private, unlisted, and group-scoped boards are shared by capability or through their parent Garden/group context.
+
+#### 10.5.2 Posts and Comments
+
+```rust
+CommonsPost {
+    post_id:         [u8; 32],
+    board_id:        [u8; 32],
+    author_mask:     [u8; 32],
+    title:           String,
+    content_type:    CommonsPostType,
+    body_hash:       Option<[u8; 32]>,
+    url:             Option<String>,
+    attachments:     Vec<AttachmentRef>,
+    tags:            Vec<String>,
+    created_at_bucket: u64,
+    edited_at_bucket:  Option<u64>,
+    moderation_state: ModerationState,
+    signature:       [u8; 64],
+}
+
+CommonsPostType {
+    Text,
+    Link,
+    Image,
+    Video,
+    File,
+    Question,
+    Poll,
+    Announcement,
+}
+
+CommonsComment {
+    comment_id:      [u8; 32],
+    post_id:         [u8; 32],
+    parent_comment:  Option<[u8; 32]>,
+    author_mask:     [u8; 32],
+    body_hash:       [u8; 32],
+    created_at_bucket: u64,
+    edited_at_bucket:  Option<u64>,
+    moderation_state: ModerationState,
+    signature:       [u8; 64],
+}
+
+ModerationState {
+    Visible,
+    Removed { reason_code: String },
+    FilteredPendingReview,
+    AuthorDeleted,
+    ModeratorLocked,
+}
+```
+
+Post and comment bodies are content-addressed blobs. Public boards may use public plaintext storage for public content; private boards use encrypted storage at the board's access level. Attachments use §11 manifests and inherit the post's access scope unless explicitly published separately.
+
+#### 10.5.3 Masks and Reputation
+
+Commons is mask-native. A user chooses which mask to use per board, and the default is conservative:
+
+1. If the board is linked to a Garden and the user has a Garden profile, offer that Garden profile first.
+2. Otherwise offer the user's public profile if `identity_is_public = true`.
+3. Offer "use a separate mask for this board" as a one-tap option.
+4. Anonymous masks are available where the board permits them.
+
+The UI must not force a user to deanonymize to read a public or unlisted board. Posting policy is board-controlled, but reading policy is governed by `BoardAccessMode`.
+
+Reputation is scoped. Commons MUST NOT create one global karma score that follows the user's root identity across all contexts.
+
+```rust
+ReputationScope {
+    MaskGlobal,      // this mask across public Commons
+    BoardLocal,      // this mask inside one board
+    TopicLocal,      // this mask inside a tag/topic cluster
+    TrustLocal,      // reputation among peers who trust this mask
+}
+
+ReputationSignal {
+    Upvote,
+    Downvote,
+    Helpful,
+    Accurate,
+    Funny,
+    Unsafe,
+    Spam,
+    OffTopic,
+    ModeratorEndorsed,
+}
+
+ReputationPolicy {
+    enabled:          bool,
+    accepted_signals: Vec<ReputationSignal>,
+    visible_scope:    ReputationScope,
+    posting_gate:     Option<i64>,
+    voting_gate:      Option<i64>,
+}
+```
+
+Boards decide which reputation signals matter. A technical board may weight `Accurate` and `Helpful`; a humor board may weight `Funny`; a safety board may ignore popularity and privilege moderator endorsement. Reputation can be exported as a signed proof for another board, but importing it is always opt-in by the receiving board.
+
+#### 10.5.4 Voting, Ranking, and Anti-Abuse
+
+Votes are signed by the voting mask and scoped to the board. Boards may choose public vote totals, fuzzy vote totals, delayed totals, or private moderator-only totals.
+
+Ranking modes:
+- `Chronological` — newest first
+- `Hot` — recent activity and votes
+- `Top` — vote-weighted over a selected period
+- `Best` — reputation-weighted comments, optimized for useful answers
+- `Controversial` — high activity with divided signals, opt-in per board
+
+Anti-abuse requirements:
+1. New masks are rate-limited per board until they build local reputation or are approved.
+2. Vote brigading detection is local to the board/index and based on timing, graph distance, shared route patterns, and sudden vote concentration.
+3. A board may require proof-of-work, blind rate tokens, or moderator approval under load.
+4. Downranking is local policy. A removal or spam judgment in one board does not globally revoke the mask.
+5. Moderators can lock posts, remove comments, add removal reasons, pin moderator comments, and create appeal threads.
+
+#### 10.5.5 Discovery and Search
+
+Commons discovery is index-based and local-search-first. Public boards publish signed `CommonsBoard` records to service indexes (§12.5). Clients cache followed boards and chosen indexes locally. Search over cached records is local by default; querying a remote index is explicit and follows the anti-eclipse lookup rule (§4.3).
+
+Discovery surfaces:
+- followed boards
+- trusted-peer recommendations
+- Garden-linked boards
+- Wiki-linked discussion boards
+- service-index curated lists
+- local language/topic tags
+
+There is no global front page. Any "front page" is a client-selected view over chosen indexes, followed boards, local cache, and trusted recommendations.
+
+#### 10.5.6 Relationship to Gardens and Wiki
+
+Gardens can attach a Commons board for long-form discussion, public Q&A, issue triage, or community discovery. Garden roles can map to board moderator permissions, but this mapping is explicit.
+
+Wiki pages can attach a Commons discussion thread. Commons discussion can propose changes to a Wiki page, but a Commons vote does not edit the Wiki. Wiki editorial policy remains with the Wiki maintainers (§10.6).
+
+### 10.6 Wiki
+
+Wiki is the bundled durable knowledge system for Mesh Infinity. It exists for information that should survive beyond a chat thread or Commons post: manuals, survival guides, public-interest archives, technical documentation, banned books, evidence packs, community procedures, source mirrors, project docs, and curated references.
+
+**Core rule:** reading a Wiki MUST NOT require revealing a stable identity when the Wiki's access mode permits public, unlisted, or capability-based reading. A Wiki may restrict who can edit, publish, mirror, or administer it, but reading and contribution identity are separate concerns.
+
+**What Wiki is:**
+- Collaborative pages with revisions, history, diffs, rollback, and protected pages
+- Page-scoped file hosting using §11 file manifests
+- Citations, source mirrors, page bundles, and full-wiki export
+- Anonymous, capability-based, group-based, trust-gated, and private read modes
+- Maintainer review, approved revisions, anonymous drafts, and moderation queues
+- Optional attachment to a Commons discussion thread and/or Garden
+
+**What Wiki is NOT:**
+- A real-time chat system
+- A popularity-ranked discussion board
+- A guarantee that all content is true
+- A global content-control point
+
+#### 10.6.1 Wiki Model
+
+```rust
+Wiki {
+    wiki_id:          [u8; 32],
+    slug:             String,
+    display_name:     String,
+    description:      Option<String>,
+    access_mode:      WikiAccessMode,
+    edit_mode:        WikiEditMode,
+    maintainer_keys:  Vec<[u8; 32]>,
+    linked_garden:    Option<[u8; 32]>,
+    linked_board:     Option<[u8; 32]>,
+    default_license:  Option<String>,
+    created_at:       u64,
+    updated_at:       u64,
+    signature:        [u8; 64],
+}
+
+WikiAccessMode {
+    PublicRead,
+    UnlistedRead,
+    CapabilityRead,
+    GroupRead,
+    TrustGatedRead,
+    PrivateRead,
+}
+
+WikiEditMode {
+    MaintainersOnly,
+    ApprovedContributors,
+    MaskReputationGated { min_reputation: i64, scope: ReputationScope },
+    AnonymousDrafts,
+    OpenEditsWithModeration,
+}
+```
+
+A Wiki can be hosted by one node, mirrored by many nodes, or attached to a Garden cluster. Hosting and mirroring are explicit operator choices under §2.1 principle 12.
+
+#### 10.6.2 Pages, Revisions, and Approval
+
+```rust
+WikiPage {
+    page_id:           [u8; 32],
+    wiki_id:           [u8; 32],
+    path:              String,
+    title:             String,
+    current_revision:  [u8; 32],
+    approved_revision: Option<[u8; 32]>,
+    protection:        PageProtection,
+    access_override:   Option<WikiAccessMode>,
+    discussion_thread: Option<[u8; 32]>,
+    signature:         [u8; 64],
+}
+
+WikiPageRevision {
+    revision_id:       [u8; 32],
+    parent_revision:   Option<[u8; 32]>,
+    page_id:           [u8; 32],
+    editor_mask:       Option<[u8; 32]>,
+    anonymous_proof:   Option<AnonymousEditProof>,
+    body_hash:         [u8; 32],
+    summary:           Option<String>,
+    created_at_bucket: u64,
+    approval_state:    RevisionApprovalState,
+    signature:         [u8; 64],
+}
+
+PageProtection {
+    Normal,
+    SemiProtected,     // approved contributors only
+    Protected,         // maintainers only
+    Frozen,            // no edits; archival state
+}
+
+RevisionApprovalState {
+    Draft,
+    PendingReview,
+    Approved,
+    Rejected { reason_code: String },
+    Superseded,
+}
+```
+
+Every page has a full revision history. The visible page is `approved_revision` when review is enabled, otherwise `current_revision`. Revisions are immutable content-addressed records; edits create new revisions. Maintainers can approve, reject, rollback, protect, unprotect, freeze, move, and merge pages.
+
+Anonymous edits are draft submissions. They can be accepted without revealing a stable identity, but the Wiki may require rate tokens, proof-of-work, or moderator approval before accepting them.
+
+#### 10.6.3 Anonymous and Capability-Based Reading
+
+Reading must be possible without identity disclosure wherever the Wiki policy allows it.
+
+```rust
+WikiReadCapability {
+    wiki_id:      [u8; 32],
+    scope:        WikiCapabilityScope,
+    expires_at:   Option<u64>,
+    caveats:      Vec<CapabilityCaveat>,
+    token_hash:   [u8; 32],
+}
+
+WikiCapabilityScope {
+    WholeWiki,
+    Page([u8; 32]),
+    PathPrefix(String),
+    Attachment([u8; 32]),
+}
+
+CapabilityCaveat {
+    ExpiresAt(u64),
+    MaxFetches(u32),
+    ReadOnly,
+    NoMirror,
+    RouteDeterminantRequired(u16),
+}
+```
+
+A host may see that a valid capability was used, but it should not require account login, phone/email, public profile, or stable mask disclosure merely to read a page. In hostile modes, clients SHOULD retrieve public and capability-readable Wiki pages through Tor, wrapper nodes, or other privacy-preserving route determinants where available.
+
+#### 10.6.4 Attachments and File Hosting
+
+Wiki attachments are first-class and page-scoped. This deliberately avoids the common wiki footgun where page reads are restricted but uploaded files remain accessible by direct URL.
+
+```rust
+WikiAttachment {
+    attachment_id:   [u8; 32],
+    owning_page_id:  [u8; 32],
+    manifest_hash:   [u8; 32],       // §11 FileManifest
+    name:            String,
+    mime_type:       String,
+    size:            u64,
+    access_mode:     AttachmentAccessMode,
+    content_warning: Option<ContentWarning>,
+    added_by:        Option<[u8; 32]>,
+    added_at_bucket: u64,
+    signature:       [u8; 64],
+}
+
+AttachmentAccessMode {
+    InheritPage,
+    MoreRestricted(WikiAccessMode),
+    PublicMirrorExplicit,
+}
+
+ContentWarning {
+    label:       String,
+    description: Option<String>,
+}
+```
+
+Attachment access defaults to `InheritPage`. A direct attachment URL, manifest hash, or mirror address MUST NOT bypass page access policy unless the attachment is explicitly set to `PublicMirrorExplicit`. Large attachments use §11 direct transfer, sticky storage, or distributed storage depending on the Wiki's availability policy.
+
+Hosts may refuse to store or serve attachments by local policy. Refusal is local governance, not global deletion.
+
+#### 10.6.5 Mirrors, Bundles, and Preservation
+
+Wikis are designed for preservation. Any Wiki may publish signed export bundles:
+
+```rust
+WikiBundle {
+    wiki_id:          [u8; 32],
+    bundle_id:        [u8; 32],
+    included_pages:   Vec<[u8; 32]>,
+    included_files:   Vec<[u8; 32]>,
+    revision_cutoff:  u64,
+    manifest_hash:    [u8; 32],
+    encryption:       BundleEncryption,
+    signature:        [u8; 64],
+}
+
+BundleEncryption {
+    Public,
+    CapabilityEncrypted,
+    GroupEncrypted,
+    TrustEncrypted,
+}
+```
+
+Mirrors verify Wiki signatures and can serve the same pages and attachments under the same access policy. A mirror may choose to mirror the whole Wiki, selected namespaces, selected pages, or only public bundles. Mirror refusal and mirror removal are local operator choices.
+
+#### 10.6.6 Relationship to Commons and Garden
+
+Every Wiki page may have a linked Commons discussion thread for debate, correction proposals, and source discussion. That thread is not the page. The Wiki's editorial policy decides what becomes the approved revision.
+
+A Garden can host a private Wiki for community docs, runbooks, rules, shared resources, or archives. Garden roles can map to Wiki maintainer or contributor permissions, but this mapping is explicit and revocable.
+
+Commons can promote a post into a Wiki draft. Wiki can cite a Commons thread as context, but durable pages should prefer stable files, source mirrors, and explicit citations.
+
 ## 11. File Sharing
 
 File sharing in Mesh Infinity consists of two separate systems: **direct transfer** (live, peer-to-peer) and **distributed storage** (async, content-addressed, Freenet-style). These systems share the same encryption model and content addressing scheme but are distinct delivery mechanisms. Publishing to one does not imply publishing to the other.
@@ -7705,6 +8556,8 @@ File sharing in Mesh Infinity consists of two separate systems: **direct transfe
 - **§11.2 Distributed Object Storage** — content-addressed encrypted blobs; 5 security levels; manifest format; parallel fetch; stickiness metric; stop-storing signal
 - **§11.3 Public File Hosting** — mesh HTTP serving; content-addressed advertising; hash-addressable cross-system
 - **§11.4 Private File Sharing** — direct transfer to peers/groups; shared group repositories; distributed storage at Level 2–4
+- **§11.5 Storage Backend Adapter Interface** — local vault plus optional IPFS, Tahoe-LAFS, Hypercore, cloud, and public archive adapters
+- **§11.6 MeshTorrent Closed-Swarm Distribution** — BitTorrent-style large-file swarms restricted to Mesh Infinity scopes, peers, helpers, and capabilities
 
 ### 11.1 Direct File Transfer
 
@@ -8172,12 +9025,13 @@ ReplicationMode {
 
 The following backends are supported through the same adapter interface. They are briefly specified here; full configuration follows the same pattern as §11.5.2–11.5.4.
 
-**BitTorrent/WebTorrent:**
-- Content distributed as standard BitTorrent infohashes
-- WebTorrent adds browser-based seeding via WebRTC
-- Mesh nodes act as seeders; external BitTorrent clients can participate
-- Use case: large public file distribution (§11.3)
-- Privacy: torrent participation reveals IP to other peers in the swarm. Use only for content intentionally made public. Mesh nodes participating via Tor or I2P as transport avoid direct IP exposure.
+**External BitTorrent/WebTorrent bridge:**
+- This is an opt-in bridge for content intentionally published outside Mesh Infinity. It is not the default torrent-like file distribution path; use MeshTorrent (§11.6) for closed mesh swarms.
+- Content is distributed as standard BitTorrent infohashes or WebTorrent-compatible browser swarms.
+- External BitTorrent clients can participate only when the publisher explicitly exports a public torrent descriptor.
+- Private MeshTorrent descriptors MUST NOT be converted into public `.torrent` files, public magnet links, WebTorrent swarms, public DHT announces, or public tracker announces.
+- Use case: large public file distribution where clearnet interoperability is the goal.
+- Privacy: ordinary torrent participation reveals a routable network endpoint and content interest to peers, trackers, and DHT participants. Use only for content intentionally made public. Mesh nodes that bridge through Tor or I2P reduce direct IP exposure but still create public swarm metadata.
 
 **Storj (S3-compatible):**
 - S3-compatible API backed by a decentralized storage network
@@ -8200,12 +9054,156 @@ The storage layer selects backends based on content type and security level:
 |-------------|----------------|-------------|
 | Message history | Local vault (§17.9) | Hypercore (multi-device sync) |
 | S&F payloads | Local vault on S&F node | Tahoe-LAFS (redundancy across S&F nodes) |
-| Public files (§11.3) | IPFS | BitTorrent, Arweave (permanent) |
+| Public files (§11.3) | MeshTorrent (§11.6) or IPFS | External BitTorrent/WebTorrent bridge, Arweave (permanent) |
 | Private files (§11.4) | Local vault + direct transfer | Tahoe-LAFS (availability), Storj (cloud) |
 | Backups (§3.7) | Local + optional cloud | Storj, Tahoe-LAFS, Hypercore |
-| Garden media | Local vault on cluster | IPFS (public Gardens), Tahoe-LAFS (private Gardens) |
+| Garden media | Local vault on cluster + MeshTorrent (§11.6) for large media | IPFS (public Gardens), Tahoe-LAFS (private Gardens) |
 
 Users configure preferred backends in Settings → Storage. The storage layer falls back to local vault if no external backend is available — the system always works without external dependencies (§2.1 principle 5).
+
+### 11.6 MeshTorrent Closed-Swarm Distribution
+
+MeshTorrent is Mesh Infinity's first-party BitTorrent-style distribution mode for large files, media archives, Wiki bundles, Garden assets, Commons attachments, software releases, backups, and other content where many recipients may fetch the same bytes. It borrows the proven swarm model of piece-addressed files, peer selection, resumable transfer, and cooperative seeding, but it is scoped to Mesh Infinity identities and transports.
+
+**Core rule:** MeshTorrent is a closed ecosystem by default. A MeshTorrent swarm never announces to public BitTorrent trackers, public DHTs, WebTorrent discovery, clearnet peer exchange, or any non-mesh peer unless the publisher explicitly exports through the external BitTorrent/WebTorrent bridge (§11.5.5). A private MeshTorrent swarm is not a public torrent with better transport; it is a mesh-native object distribution protocol.
+
+This follows the same privacy lesson as BitTorrent-over-I2P: peer addressing and tracker behavior must be adapted to the anonymity network rather than leaking ordinary IP/port endpoints. MeshTorrent peers are mesh identities or scoped capability endpoints, not public IP addresses.
+
+#### 11.6.1 Descriptor
+
+MeshTorrent descriptors are distributed through Chat, Garden, Commons, Wiki, Relay, service indexes, helper servers, QR codes, removable media, or other mesh-safe channels. A descriptor is content-addressed and signed when attribution is intended.
+
+```rust
+MeshTorrentDescriptor {
+    version:          u32,
+    torrent_id:       [u8; 32],       // SHA-256 of the canonical descriptor without signatures
+    display_name:     Option<Vec<u8>>, // follows content security level; encrypted when private
+    total_size:       u64,
+    piece_size:       u32,            // power of two; 256 KiB to 16 MiB
+    files:            Vec<MeshTorrentFile>,
+    piece_hashes:     Vec<[u8; 32]>,  // SHA-256 per piece over ciphertext bytes
+    manifest_hash:    [u8; 32],       // corresponding FileManifest (§11.2.3)
+    security_level:   ContentSecurityLevel,
+    swarm_scope:      MeshTorrentScope,
+    tracker_policy:   MeshTrackerPolicy,
+    created_at:       u64,
+    publisher:        Option<[u8; 32]>,
+    signature:        Option<[u8; 64]>,
+}
+
+MeshTorrentFile {
+    path:       Vec<Vec<u8>>, // path components; advisory display path, never trusted blindly
+    size:       u64,
+    offset:     u64,         // byte offset in the concatenated torrent stream
+    mime_type:  Option<Vec<u8>>,
+}
+
+MeshTorrentScope {
+    PublicMesh,
+    UnlistedMesh,
+    TrustGated(Vec<[u8; 32]>),
+    Group([u8; 32]),
+    Garden([u8; 32]),
+    CommonsBoard([u8; 32]),
+    Wiki([u8; 32]),
+    LAN,
+    Direct(Vec<[u8; 32]>),
+}
+
+MeshTrackerPolicy {
+    Trackerless,                 // gossip and peer exchange only inside the scope
+    Helpers(Vec<[u8; 32]>),      // approved helper servers may index peers
+    StickySeeders(Vec<[u8; 32]>),// publisher-designated seed nodes
+    Disabled,                    // descriptor can be fetched only from explicitly known peers
+}
+```
+
+The piece model mirrors standard BitTorrent's operational strengths: a file set is split into fixed-size pieces, recipients verify each piece independently, missing pieces can be fetched from different peers, and a partially downloaded file can resume without restarting. MeshTorrent uses SHA-256 piece hashes, not SHA-1, and hashes ciphertext for Level 2–4 content so seeders never need plaintext.
+
+#### 11.6.2 Discovery and Swarm Membership
+
+MeshTorrent discovery is scoped. A node learns about peers for a swarm only through a channel it is already allowed to use:
+
+- `Trackerless` swarms use scoped mesh gossip and scoped peer exchange. Peer exchange entries contain mesh peer IDs or capability endpoints, never IP addresses.
+- `Helpers` swarms allow helper servers (§4.3.1) to cache peer announcements. Helpers are non-authoritative and cannot prove absence; clients apply the anti-eclipse lookup rule (§4.3).
+- `StickySeeders` swarms prefer explicitly listed seeders before asking broader scoped peers.
+- `Disabled` swarms do not perform discovery. The receiver fetches only from peers already named in the descriptor or in the sharing conversation.
+
+```rust
+MeshTorrentAnnouncement {
+    torrent_id:       [u8; 32],
+    peer_id:          [u8; 32],
+    scope:            MeshTorrentScope,
+    have_bitmap_hash: [u8; 32], // hash of optional encrypted availability bitmap
+    expires_at:       u64,
+    route_hints:      Vec<TransportHint>,
+    rate_hint:        Option<u32>, // KiB/s willing to seed; advisory only
+    signature:        [u8; 64],
+}
+```
+
+Announcements expire quickly by default: 30 minutes for public mesh swarms, 10 minutes for group/private swarms, and 2 minutes for LAN/direct swarms. Nodes refresh only while they are willing to seed. A stale announcement is a hint, not a promise.
+
+#### 11.6.3 Privacy and Access Control
+
+MeshTorrent inherits content security levels from §11.2.2:
+
+- Level 0–1 content may be readable by anyone who obtains the descriptor, but swarm discovery remains mesh-scoped unless exported.
+- Level 2–4 content is encrypted before piece hashing and seeding. Seeders can serve ciphertext without learning file names, MIME types, thumbnails, or plaintext content when metadata is encrypted.
+- Group, Garden, Commons, Wiki, LAN, and Direct scopes require the same membership or capability checks as the owning application layer.
+- Fetch requests for unauthorized peers must fail without confirming whether the torrent exists.
+
+Privacy requirements:
+
+1. No MeshTorrent packet may contain a public IPv4 or IPv6 address as a peer address.
+2. No private descriptor may contain a public tracker URL, WebRTC discovery URL, public DHT bootstrap node, or clearnet peer endpoint.
+3. Public bridge export requires a separate user action named as public export, not a generic "share" action.
+4. A node must not announce a swarm under one mask using a helper, tracker, seeder, or route determinant linked only to another mask unless the user explicitly links those contexts.
+5. Piece requests should be batched and pipelined to reduce request-pattern leakage. In private scopes, clients should prefer rarest-first within a small random window rather than pure rarest-first if that would make a user's file interest unusually distinctive.
+6. Seeding policy is per scope. A user can seed for a Garden, Wiki, Commons board, group, LAN, or direct contact without becoming a global public seeder.
+
+#### 11.6.4 Abuse and Resource Controls
+
+MeshTorrent must not become an easy DoS amplifier. Every implementation must enforce:
+
+- Per-swarm, per-peer, and global bandwidth limits.
+- Per-swarm disk quotas and automatic cleanup for incomplete downloads.
+- Verification before promotion: a piece is not served onward until its hash matches the descriptor.
+- Backpressure: peers that request invalid ranges, repeatedly fail authentication, or exceed rate windows are choked or banned locally.
+- Seeder caps for battery and metered networks. Mobile clients default to WiFi-and-charging seeding for large public swarms unless the user changes it.
+- Helper-side announce limits using blind or capability-scoped rate tokens (§4.3.1) where possible.
+- Descriptor size limits. A descriptor that describes too many files, absurd path depth, or unsafe path components is rejected before storage allocation.
+
+User-facing controls are simple:
+
+- **Keep available** — seed this item when practical.
+- **Available to** — public mesh, this group, this Garden, this board, this Wiki, LAN, or selected people.
+- **Use mobile data** — off by default for large swarms.
+- **Storage limit** — local cache size with "clear incomplete" and "clear old seeds" actions.
+
+#### 11.6.5 Public Bridge Export
+
+Public BitTorrent/WebTorrent export is intentionally separate from MeshTorrent sharing. Export creates a new public artifact:
+
+```rust
+MeshTorrentBridgeExport {
+    torrent_id:        [u8; 32],
+    export_kind:       BridgeKind,
+    public_info_hash:  [u8; 32],
+    exported_at:       u64,
+    warning_accepted:  bool,
+}
+
+BridgeKind {
+    BittorrentV1,
+    BittorrentV2,
+    WebTorrent,
+}
+```
+
+The UI must state plainly: *"This makes the file available outside Mesh Infinity. Public torrent peers may see that you are participating."*
+
+Bridge export is forbidden for Level 2–4 content unless the export first creates a new Level 0 or Level 1 public copy with a separate descriptor. This prevents accidental publication of a private swarm's access policy, peer set, or metadata.
 
 ---
 
@@ -8254,7 +9252,7 @@ Knowledge of a private address already implies knowledge of services on it — t
 
 #### 12.1.1 Mesh Infinity Native Service Port Blocks
 
-67 blocks reserved (67000–133999); 13 currently assigned. The remaining 54 (80000–133999) are reserved for future first-party mesh services. Adapters share sub-port ranges within their parent protocol block — they do not occupy separate blocks.
+67 blocks reserved (67000–133999); 14 currently assigned. The remaining 53 (81000–133999) are reserved for future first-party mesh services. Adapters share sub-port ranges within their parent protocol block — they do not occupy separate blocks.
 
 | Block | Range | Service |
 |-------|-------|---------|
@@ -8271,7 +9269,8 @@ Knowledge of a private address already implies knowledge of services on it — t
 | 77 | 77000–77999 | Screen Share (§20.6) |
 | 78 | 78000–78999 | Clipboard Sync (§20.7) |
 | 79 | 79000–79999 | Print Services (§20.8): native server 79000–79099; IPP adapter 79100–79199 |
-| 80–133 | 80000–133999 | Reserved for future first-party protocols |
+| 80 | 80000–80999 | MeshTorrent closed-swarm distribution (§11.6) |
+| 81–133 | 81000–133999 | Reserved for future first-party protocols |
 
 Note: Proximity Share (§10.4) is a peer-to-peer direct service link — it has no mesh port. BLE and WiFi Direct transports may use ports at the transport layer, but Proximity Share itself operates outside the port space.
 
@@ -8404,11 +9403,15 @@ TunnelAccept {
     reject_reason: Option<TunnelRejectReason>,
     mtu:           Option<u16>,  // maximum TunnelData payload bytes for this path segment.
                                   // Set by the target based on the underlying transport medium.
-                                  // None means unconstrained; client uses own path MTU discovery.
+                                  // None means use the conservative default MTU, not unconstrained.
                                   // Payloads larger than mtu are fragmented by the sender into
                                   // multiple TunnelData frames before transmission. The receiver
                                   // reassembles fragments before delivering to the application.
                                   // See TunnelData.fragment for the fragmentation model.
+    max_reassembly_bytes: Option<u32>, // maximum logical payload size accepted after reassembly.
+                                       // None means the conservative default, not unbounded.
+    max_inflight_reassemblies: Option<u16>, // maximum incomplete logical payloads per session.
+                                            // None means the conservative default, not unbounded.
 }
 
 TunnelRejectReason {
@@ -8436,7 +9439,8 @@ TunnelData {
 }
 
 TunnelFragment {
-    total_size:    u32,   // total reassembled payload size in bytes
+    total_size:    u32,   // total reassembled payload size in bytes;
+                          // must be <= negotiated max_reassembly_bytes
     fragment_index: u16,  // 0-based index of this fragment
     fragment_count: u16,  // total number of fragments (1 = unfragmented)
     fragment_id:   u16,   // groups fragments belonging to the same logical payload;
@@ -8468,6 +9472,10 @@ TunnelClose {
 6. When the underlying transport path changes and the MTU shifts, either side sends `TunnelMTUUpdate`. The sender immediately adjusts fragment sizes. In-flight fragments from before the update that exceed the new MTU are re-fragmented before retransmission.
 
 **Fragmentation:** When a logical payload exceeds the path MTU, the sender splits it into `TunnelData` frames each carrying one fragment. All fragments share the same `fragment_id` and carry `fragment_count` so the receiver knows when it has all pieces. Fragments may arrive out of order; the receiver holds them until all `fragment_count` pieces are present, then reassembles in `fragment_index` order and delivers the complete payload to the application. A missing fragment stalls reassembly — for UDP tunnels, if no retransmit arrives within a configurable timeout (default: 5 seconds), the partial payload is discarded and the gap is treated as a dropped datagram.
+
+**Reassembly and backpressure limits:** Fragmentation is never an unbounded allocation promise. Unless an authenticated service policy negotiates tighter or looser values, defaults are: `mtu = 1200`, `max_reassembly_bytes = 1 MiB`, `max_inflight_reassemblies = 32`, and a 4 MiB total reassembly memory budget per tunnel session. Generic tunnels MUST NOT accept a `max_reassembly_bytes` value above 16 MiB without an application-specific authenticated policy. A receiver MUST reject and account as abuse any fragment set where `fragment_count == 0`, `fragment_index >= fragment_count`, `total_size > max_reassembly_bytes`, a fragment payload exceeds the negotiated MTU, or repeated fragments for the same `(session_id, fragment_id)` disagree on `total_size` or `fragment_count`. Duplicate fragments do not extend the reassembly timeout.
+
+**Slow-reader protection:** If the local application stops reading, the tunnel applies backpressure before buffering expands: shrink receive windows where the underlying reliable layer supports it, pause acknowledgements only within protocol limits, and drop or close the lowest-priority tunnel when budgets are exhausted. TCP tunnel reassembly timeout defaults to 30 seconds; UDP remains 5 seconds. Resource-exhaustion closes use coarse `RateLimited` or `ServiceUnavailable` outcomes only — unauthenticated or untrusted peers never receive detailed fragment parser reasons that could be used as an oracle.
 
 **TCP vs UDP semantics:**
 - **TCP tunnels:** The tunnel presents as a reliable ordered stream. TCP's own retransmission handles packet loss. Applications needing reliable delivery should use TCP tunneling.
@@ -8941,7 +9949,17 @@ Infinet is Mesh Infinity's equivalent of a Tailscale tailnet — a private virtu
 
 #### 13.14.1 Address Spaces
 
-Infinet uses two address spaces as a **compatibility interface** for existing software. These are not the actual routing substrate — everything routes by mesh address underneath. The IP addresses and domain names are a familiar API surface that lets existing software use Infinet without modification.
+Infinet exposes IPv4 and IPv6 compatibility destinations through the Mesh address format (§17.6). These are a **compatibility interface** for existing software, not the actual routing substrate — everything routes by Mesh address underneath. The IP addresses and domain names are a familiar API surface that lets existing software use Infinet without modification.
+
+The route determinant for Infinet is `0003`. Infinet-scoped IP compatibility addresses use:
+
+```
+00040003:<IPv4 endpoint payload>:<trust relationship ID>  // IPv4 inside Infinet
+00060003:<IPv6 endpoint payload>:<trust relationship ID>  // IPv6 inside Infinet
+00420003:<Infinet-native endpoint payload>:<trust relationship ID>
+```
+
+Infinet compatibility IPs MUST NOT be treated as public clearnet destinations merely because their payload is an IPv4 or IPv6 literal. The `0003` route determinant scopes the locator to the Infinet. DNS, ACLs, split tunneling, packet logging, and error reporting must preserve that scope and must not reveal Infinet-private destinations to unrelated routing planes.
 
 **IPv6 — ULA prefix (matching Tailscale's allocation):** AUTO-ASSIGNED, collision-detected
 ```
@@ -8991,6 +10009,8 @@ On join, each participant is automatically assigned a /64 IPv6 subnet. The alloc
 IPv4 is optional and manually assigned by an admin. If a participant needs a 100.x.y.z address within the Infinet (e.g. for legacy IPv4-only software), an admin assigns them a /16 subnet and a device address within it. Participants without a manual IPv4 assignment are IPv6-only within the Infinet. The manual-only policy eliminates the 64-participant cap.
 
 Devices can have IPv6 (default), IPv4+IPv6 (if manually assigned), or mesh-address-only (for devices that only use Infinet DNS, not IP routing).
+
+When an Infinet device has an IPv6 assignment, the corresponding Mesh compatibility destination uses `address_indicator = 0006` and `route_determinant = 0003`. When it has a manual IPv4 assignment, the corresponding Mesh compatibility destination uses `address_indicator = 0004` and `route_determinant = 0003`. Mesh-address-only devices use `00420003` or mesh-native service addresses and do not receive A/AAAA records.
 
 #### 13.14.3 Domain Names
 
@@ -9737,7 +10757,7 @@ Anonymous profiles are a double-edged addition to the security menu. They enable
 
 Performance targets in Mesh Infinity cannot be defined against clearnet baselines -- the comparison is Mesh Infinity vs "being surveilled," not Mesh Infinity vs direct TCP. This section defines the security floor that optimisations cannot cross. Implementation decides specific targets above that floor based on real measurements.
 
-LoSec mode (§6.7) is the correct tool for performance-sensitive sessions -- not disabling security mechanisms globally. LoSec is configured per-session, not globally.
+LoSec mode (§6.9) is the correct tool for performance-sensitive sessions -- not disabling security mechanisms globally. LoSec is configured per-session, not globally.
 
 ### 16.0 Overview
 
@@ -9821,7 +10841,7 @@ Tunnels are not permanent -- they have a lifecycle tied to actual usage and mesh
 
 ### 16.4 LoSec as Per-Session Optimisation
 
-LoSec mode (§6.7) is the correct tool when a specific session needs lower latency or higher bandwidth. Key properties:
+LoSec mode (§6.9) is the correct tool when a specific session needs lower latency or higher bandwidth. Key properties:
 
 - Configured per-session, not globally.
 - Only that session uses the shorter path.
@@ -9900,13 +10920,16 @@ User taps send
   → message appears in thread instantly (optimistic insert)
   → FFI call dispatched asynchronously
   → Rust encrypts, queues for traffic shaper
-  → on successful network send: status → "sent" (single check)
+  → on successful network send or S&F deposit: status → "sent" or "deposited" (single check variant)
   → on delivery receipt: status → "delivered" (double check)
   → on read receipt: status → "read" (blue double check)
+  → on retry without custody during urgency window: status → "at risk" (warning icon)
   → on failure after retry exhaustion: status → "failed" (red retry icon)
 ```
 
 The optimistic insert uses `AnimatedList.insertItem` for the send animation (§22.1.7). The status icon cross-fades between states (100ms).
+
+**At-risk messages** show a warning icon and remain eligible for automatic retry. The user-facing copy must be direct: "Not delivered yet." It must not imply the recipient has the message.
 
 **Failed messages** show a red `Icons.error_outline` with a "Tap to retry" interaction. The message stays in its chronological position — it is never removed or reordered.
 
@@ -10049,22 +11072,22 @@ The solver uses this profile to **automatically select the fastest viable path**
 2. If current conversation security mode is Fast (LoSec) or Direct:
    → Use the already-selected mode. No change needed.
 
-3. If current security mode is Standard:
-   → Solver evaluates whether the Standard path meets the latency ceiling.
-   → If yes: use Standard. Streams work fine on fast mesh paths.
+3. If current privacy mode is Automatic:
+   → Solver evaluates whether the Automatic path meets the latency ceiling.
+   → If yes: use Automatic. Streams work fine on fast mesh paths.
    → If no: solver SUGGESTS Fast mode via an inline prompt in the call/session UI:
      "Your mesh path is too slow for smooth [video/audio/remote desktop].
-      Switch to Fast mode for this session?  [Switch]  [Keep standard]"
+      Switch to Fast mode for this session?  [Switch]  [Keep automatic]"
    → The suggestion is non-blocking — the stream starts immediately on the current
      path. If the user taps Switch, the path migrates seamlessly.
 
-4. If current security mode is Reinforced or Maximum Security:
+4. If current privacy mode is More private or Most private:
    → Stream starts on the current path. No suggestion to downgrade — the user
-     explicitly chose high security. If latency exceeds the ceiling, the codec
+     explicitly chose more privacy. If latency exceeds the ceiling, the codec
      adapts (see §16.10.5) rather than the path changing.
 ```
 
-**Key principle:** The system never silently downgrades security for performance. It suggests, the user decides. But it also never forces a user into an unusable call because they forgot to change a setting.
+**Key principle:** The system never silently downgrades privacy for performance. It suggests, the user decides. But it also never forces a user into an unusable call because they forgot to change a setting.
 
 #### 16.10.3 Selective Reliability — KCP Partial Mode
 
@@ -10269,7 +11292,7 @@ The architecture must be implementable **consistently across all supported platf
 - **§17.3 Rust Backend Module Structure** -- full module tree
 - **§17.4 Runtime Modes** -- Client / Dual / Server; startup conditions
 - **§17.5 FFI Boundary** -- C ABI; design rules; full function catalogue
-- **§17.6 Mesh Address Format** -- 256-bit address; device address + conversation ID; Mesh DNS
+- **§17.6 Mesh Address Format** -- 256-bit typed address; routing header + endpoint/locator + trust relationship ID; Mesh DNS
 - **§17.7 Mesh URL Scheme** -- `meshinfinity://` protocol segments; deep-link registration
 - **§17.8 Flutter UI Layer** -- MVVM; async events; no business logic in UI
 - **§17.9 Encrypted Vault Storage** -- XChaCha20-Poly1305 blobs; HKDF-derived per-collection keys; atomic writes
@@ -10512,9 +11535,9 @@ Mesh Infinity is one codebase producing two build profiles — full-client and c
 
 Modes:
 
-- **Client**: Full UI, messaging, VPN. Does not relay for the network by default. Connects to server nodes for store-and-forward.
-- **Dual**: Full UI plus active mesh routing; relays messages for other peers. Contributes to the mesh as both a user node and a routing node.
-- **Server**: No UI; runs as a mesh infrastructure node. Can be configured with any combination of: directory caching, store-and-forward, offline inbox, exit node, hosted services, wrapper node.
+- **Client**: Full UI, messaging, VPN. Does not relay for the network by default. Connects to helper infrastructure for store-and-forward and discovery when configured.
+- **Dual**: Full UI plus active mesh routing; relays messages for other peers. Contributes to the mesh as both a user node and a routing node. May expose explicitly enabled limited helper roles when local policy allows.
+- **Server**: No end-user chat UI; the primary runtime mode for Strategic Helper Infrastructure (§4.3.1). Can be configured with any combination of: directory caching, bootstrap rendezvous, profile resolving, store-and-forward, offline inbox, NAT relay, exit node, hosted services, wrapper node, Garden cache, and abuse throttling.
 
 Mode can be toggled at runtime via `mi_set_node_mode`. Switching from Client to Server mode requires UI confirmation and disables the UI session. **Clientless builds (§17.16) are permanently in Server mode** — there is no UI to toggle and `mi_set_node_mode` is not available on that build profile.
 
@@ -10731,7 +11754,7 @@ mi_prewarm_tunnel(ctx: *mut MeshContext, peer_id: *const c_char) -> i32
 // Security mode
 mi_set_conversation_security_mode(ctx: *mut MeshContext,
     room_id: *const c_char, mode: u8) -> i32
-    // mode: 0=MaxSecurity, 1=Reinforced, 2=Standard, 3=Fast, 4=Direct
+    // mode: 0=MostPrivate, 1=MorePrivate, 2=Automatic, 3=Fast, 4=Direct
 ```
 
 Events (async push to Flutter):
@@ -10748,18 +11771,186 @@ mi_poll_events(ctx: *mut MeshContext) -> *const c_char  // JSON array of pending
 
 ### 17.6 Mesh Address Format
 
-Mesh addresses are **256-bit** (8 groups of 8 hexadecimal characters, colon-separated):
+Mesh addresses are **256-bit** (8 groups of 8 hexadecimal characters, colon-separated). The existing endpoint plus relationship-scoped routing structure is preserved, with the first 32-bit segment reserved as a typed routing header:
 
 ```
-a1b2c3d4:e5f6a7b8:12345678:90abcdef:01234567:89abcdef:fedcba98:76543210
-|_____________ device address (160 bits / 20 bytes) _____________||_ conversation ID (96 bits / 12 bytes) _|
+aaaaarrr:e5f6a7b8:12345678:90abcdef:01234567:89abcdef:fedcba98:76543210
+|header||_______ endpoint / locator payload (128 bits) _______||_ trust relationship ID (96 bits / 12 bytes) _|
 ```
 
-- **Device address (160 bits)**: first 5 groups; identifies a specific node endpoint (one of the node's addresses). Addresses belong to masks (§17.2), not directly to the self.
-- **Conversation ID (96 bits)**: last 3 groups; identifies a specific conversation or session on that endpoint.
+- **Address header (32 bits)**: the first group. The high 16 bits are the `address_indicator`; the low 16 bits are the `route_determinant` (§17.6.1). The header defines what the endpoint/locator payload means and which routing plane may use it.
+- **Endpoint / locator payload (128 bits)**: groups 2 through 5. For mesh-native addresses, this identifies a specific node endpoint (one of the node's addresses). Addresses belong to masks (§17.2), not directly to the self. For embedded IPv4/IPv6 compatibility addresses, this stores the canonical IP locator (§17.6.2).
+- **Trust relationship ID (96 bits)**: last 3 groups; identifies the relationship-scoped routing context for traffic to that endpoint. This may correspond to a direct trust relationship, service-specific relationship, tunnel session, anonymous rendezvous context, or other scoped relationship depending on the address indicator and route determinant.
 - A service address appends a 32-bit port: `device_address:port32`.
 
-Conversations are uniquely identified by `(source_address, destination_address, conversation_id)`. Multiple concurrent conversations between the same pair of nodes use different conversation IDs and are independently encrypted.
+Relationship-scoped routes are uniquely identified by `(source_address, destination_address, trust_relationship_id)`. Multiple concurrent relationships or sessions between the same pair of endpoint payloads use different trust relationship IDs and are independently encrypted.
+
+The 128-bit endpoint payload is generated by the address owner and MUST be high-entropy for mesh-native addresses. It is large enough to make collision and scanning attacks impractical while preserving the trust relationship ID's existing role. A node that needs additional unlinkability should generate multiple independent addresses for separate masks, services, threat contexts, and routing scopes rather than reusing one endpoint payload across contexts.
+
+#### 17.6.1 Address Header
+
+The first 32-bit group is split into two 16-bit registries:
+
+```
+aaaaarrr
+|   |
+|   +-- route_determinant: 16 bits
++------ address_indicator: 16 bits
+```
+
+`address_indicator` defines the payload type:
+
+| Value | Meaning |
+|-------|---------|
+| `0000` | Reserved; invalid except for the `::` local-public-address literal (§17.6.3) |
+| `0004` | IPv4 payload |
+| `0006` | IPv6 payload |
+| `0040` | Mesh cryptographic endpoint |
+| `0041` | Mesh service endpoint |
+| `0042` | Infinet-native structured endpoint |
+| `0043` | Anonymous rendezvous / relay / dead-drop endpoint |
+| `0044` | Content-addressed resource |
+| `8000`-`bfff` | Private organisational use |
+| `c000`-`efff` | Experimental use |
+| `ffff` | Extension escape |
+
+`route_determinant` defines the routing plane or locator context:
+
+| Value | Meaning |
+|-------|---------|
+| `0000` | Unspecified / resolver-selected |
+| `0001` | Clearnet direct |
+| `0002` | Mesh native |
+| `0003` | Infinet |
+| `0004` | Tailscale / Headscale |
+| `0005` | ZeroTier |
+| `0006` | Tor |
+| `0007` | I2P |
+| `0008` | Local LAN |
+| `0009` | Bluetooth / proximity |
+| `000a` | RF / Meshtastic |
+| `000b` | Relay / store-and-forward |
+| `8000`-`bfff` | Private organisational use |
+| `c000`-`efff` | Experimental use |
+| `ffff` | Extension escape |
+
+The header is routing metadata, not an authority grant. A packet carrying `00040001` is an IPv4 clearnet destination; it is not evidence that the sender is allowed to use a clearnet exit. A packet carrying `00040003` is an IPv4 destination scoped to Infinet; it MUST NOT leak that private destination outside the relevant Infinet routing context. Transport solvers, ACLs, split-tunnel policy, exit-node policy, and threat context remain authoritative.
+
+Receivers MUST reject addresses whose `address_indicator` and `route_determinant` combination is unsupported, disabled, unavailable, or inconsistent with the active security policy. A route determinant may reduce routing scope, but it must never silently downgrade encryption, trust checks, anonymity routing, DNS leak prevention, or user-visible security state.
+
+#### 17.6.2 Embedded IP Payloads
+
+IPv4 and IPv6 payloads are compatibility locators for existing software and external routing planes. They are not proof of reachability and they are not mesh identity claims.
+
+For `address_indicator = 0004`, the 128-bit endpoint/locator payload stores IPv4 as:
+
+```
+[96 zero bits][32-bit IPv4 address]
+```
+
+For `address_indicator = 0006`, the 128-bit endpoint/locator payload stores the IPv6 address directly:
+
+```
+[128-bit IPv6 address]
+```
+
+Examples:
+
+```
+IPv4 225.225.225.225 over clearnet:
+00040001:00000000:00000000:00000000:e1e1e1e1:00000000:00000000:00000000
+
+Compressed text:
+00040001::e1e1e1e1:0:0:0
+
+IPv6 2001:db8::1 over Infinet:
+00060003:20010db8:00000000:00000000:00000001:00000000:00000000:00000000
+```
+
+The trust relationship ID remains present for embedded IP destinations. When a Mesh address represents a destination for ordinary IP software, the trust relationship ID is the mesh tunnel/session or policy-context discriminator, not part of the native IP literal. The zero trust relationship ID MAY be used for route lookup, DNS answers, and policy display before a specific tunnel session exists; live tunnels MUST use nonzero high-entropy trust relationship IDs.
+
+IPv4 padding MUST be zero. Non-canonical embedded IPv4 forms MUST be rejected rather than normalised silently. Native IPv4/IPv6 scope remains meaningful: private, link-local, loopback, multicast, unique-local, and other special-use addresses MUST be handled only inside the route determinant and policy context where they are valid.
+
+#### 17.6.3 Mesh Address Text Form
+
+The full text form is 8 colon-separated groups of 8 lowercase hexadecimal characters. Parsers MAY accept uppercase input but canonical output is lowercase.
+
+Compression rules:
+
+1. Segment 0 is the address header and MUST NOT be all zero except for the literal `::`.
+2. Outside compressed sections, leading zeroes in a segment MAY be omitted.
+3. A single `::` MAY compress one contiguous run of zero nibbles.
+4. The compressed run MAY begin or end inside an 8-nibble segment.
+5. If a shortened segment immediately precedes `::`, omitted trailing nibbles are part of the compressed zero run.
+6. If a shortened segment immediately follows `::`, omitted leading nibbles are normal leading zeroes.
+7. `::` alone is a reserved local-public-address literal. It resolves to the node's active local public Mesh address in the current routing context and is not valid for network transmission as a remote destination.
+8. Otherwise, `::` MUST have explicit hexadecimal characters on both sides.
+9. Canonical output compresses the longest zero-nibble run; ties choose the earliest run.
+
+Examples:
+
+```
+1abb1abb:0024cabe:5f000000:00000000:00000000:00000000:00000000:00000001
+-> 1abb1abb:24cabe:5f::1
+
+1abb1abb:1a000000:00000000:00000000:00000000:00000000:00000000:00000000
+-> 1abb1abb:1a::0
+
+::
+-> local public Mesh address literal
+```
+
+Invalid compressed forms:
+
+```
+1abb1abb:1a::
+::1
+::abcd
+```
+
+Those forms are invalid because the compression marker is open-ended. The only valid unanchored `::` form is the local-public-address literal by itself.
+
+#### 17.6.4 IPv4 Helper Input Forms
+
+IPv4 helper forms are accepted at application and configuration boundaries as user-entry conveniences. They are not wire formats and they are not stored in vaults. The parser expands them into a full Mesh address with `address_indicator = 0004` and a route determinant selected by the current field, route policy, or explicit user choice.
+
+Accepted helper forms:
+
+```
+1:d1:d2:d3:d4   decimal octets
+2:h1:h2:h3:h4   hexadecimal octets
+3:hhhhhhhh      packed 32-bit hexadecimal IPv4
+```
+
+Aliases:
+
+```
+a = 1
+b = 2
+c = 3
+```
+
+Aliases are recognised only when the remaining field count and field syntax exactly match the corresponding helper form. Otherwise, the input is parsed by the ordinary Mesh or native IPv6 parser for that application boundary.
+
+Examples:
+
+```
+1:225:225:225:225
+2:e1:e1:e1:e1
+3:e1e1e1e1
+```
+
+All three represent IPv4 `225.225.225.225` and expand to the same embedded IPv4 payload. Periods are not accepted in Mesh address fields.
+
+Validation:
+
+- `1` / `a`: exactly four decimal octets, each `0`-`255`; leading decimal zeroes are rejected except the literal `0`.
+- `2` / `b`: exactly four hexadecimal octets, each `0`-`ff`; canonical output uses lowercase without unnecessary leading zeroes.
+- `3` / `c`: exactly one 8-character hexadecimal field.
+
+Subnet masks and CIDR suffixes are not part of destination address syntax. Prefix lengths belong in routing policy, ACLs, split tunneling, gateway advertisements, and address allocation rules.
+
+Native IPv6 text is accepted at application boundaries using the platform's IPv6 parser and then embedded into an address with `address_indicator = 0006`. Canonical Mesh address display uses the Mesh text form above, not IPv6 text form.
 
 **Human-readable resolution (Mesh DNS):**
 
@@ -11536,6 +12727,8 @@ See §4.1.3 for the full bootstrap integrity model. Summary:
 
 A first-class build profile that compiles the full Rust backend but replaces the Flutter client UI with a minimal native shell. The resulting node is not second-class: it holds a full mesh identity, participates in routing and forwarding, supports all transports, and runs all enabled modules. The difference is deployment intent — infrastructure over end-user interaction.
 
+Clientless is the canonical deployment vehicle for Strategic Helper Infrastructure (§4.3.1). It exists so individuals and communities can run durable helper capacity — bootstrap, discovery, store-and-forward, profile resolution, NAT relay, Garden cache, wrapper, exit, and abuse-throttling roles — without depending on a central provider. The build profile is not a reduced client; it is the server/infrastructure form of the same system.
+
 **Shell per platform:**
 
 | Platform | Shell |
@@ -11561,11 +12754,11 @@ Additional basic config file fields (node name, start-on-boot) may be surfaced i
 
 **Control surface:** The §17.12 Node Management Interface (local HTTPS WebUI + mesh control plane) is the primary and complete management interface for all clientless deployments. The shell is a launcher, status indicator, and bootstrap config surface — nothing more.
 
-**Runtime mode:** Clientless nodes always start in Server mode. There is no UI to toggle this.
+**Runtime mode:** Clientless nodes always start in Server mode. There is no UI to toggle this because clientless deployments are intentionally infrastructure nodes.
 
 **Build relationship:** One codebase. Official primary-platform full-client binaries (Android APK, iOS, Linux desktop, macOS, Windows) and official clientless binaries are built from the same Rust backend. A supported platform can target either profile — a Linux machine can be a full client or a dedicated infrastructure node depending on which binary is deployed. Clientless is a supported deployment of the same software serving a different role, not a community port or reduced build.
 
-**Target hardware:** Old Android phones used as dedicated nodes, Raspberry Pi and SBCs, repurposed desktops and laptops, OpenWrt routers, pfSense/OPNsense appliances, any Linux/BSD host where Rust cross-compiles.
+**Target hardware:** Old Android phones used as dedicated nodes, Raspberry Pi and SBCs, repurposed desktops and laptops, OpenWrt routers, pfSense/OPNsense appliances, reverse-proxy and middleware hosts, streaming origins, and any Linux/BSD host where Rust cross-compiles. These are not merely "places the binary runs" — they are preferred infrastructure surfaces for helper roles, deniable-carrier brokering (§5.27), passive assist, and high-bandwidth steganographic relay.
 
 **Build identity:** The canonical application identifier is `com.oniimediaworks.meshinfinity`. Variants append suffixes in order:
 
@@ -13880,7 +15073,8 @@ Additional blocks reserved in the §12.1.1 native service space for §20 protoco
 | 77 | 77000–77999 | Screen Share |
 | 78 | 78000–78999 | Clipboard Sync |
 | 79 | 79000–79999 | Print Services |
-| 80–133 | 80000–133999 | Reserved for future first-party protocols |
+| 80 | 80000–80999 | MeshTorrent closed-swarm distribution |
+| 81–133 | 81000–133999 | Reserved for future first-party protocols |
 
 **Adapter sub-port allocation within protocol blocks:**
 
@@ -15517,11 +16711,9 @@ AppBar(
         Text(room.name, style: textTheme.titleSmall,
           maxLines: 1, overflow: TextOverflow.ellipsis),
         Row(children: [
-          TrustBadge(level: peer.trustLevel, compact: true),
-          SizedBox(width: 4),
-          Text(peer.isOnline ? 'Online' : 'Offline',
+          Text(_threadSubtitle(peer),
             style: textTheme.bodySmall.copyWith(
-              color: peer.isOnline ? kSecGreen : colorScheme.onSurfaceVariant,
+              color: colorScheme.onSurfaceVariant,
               fontSize: 11)),
         ]),
       ],
@@ -15537,12 +16729,19 @@ AppBar(
 )
 ```
 
+`_threadSubtitle(peer)` returns ordinary chat copy:
+- `Online` / `Offline` in Normal mode when presence is available.
+- `Reachable` / `Unavailable` in Elevated mode when coarse presence is available.
+- No subtitle for unknown presence unless delivery state requires explanation.
+
+Trust badges are not shown in the default thread header. Verification/key-change state appears only when action is needed: verified safety-number chip, key changed, compromised contact, direct mode, failed delivery, or non-default privacy mode. Trust level details remain in ContactDetailScreen.
+
 **Thread menu items** (shown as ModalBottomSheet or PopupMenu on desktop):
 ```
 'Search in conversation'  — Icon: search
 'Disappearing messages'   — Icon: timer_outlined
   → on tap: show DisappearingMessagesSheet
-'Connection mode'         — Icon: settings_ethernet
+'Privacy & speed'         — Icon: tune
   → on tap: show ConnectionModeSheet
 'View contact'            — Icon: person_outlined
 'Export conversation'     — Icon: download_outlined
@@ -15551,14 +16750,14 @@ AppBar(
 
 **ConnectionModeSheet:**
 
-The connection mode sheet presents five message security modes as a spectrum from maximum security to maximum speed. Each mode is a distinct combination of routing, encryption layers, and traffic shaping. The default is `Standard` — the right balance for most conversations.
+The connection mode sheet is an advanced per-conversation privacy and performance control. It must feel like a normal chat-app setting, not a threat-model console. The default label is **Automatic**. Technical mode names (`loSec`, `mixnet`, `direct`) are backend names only.
 
 ```dart
 enum MessageSecurityMode {
-  maxSecurity,  // Mixnet routing + S&F + maximum cover
-  reinforced,   // Standard mesh + extra hops + tighter jitter
-  standard,     // Standard mesh routing (default)
-  loSec,        // 1-2 relay hops, obfuscated
+  private,      // Mixnet routing + S&F + maximum cover
+  careful,      // Standard mesh + extra hops + tighter jitter
+  automatic,    // Standard mesh routing (default)
+  fast,         // 1-2 relay hops, obfuscated
   direct,       // Peer-to-peer, no mesh routing
 }
 ```
@@ -15569,59 +16768,56 @@ BottomSheet(
     SizedBox(height: 8),
     Padding(
       padding: EdgeInsets.fromLTRB(20, 8, 20, 4),
-      child: Text('Message security', style: textTheme.titleMedium),
+      child: Text('Privacy & speed', style: textTheme.titleMedium),
     ),
     Padding(
       padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
-      child: Text('Higher security adds latency. Lower security is faster.',
+      child: Text('Mesh Infinity picks a good default. Change this only for this chat.',
         style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant)),
     ),
 
-    // Maximum Security
+    // Private
     _SecurityModeTile(
       icon: Icons.security_outlined,
       iconColor: Color(0xFF7C3AED),  // purple
-      title: 'Maximum security',
-      subtitle: 'Mixnet routing. Messages may take seconds to arrive. '
-        'Defeats timing analysis.',
+      title: 'Most private',
+      subtitle: 'Slower delivery. Best when privacy matters more than speed.',
       latencyHint: '1–10s',
-      selected: room.securityMode == MessageSecurityMode.maxSecurity,
-      onTap: () => _setMode(MessageSecurityMode.maxSecurity),
+      selected: room.securityMode == MessageSecurityMode.private,
+      onTap: () => _setMode(MessageSecurityMode.private),
     ),
 
-    // Reinforced
+    // Careful
     _SecurityModeTile(
       icon: Icons.enhanced_encryption_outlined,
       iconColor: kBrand,
-      title: 'Reinforced',
-      subtitle: 'Extra routing hops. Tighter traffic shaping. '
-        'Good for sensitive conversations.',
+      title: 'More private',
+      subtitle: 'A little slower. Quieter connection patterns.',
       latencyHint: '200–500ms',
-      selected: room.securityMode == MessageSecurityMode.reinforced,
-      onTap: () => _setMode(MessageSecurityMode.reinforced),
+      selected: room.securityMode == MessageSecurityMode.careful,
+      onTap: () => _setMode(MessageSecurityMode.careful),
     ),
 
-    // Standard (default)
+    // Automatic (default)
     _SecurityModeTile(
       icon: Icons.hub_outlined,
       iconColor: kSecGreen,
-      title: 'Standard',
-      subtitle: 'Full mesh routing with cover traffic. '
-        'The right balance for most conversations.',
+      title: 'Automatic',
+      subtitle: 'Recommended for everyday chats.',
       latencyHint: '<100ms',
       isDefault: true,
-      selected: room.securityMode == MessageSecurityMode.standard,
-      onTap: () => _setMode(MessageSecurityMode.standard),
+      selected: room.securityMode == MessageSecurityMode.automatic,
+      onTap: () => _setMode(MessageSecurityMode.automatic),
     ),
 
-    // LoSec
+    // Fast
     _SecurityModeTile(
       icon: Icons.speed_outlined,
       iconColor: kSecAmber,
       title: 'Fast',
-      subtitle: 'Shorter path through 1–2 relays. Fine for everyday use.',
+      subtitle: 'Better speed. Slightly less private.',
       latencyHint: '<50ms',
-      selected: room.securityMode == MessageSecurityMode.loSec,
+      selected: room.securityMode == MessageSecurityMode.fast,
       onTap: () => _confirmLoSec(),
     ),
 
@@ -15630,7 +16826,7 @@ BottomSheet(
       icon: Icons.warning_amber_outlined,
       iconColor: kSecRed,
       title: 'Direct',
-      subtitle: 'No mesh routing. Your network location is visible.',
+      subtitle: 'Connects straight to the other person. Use only when you mean to.',
       latencyHint: 'Minimum',
       selected: room.securityMode == MessageSecurityMode.direct,
       onTap: () => _confirmDirect(),
@@ -15682,10 +16878,10 @@ ListTile(
 
 | Mode | Routing | Encryption | Jitter | Cover traffic | Padding | Persistent indicator |
 |------|---------|-----------|--------|---------------|---------|---------------------|
-| Maximum | Mixnet (§5.25) + S&F preferred | 4-layer + mixnet Sphinx | 500ms batch window | Full | Yes | Purple chip: "Maximum security — slower delivery" |
-| Reinforced | Standard mesh + minimum 3 hops | 4-layer | `High` (0–50ms) forced | Full | Yes | Blue chip: "Reinforced" |
-| Standard | Standard mesh (§6.1) | 4-layer | Per §16.9.3 | Normal | Yes | None (default, no indicator) |
-| Fast (LoSec) | 1–2 relay hops (§6.9) | WireGuard only | `High` (0–50ms) | Injected per §6.9.2 | Yes | Amber chip: "Fast mode" |
+| Most private | Mixnet (§5.25) + S&F preferred | 4-layer + mixnet Sphinx | 500ms batch window | Full | Yes | Purple chip: "Most private — slower" |
+| More private | Standard mesh + minimum 3 hops | 4-layer | `High` (0–50ms) forced | Full | Yes | Blue chip: "More private" |
+| Automatic | Standard mesh (§6.1) | 4-layer | Per §16.9.3 | Normal | Yes | None (default, no indicator) |
+| Fast | 1–2 relay hops (§6.9) | WireGuard only | `High` (0–50ms) | Injected per §6.9.2 | Yes | Amber chip: "Fast mode" |
 | Direct | Peer-to-peer (§6.9) | WireGuard only | 0ms | None | Yes | Red banner: "Direct — no mesh routing" |
 
 **Mode applies per-conversation.** Different conversations can run at different security modes simultaneously. The node's mesh participation (routing, cover traffic, relay) continues normally regardless of per-conversation mode choices.
@@ -15694,21 +16890,21 @@ ListTile(
 
 **Mode change and in-flight messages:** Messages already queued in the traffic shaper when the mode changes use the mode that was active **at queue time** — the traffic shaper does not re-route in-flight frames. The mode change takes effect for the *next* message queued after the change is committed. This prevents a partially-processed message from being split across two security modes.
 
-**Availability:** Maximum Security and Reinforced are always available. Standard is always available. Fast (LoSec) and Direct over network transports have the existing availability requirements from §6.9 (ambient traffic threshold, peer trust, mutual consent).
+**Availability:** Most private and More private are always available. Automatic is always available. Fast and Direct over network transports have the existing availability requirements from §6.9 (ambient traffic threshold, peer trust, mutual consent).
 
-**Proximity transport override:** When the active transport is a proximity transport (Bluetooth, WiFi Direct, NFC, ultrasonic, USB/serial, same-segment Ethernet — see §6.9.5 Path A), the conversation automatically uses Direct mode without user action or confirmation. The security mode picker shows a disabled "Direct (Bluetooth)" or equivalent label with a check mark and a note: *"You're physically connected — direct is automatic."* The user can still manually select a higher-security mode (Standard, Reinforced, Maximum Security) over a proximity transport if they want mesh routing for operational reasons — but this is unusual and not the default.
+**Proximity transport override:** When the active transport is a proximity transport (Bluetooth, WiFi Direct, NFC, ultrasonic, USB/serial, same-segment Ethernet — see §6.9.5 Path A), the conversation can use Direct mode automatically only when §6.9.5 permits it. The privacy picker shows a disabled "Direct (Bluetooth)" or equivalent label with a check mark and a note: *"Nearby connection."* The user can still manually select a more private mode over a proximity transport if they want mesh routing for operational reasons — but this is unusual and not the default.
 
 Fast (LoSec) confirmation — inline chip replacing normal UI, NOT a modal:
 ```
 // After selecting Fast, show amber chip in thread AppBar subtitle:
 // "Fast mode  [×]"
-// No blocking modal. Dismiss with [×] to return to Standard.
+// No blocking modal. Dismiss with [×] to return to Automatic.
 ```
 
-Maximum Security / Reinforced — inline chip, no confirmation needed (higher security never needs a warning):
+Most private / More private — inline chip, no confirmation needed (more private never needs a warning):
 ```
-// Maximum Security: purple chip in thread AppBar subtitle: "Maximum security — slower delivery"
-// Reinforced: blue chip: "Reinforced"
+// Most private: purple chip in thread AppBar subtitle: "Most private — slower"
+// More private: blue chip: "More private"
 // Neither is dismissible with [×] — tap the chip to reopen the security mode sheet.
 ```
 
@@ -16956,15 +18152,15 @@ Column(children: [
 ])
 ```
 
-If threat context is Critical: show message:
+If privacy preset is Lockdown: show message:
 ```
 Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
   Icon(Icons.search_off_outlined, size: 48, color: colorScheme.outline),
   SizedBox(height: 12),
-  Text('Discovery unavailable in Critical mode',
+  Text('Discovery unavailable in Lockdown',
     style: textTheme.titleSmall, textAlign: TextAlign.center),
   SizedBox(height: 8),
-  Text('Change your threat context in Network settings to enable discovery.',
+  Text('Change your privacy preset in Network settings to enable discovery.',
     style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant),
     textAlign: TextAlign.center),
 ]))
@@ -18579,9 +19775,9 @@ ListView(
       )),
     ),
 
-    // 2. THREAT CONTEXT
+    // 2. PRIVACY PRESET
     _ExpandableSection(
-      title: 'Threat Context',
+      title: 'Privacy preset',
       initiallyExpanded: true,
       child: Padding(
         padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -18589,17 +19785,17 @@ ListView(
           SegmentedButton<ThreatContext>(
             segments: [
               ButtonSegment(value: ThreatContext.normal,
-                label: Text('Normal'), icon: Icon(Icons.radio_button_unchecked, size: 14)),
+                label: Text('Everyday'), icon: Icon(Icons.radio_button_unchecked, size: 14)),
               ButtonSegment(value: ThreatContext.elevated,
-                label: Text('Elevated'), icon: Icon(Icons.warning_outlined, size: 14)),
+                label: Text('More private'), icon: Icon(Icons.warning_outlined, size: 14)),
               ButtonSegment(value: ThreatContext.critical,
-                label: Text('Critical'), icon: Icon(Icons.dangerous_outlined, size: 14)),
+                label: Text('Lockdown'), icon: Icon(Icons.dangerous_outlined, size: 14)),
             ],
             selected: {net.threatContext},
             onSelectionChanged: (s) => net.setThreatContext(s.first),
           ),
           SizedBox(height: 8),
-          Text(_threatContextDescription(net.threatContext),
+          Text(_privacyPresetDescription(net.threatContext),
             style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant)),
         ]),
       ),
@@ -18978,10 +20174,10 @@ Padding(
 
 The `body` text is defined in the `_OverlayRequirementsHint` constructor per overlay type (see trusted contexts section above). Plain language only — no jargon, no commands, no scary warnings. The tone is: "here's what you might need to check; no action required if you haven't changed the defaults."
 
-Threat context descriptions:
-- Normal: "Standard operation. Optimize for performance within security policy."
-- Elevated: "Prefer anonymizing transports. Clearnet requires minimum 1 hop. LoSec available."
-- Critical: "Maximum security. Clearnet disabled. LoSec unavailable. Only anonymizing transports."
+Privacy preset descriptions:
+- Everyday: "Fast and familiar for daily chats."
+- More private: "Quieter discovery and fewer activity signals."
+- Lockdown: "Strictest privacy. Slower and less automatic."
 
 #### 22.9.2 MetricsScreen
 
@@ -19061,9 +20257,9 @@ ListView(
         _MetricRow(icon: Icons.people_outline,
           label: 'Peers in map', value: '${metrics.networkMapSize}'),
         _MetricRow(icon: Icons.route_outlined,
-          label: 'Threat context', value: _threatContextLabel(metrics.threatContext)),
+          label: 'Privacy preset', value: _privacyPresetLabel(metrics.threatContext)),
         _MetricRow(icon: Icons.settings_ethernet_outlined,
-          label: 'Connection mode', value: _connectionModeLabel(metrics.connectionMode)),
+          label: 'Chat mode', value: _connectionModeLabel(metrics.connectionMode)),
         _MetricRow(icon: Icons.inbox_outlined,
           label: 'S&F nodes in use', value: '${metrics.storeFwdNodes}'),
       ],
@@ -22016,7 +23212,7 @@ Scaffold(
             color: Colors.white.withValues(alpha: 0.7))),
         // callStatusLabel: 'Calling…' | 'Connecting…' | '00:42' (timer) | 'Call ended'
 
-        // Connection mode indicator
+        // Privacy & speed indicator
         if (call.connectionMode == ConnectionMode.loSec)
           Container(
             margin: EdgeInsets.only(top: 6),
@@ -22488,6 +23684,12 @@ This is not a compromise -- it is a security requirement. **Ubiquity IS the secu
 
 Every operational security UX decision must be evaluated against: "Can my non-technical friend who just wants to message people understand this?"
 
+**Ordinary-use camouflage:** No default screen, empty state, onboarding copy, notification, tray tooltip, or conversation header may imply that the user is a dissident, whistleblower, activist, journalist, target, or person in danger. Those use cases are supported, but the ordinary product identity is private chat, groups, calls, files, and personal networking. A seized or casually inspected phone should show an app that looks normal for family, gaming, work, school, and community use.
+
+**Security is mostly ambient:** The default UI shows security only when the user needs to act or when state differs from the safe baseline. Green-lock theatre, constant threat chips, dense security dashboards, and repeated warnings train users to ignore the product. Normal encrypted operation is unmarked. Exceptional risk is marked clearly and sparingly.
+
+**Advanced controls are discoverable, not dominant:** Threat context, routing modes, masks, relay settings, and debug metrics must be reachable within one or two taps from relevant screens, but they must not dominate the chat list or thread header. The first-run path optimizes for sending a message to a trusted person successfully.
+
 ### 22.22 Plain Language Requirement
 
 All security-related user-facing text must pass the plain language test. Technical accuracy is required; technical jargon is not.
@@ -22508,7 +23710,7 @@ The spec does not prescribe UI layouts or visual design -- those are frontend co
 
 **Ambient state** disclosures describe things that are always true about the system. They are disclosed during onboarding, available in settings and help at any time, and not repeated on every action.
 
-The following must be clearly communicated before a user first sends a message:
+The following must be clearly communicated before a user first sends a message. This is a single plain-language setup screen with short rows and a "Learn more" link, not a sequence of modal warnings:
 
 1. **Cover traffic:** "Your app sends extra data to keep your activity private. This uses some battery and data -- about X MB per day on average."
 2. **Relay participation:** "Your device may help route other people's encrypted messages. You can't read them, and neither can anyone else."
@@ -22516,7 +23718,7 @@ The following must be clearly communicated before a user first sends a message:
 4. **No central server:** "Mesh Infinity has no central servers. Your messages travel through the network itself."
 5. **Trust model basics:** "You control who can contact you and what they can see. Strangers start with minimal access."
 
-These are not scary warnings -- they are honest explanations of how the system works. Tone should be matter-of-fact and positive.
+These are not scary warnings -- they are honest explanations of how the system works. Tone should be matter-of-fact and positive. The screen title is "How Mesh Infinity works", not "Security warning", "Threat model", or similar high-risk language.
 
 ### 22.24 Event-Based Disclosures
 
@@ -22524,9 +23726,9 @@ These are not scary warnings -- they are honest explanations of how the system w
 
 #### 22.24.1 Security State Changes
 
-- **Threat context change** (user-initiated): confirm the change.
-- **Connection mode change to LoSec:** persistent amber indicator for the duration of the session.
-- **Connection mode change to Direct:** persistent red indicator + full-screen warning (§6.7), persists during session.
+- **Privacy preset change** (user-initiated): confirm the change.
+- **Privacy & speed change to Fast:** persistent amber indicator for the duration of the session.
+- **Privacy & speed change to Direct:** persistent red indicator + full-screen warning (§6.9.5), persists during session.
 - **Trusted peer becomes Disavowed:** notification: "A contact may be compromised."
 - **Trusted peer becomes Compromised:** urgent notification: "A contact's device is compromised."
 - **Key change approval pending:** actionable notification -- approve or decline.
@@ -22538,7 +23740,7 @@ These are not scary warnings -- they are honest explanations of how the system w
 - Enabling APNs/FCM notifications (any tier above Tier 1).
 - Enabling read receipts or typing indicators.
 - Enabling LoSec for a service (first time per service).
-- Activating direct mode (full-screen warning, §6.7).
+- Activating direct mode (full-screen warning, §6.9.5).
 - Cross-profile linkage (warning: irreversible).
 - Sharing private profile (warning: permanent).
 - Joining a Public network via QR.
@@ -22583,8 +23785,8 @@ A dedicated metrics screen makes abstract security properties tangible. This is 
 
 | Metric | Display label | Source |
 |--------|-------------|--------|
-| Current threat context level | "Security level" | Global threat context |
-| Active LoSec or Direct sessions | "Active fast connections" | Session manager |
+| Current privacy preset | "Privacy preset" | Global threat context |
+| Active Fast or Direct sessions | "Active fast connections" | Session manager |
 | Pending approvals | "Pending approvals" | Key change / trust promotion queues |
 | Recent security events (last 7 days) | "Recent security events" | Event log |
 
@@ -22608,7 +23810,11 @@ New users must complete a minimal security onboarding before first use:
 
 1. **Ambient state disclosures** (§22.23) -- presented simply, not as a wall of text.
 2. **PIN setup prompt** -- strongly encouraged, skippable with acknowledgment.
-3. **Threat context defaults to Normal** -- no forced selection during onboarding. Users who need Elevated or Critical mode can change it in Settings → Network → Threat Context at any time. The Explainer step (§22.42.4) mentions that threat context exists and where to find it, without requiring a decision.
+3. **Privacy preset quick check** -- no technical threat-model quiz and no wording that asks the user to self-identify as endangered. Before first message, ask: *"Choose your default privacy style."* Options:
+   - **Everyday** — fastest and most familiar; good for family, friends, school, work, and communities. Starts in `ThreatContext::Normal`.
+   - **More private** — uses quieter discovery and fewer activity signals. Starts in `ThreatContext::Elevated`.
+   - **Lockdown** — most private; slower and stricter. Starts in `ThreatContext::Critical`.
+   The recommended default is **Everyday** unless the user selects otherwise. The user can change this later in Settings → Privacy & Safety. The app must not explain these options using examples such as police, immigration, school discipline, employer retaliation, journalism, activism, or illegality during ordinary onboarding; those explanations belong in help and advanced safety guidance.
 4. **Contact import or first pairing** -- gets the user connected immediately.
 
 Onboarding must not:
@@ -23962,22 +25168,22 @@ TrayPopup(
 
     Divider(height: 1),
 
-    // ── THREAT CONTEXT ──
+    // ── PRIVACY PRESET ──
     Padding(
       padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Threat Context',
+        Text('Privacy preset',
           style: textTheme.labelSmall.copyWith(
             color: colorScheme.onSurfaceVariant)),
         SizedBox(height: 8),
         Row(children: [
-          _ThreatChip(label: 'Normal', level: ThreatContext.normal,
+          _ThreatChip(label: 'Everyday', level: ThreatContext.normal,
             current: threatContext, onTap: () => _setThreat(normal)),
           SizedBox(width: 6),
-          _ThreatChip(label: 'Elevated', level: ThreatContext.elevated,
+          _ThreatChip(label: 'More private', level: ThreatContext.elevated,
             current: threatContext, onTap: () => _setThreat(elevated)),
           SizedBox(width: 6),
-          _ThreatChip(label: 'Critical', level: ThreatContext.critical,
+          _ThreatChip(label: 'Lockdown', level: ThreatContext.critical,
             current: threatContext, onTap: () => _setThreat(critical)),
         ]),
       ]),
@@ -24261,12 +25467,12 @@ notification must be useful, not just a legal placeholder.
              Connected · 3 tunnels · 12 peers
              Cover traffic: 2.3 MB today
 
-[Threat context selector: Normal | Elevated | Critical]
+[Privacy preset: Everyday | More private | Lockdown]
 
 [Action: Mute 1h]   [Action: Settings]   [Action: Open]
 ```
 
-The threat context selector in the expanded notification is a set of three
+The privacy preset selector in the expanded notification is a set of three
 `RemoteViews` buttons, not a spinner — each tap sends a `PendingIntent` to the
 service. Selected state shown with a different background tint.
 
@@ -24296,14 +25502,14 @@ and in Notification Center while the app is backgrounded.
 ╔════════════════════════════════╗
 ║  [Logo]  Mesh Infinity         ║
 ║  ● Connected · 3 tunnels       ║
-║  Normal threat context         ║
+║  Running in the background     ║
 ╚════════════════════════════════╝
 ```
 
 Tapping opens the app to the Network section (if enabled) or Settings.
 
 **Live Activity states:**
-- Connected: green dot, tunnel count, threat context
+- Connected: green dot, tunnel count
 - LoSec: amber dot, "LoSec mode active"
 - Direct: red dot, "⚠ Direct mode"
 - VPN: lock icon, exit node name
@@ -24392,8 +25598,8 @@ AppShell
   │       └── [more menu]         → thread menu sheet
   │           ├── Search          → (inline search bar in thread)
   │           ├── Disappearing    → DisappearingMessagesSheet
-  │           └── Connection mode → ConnectionModeSheet
-  │               ├── LoSec       → inline amber chip (no navigation)
+  │           └── Privacy & speed → ConnectionModeSheet
+  │               ├── Fast        → inline amber chip (no navigation)
   │               └── Direct      → DirectConfirmDialog (modal)
   │
   ├── Garden tab
@@ -24521,7 +25727,8 @@ Error strings come from `bridge.getLastError()`. Fallback strings:
 |---------|----------------|--------|
 | Create identity fails | "Failed to create identity. Please try again." | Yes |
 | Import backup fails | "Import failed. Check your passphrase and backup data." | Yes |
-| Send message fails | "Message not sent. Will retry when connection is available." | No — auto-retry |
+| Send message at risk | "Not delivered yet. Mesh Infinity is still trying." | No — auto-retry |
+| Send message fails | "Message not delivered. Tap to retry." | Yes |
 | Pair contact fails | "Pairing failed. Check the code and try again." | Yes |
 | Load conversations fails | "Couldn't load conversations. Pull down to retry." | No — pull-to-refresh |
 | Load contacts fails | "Couldn't load contacts. Pull down to retry." | No — pull-to-refresh |
@@ -25751,10 +26958,10 @@ Allows testers to simulate conditions that are hard to reproduce naturally.
 ```
 SectionHeader('Simulate'),
 
-// Threat context override
+// Privacy preset override
 ListTile(
   leading: Icon(Icons.shield_outlined),
-  title: Text('Override Threat Context'),
+  title: Text('Override Privacy Preset'),
   subtitle: Text('Currently: ${threatContext.name}'),
   trailing: SegmentedButton<ThreatContext>(...),
 ),
