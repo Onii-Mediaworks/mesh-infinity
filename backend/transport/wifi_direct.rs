@@ -533,8 +533,8 @@ pub struct AndroidWifiDirectSession {
 /// All access goes through this function so there is a single, authoritative
 /// global instance — matching the pattern used by `android_wifi_direct_adapter_state`.
 #[cfg(target_os = "android")]
-fn android_wifi_direct_session_registry()
--> &'static Mutex<HashMap<String, AndroidWifiDirectSession>> {
+fn android_wifi_direct_session_registry(
+) -> &'static Mutex<HashMap<String, AndroidWifiDirectSession>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, AndroidWifiDirectSession>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1116,9 +1116,8 @@ impl WifiDirectTransport {
         // SAFETY: socketpair(2) is a standard POSIX syscall.  fds is a valid
         // pointer to a two-element array.  AF_UNIX + SOCK_STREAM gives a
         // bidirectional byte-stream socket pair.
-        let ret = unsafe {
-            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
-        };
+        let ret =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
         if ret != 0 {
             return Err(WifiDirectError::ConnectFailed(format!(
                 "socketpair failed: errno {}",
@@ -1189,8 +1188,9 @@ impl WifiDirectTransport {
                         // Queue the outbound frame for the native bridge to drain.
                         queue_android_outbound_session_frame(&body);
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
                     {
                         // Normal — no outbound data this tick.
                     }
@@ -2343,7 +2343,11 @@ mod tests {
     fn test_wifi_direct_fd_session_invalid_fd_returns_err() {
         // Adapter must be available for register_wifi_direct_session_fd to proceed.
         update_android_adapter_state(
-            true, true, true, false, true,
+            true,
+            true,
+            true,
+            false,
+            true,
             Some("client".to_string()),
             Some("192.168.49.1".to_string()),
             Some("de:ad:be:ef:00:02".to_string()),

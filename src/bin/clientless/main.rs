@@ -60,7 +60,8 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             // RUST_LOG=debug overrides the default; info is the production level.
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "mesh_infinity=info,tower_http=warn".into()),
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "mesh_infinity=info,tower_http=warn".into()),
         )
         .init();
 
@@ -78,8 +79,8 @@ async fn main() -> Result<()> {
     //
     // Defaults are used on first run; the config is persisted to disk so the
     // shell UI's changes survive restarts.
-    let cfg = ClientlessConfig::load_or_default()
-        .context("failed to load clientless configuration")?;
+    let cfg =
+        ClientlessConfig::load_or_default().context("failed to load clientless configuration")?;
 
     info!(
         port = cfg.webui_port,
@@ -115,7 +116,11 @@ async fn main() -> Result<()> {
     // Bind address respects the webui_local_only toggle:
     //   true  → 127.0.0.1:<port>  (shell default; safest for fresh deployments)
     //   false → 0.0.0.0:<port>    (operator has explicitly opened remote access)
-    let bind_host = if cfg.webui_local_only { "127.0.0.1" } else { "0.0.0.0" };
+    let bind_host = if cfg.webui_local_only {
+        "127.0.0.1"
+    } else {
+        "0.0.0.0"
+    };
     let addr: SocketAddr = format!("{}:{}", bind_host, cfg.webui_port)
         .parse()
         .context("invalid bind address")?;

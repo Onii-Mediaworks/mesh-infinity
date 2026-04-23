@@ -744,11 +744,7 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
     // Copy the JVM byte array into a Rust Vec.
     let mut frame = vec![0i8; data_len as usize];
     let copy_result = unsafe {
-        env.get_byte_array_region(
-            jni::objects::JByteArray::from_raw(data),
-            0,
-            &mut frame,
-        )
+        env.get_byte_array_region(jni::objects::JByteArray::from_raw(data), 0, &mut frame)
     };
     if copy_result.is_err() {
         return -1;
@@ -4870,8 +4866,8 @@ pub unsafe extern "C" fn mi_connector_evaluate(
     // The domain pointer is optional — null means no domain available.
     // An empty string is also treated as absent so Kotlin callers can pass ""
     // instead of null without triggering spurious domain-pattern mismatches.
-    let dst_domain: Option<&str> = unsafe { c_str_to_str(dst_domain_ptr) }
-        .filter(|s| !s.is_empty());
+    let dst_domain: Option<&str> =
+        unsafe { c_str_to_str(dst_domain_ptr) }.filter(|s| !s.is_empty());
 
     // Retrieve the current App Connector config and run the selector engine.
     let action = ctx.evaluate_connector_connection(package, dst_ip, dst_port_u16, dst_domain);
@@ -5361,7 +5357,11 @@ pub unsafe extern "C" fn mi_zerotier_probe_roots(ctx: *mut MeshContext) -> i32 {
         return 0;
     }
     let ctx = unsafe { &*ctx };
-    if ctx.zerotier_probe_roots() { 1 } else { 0 }
+    if ctx.zerotier_probe_roots() {
+        1
+    } else {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7747,7 +7747,10 @@ mod tests {
             r#"{"mesh_discovery":false,"allow_relays":false,"clearnet":true,"tor":true}"#,
         )
         .unwrap();
-        assert_eq!(unsafe { mi_set_transport_flags(ctx, transport_flags.as_ptr()) }, 0);
+        assert_eq!(
+            unsafe { mi_set_transport_flags(ctx, transport_flags.as_ptr()) },
+            0
+        );
 
         let startup_config_path = dir_path.join("layer1_startup.json");
         let startup_config_bytes = std::fs::read(startup_config_path).unwrap();
@@ -8186,9 +8189,7 @@ mod tests {
         assert!(!ptr.is_null());
         let events_json = unsafe { CStr::from_ptr(ptr).to_str().unwrap() };
         let events: Vec<serde_json::Value> = serde_json::from_str(events_json).unwrap();
-        let has_layer1_ready = events
-            .iter()
-            .any(|event| event["type"] == "Layer1Ready");
+        let has_layer1_ready = events.iter().any(|event| event["type"] == "Layer1Ready");
         assert!(
             has_layer1_ready,
             "bootstrap_layer1 must queue a Layer1Ready event; got: {events_json}"
@@ -8242,9 +8243,17 @@ mod tests {
         assert_eq!(unsafe { mi_create_identity(ctx, name.as_ptr()) }, 0);
 
         // First call must succeed.
-        assert_eq!(unsafe { mi_bootstrap_layer1(ctx) }, 0, "first call must return 0");
+        assert_eq!(
+            unsafe { mi_bootstrap_layer1(ctx) },
+            0,
+            "first call must return 0"
+        );
         // Second call must also return 0 — no panic, no corruption.
-        assert_eq!(unsafe { mi_bootstrap_layer1(ctx) }, 0, "second call must also return 0");
+        assert_eq!(
+            unsafe { mi_bootstrap_layer1(ctx) },
+            0,
+            "second call must also return 0"
+        );
 
         // State must still be consistent — is_layer1_ready must be 1.
         assert_eq!(

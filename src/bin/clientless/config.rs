@@ -59,7 +59,6 @@ const CONFIG_FILENAME: &str = "clientless.json";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientlessConfig {
     // ── WebUI access ─────────────────────────────────────────────────────────
-
     /// HTTPS port the Node Management Interface WebUI listens on.
     ///
     /// Shown read-only in the shell UI alongside the full URL.  The operator
@@ -79,7 +78,6 @@ pub struct ClientlessConfig {
     pub webui_local_only: bool,
 
     // ── Backend data directory ────────────────────────────────────────────────
-
     /// Absolute path to the directory where the backend stores all persistent
     /// state: identity vault, message store, peer database, TLS certificate.
     ///
@@ -117,9 +115,9 @@ fn default_data_dir() -> String {
 impl Default for ClientlessConfig {
     fn default() -> Self {
         Self {
-            webui_port:       DEFAULT_WEBUI_PORT,
+            webui_port: DEFAULT_WEBUI_PORT,
             webui_local_only: DEFAULT_WEBUI_LOCAL_ONLY,
-            data_dir:         default_data_dir(),
+            data_dir: default_data_dir(),
         }
     }
 }
@@ -135,8 +133,7 @@ impl ClientlessConfig {
         // Locate the config file from the default data directory.
         // If the config file specifies a different data_dir, that will take
         // effect on the next call (i.e., the operator can relocate the data).
-        let default_dir = resolve_default_data_dir()
-            .unwrap_or_else(|| PathBuf::from("./data"));
+        let default_dir = resolve_default_data_dir().unwrap_or_else(|| PathBuf::from("./data"));
 
         let config_path = default_dir.join(CONFIG_FILENAME);
 
@@ -167,8 +164,8 @@ impl ClientlessConfig {
             .with_context(|| format!("failed to create data directory {}", dir.display()))?;
 
         let config_path = dir.join(CONFIG_FILENAME);
-        let json = serde_json::to_string_pretty(self)
-            .context("failed to serialise ClientlessConfig")?;
+        let json =
+            serde_json::to_string_pretty(self).context("failed to serialise ClientlessConfig")?;
 
         std::fs::write(&config_path, json)
             .with_context(|| format!("failed to write {}", config_path.display()))?;

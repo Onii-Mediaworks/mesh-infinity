@@ -26,6 +26,12 @@ edition = "2021"
 # Fuzz binaries are not published to crates.io.
 publish = false
 
+# cargo-fuzz checks for this metadata flag when the manifest name/path does not
+# match its implicit expectations. Setting it explicitly makes CI and local
+# invocation treat this manifest as the fuzz workspace unambiguously.
+[package.metadata]
+cargo-fuzz = true
+
 # libfuzzer-sys provides the Rust binding to libFuzzer.
 # It exports the `fuzz_target!` macro that wraps our harness function as the
 # libFuzzer entry point (the `LLVMFuzzerTestOneInput` C symbol).

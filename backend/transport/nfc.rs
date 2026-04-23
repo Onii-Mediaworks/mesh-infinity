@@ -961,8 +961,8 @@ impl NfcTransport {
 
                 if outbound_len > 0 {
                     // Start the stale timer the first time we see queued frames.
-                    let first_seen = outbound_queued_since
-                        .get_or_insert_with(std::time::Instant::now);
+                    let first_seen =
+                        outbound_queued_since.get_or_insert_with(std::time::Instant::now);
 
                     if first_seen.elapsed().as_millis() as u64 >= EXCHANGE_TIMEOUT_MS {
                         // The outbound queue has been non-empty for the full
@@ -1342,7 +1342,7 @@ mod tests {
         // Use dequeue_android_outbound_frame's inverse: manually push a frame
         // by calling into the module-level queue function.
         enqueue_android_inbound_frame(b"pop_test".to_vec()); // inbound — different queue
-        // Queue an outbound frame via the public module function used by NfcTransport.
+                                                             // Queue an outbound frame via the public module function used by NfcTransport.
         {
             let mut state = android_nfc_adapter_state()
                 .lock()
@@ -1413,9 +1413,17 @@ mod tests {
         }
         let mut buf = [0u8; 256];
         let n1 = pop_outbound_frame(&mut buf).expect("first frame must be present");
-        assert_eq!(&buf[..n1], b"first", "first pop must return the first frame");
+        assert_eq!(
+            &buf[..n1],
+            b"first",
+            "first pop must return the first frame"
+        );
         let n2 = pop_outbound_frame(&mut buf).expect("second frame must be present");
-        assert_eq!(&buf[..n2], b"second", "second pop must return the second frame");
+        assert_eq!(
+            &buf[..n2],
+            b"second",
+            "second pop must return the second frame"
+        );
         assert!(
             pop_outbound_frame(&mut buf).is_none(),
             "queue must be empty after two pops"

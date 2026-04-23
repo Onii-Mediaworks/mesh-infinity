@@ -504,7 +504,11 @@ mod tests {
     use super::*;
 
     // Helper: build a minimal AppConnectorConfig with a single rule.
-    fn single_rule_config(selector: AppSelector, target: RoutingTarget, priority: u8) -> AppConnectorConfig {
+    fn single_rule_config(
+        selector: AppSelector,
+        target: RoutingTarget,
+        priority: u8,
+    ) -> AppConnectorConfig {
         AppConnectorConfig {
             mode: AppConnectorMode::Allowlist,
             apps: vec![],
@@ -543,24 +547,20 @@ mod tests {
         );
 
         // Matching package → RouteViaMesh.
-        let action = config.evaluate_connection(
-            "com.example.browser",
-            ip("1.2.3.4"),
-            443,
-            None,
+        let action = config.evaluate_connection("com.example.browser", ip("1.2.3.4"), 443, None);
+        assert_eq!(
+            action,
+            ConnectorAction::RouteViaMesh,
+            "Matching package name must route via mesh"
         );
-        assert_eq!(action, ConnectorAction::RouteViaMesh,
-            "Matching package name must route via mesh");
 
         // Different package → default AllowDirect.
-        let action2 = config.evaluate_connection(
-            "com.other.app",
-            ip("1.2.3.4"),
-            443,
-            None,
+        let action2 = config.evaluate_connection("com.other.app", ip("1.2.3.4"), 443, None);
+        assert_eq!(
+            action2,
+            ConnectorAction::AllowDirect,
+            "Non-matching package must fall through to default"
         );
-        assert_eq!(action2, ConnectorAction::AllowDirect,
-            "Non-matching package must fall through to default");
     }
 
     /// Domain glob pattern `*.example.com` should match `sub.example.com` but
@@ -585,38 +585,37 @@ mod tests {
             443,
             Some("sub.example.com"),
         );
-        assert_eq!(hit, ConnectorAction::RouteViaMesh,
-            "*.example.com must match sub.example.com");
+        assert_eq!(
+            hit,
+            ConnectorAction::RouteViaMesh,
+            "*.example.com must match sub.example.com"
+        );
 
         // Second-level subdomain also matches.
-        let hit2 = config.evaluate_connection(
-            "any.app",
-            ip("93.184.216.34"),
-            80,
-            Some("a.b.example.com"),
+        let hit2 =
+            config.evaluate_connection("any.app", ip("93.184.216.34"), 80, Some("a.b.example.com"));
+        assert_eq!(
+            hit2,
+            ConnectorAction::RouteViaMesh,
+            "*.example.com must match a.b.example.com"
         );
-        assert_eq!(hit2, ConnectorAction::RouteViaMesh,
-            "*.example.com must match a.b.example.com");
 
         // The bare domain itself does not match (no label replacing *).
-        let miss = config.evaluate_connection(
-            "any.app",
-            ip("93.184.216.34"),
-            443,
-            Some("example.com"),
+        let miss =
+            config.evaluate_connection("any.app", ip("93.184.216.34"), 443, Some("example.com"));
+        assert_eq!(
+            miss,
+            ConnectorAction::AllowDirect,
+            "*.example.com must NOT match example.com directly"
         );
-        assert_eq!(miss, ConnectorAction::AllowDirect,
-            "*.example.com must NOT match example.com directly");
 
         // Completely different domain does not match.
-        let miss2 = config.evaluate_connection(
-            "any.app",
-            ip("1.1.1.1"),
-            53,
-            Some("other.com"),
+        let miss2 = config.evaluate_connection("any.app", ip("1.1.1.1"), 53, Some("other.com"));
+        assert_eq!(
+            miss2,
+            ConnectorAction::AllowDirect,
+            "*.example.com must NOT match other.com"
         );
-        assert_eq!(miss2, ConnectorAction::AllowDirect,
-            "*.example.com must NOT match other.com");
     }
 
     /// CIDR `10.0.0.0/8` must include `10.1.2.3` and exclude `11.0.0.0`.
@@ -635,23 +634,35 @@ mod tests {
 
         // Address inside the /8 → RouteViaMesh.
         let inside = config.evaluate_connection("pkg", ip("10.1.2.3"), 80, None);
-        assert_eq!(inside, ConnectorAction::RouteViaMesh,
-            "10.1.2.3 must be inside 10.0.0.0/8");
+        assert_eq!(
+            inside,
+            ConnectorAction::RouteViaMesh,
+            "10.1.2.3 must be inside 10.0.0.0/8"
+        );
 
         // Address outside the /8 → default AllowDirect.
         let outside = config.evaluate_connection("pkg", ip("11.0.0.0"), 80, None);
-        assert_eq!(outside, ConnectorAction::AllowDirect,
-            "11.0.0.0 must be outside 10.0.0.0/8");
+        assert_eq!(
+            outside,
+            ConnectorAction::AllowDirect,
+            "11.0.0.0 must be outside 10.0.0.0/8"
+        );
 
         // Edge: network address itself is inside.
         let network_addr = config.evaluate_connection("pkg", ip("10.0.0.0"), 80, None);
-        assert_eq!(network_addr, ConnectorAction::RouteViaMesh,
-            "10.0.0.0 (network address) must be inside 10.0.0.0/8");
+        assert_eq!(
+            network_addr,
+            ConnectorAction::RouteViaMesh,
+            "10.0.0.0 (network address) must be inside 10.0.0.0/8"
+        );
 
         // Edge: broadcast-like address at end of range is inside.
         let end = config.evaluate_connection("pkg", ip("10.255.255.255"), 80, None);
-        assert_eq!(end, ConnectorAction::RouteViaMesh,
-            "10.255.255.255 must be inside 10.0.0.0/8");
+        assert_eq!(
+            end,
+            ConnectorAction::RouteViaMesh,
+            "10.255.255.255 must be inside 10.0.0.0/8"
+        );
     }
 
     /// Port 443 rule fires only on port 443, not 80 or 8443.
@@ -670,17 +681,26 @@ mod tests {
 
         // Exact match.
         let hit = config.evaluate_connection("any", ip("8.8.8.8"), 443, None);
-        assert_eq!(hit, ConnectorAction::RouteViaMesh,
-            "Port 443 rule must fire on port 443");
+        assert_eq!(
+            hit,
+            ConnectorAction::RouteViaMesh,
+            "Port 443 rule must fire on port 443"
+        );
 
         // Different port — falls through to default.
         let miss = config.evaluate_connection("any", ip("8.8.8.8"), 80, None);
-        assert_eq!(miss, ConnectorAction::AllowDirect,
-            "Port 443 rule must NOT fire on port 80");
+        assert_eq!(
+            miss,
+            ConnectorAction::AllowDirect,
+            "Port 443 rule must NOT fire on port 80"
+        );
 
         let miss2 = config.evaluate_connection("any", ip("8.8.8.8"), 8443, None);
-        assert_eq!(miss2, ConnectorAction::AllowDirect,
-            "Port 443 rule must NOT fire on port 8443");
+        assert_eq!(
+            miss2,
+            ConnectorAction::AllowDirect,
+            "Port 443 rule must NOT fire on port 8443"
+        );
     }
 
     /// When no rule matches the default policy is AllowDirect.
@@ -699,20 +719,22 @@ mod tests {
         );
 
         // Our package does not match — must get the default.
-        let action = config.evaluate_connection(
-            "com.completely.different",
-            ip("5.5.5.5"),
-            80,
-            None,
+        let action =
+            config.evaluate_connection("com.completely.different", ip("5.5.5.5"), 80, None);
+        assert_eq!(
+            action,
+            ConnectorAction::AllowDirect,
+            "Unmatched connection must return AllowDirect default"
         );
-        assert_eq!(action, ConnectorAction::AllowDirect,
-            "Unmatched connection must return AllowDirect default");
 
         // Empty rule list — always defaults.
         let empty_config = AppConnectorConfig::default();
         let default_action = empty_config.evaluate_connection("any.pkg", ip("1.1.1.1"), 53, None);
-        assert_eq!(default_action, ConnectorAction::AllowDirect,
-            "Empty config must always return AllowDirect");
+        assert_eq!(
+            default_action,
+            ConnectorAction::AllowDirect,
+            "Empty config must always return AllowDirect"
+        );
     }
 
     /// A rule with lower priority number (= higher precedence) wins over a
@@ -755,8 +777,11 @@ mod tests {
 
         // Priority 1 rule (Tor → RouteViaMesh) must win.
         let action = config.evaluate_connection("com.example.app", ip("9.9.9.9"), 443, None);
-        assert_eq!(action, ConnectorAction::RouteViaMesh,
-            "Lower priority number must win — Tor (priority 1) beats Direct (priority 10)");
+        assert_eq!(
+            action,
+            ConnectorAction::RouteViaMesh,
+            "Lower priority number must win — Tor (priority 1) beats Direct (priority 10)"
+        );
     }
 
     // -----------------------------------------------------------------

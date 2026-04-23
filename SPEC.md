@@ -15108,7 +15108,24 @@ This section specifies the testing strategy, diagnostic tooling, developer mode,
 3. **Fuzz tests** — all parsing, decryption, and wire-format code tested with arbitrary inputs
 4. **Network simulation tests** — multi-node scenarios in an in-process simulated mesh
 
-**Key invariant:** No code reaches the main branch without passing all four tiers. CI enforces this automatically.
+**Key invariant:** A security-sensitive feature is not considered implemented until its safety tests, fuzzing surface, and invariants are implemented too.
+
+**Critical wording to preserve:** Do not add fake passing tests. Do not claim compliance just because the implementation is incomplete. Track incomplete safety surfaces explicitly, and make it impossible for future implementation work to land without activating the matching tests.
+
+#### 21.0.1 Initial Development Testing Methodology
+
+Mesh Infinity is still in initial development. That does not weaken the testing methodology. It makes explicit safety-surface tracking mandatory.
+
+Pre-1.0 development MAY contain incomplete targets, incomplete harnesses, or blocked stateful-test surfaces, but only when the incompleteness is explicit. Explicit means all of the following are true:
+
+- the surface is tracked in `fuzz/targets.toml`
+- the owning module is named
+- the threat is named
+- the current state is one of the approved registry states
+- the unblock condition is written if the target is not active
+- the gap is visible in review and in CI
+
+Implicit incompleteness is forbidden. A dangerous parser, byte boundary, or state machine MUST NOT appear in the repository without its fuzzability and testability being tracked at the same time.
 
 ---
 
@@ -15142,19 +15159,28 @@ Integration tests exercise complete flows across module boundaries. Required:
 
 #### 21.1.3 Fuzz Tests
 
-Fuzz testing is **mandatory** for all code that processes externally-originating bytes. `cargo fuzz` targets must exist for:
+Fuzz testing is **mandatory** for all code that processes externally-originating bytes. The machine-readable source of truth is `fuzz/targets.toml`.
 
-| Fuzz target | Input |
-|-------------|-------|
-| `fuzz_decrypt_message` | Arbitrary XChaCha20-Poly1305 ciphertext — must not panic, must not produce false-positive decrypt |
-| `fuzz_parse_routing_announcement` | Arbitrary routing announcement bytes |
-| `fuzz_parse_pairing_qr` | Arbitrary QR payload bytes |
-| `fuzz_vault_load` | Arbitrary vault file bytes |
-| `fuzz_identity_payload` | Arbitrary identity.dat contents |
-| `fuzz_ffi_json_inputs` | Arbitrary JSON strings passed to all FFI functions |
-| `fuzz_kcp_packet` | Arbitrary KCP packet bytes |
+The repository MUST track every required fuzz surface in the registry, including blocked surfaces that are not yet active. Missing registry entries for externally-originating byte processors are methodology violations.
 
-**Requirement:** All fuzz targets must run for at least 1 million iterations in CI before merge. Corpus entries from previously found crashes are committed and replayed on every run.
+Current active cargo-fuzz targets are those whose registry status is `active`. Additional spec-required byte boundaries MAY remain blocked only while explicitly tracked in the registry.
+
+The registry supports these statuses:
+
+- `active`
+- `blocked-unimplemented`
+- `blocked-design-pending`
+- `not-applicable`
+
+Status rules:
+
+- `active` means the target exists under `fuzz/fuzz_targets/`, has a committed seed corpus, and runs in fuzz CI.
+- `blocked-unimplemented` is allowed only while the owning parser or byte boundary does not exist in the codebase.
+- once the owning parser exists, `blocked-unimplemented` is a methodology violation
+- `blocked-design-pending` is allowed when the parser exists but the dedicated fuzz harness or stateful driver is not yet landed; this is still a tracked safety gap
+- `not-applicable` requires a written reason
+
+The registry MUST include, at minimum, the currently known security-relevant byte boundaries from this spec, including message decryption, routing announcements, pairing payloads and QR payloads, vault and identity loading, FFI JSON inputs, KCP packet processing, and future simulator action-sequence fuzzing.
 
 #### 21.1.4 Network Simulation Tests
 
@@ -15171,24 +15197,154 @@ The `backend/tests/simulation/` directory contains multi-node scenarios run enti
 
 ### 21.2 Fuzz Testing Requirements
 
-#### 21.2.1 Corpus Management
+#### 21.2.1 External Byte Boundary Rule
+
+Any function, type, or module that accepts untrusted bytes from:
+
+- network traffic
+- FFI
+- QR, NFC, BLE, acoustic, or media-derived carriers
+- storage files
+- imported bundles or backups
+- helper or middleware payloads
+
+MUST satisfy all of the following:
+
+1. no panic path on attacker-controlled input
+2. no `unwrap()` / `expect()` on attacker-controlled input paths
+3. length, version, and type validation before semantic use
+4. typed errors rather than stringly-typed silent failure
+5. corpus replay test coverage
+6. an active fuzz target, or a registry entry explaining why fuzzing is not active yet
+
+If fuzzing is not active yet, the registry entry MUST make the gap explicit.
+
+#### 21.2.2 Shared Security Invariant Layer
+
+Shared testing helpers live under `backend/testing/`. This layer exists so future dangerous subsystems are born testable rather than retrofitted later.
+
+The shared layer MUST include reusable helpers for:
+
+- security invariants
+- deterministic arbitrary-data decoding
+- corpus replay
+- simulator action modeling
+
+Canonical locations:
+
+- `backend/testing/invariants.rs`
+- `backend/testing/arbitrary.rs`
+- `backend/testing/corpus.rs`
+- `backend/testing/sim.rs`
+
+These helpers do not prove safety. They make consistent safety checks easy to reuse.
+
+The following invariants MUST be enforced where applicable by tests, fuzz harnesses, simulator scenarios, and regression checks:
+
+- invalid input never escalates trust
+- failed authentication never mutates trusted state
+- malformed input never panics
+- replayed messages are rejected or deduplicated
+- kill switch and disavow state always revoke capabilities
+- private keys, seeds, plaintext, and internal crypto state never appear in FFI JSON, diagnostics, logs, or public events
+- decrypt never succeeds unless authentication succeeds
+- diagnostic reports never contain message content, private keys, contact names, phone numbers, emails, IPs, or hostnames
+
+#### 21.2.3 Corpus Management
 
 The fuzz corpus is committed to `fuzz/corpus/` in the repository. Each target has its own subdirectory. Corpus entries are:
 - Automatically generated by `cargo fuzz` during development runs
 - Manually added when bugs are found and fixed (regression entries)
 - Pruned periodically to remove entries covered by faster/smaller inputs
 
-#### 21.2.2 Coverage Requirements
+Fixed crashers and weird-but-valid bug reproducers live under `fuzz/artifacts/fixed/YYYY-MM-DD-short-bug-name/`. Each fixed-artifact directory MUST contain the minimized reproducer bytes and a short `README.md` explaining the bug class and the fix.
 
-Fuzz targets must achieve line coverage ≥80% of the target module within their first 10 million iterations (measured with `cargo-llvm-cov`). Targets that fall below this threshold require manual seed expansion.
+Any fuzz crash, parser weirdness, trust escalation, panic, replay bug, sanitizer finding, or simulator invariant failure MUST become:
 
-#### 21.2.3 Continuous Fuzz Infrastructure
+- a minimized corpus entry
+- a regression test
+- a short finding note
+- a release blocker until fixed if security-relevant
 
-The CI pipeline runs fuzz targets in short-duration (60-second) smoke mode on every PR. Extended fuzzing (24h+ duration) runs nightly on the main branch. Any crash found during extended fuzzing:
+#### 21.2.4 Coverage and Replay Expectations
 
-1. Is filed as a P0 security issue
-2. Has a regression test added to the corpus immediately
-3. Blocks the next release until fixed and verified
+Fuzzing is mandatory but not sufficient. It complements human review, protocol review, simulation testing, typed error handling, and release discipline.
+
+Fuzz targets SHOULD achieve strong line coverage of the target module, measured with open tooling such as `cargo-llvm-cov`. Coverage shortfalls require manual seed expansion, harness review, or decomposition of the target surface.
+
+Committed seed corpora and committed fixed-artifact reproducers MUST be replayed regularly in CI or equivalent release gating. A release MAY NOT claim corpus-replay compliance unless the relevant replay step has actually run for that release candidate.
+
+#### 21.2.5 Continuous Fuzz Infrastructure
+
+Per-PR CI MUST run short-duration fuzz smoke for every `active` target in the registry. Smoke duration SHOULD be 30 to 60 seconds per target.
+
+Nightly or equivalent long-running campaigns MUST run all active fuzz targets for materially longer durations, along with simulator/property-test campaigns where available.
+
+Any crash found during extended fuzzing:
+
+1. is treated as a security finding until triaged
+2. has a minimized reproducer committed immediately
+3. gains a regression test or regression corpus entry before the fix is considered complete
+4. blocks the next release until fixed and verified if security-relevant
+
+#### 21.2.6 Stateful Simulator and Property-Fuzz Methodology
+
+Byte fuzzing alone is not enough for stateful protocols. Mesh Infinity MUST also support action-sequence fuzzing over the simulator.
+
+The canonical future target is `fuzz_network_sim_actions`.
+
+It decodes arbitrary bytes into bounded sequences of actions such as:
+
+- create node
+- pair nodes
+- send message
+- drop packet
+- duplicate packet
+- delay packet
+- partition link
+- restore link
+- advance time
+- rotate key
+- disavow peer
+- trigger kill switch
+- restart node
+- reload vault
+- toggle transport
+
+After every action, shared simulator invariants MUST be checked.
+
+#### 21.2.7 Feature Landing Checklist
+
+Security-sensitive features are not considered landed unless this checklist is complete:
+
+- [ ] Threat boundary identified.
+- [ ] External byte inputs listed.
+- [ ] Parser rejects malformed inputs with typed errors.
+- [ ] No panic path from FFI, network, storage, or other untrusted input.
+- [ ] Unit tests include valid, invalid, boundary, replay, wrong-key, and corrupted-input cases where applicable.
+- [ ] Fuzz target exists, or the registry explains why it is not active yet.
+- [ ] Seed corpus added.
+- [ ] Regression corpus replay passes.
+- [ ] Shared invariants added or reused.
+- [ ] Simulator action added if the feature affects network, trust, routing, message, transport, or identity state.
+- [ ] CI enforces the relevant checks.
+
+#### 21.2.8 Tooling Recommendations
+
+Preferred open-source tooling for this section includes:
+
+- `cargo-fuzz` / libFuzzer
+- `cargo-afl` / AFL++
+- `proptest`
+- `arbitrary`
+- `cargo-llvm-cov`
+- `Miri`
+- `Loom`
+- `Kani`
+- sanitizers
+- `cargo audit`
+
+Public continuous fuzzing systems such as ClusterFuzzLite or OSS-Fuzz are desirable future integrations, but they do not replace local reproducibility, committed corpora, or human review.
 
 ---
 
@@ -15316,30 +15472,48 @@ Available from tests and from the debug menu (§21.4.3 Simulation section):
 | Check | Tool | Blocking |
 |-------|------|---------|
 | Unit tests | `cargo test` | Yes |
-| Integration tests | `cargo test --features integration` | Yes |
+| Integration tests | `cargo test --test integration` or equivalent repo-native integration targets | Yes |
 | Clippy (zero warnings) | `cargo clippy -- -D warnings` | Yes |
 | Format | `cargo fmt --check` | Yes |
-| Fuzz smoke (60s per target) | `cargo fuzz run <target> -- -max_total_time=60` | Yes |
+| Fuzz registry consistency | `python3 tests/scripts/check_fuzz_registry.py` or equivalent | Yes |
+| Fuzz smoke (30–60s per active target) | `cargo fuzz run <target> -- -max_total_time=30..60` | Yes |
+| Corpus replay | committed corpus and fixed-artifact reproducers replayed, or an explicit tracked gap if replay is not yet automated | Yes |
 | Flutter analyze | `flutter analyze` | Yes |
 | Flutter tests | `flutter test` | Yes |
-| Build (debug, all platforms) | `make <platform>-debug` | Yes |
+| Build checks required by current repo policy | repo-native build workflow | Yes |
+
+Current repository enforcement on 2026-04-23:
+
+- `quality.yml` enforces Rust quality checks
+- `quality.yml` enforces Flutter analyze/test
+- `quality.yml` enforces fuzz registry consistency
+- `quality.yml` runs 30-second smoke fuzzing for every `active` target in `fuzz/targets.toml`
+
+The current repository does not yet demonstrate full automated corpus-replay coverage for fixed artifacts or a scheduled nightly fuzz/property workflow. Those remain required and must be landed before claiming full CI compliance with this section.
 
 #### 21.6.2 Nightly Requirements
 
 | Check | Tool | Alert on failure |
 |-------|------|-----------------|
 | Extended fuzz (24h) | `cargo fuzz run <target> -- -max_total_time=86400` | P0 security issue |
-| Coverage report | `cargo llvm-cov` | Warning if <80% |
-| Release build (all platforms) | `make <platform>-release` | Yes |
+| Simulator/property campaigns | simulator scenarios, proptest, or stateful fuzz harnesses | P0 security issue if a security invariant fails |
+| Coverage report | `cargo llvm-cov` or equivalent | Warning if coverage exceptions are undocumented |
+| Release build (all platforms) | repo-native release build workflow | Yes |
 | Dependency audit | `cargo audit` | Yes |
+| Deep analysis where applicable | sanitizers, Miri, Loom, Kani | Yes |
+
+If nightly automation is not yet wired into the repository, the gap MUST be documented explicitly and the release process MUST run equivalent checks manually. Missing automation is not compliance.
 
 #### 21.6.3 Release Gate
 
 A version is releasable only when:
 1. All per-PR checks pass on the tagged commit
-2. Nightly fuzz has run for ≥24h on the tagged commit with no crashes
-3. All platform release builds succeed
-4. The spec version number in `SPEC.md` matches the app version in `Cargo.toml`
+2. Long fuzzing has run on the tagged commit with no unresolved crashes
+3. No open fuzz crashers, sanitizer findings, or simulator invariant failures remain release-relevant
+4. Crash reproducers are committed as regression corpus or fixed artifacts
+5. All platform release builds required by the repo policy succeed
+6. Coverage exceptions are documented
+7. The spec version number in `SPEC.md` matches the app version in `Cargo.toml`
 
 ---
 

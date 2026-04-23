@@ -35,7 +35,7 @@ use tokio_rustls::TlsAcceptor;
 
 // File names for the persisted certificate and key.
 const CERT_FILENAME: &str = "webui-cert.pem";
-const KEY_FILENAME:  &str = "webui-key.pem";
+const KEY_FILENAME: &str = "webui-key.pem";
 
 // ---------------------------------------------------------------------------
 // load_or_generate_cert
@@ -52,19 +52,19 @@ const KEY_FILENAME:  &str = "webui-key.pem";
 pub fn load_or_generate_cert(data_dir: &str) -> Result<TlsAcceptor> {
     let dir = Path::new(data_dir);
     let cert_path = dir.join(CERT_FILENAME);
-    let key_path  = dir.join(KEY_FILENAME);
+    let key_path = dir.join(KEY_FILENAME);
 
     let (cert_pem, key_pem) = if cert_path.exists() && key_path.exists() {
         // Load the persisted certificate and key.
         let cert = std::fs::read_to_string(&cert_path)
             .with_context(|| format!("failed to read {}", cert_path.display()))?;
-        let key  = std::fs::read_to_string(&key_path)
+        let key = std::fs::read_to_string(&key_path)
             .with_context(|| format!("failed to read {}", key_path.display()))?;
         (cert, key)
     } else {
         // First run: generate a new self-signed certificate.
-        let (cert, key) = generate_self_signed()
-            .context("failed to generate self-signed TLS certificate")?;
+        let (cert, key) =
+            generate_self_signed().context("failed to generate self-signed TLS certificate")?;
 
         // Persist so we reuse the same certificate across restarts.
         // The shell UI will display this certificate's fingerprint.
@@ -81,8 +81,7 @@ pub fn load_or_generate_cert(data_dir: &str) -> Result<TlsAcceptor> {
         (cert, key)
     };
 
-    build_tls_acceptor(&cert_pem, &key_pem)
-        .context("failed to build TLS acceptor from certificate")
+    build_tls_acceptor(&cert_pem, &key_pem).context("failed to build TLS acceptor from certificate")
 }
 
 // ---------------------------------------------------------------------------
@@ -95,8 +94,7 @@ pub fn load_or_generate_cert(data_dir: &str) -> Result<TlsAcceptor> {
 /// be written to disk or fed directly to rustls.
 fn generate_self_signed() -> Result<(String, String)> {
     // Generate a fresh ECDSA P-256 key pair.
-    let key_pair = KeyPair::generate()
-        .context("failed to generate ECDSA key pair")?;
+    let key_pair = KeyPair::generate().context("failed to generate ECDSA key pair")?;
 
     // Build the certificate parameters.
     let mut params = CertificateParams::default();
@@ -117,7 +115,7 @@ fn generate_self_signed() -> Result<(String, String)> {
 
     // 10-year validity window.  Not auto-renewed; deletion + restart rotates.
     params.not_before = rcgen::date_time_ymd(2025, 1, 1);
-    params.not_after  = rcgen::date_time_ymd(2035, 1, 1);
+    params.not_after = rcgen::date_time_ymd(2035, 1, 1);
 
     // Self-sign the certificate with its own key pair.
     let cert = params
@@ -154,12 +152,12 @@ fn build_tls_acceptor(cert_pem: &str, key_pem: &str) -> Result<TlsAcceptor> {
             .context("no private key found in PEM")?
             .map(PrivateKeyDer::Pkcs8)
             .context("failed to parse private key PEM")?;
-        key   // reader drops here, before key is moved out
+        key // reader drops here, before key is moved out
     };
 
     // Build the rustls ServerConfig.
     let config = ServerConfig::builder()
-        .with_no_client_auth()           // No mutual TLS; password auth instead.
+        .with_no_client_auth() // No mutual TLS; password auth instead.
         .with_single_cert(cert_chain, private_key)
         .context("failed to build rustls ServerConfig")?;
 

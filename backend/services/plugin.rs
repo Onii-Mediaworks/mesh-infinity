@@ -265,8 +265,8 @@ impl PluginSandbox {
         // It cannot be used to exfiltrate data because the log is not returned
         // to the plugin. Per §18.3, key material and internals are never logged.
         linker.func_wrap(
-            "mesh",           // module name in the WASM import section
-            "mesh_log",       // function name in the WASM import section
+            "mesh",     // module name in the WASM import section
+            "mesh_log", // function name in the WASM import section
             |mut caller: wasmtime::Caller<'_, SandboxState>, ptr: i32, len: i32| {
                 // Retrieve the plugin's linear memory.
                 // "memory" is the standard WASM memory export name.
@@ -353,7 +353,11 @@ impl PluginSandbox {
                 // Reborrow needed: drop mem_data first.
                 let granted = caller.data().permissions.contains(&requested);
                 // Return 1 (granted) or 0 (denied) following WASM boolean convention.
-                if granted { 1 } else { 0 }
+                if granted {
+                    1
+                } else {
+                    0
+                }
             },
         )?;
 
@@ -602,11 +606,13 @@ impl PluginSandbox {
         }
 
         // Write hook name bytes to offset 0 in WASM linear memory.
-        memory.write(&mut store, HOOK_NAME_OFFSET as usize, hook_name_bytes)
+        memory
+            .write(&mut store, HOOK_NAME_OFFSET as usize, hook_name_bytes)
             .map_err(|e| anyhow::anyhow!("failed to write hook name to WASM memory: {}", e))?;
 
         // Write serialized JSON input bytes to offset 4096 in WASM linear memory.
-        memory.write(&mut store, INPUT_OFFSET as usize, &input_bytes)
+        memory
+            .write(&mut store, INPUT_OFFSET as usize, &input_bytes)
             .map_err(|e| anyhow::anyhow!("failed to write input JSON to WASM memory: {}", e))?;
 
         // --- Call hook_dispatch in the WASM sandbox -------------------------
@@ -664,9 +670,8 @@ impl PluginSandbox {
 
                 // Deserialize the output bytes as JSON.
                 // Plugin output must be valid UTF-8 JSON; if it isn't, we return an error.
-                let output_value: serde_json::Value =
-                    serde_json::from_slice(output_bytes)
-                        .map_err(|e| anyhow::anyhow!("plugin output is not valid JSON: {}", e))?;
+                let output_value: serde_json::Value = serde_json::from_slice(output_bytes)
+                    .map_err(|e| anyhow::anyhow!("plugin output is not valid JSON: {}", e))?;
                 Ok(Some(output_value))
             }
             Err(trap_err) => {
@@ -1697,9 +1702,10 @@ impl PluginRegistry {
                         );
                         // Mark as Failed so the UI shows the quarantine badge.
                         if let Some(p) = self.plugins.iter_mut().find(|p| p.id == pid) {
-                            p.status = PluginStatus::Failed(
-                                format!("crash loop: {} consecutive traps — {}", crash_count, trap_err)
-                            );
+                            p.status = PluginStatus::Failed(format!(
+                                "crash loop: {} consecutive traps — {}",
+                                crash_count, trap_err
+                            ));
                         }
                     }
 
@@ -2795,14 +2801,24 @@ mod tests {
     fn test_plugin_sandbox_new() {
         // Creating a sandbox should succeed on all supported platforms.
         let sandbox = PluginSandbox::new();
-        assert!(sandbox.is_ok(), "PluginSandbox::new() should succeed: {:?}", sandbox.err());
+        assert!(
+            sandbox.is_ok(),
+            "PluginSandbox::new() should succeed: {:?}",
+            sandbox.err()
+        );
 
         let sandbox = sandbox.unwrap();
 
         // A fresh sandbox has no modules, timeouts, or crashes loaded.
         assert!(sandbox.modules.is_empty(), "modules should start empty");
-        assert!(sandbox.timeout_counts.is_empty(), "timeout_counts should start empty");
-        assert!(sandbox.crash_counts.is_empty(), "crash_counts should start empty");
+        assert!(
+            sandbox.timeout_counts.is_empty(),
+            "timeout_counts should start empty"
+        );
+        assert!(
+            sandbox.crash_counts.is_empty(),
+            "crash_counts should start empty"
+        );
     }
 
     /// PluginSandbox::load_module rejects malformed WASM bytes.
@@ -2823,8 +2839,10 @@ mod tests {
         // Compilation should fail with a clear error.
         assert!(result.is_err(), "load_module should reject invalid WASM");
         // No module should be cached after a compile failure.
-        assert!(!sandbox.modules.contains_key(&plugin_id),
-            "failed module should not be cached");
+        assert!(
+            !sandbox.modules.contains_key(&plugin_id),
+            "failed module should not be cached"
+        );
     }
 
     /// invoke_hook_sandboxed skips plugins with no compiled module.
@@ -2838,7 +2856,9 @@ mod tests {
         let mut registry = PluginRegistry::new();
         let id = registry.install(test_manifest(), None).expect("install");
         registry.activate(&id).expect("activate");
-        registry.register_hook("on_message", id).expect("register_hook");
+        registry
+            .register_hook("on_message", id)
+            .expect("register_hook");
 
         // Create a sandbox but do NOT load any module.
         let mut sandbox = PluginSandbox::new().expect("sandbox creation should succeed");
@@ -2854,7 +2874,10 @@ mod tests {
         // One invocation returned (the plugin was active).
         assert_eq!(results.len(), 1, "should return one invocation record");
         // Output is None because there was no compiled WASM module to run.
-        assert!(results[0].output.is_none(), "output should be None with no module");
+        assert!(
+            results[0].output.is_none(),
+            "output should be None with no module"
+        );
     }
 
     /// invoke_hook_sandboxed enforces permission gating (§18.2).
@@ -2872,7 +2895,9 @@ mod tests {
         let id = registry.install(manifest, None).expect("install");
         registry.activate(&id).expect("activate");
         // Register the plugin for an on_message hook.
-        registry.register_hook("on_message_received", id).expect("register_hook");
+        registry
+            .register_hook("on_message_received", id)
+            .expect("register_hook");
 
         // Create a sandbox.
         let mut sandbox = PluginSandbox::new().expect("sandbox creation should succeed");
@@ -2902,7 +2927,9 @@ mod tests {
         let mut registry = PluginRegistry::new();
         let id = registry.install(test_manifest(), None).expect("install");
         registry.activate(&id).expect("activate");
-        registry.register_hook("on_message_received", id).expect("register_hook");
+        registry
+            .register_hook("on_message_received", id)
+            .expect("register_hook");
 
         let mut sandbox = PluginSandbox::new().expect("sandbox creation should succeed");
 
@@ -2914,7 +2941,11 @@ mod tests {
         );
 
         // One invocation should be recorded (permission passed, module missing → output=None).
-        assert_eq!(results.len(), 1, "plugin with ReadMessages should handle on_message_received");
+        assert_eq!(
+            results.len(),
+            1,
+            "plugin with ReadMessages should handle on_message_received"
+        );
         assert_eq!(results[0].hook_name, "on_message_received");
     }
 }

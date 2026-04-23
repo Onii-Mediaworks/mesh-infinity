@@ -991,10 +991,10 @@ impl MeshRuntime {
             };
             instance.device_info = device_info;
             // Prune the active exit node if the peer is no longer visible.
-            instance.active_exit_node =
-                instance.active_exit_node.clone().filter(|active| {
-                    mapped_peers.iter().any(|peer| peer.name == *active)
-                });
+            instance.active_exit_node = instance
+                .active_exit_node
+                .clone()
+                .filter(|active| mapped_peers.iter().any(|peer| peer.name == *active));
             instance.peers = mapped_peers;
             instance.relay_mode = relay_mode.to_string();
             instance.key_expiry_ms = key_expiry_ms;
@@ -1426,7 +1426,11 @@ impl MeshRuntime {
         // If no instances exist, there is nothing to reauthenticate.
         let control_url = {
             let overlay = self.overlay.lock().unwrap_or_else(|e| e.into_inner());
-            match overlay.tailnets.first().and_then(|t| t.credentials.as_ref()) {
+            match overlay
+                .tailnets
+                .first()
+                .and_then(|t| t.credentials.as_ref())
+            {
                 Some(creds) => creds.controller.base_url().to_string(),
                 None => return Err("Tailscale is not configured".into()),
             }
@@ -1851,7 +1855,11 @@ impl MeshRuntime {
                 .credentials
                 .as_mut()
                 .ok_or("ZeroTier is not configured")?;
-            if !credentials.network_ids.iter().any(|entry| entry == network_id) {
+            if !credentials
+                .network_ids
+                .iter()
+                .any(|entry| entry == network_id)
+            {
                 credentials.network_ids.push(network_id.to_string());
             }
             instance.id.clone()
@@ -3423,11 +3431,7 @@ impl MeshRuntime {
     /// `label`:       User-visible name shown in the instances list, e.g. "Work tailnet".
     /// `control_url`: Empty string for the official Tailscale server, or the base URL of
     ///                a self-hosted Headscale instance (e.g. "https://hs.example.com").
-    pub fn tailscale_add_instance(
-        &self,
-        label: &str,
-        control_url: &str,
-    ) -> anyhow::Result<String> {
+    pub fn tailscale_add_instance(&self, label: &str, control_url: &str) -> anyhow::Result<String> {
         use crate::transport::overlay_client::TailscaleClient;
 
         // Build the new instance.  `TailscaleClient::with_label` calls
@@ -3482,9 +3486,9 @@ impl MeshRuntime {
                 .priority_tailnet_id
                 .as_deref()
                 .is_some_and(|p| p == instance_id)
-            {
-                overlay.priority_tailnet_id = None;
-            }
+        {
+            overlay.priority_tailnet_id = None;
+        }
         drop(overlay);
         self.save_overlay_state();
         Ok(())
@@ -3553,8 +3557,12 @@ impl MeshRuntime {
             instance.status = OverlayClientStatus::Connecting;
         }
         self.save_overlay_state();
-        self.push_event("TailscaleConnecting", serde_json::json!({ "instanceId": instance_id }));
-        self.sync_tailscale_client(instance_id).map_err(anyhow::Error::msg)
+        self.push_event(
+            "TailscaleConnecting",
+            serde_json::json!({ "instanceId": instance_id }),
+        );
+        self.sync_tailscale_client(instance_id)
+            .map_err(anyhow::Error::msg)
     }
 
     /// Begin Tailscale OAuth flow for a specific instance.
@@ -3578,9 +3586,7 @@ impl MeshRuntime {
                 url: control_url.to_string(),
             }
         };
-        let wg_pubkey = self
-            .overlay_mesh_pubkey()
-            .map_err(anyhow::Error::msg)?;
+        let wg_pubkey = self.overlay_mesh_pubkey().map_err(anyhow::Error::msg)?;
         let hostname = self.overlay_hostname();
         let client = match &controller {
             TailscaleController::Vendor => ControlClient::new_central(wg_pubkey, &hostname),
@@ -3760,8 +3766,12 @@ impl MeshRuntime {
             instance.status = OverlayClientStatus::Connecting;
         }
         self.save_overlay_state();
-        self.push_event("TailscaleOAuthComplete", serde_json::json!({ "instanceId": instance_id }));
-        self.sync_tailscale_client(instance_id).map_err(anyhow::Error::msg)
+        self.push_event(
+            "TailscaleOAuthComplete",
+            serde_json::json!({ "instanceId": instance_id }),
+        );
+        self.sync_tailscale_client(instance_id)
+            .map_err(anyhow::Error::msg)
     }
 
     /// Trigger reauthentication for a specific Tailscale instance.
@@ -3821,29 +3831,37 @@ impl MeshRuntime {
             .map(|z| {
                 // Serialize all joined networks with their full detail so the
                 // ZeroNetNetworksPage can display them without a separate call.
-                let networks: Vec<serde_json::Value> = z.networks.iter().map(|n| {
-                    serde_json::json!({
-                        "networkId":   n.network_id,
-                        "name":        n.name,
-                        "assignedIp":  n.assigned_ip,
-                        // One of: "authorized", "awaitingauthorization", "unauthorized".
-                        "authStatus":  format!("{:?}", n.auth_status).to_lowercase(),
-                        "memberCount": n.member_count,
+                let networks: Vec<serde_json::Value> = z
+                    .networks
+                    .iter()
+                    .map(|n| {
+                        serde_json::json!({
+                            "networkId":   n.network_id,
+                            "name":        n.name,
+                            "assignedIp":  n.assigned_ip,
+                            // One of: "authorized", "awaitingauthorization", "unauthorized".
+                            "authStatus":  format!("{:?}", n.auth_status).to_lowercase(),
+                            "memberCount": n.member_count,
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 // Serialize all visible members so ZeroNetMembersPage can display
                 // them.  Only available when this device controls the network.
-                let members: Vec<serde_json::Value> = z.members.iter().map(|m| {
-                    serde_json::json!({
-                        "networkId":  m.network_id,
-                        "nodeId":     m.node_id,
-                        "name":       m.name,
-                        "ips":        m.ips,
-                        "authorized": m.authorized,
-                        "lastSeen":   m.last_seen,
+                let members: Vec<serde_json::Value> = z
+                    .members
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "networkId":  m.network_id,
+                            "nodeId":     m.node_id,
+                            "name":       m.name,
+                            "ips":        m.ips,
+                            "authorized": m.authorized,
+                            "lastSeen":   m.last_seen,
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 serde_json::json!({
                     // Stable id — used to address this instance in all other calls.
@@ -3959,9 +3977,9 @@ impl MeshRuntime {
                 .priority_zeronet_id
                 .as_deref()
                 .is_some_and(|p| p == instance_id)
-            {
-                overlay.priority_zeronet_id = None;
-            }
+        {
+            overlay.priority_zeronet_id = None;
+        }
         drop(overlay);
         self.save_overlay_state();
         Ok(())
@@ -4039,10 +4057,9 @@ impl MeshRuntime {
             let instance = overlay
                 .zeronet_by_id_mut(instance_id)
                 .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?;
-            let creds = instance
-                .credentials
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured"))?;
+            let creds = instance.credentials.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured")
+            })?;
             if !creds.network_ids.iter().any(|entry| entry == network_id) {
                 creds.network_ids.push(network_id.to_string());
             }
@@ -4073,10 +4090,9 @@ impl MeshRuntime {
             let instance = overlay
                 .zeronet_by_id_mut(instance_id)
                 .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?;
-            let creds = instance
-                .credentials
-                .as_mut()
-                .ok_or_else(|| anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured"))?;
+            let creds = instance.credentials.as_mut().ok_or_else(|| {
+                anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured")
+            })?;
             // Remove the network from the joined list.
             creds.network_ids.retain(|id| id != network_id);
             // Also remove any cached network entry from the display list so the
@@ -4136,7 +4152,9 @@ impl MeshRuntime {
                 .ok_or_else(|| anyhow::anyhow!("no ZeroTier instance '{instance_id}'"))?
                 .credentials
                 .clone()
-                .ok_or_else(|| anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("ZeroTier instance '{instance_id}' is not configured")
+                })?
         };
 
         let controller = match &credentials.controller {

@@ -863,7 +863,10 @@ mod tests {
 
     #[test]
     fn test_threat_suppression() {
-        let config = NotificationConfig { tier: NotificationTier::RichPush, ..Default::default() };
+        let config = NotificationConfig {
+            tier: NotificationTier::RichPush,
+            ..Default::default()
+        };
 
         // Not suppressed in Normal context.
         assert!(!config.is_suppressed_by_threat(ThreatContext::Normal));
@@ -987,7 +990,10 @@ mod tests {
 
     #[test]
     fn test_dispatcher_threat_suppression() {
-        let config = NotificationConfig { tier: NotificationTier::RichPush, ..Default::default() };
+        let config = NotificationConfig {
+            tier: NotificationTier::RichPush,
+            ..Default::default()
+        };
         let mut dispatcher = NotificationDispatcher::new(config);
         dispatcher.set_threat_context(ThreatContext::Critical);
 

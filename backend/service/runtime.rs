@@ -599,7 +599,8 @@ pub struct MeshRuntime {
     /// in `OverlayManager`) because `ZeroTierTransport` owns a `UdpSocket`
     /// and cannot be serialised to JSON.  The `Arc` is shared with the
     /// background receive thread started by `start_recv()`.
-    pub zerotier_transport: Mutex<Option<std::sync::Arc<crate::transport::zerotier::ZeroTierTransport>>>,
+    pub zerotier_transport:
+        Mutex<Option<std::sync::Arc<crate::transport::zerotier::ZeroTierTransport>>>,
 }
 
 // SAFETY: All mutable state is wrapped in `Mutex`, making MeshRuntime safe

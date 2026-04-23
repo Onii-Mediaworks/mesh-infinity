@@ -54,8 +54,8 @@ use hyper::Request;
 use hyper_util::{rt::TokioExecutor, rt::TokioIo, server::conn::auto::Builder as HyperBuilder};
 use serde_json::json;
 use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
 use tokio::sync::RwLock;
+use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::info;
 
@@ -121,27 +121,20 @@ fn build_router(state: AppState) -> Router {
         // In production this would serve a compiled React/Vue/Svelte app
         // embedded in the binary via `include_str!` or `rust-embed`.
         .route("/", get(handle_index))
-
         // ── Health (unauthenticated — safe to expose, returns no secrets) ──
         .route("/api/health", get(handle_health))
-
         // ── Mesh connectivity ──────────────────────────────────────────────
-        .route("/api/status",   get(handle_status))
+        .route("/api/status", get(handle_status))
         .route("/api/transports", get(handle_transports))
-        .route("/api/peers",    get(handle_peers))
-
+        .route("/api/peers", get(handle_peers))
         // ── Identity ───────────────────────────────────────────────────────
         .route("/api/identity", get(handle_identity))
-
         // ── Module system ──────────────────────────────────────────────────
-        .route("/api/modules",  get(handle_modules))
-
+        .route("/api/modules", get(handle_modules))
         // ── Storage metrics ────────────────────────────────────────────────
-        .route("/api/storage",  get(handle_storage))
-
+        .route("/api/storage", get(handle_storage))
         // ── Updates ───────────────────────────────────────────────────────
-        .route("/api/updates",  get(handle_updates))
-
+        .route("/api/updates", get(handle_updates))
         // Inject shared state into all handlers.
         .with_state(state)
 }

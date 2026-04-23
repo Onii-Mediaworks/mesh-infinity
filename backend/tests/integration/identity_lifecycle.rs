@@ -75,8 +75,8 @@ fn test_identity_create_save_reload_no_pin() {
     // Step 3: Reload the identity from disk without a PIN.
     // This reads the files, retrieves the master key from the OS keychain,
     // decrypts, and reconstructs the keypairs.
-    let reloaded = SelfIdentity::load_from_disk(&data_dir, None)
-        .expect("identity load_from_disk failed");
+    let reloaded =
+        SelfIdentity::load_from_disk(&data_dir, None).expect("identity load_from_disk failed");
 
     // Step 4: Verify the peer ID survived the round-trip.
     // The peer ID is derived from the public key, so if this matches, the

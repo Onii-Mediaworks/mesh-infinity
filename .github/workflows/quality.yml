@@ -2,14 +2,15 @@ name: Quality Gates
 
 # Run on every push and pull request targeting main.
 #
-# This workflow enforces the four spec-required quality gates (§21.6):
-#   1. rust-quality  — clippy, format check, unit tests, integration tests
-#   2. flutter-quality — flutter analyze, flutter test
-#   3. fuzz-smoke    — 30-second libFuzzer smoke run for each fuzz target
-#                      (pushes to main only; skipped on PRs to keep CI fast)
+# This workflow enforces the currently implemented quality gates from SPEC §21:
+#   1. rust-quality     — clippy, format check, unit tests, integration tests
+#   2. flutter-quality  — flutter analyze, flutter test
+#   3. fuzz-smoke       — registry consistency + 30-second libFuzzer smoke run
+#                         for every `active` entry in `fuzz/targets.toml`
 #
-# The build.yml workflow handles platform compilation and packaging.  This
-# workflow is deliberately lightweight and runs on ubuntu-latest for all jobs.
+# The build.yml workflow handles platform compilation and packaging. This
+# workflow is intentionally focused on fast safety checks that must stay
+# aligned with the repository's tracked fuzz surface.
 
 on:
   push:
@@ -183,23 +184,15 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
         run: flutter test
 
-  # ── Fuzz smoke: 30-second libFuzzer run for each target ──────────────────
+  # ── Fuzz smoke: registry check + 30-second libFuzzer run ─────────────────
   #
-  # This job runs ONLY on pushes to main (not on pull_request events).
-  #
-  # Why not on PRs?  A 30-second fuzz run per target is fast enough for a
-  # smoke check but adds ~3 minutes to CI.  PR feedback latency matters more
-  # than fuzz coverage at review time; the smoke run on main catches regressions
-  # before they accumulate.
-  #
-  # For deeper fuzzing (24h+ duration), a separate nightly workflow is used
-  # (see §21.2.3).
+  # This job runs on both pushes and pull requests to main. The target list is
+  # not hard-coded here; it is sourced from `fuzz/targets.toml` so new active
+  # byte-boundary fuzz targets cannot drift out of CI silently.
 
   fuzz-smoke:
     name: fuzz-smoke
     runs-on: ubuntu-latest
-    # Run only on direct pushes to main; skip for pull_request events.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
       - uses: actions/checkout@v4
@@ -230,27 +223,28 @@ jobs:
       # `cargo-fuzz` manages the fuzz workspace, compiles targets with the
       # correct sanitizer flags, and runs the libFuzzer binary.
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
 
-      # ── Fuzz target 1: NFC NDEF parser ───────────────────────────────────
-      #
-      # Feeds arbitrary bytes to decode_ndef_message for 30 seconds.
-      # The corpus directory provides seed inputs for the fuzzer to start from.
-      # `-max_total_time=30` tells libFuzzer to exit after 30 seconds regardless
-      # of how many iterations it has completed.
-      - name: fuzz smoke — fuzz_nfc_ndef (30s)
-        run: cargo +nightly fuzz run fuzz_nfc_ndef -- -max_total_time=30
+      # Verify that the machine-readable registry matches the actual cargo-fuzz
+      # targets and committed corpus directories before fuzzing starts.
+      - name: fuzz registry consistency
+        run: python3 tests/scripts/check_fuzz_registry.py
 
-      # ── Fuzz target 2: Pairing payload parser ────────────────────────────
-      #
-      # Feeds arbitrary bytes to serde_json::from_slice::<PairingPayload> for
-      # 30 seconds.
-      - name: fuzz smoke — fuzz_pairing_payload (30s)
-        run: cargo +nightly fuzz run fuzz_pairing_payload -- -max_total_time=30
+      # Run a short smoke campaign against every active fuzz target listed in
+      # the registry. Committed corpus entries seed the fuzzer automatically.
+      - name: fuzz smoke — active targets (30s each)
+        run: |
+          python3 - <<'PY' > /tmp/mesh_infinity_active_fuzz_targets.txt
+          import tomllib
+          from pathlib import Path
 
-      # ── Fuzz target 3: MeshPacket frame parser ───────────────────────────
-      #
-      # Feeds arbitrary bytes to serde_json::from_slice::<MeshPacket> for
-      # 30 seconds.
-      - name: fuzz smoke — fuzz_message_frame (30s)
-        run: cargo +nightly fuzz run fuzz_message_frame -- -max_total_time=30
+          registry = tomllib.loads(Path("fuzz/targets.toml").read_text(encoding="utf-8"))
+          for entry in registry["target"]:
+              if entry["status"] == "active":
+                  print(entry["name"])
+          PY
+
+          while IFS= read -r target; do
+            echo "Running cargo-fuzz smoke target: ${target}"
+            cargo +nightly fuzz run "${target}" -- -max_total_time=30
+          done < /tmp/mesh_infinity_active_fuzz_targets.txt

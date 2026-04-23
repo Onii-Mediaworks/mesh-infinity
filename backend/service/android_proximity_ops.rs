@@ -170,11 +170,7 @@ impl MeshRuntime {
     ///               `socket.fileDescriptor.fd` via reflection, or from a
     ///               `ParcelFileDescriptor.detachFd()` call).
     #[cfg(target_os = "android")]
-    pub fn register_wifi_direct_session_fd(
-        &self,
-        peer_mac: &str,
-        fd: i32,
-    ) -> Result<(), String> {
+    pub fn register_wifi_direct_session_fd(&self, peer_mac: &str, fd: i32) -> Result<(), String> {
         // Guard: peer_mac must be a non-empty string to be a usable key.
         if peer_mac.trim().is_empty() {
             return Err("peer_mac must not be empty".into());

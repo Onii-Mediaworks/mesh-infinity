@@ -114,8 +114,7 @@ fn generate_instance_id() -> String {
     nanos.hash(&mut h1);
     // Fold in a static counter for uniqueness within the same nanosecond
     // (e.g. two instances created back-to-back in a test).
-    static COUNTER: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     count.hash(&mut h1);
     let a = h1.finish();
@@ -706,7 +705,7 @@ mod tests {
         assert!(c.prefer_mesh_relay);
         assert!(!c.is_connected());
         assert_eq!(c.anonymization_score(), 0.0); // no credentials
-        // id must be a non-empty hex string.
+                                                  // id must be a non-empty hex string.
         assert!(!c.id.is_empty());
         assert!(c.id.chars().all(|ch| ch.is_ascii_hexdigit()));
     }
@@ -882,15 +881,24 @@ mod tests {
         mgr.tailnets.push(ts2);
 
         // Without a priority set, the first connected instance wins.
-        assert_eq!(mgr.active_tailnet().map(|t| t.id.as_str()), Some(ts1_id.as_str()));
+        assert_eq!(
+            mgr.active_tailnet().map(|t| t.id.as_str()),
+            Some(ts1_id.as_str())
+        );
 
         // Set priority to the second instance.
         mgr.priority_tailnet_id = Some(ts2_id.clone());
-        assert_eq!(mgr.active_tailnet().map(|t| t.id.as_str()), Some(ts2_id.as_str()));
+        assert_eq!(
+            mgr.active_tailnet().map(|t| t.id.as_str()),
+            Some(ts2_id.as_str())
+        );
 
         // Disconnect the priority instance; fallback to first connected.
         mgr.tailnet_by_id_mut(&ts2_id).unwrap().status = OverlayClientStatus::Disconnected;
-        assert_eq!(mgr.active_tailnet().map(|t| t.id.as_str()), Some(ts1_id.as_str()));
+        assert_eq!(
+            mgr.active_tailnet().map(|t| t.id.as_str()),
+            Some(ts1_id.as_str())
+        );
     }
 
     #[test]
@@ -969,11 +977,17 @@ mod tests {
         mgr.zeronets.push(zt2);
 
         // Without a priority set, first connected wins.
-        assert_eq!(mgr.active_zeronet().map(|z| z.id.as_str()), Some(zt1_id.as_str()));
+        assert_eq!(
+            mgr.active_zeronet().map(|z| z.id.as_str()),
+            Some(zt1_id.as_str())
+        );
 
         // Set priority to the second instance.
         mgr.priority_zeronet_id = Some(zt2_id.clone());
-        assert_eq!(mgr.active_zeronet().map(|z| z.id.as_str()), Some(zt2_id.as_str()));
+        assert_eq!(
+            mgr.active_zeronet().map(|z| z.id.as_str()),
+            Some(zt2_id.as_str())
+        );
     }
 
     #[test]

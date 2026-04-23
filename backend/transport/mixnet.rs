@@ -925,8 +925,7 @@ mod tests {
         let secrets: Vec<x25519_dalek::StaticSecret> = (0..3)
             .map(|_| x25519_dalek::StaticSecret::random_from_rng(rand_core::OsRng))
             .collect();
-        let pubkeys: Vec<X25519PublicKey> =
-            secrets.iter().map(X25519PublicKey::from).collect();
+        let pubkeys: Vec<X25519PublicKey> = secrets.iter().map(X25519PublicKey::from).collect();
         let addrs: Vec<[u8; 14]> = (0u8..3)
             .map(|i| {
                 let mut a = [0u8; 14];

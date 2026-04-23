@@ -76,9 +76,7 @@ fn test_vault_write_reload_survives() {
         .collection(collection_name)
         .expect("failed to open vault collection for writing");
 
-    collection
-        .save(&stored_value)
-        .expect("vault save failed");
+    collection.save(&stored_value).expect("vault save failed");
 
     // Drop manager_1 so no in-memory state is shared with manager_2.
     drop(manager_1);
@@ -118,7 +116,9 @@ fn test_vault_empty_collection_returns_none() {
         .expect("failed to open fresh vault collection");
 
     // Load should succeed and return None.
-    let loaded: Option<String> = collection.load().expect("vault load on empty collection failed");
+    let loaded: Option<String> = collection
+        .load()
+        .expect("vault load on empty collection failed");
 
     assert!(
         loaded.is_none(),
@@ -144,13 +144,15 @@ fn test_vault_delete_removes_entry() {
         .collection(collection_name)
         .expect("failed to open vault collection");
 
-    collection
-        .save(&stored_value)
-        .expect("vault save failed");
+    collection.save(&stored_value).expect("vault save failed");
 
     // Verify it exists (belt-and-suspenders: confirm save worked).
     let check: Option<u64> = collection.load().expect("vault load after save failed");
-    assert_eq!(check, Some(stored_value), "vault save did not persist in-process");
+    assert_eq!(
+        check,
+        Some(stored_value),
+        "vault save did not persist in-process"
+    );
 
     // Delete the entry.
     collection.delete().expect("vault delete failed");
@@ -192,9 +194,7 @@ fn test_vault_wrong_key_cannot_decrypt() {
     let collection = manager_correct
         .collection(collection_name)
         .expect("failed to open vault collection");
-    collection
-        .save(&stored_value)
-        .expect("vault save failed");
+    collection.save(&stored_value).expect("vault save failed");
 
     drop(manager_correct);
 

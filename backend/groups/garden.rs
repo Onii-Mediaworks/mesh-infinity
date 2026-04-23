@@ -1247,10 +1247,12 @@ mod tests {
     #[test]
     fn test_permission_count() {
         // Verify we have all 34 permissions.
-        let perms = [Permission::ViewChannel,
+        let perms = [
+            Permission::ViewChannel,
             Permission::SendMessages,
             Permission::Administrator,
-            Permission::MentionEveryone];
+            Permission::MentionEveryone,
+        ];
         assert_eq!(perms.len(), 4); // Spot check.
     }
 
