@@ -67,8 +67,8 @@
   - [5.23 Tailscale / Headscale](#523-tailscale-headscale)
   - [5.24 libp2p Integration](#524-libp2p-integration)
   - [5.25 Native Mixnet Tier](#525-native-mixnet-tier)
-  - [5.26 Traffic Obfuscation](#526-traffic-obfuscation)
-  - [5.27 Traffic Unidentifiability](#527-traffic-unidentifiability)
+  - [5.26 Traffic Camouflage and Primary Carriers](#526-traffic-camouflage-and-primary-carriers)
+  - [5.27 Deniable Carrier Ladder](#527-deniable-carrier-ladder)
   - [5.28 Offline Transport](#528-offline-transport)
   - [5.29 Community Overlay Networks](#529-community-overlay-networks)
   - [5.30 Overlay Transport Client Architecture](#530-overlay-transport-client-architecture)
@@ -2146,7 +2146,7 @@ Note: LAN discovery mechanisms (mDNS, SSDP, subnet broadcast) are in §4.9 — t
 - **§5.23 Tailscale** — managed WireGuard overlay, Headscale self-hosted option
 - **§5.24 libp2p Integration** — GossipSub, NAT traversal, transport multiplexing
 - **§5.25 Native Mixnet Tier** — mixnet routing mode; open base protocol; Katzenpost experimental
-- **§5.26 Traffic Obfuscation** — DPI circumvention: WireGuard-over-QUIC, WebSocket, obfs4, Shadowsocks, meek
+- **§5.26 Traffic Camouflage and Primary Carriers** — DPI circumvention and carrier selection: compliant non-VPN primary carriers, real web carriers, pluggable transports, bootstrap ladder
 
 ### 5.1 Connection-Level Cryptographic Primitives
 
@@ -4067,7 +4067,7 @@ This is specced as a supported operational mode. The `created_at` / `expires_at`
 Offline transport is a last-resort transport in the solver's hierarchy — used when all network transports are unavailable or explicitly when a node is configured for offline-only operation.
 
 ```rust
-ObfuscationMode / TransportMode additions:
+CarrierFamily / TransportMode additions:
     OfflinePhysicalMedia,
     OfflineExternalStorage,
 ```
@@ -4724,7 +4724,7 @@ The store-and-forward mechanism operates above the routing layer. The hop-by-hop
 
 ### 6.9 LoSec Mode (Low-Security, High-Bandwidth Transport)
 
-**LoSec connections are always obfuscated** via §5.26 (Traffic Obfuscation). The default wrapper is WireGuard-over-QUIC (`QuicTls`), making LoSec sessions appear as HTTPS traffic to any observer. This is not optional — obfuscation is a prerequisite for LoSec, not a setting.
+**LoSec connections always require a compliant primary carrier** via §5.26 (Traffic Camouflage and Primary Carriers). The default family is `QuicHttp3`, meaning LoSec traffic must ride a real non-VPN carrier rather than presenting as recognizable VPN traffic. This is not optional — carrier camouflage is a prerequisite for LoSec, not a setting.
 
 **Mutual relay participation as LoSec eligibility signal:** When both parties are active relay nodes on at least one shared transport, their traffic is already indistinguishable from the relay traffic they're each forwarding. This satisfies the ambient threshold requirement (§6.7) independently — if both sides are relay-participating, LoSec is available regardless of other ambient traffic metrics. The obfuscation layer on top means the resulting session looks like relay traffic even to DPI. Two relay nodes communicating in LoSec mode produce no observable signature beyond normal mesh participation.
 
@@ -4749,7 +4749,7 @@ The store-and-forward mechanism operates above the routing layer. The hop-by-hop
 | Bandwidth | Low | High | Maximum | Transport-limited |
 | Latency | <100ms | <50ms | Minimum | Minimum |
 | Requires confirmation | No | Yes | Yes (full modal) | No (automatic) |
-| Obfuscation | Per ThreatContext | Yes (QUIC) | Yes (QUIC) | No (unnecessary) |
+| Carrier camouflage | Per ThreatContext | Yes (compliant primary carrier) | Yes (compliant primary carrier) | No (unnecessary) |
 
 LoSec connections are protected by WireGuard only: authenticated encryption, forward secrecy, and replay protection. The onion layers of §7.1 are not applied. Intermediate relay nodes cannot read content, but can observe that two identities are communicating and approximately how much data is exchanged.
 
@@ -4769,7 +4769,7 @@ LoSec connections are protected by WireGuard only: authenticated encryption, for
 
 #### 6.9.3 Direct mode — obfuscation
 
-**Network direct mode** connections are obfuscated per §5.26 (Traffic Obfuscation). The default obfuscation mode for direct connections is WireGuard-over-QUIC (`QuicTls`), making the connection appear as HTTPS to any observer. The solver selects the appropriate obfuscation wrapper based on ThreatContext — see §5.26.3 for the full solver integration.
+**Network direct mode** connections must still use a compliant primary carrier per §5.26 (Traffic Camouflage and Primary Carriers). The default carrier family for direct network connections is `QuicHttp3`. The solver selects the appropriate compliant carrier family based on `ThreatContext` and policy — see §5.26.5 for the full solver integration.
 
 **Proximity direct mode** connections do NOT use obfuscation wrappers. There is no DPI to evade on a Bluetooth or USB link. WireGuard runs directly over the proximity transport for minimum overhead and maximum throughput.
 
