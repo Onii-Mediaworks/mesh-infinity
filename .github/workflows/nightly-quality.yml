@@ -79,3 +79,155 @@ jobs:
 
       - name: cargo audit
         run: cargo audit
+
+  # ── Coverage (cargo-llvm-cov) ─────────────────────────────────────────────
+  #
+  # Produces an LCOV report for the whole workspace and uploads it as a
+  # retention-30-day artifact.  A downloaded lcov.info can be ingested by
+  # lcov/genhtml locally or piped into codecov/coveralls.
+  #
+  # Requires: llvm-tools-preview component (installed below via dtolnay/rust-toolchain).
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stable toolchain with the LLVM tools component that llvm-cov needs.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-coverage
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid-dev \
+            liblzma-dev \
+            pkg-config
+
+      # cargo-llvm-cov instruments the binary with LLVM coverage and merges
+      # per-function counters into a single LCOV file.
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      # --workspace includes every crate under the Cargo workspace.
+      # --lcov writes the widely-supported LCOV text format.
+      # --output-path places the report at a known path for the upload step.
+      - name: Generate LCOV coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      # Retain the report for 30 days so developers can download it after a
+      # nightly run without re-running the full CI job.
+      - name: Upload coverage report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-report-${{ github.run_id }}
+          path: lcov.info
+          retention-days: 30
+
+  # ── Miri (undefined-behaviour detection) ─────────────────────────────────
+  #
+  # Miri runs Rust code in an interpreter that detects UB: use-after-free,
+  # out-of-bounds memory access, data races on raw pointers, etc.
+  #
+  # Scope: backend/crypto (all encryption / key-derivation paths) and
+  # backend/storage/vault (on-disk vault serialisation / AES-GCM paths).
+  #
+  # -Zmiri-disable-isolation is required for tests that call
+  # std::fs / getrandom (vault reload, random salt generation).
+
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Miri only ships on nightly.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-miri
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid-dev \
+            liblzma-dev \
+            pkg-config
+
+      # Pre-build the Miri sysroot so the first test run is not delayed by it.
+      - name: Set up Miri sysroot
+        run: cargo miri setup
+
+      # Run all unit tests inside the crypto module.
+      # -Zmiri-disable-isolation lets getrandom / OsRng work inside Miri.
+      - name: Miri — backend/crypto unit tests
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: cargo miri test --lib -- crypto
+
+      # Run all unit tests inside the storage/vault module.
+      # Vault uses argon2 (CPU-intensive) so this step may be slow; it is
+      # bounded by the runner's time limit rather than a per-step timeout.
+      - name: Miri — backend/storage/vault unit tests
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: cargo miri test --lib -- vault
+
+  # ── Loom (concurrency model-checking) ────────────────────────────────────
+  #
+  # Loom exhaustively explores thread interleavings for code compiled with
+  # `--cfg loom`.  Tests that use `loom::sync::Arc`, `loom::thread::spawn`,
+  # etc. are gated by `#[cfg(loom)]` and skipped in normal builds.
+  #
+  # Currently this job establishes the CI infrastructure so loom-annotated
+  # tests can be added incrementally to runtime.rs and service/ without
+  # requiring a workflow change.  The job succeeds cleanly when 0 loom tests
+  # are present and will catch new concurrency bugs as tests are added.
+
+  loom:
+    name: loom
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Loom requires nightly for some of its internal atomic intrinsics.
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-loom
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid-dev \
+            liblzma-dev \
+            pkg-config
+
+      # Compile and run tests with the `loom` cfg flag active.
+      # Tests not gated by `#[cfg(loom)]` are compiled out, so this run
+      # covers only the explicitly annotated concurrency tests.
+      # The filter `-- runtime` scopes model-checking to the service runtime;
+      # expand the filter as loom tests are added to other modules.
+      - name: Loom — service runtime concurrency tests
+        env:
+          RUSTFLAGS: "--cfg loom"
+        run: cargo test --lib -- runtime
