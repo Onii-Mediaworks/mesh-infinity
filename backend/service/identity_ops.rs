@@ -1144,7 +1144,12 @@ impl MeshRuntime {
                     }
                     return Err("Wrong PIN".to_string());
                 }
-                crate::identity::killswitch::duress_erase(&data_dir);
+                // Begin the 60–120 s gradual wind-down (§3.9.2 transition masking).
+                // This immediately erases Layer 2/3 files while spawning a
+                // background thread to taper old-identity Layer 1 traffic.
+                let (_erase_result, wind_down) =
+                    crate::identity::killswitch::begin_duress_wind_down(&data_dir);
+                *self.duress_wind_down.lock().unwrap() = Some(wind_down);
                 self.reset_identity_runtime_state();
                 let fresh_identity = SelfIdentity::generate(None);
                 fresh_identity

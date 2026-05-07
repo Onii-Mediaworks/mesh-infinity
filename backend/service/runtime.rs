@@ -613,6 +613,13 @@ pub struct MeshRuntime {
     /// reset to `false` after clearing completes so a future `unlock_identity`
     /// call can re-populate the identity.
     pub identity_clear_in_progress: Arc<AtomicBool>,
+    /// Active duress wind-down (§3.9.2 transition masking).
+    ///
+    /// `Some` while the 60–120 second wind-down is in progress after a duress
+    /// erase.  The cover-traffic subsystem queries `cover_traffic_multiplier()`
+    /// on each emission cycle to taper old-identity traffic smoothly.  Reset to
+    /// `None` when `is_complete()` returns true.
+    pub duress_wind_down: Mutex<Option<crate::identity::killswitch::DuressWindDown>>,
 }
 
 // SAFETY: All mutable state is wrapped in `Mutex`, making MeshRuntime safe
@@ -738,6 +745,8 @@ impl MeshRuntime {
             layer1_poll_thread: Mutex::new(None),
             // Key-clearing guard starts false; set to true while wipe is in flight.
             identity_clear_in_progress: Arc::new(AtomicBool::new(false)),
+            // No active duress wind-down at startup.
+            duress_wind_down: Mutex::new(None),
         }
     }
 
