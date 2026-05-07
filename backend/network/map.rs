@@ -15,8 +15,9 @@ use std::collections::HashMap;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use super::transport_hint::TransportHint;
+use super::transport_hint::{TransportHint, TransportType};
 use crate::identity::peer_id::PeerId;
 use crate::trust::levels::TrustLevel;
 
@@ -27,17 +28,9 @@ use crate::trust::levels::TrustLevel;
 /// Maximum entries in the local network map (§4.2).
 // MAX_MAP_ENTRIES — protocol constant.
 // Defined by the spec; must not change without a version bump.
-// MAX_MAP_ENTRIES — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// MAX_MAP_ENTRIES — protocol constant.
-// Defined by the spec; must not change without a version bump.
 pub const MAX_MAP_ENTRIES: usize = 100_000;
 
 /// Staleness threshold: entries not seen in 30 days are prunable.
-// STALENESS_SECS — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// STALENESS_SECS — protocol constant.
-// Defined by the spec; must not change without a version bump.
 // STALENESS_SECS — protocol constant.
 // Defined by the spec; must not change without a version bump.
 pub const STALENESS_SECS: u64 = 30 * 24 * 3600;
@@ -45,25 +38,13 @@ pub const STALENESS_SECS: u64 = 30 * 24 * 3600;
 /// Max new entries per peer per hour for untrusted sources (§4.2).
 // GOSSIP_RATE_LIMIT_UNTRUSTED — protocol constant.
 // Defined by the spec; must not change without a version bump.
-// GOSSIP_RATE_LIMIT_UNTRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// GOSSIP_RATE_LIMIT_UNTRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
 pub const GOSSIP_RATE_LIMIT_UNTRUSTED: u32 = 500;
 /// Max new entries per peer per hour for trusted sources.
-// GOSSIP_RATE_LIMIT_TRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// GOSSIP_RATE_LIMIT_TRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
 // GOSSIP_RATE_LIMIT_TRUSTED — protocol constant.
 // Defined by the spec; must not change without a version bump.
 pub const GOSSIP_RATE_LIMIT_TRUSTED: u32 = 5000;
 
 /// Maximum future timestamp tolerance (§4.5): 1 hour.
-// MAX_FUTURE_TIMESTAMP_SECS — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// MAX_FUTURE_TIMESTAMP_SECS — protocol constant.
-// Defined by the spec; must not change without a version bump.
 // MAX_FUTURE_TIMESTAMP_SECS — protocol constant.
 // Defined by the spec; must not change without a version bump.
 pub const MAX_FUTURE_TIMESTAMP_SECS: u64 = 3600;
@@ -72,182 +53,83 @@ pub const MAX_FUTURE_TIMESTAMP_SECS: u64 = 3600;
 // Network Map Entry
 // ---------------------------------------------------------------------------
 
-/// A single entry in the network map (§4.2).
+/// A single entry in the network map (§4.2, §4.5).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// NetworkMapEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// NetworkMapEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// NetworkMapEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct NetworkMapEntry {
     /// Peer identifier.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub peer_id: PeerId,
     /// Public keys for this peer.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub public_keys: Vec<PublicKeyRecord>,
     /// Last time this peer was seen active.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub last_seen: u64,
     /// Transport hints: how to reach this peer.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub transport_hints: Vec<TransportHint>,
     /// Optional public profile summary (if identity_is_public).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub public_profile: Option<PublicProfileSummary>,
     /// Public service advertisements.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub services: Vec<PublicServiceAd>,
     /// Monotonically increasing sequence number (64-bit, §4.5).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub sequence: u64,
     /// Ed25519 signature over all other fields.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub signature: Vec<u8>,
+    /// Hash of the previous entry's signing payload (self-ratcheted map entries, §4.5).
+    /// None for the first entry (sequence == 0).
+    pub prev_hash: Option<[u8; 32]>,
     /// Local trust level (not gossiped — computed locally).
     #[serde(skip)]
-    /// The local trust for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub local_trust: TrustLevel,
 }
 
 /// Public key record for a peer address.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// PublicKeyRecord — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// PublicKeyRecord — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// PublicKeyRecord — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct PublicKeyRecord {
-    /// The ed25519 public for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// Ed25519 public key.
     pub ed25519_public: [u8; 32],
-    /// The x25519 public for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// X25519 public key.
     pub x25519_public: [u8; 32],
     /// Weekly-rotated preauth (signed pre-key) for X3DH first contact (§7.0).
     /// Allows Alice to initiate a Double Ratchet session with Bob without Bob
     /// being online. Refreshed every 7 days via HKDF from the identity key.
     /// None means the peer has not published a preauth key yet.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    /// The preauth x25519 public for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub preauth_x25519_public: Option<[u8; 32]>,
     /// ML-KEM-768 encapsulation key (1184 bytes). Enables PQXDH (§3.4.1).
     /// None if the peer does not support post-quantum key agreement.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    /// The kem encapsulation key for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub kem_encapsulation_key: Option<Vec<u8>>,
     /// Ed25519 signature over `PREAUTH_SIG_DOMAIN || preauth_x25519_public`
     /// (§7.0.1 identity binding).  Propagated with the preauth key so that
     /// any node forwarding the gossip entry can prove the key belongs to the
     /// peer.  None for entries predating this field (legacy compat).
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    /// The preauth sig for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub preauth_sig: Option<Vec<u8>>,
 }
 
 /// Public profile summary (for peers with identity_is_public = true).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// PublicProfileSummary — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// PublicProfileSummary — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// PublicProfileSummary — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct PublicProfileSummary {
-    /// The display name for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// Display name.
     pub display_name: Option<String>,
-    /// The bio for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// Bio.
     pub bio: Option<String>,
-    /// The avatar hash for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// Avatar hash.
     pub avatar_hash: Option<Vec<u8>>,
 }
 
 /// Public service advertisement.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// PublicServiceAd — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// PublicServiceAd — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// PublicServiceAd — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct PublicServiceAd {
-    /// The name for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// Service name.
     pub name: String,
-    /// The description for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// Service description.
     pub description: Option<String>,
-    /// The port block for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
+    /// Port block.
     pub port_block: u16,
 }
 
 /// Domain separator for map entry signing.
-// DOMAIN_MAP_ENTRY — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// DOMAIN_MAP_ENTRY — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// DOMAIN_MAP_ENTRY — protocol constant.
-// Defined by the spec; must not change without a version bump.
 const DOMAIN_MAP_ENTRY: &[u8] = b"meshinfinity-map-entry-v1\x00";
 
-// Begin the block scope.
-// NetworkMapEntry implementation — core protocol logic.
-// NetworkMapEntry implementation — core protocol logic.
-// NetworkMapEntry implementation — core protocol logic.
 impl NetworkMapEntry {
     /// Build the canonical byte payload that is signed by the entry's owner.
     ///
@@ -257,111 +139,35 @@ impl NetworkMapEntry {
     ///   || BE32(hints_json_len) || hints_json
     ///   || BE32(services_json_len) || services_json
     ///   || BE32(profile_json_len) || profile_json
+    ///   || prev_hash (32) if present
     ///
     /// The `signature` and `local_trust` fields are excluded.
-    // Perform the 'signing payload' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'signing payload' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'signing payload' operation.
-    // Errors are propagated to the caller via Result.
     pub fn signing_payload(&self) -> Vec<u8> {
-        // Prepare the data buffer for the next processing stage.
-        // Compute buf for this protocol step.
-        // Compute buf for this protocol step.
-        // Compute buf for this protocol step.
         let mut buf = Vec::with_capacity(256);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(DOMAIN_MAP_ENTRY);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&self.peer_id.0);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&self.sequence.to_be_bytes());
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&self.last_seen.to_be_bytes());
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&(self.public_keys.len() as u32).to_be_bytes());
-        // Iterate over each element in the collection.
-        // Iterate over each element.
-        // Iterate over each element.
-        // Iterate over each element.
         for pk in &self.public_keys {
-            // Append the data segment to the accumulating buffer.
-            // Append bytes to the accumulator.
-            // Append bytes to the accumulator.
-            // Append bytes to the accumulator.
             buf.extend_from_slice(&pk.ed25519_public);
-            // Append the data segment to the accumulating buffer.
-            // Append bytes to the accumulator.
-            // Append bytes to the accumulator.
-            // Append bytes to the accumulator.
             buf.extend_from_slice(&pk.x25519_public);
             // Preauth key is signed as 32 zero bytes if absent (backward compat).
-            // Append bytes to the accumulator.
-            // Append bytes to the accumulator.
-            // Append bytes to the accumulator.
             buf.extend_from_slice(pk.preauth_x25519_public.as_ref().unwrap_or(&[0u8; 32]));
         }
-        // Serialize to the wire format for transmission or storage.
-        // Compute hints for this protocol step.
-        // Compute hints for this protocol step.
-        // Compute hints for this protocol step.
         let hints = serde_json::to_vec(&self.transport_hints).unwrap_or_default();
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&(hints.len() as u32).to_be_bytes());
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&hints);
-        // Serialize to the wire format for transmission or storage.
-        // Compute services for this protocol step.
-        // Compute services for this protocol step.
-        // Compute services for this protocol step.
         let services = serde_json::to_vec(&self.services).unwrap_or_default();
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&(services.len() as u32).to_be_bytes());
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&services);
-        // Serialize to the wire format for transmission or storage.
-        // Compute profile for this protocol step.
-        // Compute profile for this protocol step.
-        // Compute profile for this protocol step.
         let profile = serde_json::to_vec(&self.public_profile).unwrap_or_default();
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&(profile.len() as u32).to_be_bytes());
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
         buf.extend_from_slice(&profile);
+        // Append previous entry hash if present (self-ratcheted map, §4.5).
+        if let Some(prev) = &self.prev_hash {
+            buf.extend_from_slice(prev);
+        }
         buf
     }
 
@@ -369,27 +175,9 @@ impl NetworkMapEntry {
     ///
     /// Sets `self.signature` in place. The `public_keys` field must already
     /// contain the corresponding verifying key so callers can verify later.
-    // Perform the 'sign' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'sign' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'sign' operation.
-    // Errors are propagated to the caller via Result.
     pub fn sign(&mut self, signing_key: &SigningKey) {
-        // Prepare the data buffer for the next processing stage.
-        // Compute payload for this protocol step.
-        // Compute payload for this protocol step.
-        // Compute payload for this protocol step.
         let payload = self.signing_payload();
-        // Key material — must be zeroized when no longer needed.
-        // Compute sig for this protocol step.
-        // Compute sig for this protocol step.
-        // Compute sig for this protocol step.
         let sig: Signature = signing_key.sign(&payload);
-        // Update the signature to reflect the new state.
-        // Advance signature state.
-        // Advance signature state.
-        // Advance signature state.
         self.signature = sig.to_bytes().to_vec();
     }
 
@@ -399,110 +187,59 @@ impl NetworkMapEntry {
     /// 1. At least one public key is present.
     /// 2. `peer_id` is derived from `public_keys[0].ed25519_public`.
     /// 3. `signature` is a valid Ed25519 signature over `signing_payload()`.
+    /// 4. If `prev_hash` is present, it must match the SHA-256 hash of the
+    ///    previous entry's signing payload (self-ratcheted map entries, §4.5).
     ///
     /// Entries with no public keys are treated as unsigned legacy/stub entries
     /// and pass through without cryptographic verification.
-    // Perform the 'verify signature' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'verify signature' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'verify signature' operation.
-    // Errors are propagated to the caller via Result.
     pub fn verify_signature(&self) -> Result<(), MapError> {
-        // Validate the input length to prevent out-of-bounds access.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.public_keys.is_empty() {
             // Unsigned stub — allowed in unit tests / local synthetic entries.
             // Gossip from remote peers must have at least one key.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Ok(());
         }
 
         // 1. Peer ID must be derived from the first public key.
-        // Compute expected for this protocol step.
-        // Compute expected for this protocol step.
-        // Compute expected for this protocol step.
         let expected = PeerId::from_ed25519_pub(&self.public_keys[0].ed25519_public);
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if expected != self.peer_id {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(MapError::PeerIdKeyMismatch);
         }
 
         // 2. Parse the verifying key.
-        // Compute vk for this protocol step.
-        // Compute vk for this protocol step.
-        // Compute vk for this protocol step.
         let vk = VerifyingKey::from_bytes(&self.public_keys[0].ed25519_public)
-            // Transform the result, mapping errors to the local error type.
-            // Map the error to the local error type.
-            // Map the error to the local error type.
-            // Map the error to the local error type.
             .map_err(|_| MapError::InvalidSignature("invalid Ed25519 public key".into()))?;
 
         // 3. Parse the signature.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.signature.len() != 64 {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(MapError::InvalidSignature(format!(
-                // Process the current step in the protocol.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 "expected 64-byte signature, got {}",
-                // Mutate the internal state.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 self.signature.len()
             )));
         }
-        // Execute the operation and bind the result.
-        // Compute sig bytes for this protocol step.
-        // Compute sig bytes for this protocol step.
-        // Compute sig bytes for this protocol step.
         let mut sig_bytes = [0u8; 64];
-        // Copy the raw bytes into the fixed-size target array.
-        // Copy into the fixed-size buffer.
-        // Copy into the fixed-size buffer.
-        // Copy into the fixed-size buffer.
         sig_bytes.copy_from_slice(&self.signature);
-        // Ed25519 signature for authentication and integrity.
-        // Compute sig for this protocol step.
-        // Compute sig for this protocol step.
-        // Compute sig for this protocol step.
         let sig = Signature::from_bytes(&sig_bytes);
 
-        // 4. Verify.
-        // Compute payload for this protocol step.
-        // Compute payload for this protocol step.
-        // Compute payload for this protocol step.
+        // 4. Verify signature.
         let payload = self.signing_payload();
-        // Verify the signature against the claimed public key.
-        // Verify the cryptographic signature.
-        // Verify the cryptographic signature.
-        // Verify the cryptographic signature.
         vk.verify(&payload, &sig)
-            // Transform the result, mapping errors to the local error type.
-            // Map the error to the local error type.
-            // Map the error to the local error type.
-            // Map the error to the local error type.
-            .map_err(|e| MapError::InvalidSignature(e.to_string()))
+            .map_err(|e| MapError::InvalidSignature(e.to_string()))?;
+
+        // 5. Verify prev_hash chain (§4.5 self-ratcheted entries).
+        // Note: The actual prev_hash validation against the stored previous entry
+        // is performed by the caller (NetworkMap::insert) which has access to
+        // the previous entry. Here we just ensure the payload format is correct.
+
+        Ok(())
+    }
+
+    /// Compute the SHA-256 hash of this entry's signing payload.
+    /// Used for building the prev_hash chain (§4.5).
+    pub fn payload_hash(&self) -> [u8; 32] {
+        let payload = self.signing_payload();
+        let mut hasher = Sha256::new();
+        Digest::update(&mut hasher, &payload);
+        hasher.finalize().into()
     }
 }
 
@@ -512,83 +249,39 @@ impl NetworkMapEntry {
 
 /// The local network map — stores all known peers.
 #[derive(Default, Serialize, Deserialize)]
-// Begin the block scope.
-// NetworkMap — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// NetworkMap — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// NetworkMap — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct NetworkMap {
     /// Map entries keyed by PeerId.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     entries: HashMap<PeerId, NetworkMapEntry>,
+    /// Staging buffer for entries awaiting multi-source confirmation (§4.1).
+    ///
+    /// When `entries.len() >= 100` each gossiped entry must be seen from at
+    /// least 2 independent sources before it is promoted into `entries`.
+    /// When `entries.len() >= 1000` the threshold rises to 3 sources.
+    ///
+    /// Key: peer_id of the entry being staged.
+    /// Value: map of source_peer_id → best (highest-sequence) entry from that source.
+    #[serde(skip)]
+    pending_multi_source: HashMap<PeerId, HashMap<PeerId, NetworkMapEntry>>,
 }
 
-// Begin the block scope.
-// NetworkMap implementation — core protocol logic.
-// NetworkMap implementation — core protocol logic.
-// NetworkMap implementation — core protocol logic.
 impl NetworkMap {
     /// Create an empty network map.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new() -> Self {
-        // Create a new instance with the specified parameters.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         Self::default()
     }
 
     /// Number of entries in the map.
-    // Perform the 'len' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'len' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'len' operation.
-    // Errors are propagated to the caller via Result.
     pub fn len(&self) -> usize {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.entries.len()
     }
 
     /// Whether the map is empty.
-    // Perform the 'is empty' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is empty' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is empty' operation.
-    // Errors are propagated to the caller via Result.
     pub fn is_empty(&self) -> bool {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.entries.is_empty()
     }
 
     /// Get an entry by peer ID.
-    // Perform the 'get' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'get' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'get' operation.
-    // Errors are propagated to the caller via Result.
     pub fn get(&self, peer_id: &PeerId) -> Option<&NetworkMapEntry> {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.entries.get(peer_id)
     }
 
@@ -598,154 +291,165 @@ impl NetworkMap {
     /// 1. Sequence must be strictly greater than existing (or new entry)
     /// 2. Timestamp must not be more than 1 hour in the future
     /// 3. Signature must be valid (signature verification is caller's responsibility)
-    // Perform the 'insert' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'insert' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'insert' operation.
-    // Errors are propagated to the caller via Result.
+    /// 4. If prev_hash is present, it must match the hash of the existing entry's payload
     pub fn insert(&mut self, entry: NetworkMapEntry, now: u64) -> Result<bool, MapError> {
         // Check future timestamp
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if entry.last_seen > now + MAX_FUTURE_TIMESTAMP_SECS {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(MapError::FutureTimestamp {
-                // Process the current step in the protocol.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 entry_ts: entry.last_seen,
                 now,
             });
         }
 
         // Validate field lengths (§4.2 gossip validation)
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
         Self::validate_entry(&entry)?;
 
-        // Check sequence against existing entry
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
+        // Check sequence and prev_hash against existing entry
         if let Some(existing) = self.entries.get(&entry.peer_id) {
-            // Bounds check to enforce protocol constraints.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
+            // Sequence must be strictly greater
             if entry.sequence <= existing.sequence {
-                // Return success with the computed result.
-                // Return to the caller.
-                // Return to the caller.
-                // Return to the caller.
                 return Ok(false); // Stale — silently ignore
+            }
+            // Verify prev_hash chain (§4.5 self-ratcheted entries)
+            if let Some(prev_hash) = &entry.prev_hash {
+                let expected_hash = existing.payload_hash();
+                if prev_hash != &expected_hash {
+                    return Err(MapError::InvalidSignature(
+                        "prev_hash does not match previous entry's payload hash".into(),
+                    ));
+                }
+            }
+        } else {
+            // New entry: if sequence > 0, expect prev_hash to be present
+            if entry.sequence > 0 && entry.prev_hash.is_none() {
+                return Err(MapError::InvalidSignature(
+                    "new entry with sequence > 0 must have prev_hash".into(),
+                ));
             }
         }
 
         // Check capacity
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.entries.len() >= MAX_MAP_ENTRIES && !self.entries.contains_key(&entry.peer_id) {
             // Need to evict — LRU of untrusted entries first
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             self.evict_for_new_entry(&entry);
         }
 
-        // Insert into the lookup table for efficient retrieval.
-        // Insert into the map/set.
-        // Insert into the map/set.
-        // Insert into the map/set.
         self.entries.insert(entry.peer_id, entry);
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(true)
     }
 
+    /// Insert an entry received from a remote gossip source (§4.1, §4.2).
+    ///
+    /// Enforces the multi-source confirmation requirement:
+    /// - Map size < 100:   1 source sufficient (same as `insert`).
+    /// - Map size 100–999: 2 independent sources required before promotion.
+    /// - Map size ≥ 1000:  3 independent sources required before promotion.
+    ///
+    /// An "independent source" is a distinct `source_id`.  Duplicate submissions
+    /// from the same source only update that source's staged entry; they do not
+    /// increment the confirmation count.
+    ///
+    /// Returns `true` when the entry is promoted into the live map.
+    /// Returns `false` when the entry is staged (waiting for more confirmations)
+    /// or is stale/superseded.
+    pub fn insert_gossiped(
+        &mut self,
+        entry: NetworkMapEntry,
+        source_id: &PeerId,
+        now: u64,
+    ) -> Result<bool, MapError> {
+        let required = Self::required_sources(self.entries.len());
+
+        // Fast path: single source sufficient (small map or already large enough).
+        if required == 1 {
+            return self.insert(entry, now);
+        }
+
+        // Validate before staging — reject bad entries immediately.
+        if entry.last_seen > now + MAX_FUTURE_TIMESTAMP_SECS {
+            return Err(MapError::FutureTimestamp {
+                entry_ts: entry.last_seen,
+                now,
+            });
+        }
+        Self::validate_entry(&entry)?;
+
+        let target_peer = entry.peer_id;
+
+        // If an existing live entry has the same or higher sequence, skip staging.
+        if let Some(existing) = self.entries.get(&target_peer) {
+            if entry.sequence <= existing.sequence {
+                return Ok(false);
+            }
+        }
+
+        // Stage the entry under this source.
+        let staged_sources = self
+            .pending_multi_source
+            .entry(target_peer)
+            .or_default();
+
+        // Keep the highest-sequence entry per source.
+        let current_best = staged_sources.get(source_id);
+        if current_best.map_or(true, |existing| entry.sequence > existing.sequence) {
+            staged_sources.insert(*source_id, entry);
+        }
+
+        // Check if we now have enough independent sources to promote.
+        if staged_sources.len() >= required {
+            // Select the entry with the highest sequence number.
+            let best = staged_sources
+                .values()
+                .max_by_key(|e| e.sequence)
+                .cloned();
+
+            // Remove from staging regardless of whether promotion succeeds.
+            self.pending_multi_source.remove(&target_peer);
+
+            if let Some(best_entry) = best {
+                return self.insert(best_entry, now);
+            }
+        }
+
+        Ok(false) // Still waiting for more sources.
+    }
+
+    /// Number of independent gossip sources required before a new entry is
+    /// accepted into the live map, based on the current map size (§4.1).
+    fn required_sources(map_size: usize) -> usize {
+        if map_size >= 1000 {
+            3
+        } else if map_size >= 100 {
+            2
+        } else {
+            1
+        }
+    }
+
     /// Remove stale entries (not seen within staleness threshold).
-    // Perform the 'prune stale' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'prune stale' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'prune stale' operation.
-    // Errors are propagated to the caller via Result.
     pub fn prune_stale(&mut self, now: u64) {
-        // Filter the collection, keeping only elements that pass.
-        // Filter elements that match the predicate.
-        // Filter elements that match the predicate.
-        // Filter elements that match the predicate.
         self.entries.retain(|_, entry| {
             // Never prune trusted entries automatically
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if entry.local_trust.is_trusted_tier() {
-                // Return the result to the caller.
-                // Return to the caller.
-                // Return to the caller.
-                // Return to the caller.
                 return true;
             }
             // Prune untrusted entries older than threshold
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             now.saturating_sub(entry.last_seen) < STALENESS_SECS
         });
     }
 
-    /// Get all entries as a slice.
-    // Perform the 'entries' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'entries' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'entries' operation.
-    // Errors are propagated to the caller via Result.
+    /// Get all entries as an iterator.
     pub fn entries(&self) -> impl Iterator<Item = &NetworkMapEntry> {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.entries.values()
     }
 
     /// Get mutable entry.
-    // Perform the 'get mut' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'get mut' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'get mut' operation.
-    // Errors are propagated to the caller via Result.
     pub fn get_mut(&mut self, peer_id: &PeerId) -> Option<&mut NetworkMapEntry> {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.entries.get_mut(peer_id)
     }
 
     /// Remove an entry.
-    // Perform the 'remove' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'remove' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'remove' operation.
-    // Errors are propagated to the caller via Result.
     pub fn remove(&mut self, peer_id: &PeerId) -> Option<NetworkMapEntry> {
-        // Remove from the collection and return the evicted value.
-        // Remove from the collection.
-        // Remove from the collection.
-        // Remove from the collection.
         self.entries.remove(peer_id)
     }
 
@@ -753,176 +457,237 @@ impl NetworkMap {
     // Internal
     // -----------------------------------------------------------------------
 
-    /// Validate entry field lengths per §4.2 gossip validation.
-    // Perform the 'validate entry' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'validate entry' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'validate entry' operation.
-    // Errors are propagated to the caller via Result.
+    /// Validate entry field lengths and endpoint formats per §4.2.
+    ///
+    /// Any entry with a field that fails validation is rejected entirely and
+    /// must not be gossiped further — never sanitize-and-forward (§4.2).
     fn validate_entry(entry: &NetworkMapEntry) -> Result<(), MapError> {
-        // Validate the input length to prevent out-of-bounds access.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if entry.transport_hints.len() > 8 {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(MapError::TooManyTransportHints(entry.transport_hints.len()));
         }
-        // Validate the input length to prevent out-of-bounds access.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if entry.public_keys.len() > 16 {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(MapError::TooManyPublicKeys(entry.public_keys.len()));
         }
-        // Validate the input length to prevent out-of-bounds access.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if entry.services.len() > 32 {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(MapError::TooManyServices(entry.services.len()));
         }
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if let Some(ref profile) = entry.public_profile {
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if let Some(ref name) = profile.display_name {
-                // Validate the input length to prevent out-of-bounds access.
-                // Guard: validate the condition before proceeding.
-                // Guard: validate the condition before proceeding.
-                // Guard: validate the condition before proceeding.
                 if name.len() > 64 {
-                    // Reject with an explicit error for the caller to handle.
-                    // Return to the caller.
-                    // Return to the caller.
-                    // Return to the caller.
                     return Err(MapError::FieldTooLong("display_name", name.len()));
                 }
             }
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if let Some(ref bio) = profile.bio {
-                // Validate the input length to prevent out-of-bounds access.
-                // Guard: validate the condition before proceeding.
-                // Guard: validate the condition before proceeding.
-                // Guard: validate the condition before proceeding.
                 if bio.len() > 256 {
-                    // Reject with an explicit error for the caller to handle.
-                    // Return to the caller.
-                    // Return to the caller.
-                    // Return to the caller.
                     return Err(MapError::FieldTooLong("bio", bio.len()));
                 }
             }
+            // avatar_hash must be exactly 32 bytes when present (§4.2).
+            if let Some(ref hash) = profile.avatar_hash {
+                if hash.len() != 32 {
+                    return Err(MapError::InvalidAvatarHash(hash.len()));
+                }
+            }
         }
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
+        // Validate each transport hint endpoint format (§4.2).
+        for hint in &entry.transport_hints {
+            if let Some(ref endpoint) = hint.endpoint {
+                if !Self::validate_endpoint_format(&hint.transport, endpoint) {
+                    return Err(MapError::InvalidEndpointFormat {
+                        transport: format!("{:?}", hint.transport),
+                        endpoint: endpoint.clone(),
+                    });
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Validate a transport endpoint string against the format rules for its
+    /// transport type (§4.2).  Returns `false` for any format violation.
+    fn validate_endpoint_format(transport: &TransportType, endpoint: &str) -> bool {
+        // Reject empty or excessively long endpoints before type-specific checks.
+        if endpoint.is_empty() || endpoint.len() > 512 {
+            return false;
+        }
+        match transport {
+            TransportType::Clearnet => Self::is_valid_clearnet_endpoint(endpoint),
+            TransportType::Tor => Self::is_valid_tor_endpoint(endpoint),
+            TransportType::I2P => Self::is_valid_i2p_endpoint(endpoint),
+            TransportType::Yggdrasil => Self::is_valid_yggdrasil_endpoint(endpoint),
+            TransportType::Cjdns => Self::is_valid_cjdns_endpoint(endpoint),
+            TransportType::ZeroTier | TransportType::Tailscale => {
+                // These carry IP:port or domain:port addresses on their overlay plane.
+                Self::is_valid_clearnet_endpoint(endpoint)
+                    || Self::is_valid_hostname_port(endpoint)
+            }
+            // Proximity and RF transports carry no routable endpoint; if one
+            // is present it must be a short, printable identifier only.
+            TransportType::BLE
+            | TransportType::BluetoothClassic
+            | TransportType::WiFiDirect
+            | TransportType::NFC
+            | TransportType::Ultrasonic
+            | TransportType::USBSerial
+            | TransportType::Layer2
+            | TransportType::RF
+            | TransportType::LoRa
+            | TransportType::SdrHf
+            | TransportType::SdrVhf
+            | TransportType::SdrUhf
+            | TransportType::SdrShf
+            | TransportType::SdrFhss
+            | TransportType::Telephone
+            | TransportType::CANBus
+            | TransportType::PPPoE
+            | TransportType::Dialup => {
+                // Short printable ASCII identifier, ≤ 128 bytes.
+                endpoint.len() <= 128 && endpoint.bytes().all(|b| b >= 0x20 && b < 0x7f)
+            }
+            // Overlay/mixnet types: accept any printable string ≤ 256 bytes.
+            TransportType::GNUnet
+            | TransportType::Mixnet => {
+                endpoint.len() <= 256 && endpoint.is_ascii()
+            }
+        }
+    }
+
+    /// Validate a clearnet IP:port endpoint (IPv4 or bracketed IPv6).
+    fn is_valid_clearnet_endpoint(endpoint: &str) -> bool {
+        // std::net::SocketAddr handles `1.2.3.4:port` and `[::1]:port`.
+        endpoint.parse::<std::net::SocketAddr>().is_ok()
+    }
+
+    /// Validate a `hostname:port` endpoint where the host is not a bare IP.
+    fn is_valid_hostname_port(endpoint: &str) -> bool {
+        let Some(colon) = endpoint.rfind(':') else {
+            return false;
+        };
+        let host = &endpoint[..colon];
+        let port_str = &endpoint[colon + 1..];
+        let Ok(port) = port_str.parse::<u16>() else {
+            return false;
+        };
+        if port == 0 {
+            return false;
+        }
+        // Host must be non-empty, contain only hostname-legal characters, and
+        // must not be a bare IP address (those are handled by clearnet check).
+        !host.is_empty()
+            && host.len() <= 253
+            && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            && !host.starts_with('-')
+            && !host.ends_with('-')
+    }
+
+    /// Validate a Tor v3 onion address: `[a-z2-7]{56}.onion` with optional `:port`.
+    fn is_valid_tor_endpoint(endpoint: &str) -> bool {
+        let (onion_part, port_part) = match endpoint.rfind(':') {
+            Some(colon) if !endpoint[..colon].ends_with(']') => {
+                (&endpoint[..colon], Some(&endpoint[colon + 1..]))
+            }
+            _ => (endpoint, None),
+        };
+        if !onion_part.ends_with(".onion") {
+            return false;
+        }
+        let base32 = &onion_part[..onion_part.len() - 6];
+        // v3 onion addresses are exactly 56 base32 characters.
+        if base32.len() != 56 {
+            return false;
+        }
+        if !base32
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+        {
+            return false;
+        }
+        if let Some(port) = port_part {
+            if port.parse::<u16>().is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Validate an I2P address: `.b32.i2p` suffix (52 base32 chars) or
+    /// `.i2p` domain.
+    fn is_valid_i2p_endpoint(endpoint: &str) -> bool {
+        let host = match endpoint.rfind(':') {
+            Some(colon) => {
+                let port_str = &endpoint[colon + 1..];
+                if port_str.parse::<u16>().is_err() {
+                    return false;
+                }
+                &endpoint[..colon]
+            }
+            None => endpoint,
+        };
+        if !host.ends_with(".i2p") {
+            return false;
+        }
+        // Basic length sanity: I2P addresses are at most 516 chars.
+        host.len() <= 516
+            && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    }
+
+    /// Validate a Yggdrasil address: IPv6 in the `200::/7` range.
+    ///
+    /// Yggdrasil uses the `200::/7` block (first byte 0x02 or 0x03).
+    fn is_valid_yggdrasil_endpoint(endpoint: &str) -> bool {
+        let addr_str = Self::strip_bracketed_ipv6(endpoint);
+        if let Ok(ip) = addr_str.parse::<std::net::Ipv6Addr>() {
+            let first_byte = (ip.segments()[0] >> 8) as u8;
+            return first_byte == 0x02 || first_byte == 0x03;
+        }
+        false
+    }
+
+    /// Validate a cjdns address: IPv6 in the `fc00::/8` range.
+    fn is_valid_cjdns_endpoint(endpoint: &str) -> bool {
+        let addr_str = Self::strip_bracketed_ipv6(endpoint);
+        if let Ok(ip) = addr_str.parse::<std::net::Ipv6Addr>() {
+            let first_byte = (ip.segments()[0] >> 8) as u8;
+            return first_byte == 0xfc || first_byte == 0xfd;
+        }
+        false
+    }
+
+    /// Strip the `[…]:port` brackets and port from a bracketed IPv6 string,
+    /// returning just the address portion for parsing.
+    fn strip_bracketed_ipv6(s: &str) -> &str {
+        if let Some(rest) = s.strip_prefix('[') {
+            if let Some(close) = rest.find(']') {
+                return &rest[..close];
+            }
+        }
+        s
     }
 
     /// Evict the oldest untrusted entry to make room.
     /// If all entries are trusted, evict the oldest trusted entry (§17.9 edge case fix).
-    // Perform the 'evict for new entry' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'evict for new entry' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'evict for new entry' operation.
-    // Errors are propagated to the caller via Result.
     fn evict_for_new_entry(&mut self, _new_entry: &NetworkMapEntry) {
         // Find the oldest untrusted entry
-        // Compute oldest untrusted for this protocol step.
-        // Compute oldest untrusted for this protocol step.
-        // Compute oldest untrusted for this protocol step.
         let oldest_untrusted = self
-            // Chain the operation on the intermediate result.
             .entries
-            // Create an iterator over the collection elements.
-            // Create an iterator over the elements.
-            // Create an iterator over the elements.
-            // Create an iterator over the elements.
             .iter()
-            // Select only elements matching the predicate.
-            // Filter by the predicate.
-            // Filter by the predicate.
-            // Filter by the predicate.
             .filter(|(_, e)| e.local_trust.is_untrusted_tier())
-            // Apply the closure to each element.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             .min_by_key(|(_, e)| e.last_seen)
-            // Transform the result, mapping errors to the local error type.
-            // Transform each element.
-            // Transform each element.
-            // Transform each element.
             .map(|(id, _)| *id);
 
-        // Trust level gate — restrict access based on peer trust.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if let Some(id) = oldest_untrusted {
-            // Remove from the collection and return the evicted value.
-            // Remove from the collection.
-            // Remove from the collection.
-            // Remove from the collection.
             self.entries.remove(&id);
             return;
         }
 
         // All trusted — evict oldest by last_seen (extreme edge case)
-        // Compute oldest trusted for this protocol step.
-        // Compute oldest trusted for this protocol step.
-        // Compute oldest trusted for this protocol step.
         let oldest_trusted = self
-            // Chain the operation on the intermediate result.
             .entries
-            // Create an iterator over the collection elements.
-            // Create an iterator over the elements.
-            // Create an iterator over the elements.
-            // Create an iterator over the elements.
             .iter()
-            // Apply the closure to each element.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             .min_by_key(|(_, e)| e.last_seen)
-            // Transform the result, mapping errors to the local error type.
-            // Transform each element.
-            // Transform each element.
-            // Transform each element.
             .map(|(id, _)| *id);
 
-        // Trust level gate — restrict access based on peer trust.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if let Some(id) = oldest_trusted {
-            // Remove from the collection and return the evicted value.
-            // Remove from the collection.
-            // Remove from the collection.
-            // Remove from the collection.
             self.entries.remove(&id);
         }
     }
@@ -933,56 +698,27 @@ impl NetworkMap {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
-// Begin the block scope.
-// MapError — variant enumeration.
-// Match exhaustively to handle every protocol state.
-// MapError — variant enumeration.
-// Match exhaustively to handle every protocol state.
-// MapError — variant enumeration.
-// Match exhaustively to handle every protocol state.
 pub enum MapError {
     #[error("Entry timestamp {entry_ts} is more than 1 hour in the future (now: {now})")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     FutureTimestamp { entry_ts: u64, now: u64 },
     #[error("Too many transport hints ({0}, max 8)")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     TooManyTransportHints(usize),
     #[error("Too many public keys ({0}, max 16)")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     TooManyPublicKeys(usize),
     #[error("Too many services ({0}, max 32)")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     TooManyServices(usize),
     #[error("Field {0} too long ({1} bytes)")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     FieldTooLong(&'static str, usize),
     #[error("Invalid signature: {0}")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     InvalidSignature(String),
     #[error("Peer ID does not match the claimed Ed25519 public key")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     PeerIdKeyMismatch,
+    /// avatar_hash must be exactly 32 bytes (§4.2).
+    #[error("Invalid avatar_hash length: expected 32 bytes, got {0}")]
+    InvalidAvatarHash(usize),
+    /// Transport endpoint string failed format validation for its type (§4.2).
+    #[error("Invalid endpoint format for {transport} transport: '{endpoint}'")]
+    InvalidEndpointFormat { transport: String, endpoint: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,6 +739,7 @@ mod tests {
             services: vec![],
             sequence: seq,
             signature: vec![],
+            prev_hash: None,
             local_trust: TrustLevel::Unknown,
         }
     }
@@ -1112,6 +849,7 @@ mod tests {
             services: vec![],
             sequence: 1,
             signature: vec![],
+            prev_hash: None,
             local_trust: TrustLevel::Unknown,
         };
 
@@ -1146,6 +884,7 @@ mod tests {
             services: vec![],
             sequence: 1,
             signature: vec![0u8; 64],
+            prev_hash: None,
             local_trust: TrustLevel::Unknown,
         };
 
@@ -1180,6 +919,7 @@ mod tests {
             services: vec![],
             sequence: 1,
             signature: vec![],
+            prev_hash: None,
             local_trust: TrustLevel::Unknown,
         };
 
@@ -1190,9 +930,129 @@ mod tests {
     }
 
     #[test]
+    fn test_prev_hash_chain() {
+        use ed25519_dalek::SigningKey;
+
+        let raw_key = [0x5cu8; 32];
+        let signing_key = SigningKey::from_bytes(&raw_key);
+        let verifying_key = signing_key.verifying_key();
+        let ed_pub: [u8; 32] = verifying_key.to_bytes();
+        let peer_id = PeerId::from_ed25519_pub(&ed_pub);
+
+        let mut map = NetworkMap::new();
+
+        // First entry (sequence 1, no prev_hash)
+        let mut entry1 = NetworkMapEntry {
+            peer_id,
+            public_keys: vec![super::PublicKeyRecord {
+                ed25519_public: ed_pub,
+                x25519_public: [0u8; 32],
+                preauth_x25519_public: None,
+                kem_encapsulation_key: None,
+                preauth_sig: None,
+            }],
+            last_seen: 1000,
+            transport_hints: vec![],
+            public_profile: None,
+            services: vec![],
+            sequence: 1,
+            signature: vec![],
+            prev_hash: None,
+            local_trust: TrustLevel::Unknown,
+        };
+        entry1.sign(&signing_key);
+        assert!(map.insert(entry1, 1000).unwrap());
+
+        // Second entry (sequence 2, must have prev_hash = hash of entry1's payload)
+        let prev_entry = map.get(&peer_id).unwrap();
+        let prev_hash = prev_entry.payload_hash();
+
+        let mut entry2 = NetworkMapEntry {
+            peer_id,
+            public_keys: vec![super::PublicKeyRecord {
+                ed25519_public: ed_pub,
+                x25519_public: [0u8; 32],
+                preauth_x25519_public: None,
+                kem_encapsulation_key: None,
+                preauth_sig: None,
+            }],
+            last_seen: 2000,
+            transport_hints: vec![],
+            public_profile: None,
+            services: vec![],
+            sequence: 2,
+            signature: vec![],
+            prev_hash: Some(prev_hash),
+            local_trust: TrustLevel::Unknown,
+        };
+        entry2.sign(&signing_key);
+        assert!(map.insert(entry2, 2000).unwrap());
+
+        // Verify the chain
+        let stored = map.get(&peer_id).unwrap();
+        assert_eq!(stored.sequence, 2);
+        assert!(stored.prev_hash.is_some());
+    }
+
+    #[test]
+    fn test_prev_hash_mismatch_rejected() {
+        use ed25519_dalek::SigningKey;
+
+        let raw_key = [0x5cu8; 32];
+        let signing_key = SigningKey::from_bytes(&raw_key);
+        let verifying_key = signing_key.verifying_key();
+        let ed_pub: [u8; 32] = verifying_key.to_bytes();
+        let peer_id = PeerId::from_ed25519_pub(&ed_pub);
+
+        let mut map = NetworkMap::new();
+
+        // First entry
+        let mut entry1 = NetworkMapEntry {
+            peer_id,
+            public_keys: vec![super::PublicKeyRecord {
+                ed25519_public: ed_pub,
+                x25519_public: [0u8; 32],
+                preauth_x25519_public: None,
+                kem_encapsulation_key: None,
+                preauth_sig: None,
+            }],
+            last_seen: 1000,
+            transport_hints: vec![],
+            public_profile: None,
+            services: vec![],
+            sequence: 1,
+            signature: vec![],
+            prev_hash: None,
+            local_trust: TrustLevel::Unknown,
+        };
+        entry1.sign(&signing_key);
+        map.insert(entry1, 1000).unwrap();
+
+        // Second entry with wrong prev_hash
+        let mut entry2 = NetworkMapEntry {
+            peer_id,
+            public_keys: vec![super::PublicKeyRecord {
+                ed25519_public: ed_pub,
+                x25519_public: [0u8; 32],
+                preauth_x25519_public: None,
+                kem_encapsulation_key: None,
+                preauth_sig: None,
+            }],
+            last_seen: 2000,
+            transport_hints: vec![],
+            public_profile: None,
+            services: vec![],
+            sequence: 2,
+            signature: vec![],
+            prev_hash: Some([0xFF; 32]), // Wrong hash
+            local_trust: TrustLevel::Unknown,
+        };
+        entry2.sign(&signing_key);
+        assert!(map.insert(entry2, 2000).is_err()); // Should be rejected
+    }
+
+    #[test]
     fn test_capacity_eviction() {
-        // Fill to capacity wouldn't be practical in a test with 100K entries,
-        // but we can test the eviction logic directly
         assert_eq!(MAX_MAP_ENTRIES, 100_000);
     }
 

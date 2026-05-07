@@ -13,7 +13,8 @@
 //! only pre-validated, display-safe JSON.
 
 use std::ffi::CString;
-use std::sync::Mutex;
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::thread::JoinHandle;
 
 use crate::crypto::double_ratchet::DoubleRatchetSession;
 use crate::identity::mesh_identity::MeshIdentity;
@@ -601,6 +602,10 @@ pub struct MeshRuntime {
     /// background receive thread started by `start_recv()`.
     pub zerotier_transport:
         Mutex<Option<std::sync::Arc<crate::transport::zerotier::ZeroTierTransport>>>,
+    /// Stop flag for the Layer 1 background poll loop (§3.1.1).
+    pub layer1_poll_active: Arc<AtomicBool>,
+    /// Join handle for the headless Layer 1 background poll loop.
+    pub layer1_poll_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 // SAFETY: All mutable state is wrapped in `Mutex`, making MeshRuntime safe
@@ -608,6 +613,20 @@ pub struct MeshRuntime {
 // while Rust code holds a reference.
 unsafe impl Send for MeshRuntime {}
 unsafe impl Sync for MeshRuntime {}
+
+impl Drop for MeshRuntime {
+    /// Join the Layer 1 background poll thread before the allocation is freed.
+    ///
+    /// `start_layer1_background_poll` (poll.rs) stores a raw `*const MeshRuntime`
+    /// pointer inside the spawned thread.  Joining here guarantees the thread has
+    /// exited — and therefore holds no live references to `self` — before Rust
+    /// drops this value.  This is what makes the `unsafe { &*(runtime_addr …) }`
+    /// dereference in that thread sound: the thread cannot outlive the object it
+    /// points at.
+    fn drop(&mut self) {
+        self.stop_layer1_background_poll();
+    }
+}
 
 impl MeshRuntime {
     /// Construct a new, empty `MeshRuntime` for the given data directory.
@@ -706,6 +725,10 @@ impl MeshRuntime {
             tailscale_poll_active: Mutex::new(None),
             // No ZeroTier transport socket is active at startup.
             zerotier_transport: Mutex::new(None),
+            // The Layer 1 poll loop starts only after bootstrap succeeds.
+            layer1_poll_active: Arc::new(AtomicBool::new(false)),
+            // The join handle is stored so Drop can stop the loop cleanly.
+            layer1_poll_thread: Mutex::new(None),
         }
     }
 

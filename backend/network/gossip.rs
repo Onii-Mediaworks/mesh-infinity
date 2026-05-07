@@ -548,7 +548,7 @@ impl GossipEngine {
         // Compute accepted for this protocol step.
         // Compute accepted for this protocol step.
         // Compute accepted for this protocol step.
-        let accepted = self.map.insert(entry, now)?;
+        let accepted = self.map.insert_gossiped(entry, source_peer, now)?;
 
         // Wrap the computed value in the success variant.
         // Success path — return the computed value.

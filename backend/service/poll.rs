@@ -32,6 +32,80 @@ impl MeshRuntime {
     // Master tick
     // -----------------------------------------------------------------------
 
+    /// Start the Layer 1 background poll loop used by headless startup.
+    ///
+    /// Flutter normally drives `advance_clearnet_transport()` by calling
+    /// `mi_poll_events()` every few hundred milliseconds.  During Android
+    /// device-unlock startup Flutter does not exist yet, so Layer 1 needs its
+    /// own lightweight loop to advance listeners, LAN discovery, gossip
+    /// cleanup, store-and-forward maintenance, keepalives, and cover-traffic
+    /// participation.
+    pub fn start_layer1_background_poll(&self) {
+        if self
+            .layer1_poll_active
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+
+        if let Some(handle) = self
+            .layer1_poll_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            let _ = handle.join();
+        }
+
+        let active = self.layer1_poll_active.clone();
+        let runtime_addr = self as *const MeshRuntime as usize;
+        let spawn_result = std::thread::Builder::new()
+            .name("mesh-layer1-poll".to_string())
+            .spawn(move || {
+                while active.load(std::sync::atomic::Ordering::Acquire) {
+                    // SAFETY: `MeshRuntime::drop` calls `stop_layer1_background_poll`,
+                    // which sets `layer1_poll_active` to false and joins this thread
+                    // before the allocation is freed.  Therefore `runtime_addr` is
+                    // valid for the entire lifetime of this closure.
+                    let runtime = unsafe { &*(runtime_addr as *const MeshRuntime) };
+                    runtime.advance_clearnet_transport();
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            });
+
+        match spawn_result {
+            Ok(handle) => {
+                *self
+                    .layer1_poll_thread
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+            }
+            Err(error) => {
+                self.layer1_poll_active
+                    .store(false, std::sync::atomic::Ordering::Release);
+                self.set_error(&format!("Layer 1 background poll failed: {error}"));
+            }
+        }
+    }
+
+    /// Stop the Layer 1 background poll loop and wait for it to exit.
+    pub fn stop_layer1_background_poll(&self) {
+        self.layer1_poll_active
+            .store(false, std::sync::atomic::Ordering::Release);
+
+        let handle = self
+            .layer1_poll_thread
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+
+        if let Some(handle) = handle {
+            if let Err(error) = handle.join() {
+                eprintln!("[Layer1] background poll thread join failed: {error:?}");
+            }
+        }
+    }
+
     /// Advance all transport sub-systems for one poll cycle.
     ///
     /// Called from `mi_poll_events` approximately every 200 ms.
