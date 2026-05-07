@@ -19,6 +19,7 @@
 use crate::identity::peer_id::PeerId;
 use crate::mesh::{MeshPacket, PacketKind};
 use crate::pairing::contact::ContactRecord;
+use crate::pairing::methods::parse_pairing_qr_payload_json;
 use crate::routing::announcement::ReachabilityAnnouncement;
 use crate::routing::store_forward::{
     DepositResult, Priority, ReleaseCondition, StoreAndForwardRequest,
@@ -43,99 +44,40 @@ impl MeshRuntime {
     ///
     /// Returns `Ok(())` on success, `Err(reason)` on malformed input.
     pub fn pair_peer(&self, payload_json: &str) -> Result<(), String> {
-        // Parse the pairing payload — this was scanned from a QR code or received
-        // as a deep link.  The payload is signed by Alice's identity key in the
-        // QR generation step, but we verify the signature later during the
-        // challenge-response handshake, not here (Bob's trust in the QR is
-        // established by the physical proximity of scanning it).
-        let payload: serde_json::Value = serde_json::from_str(payload_json)
-            .map_err(|_| "Payload is not valid JSON".to_string())?;
-
-        // Extract required Ed25519 public key — this is Alice's long-term
-        // identity key from which her PeerId is derived.
-        let ed_hex = payload
-            .get("ed25519_public")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing ed25519_public")?;
-        let ed_bytes: [u8; 32] = hex::decode(ed_hex)
-            .ok()
-            .filter(|b| b.len() == 32)
-            .map(|b| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            })
-            .ok_or("Invalid ed25519_public")?;
-
-        // Extract required X25519 public key.
-        let x_hex = payload
-            .get("x25519_public")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing x25519_public")?;
-        let x_bytes: [u8; 32] = hex::decode(x_hex)
-            .ok()
-            .filter(|b| b.len() == 32)
-            .map(|b| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            })
-            .ok_or("Invalid x25519_public")?;
-        let mesh_x_bytes = payload
-            .get("mesh_x25519_public")
-            .and_then(|v| v.as_str())
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == 32)
-            .map(|b| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            });
-
-        // Derive the canonical peer ID by hashing the Ed25519 public key.
-        // This gives a stable identifier that does not change if the peer
-        // rotates their X25519 preauth key (which happens weekly).
-        let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
-        let name = payload
-            .get("display_name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        // Extract optional preauth X25519 public key (their SPK for X3DH).
-        let preauth_pub_bytes: Option<[u8; 32]> = payload
-            .get("preauth_x25519_public")
-            .and_then(|v| v.as_str())
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == 32)
-            .map(|b| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            });
-
-        // Extract transport hints.
-        let hints = payload
-            .get("transport_hints")
-            .and_then(|h| h.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let clearnet_endpoint = hints
-            .iter()
-            .find(|h| h.get("transport").and_then(|t| t.as_str()) == Some("clearnet"))
-            .and_then(|h| h.get("endpoint"))
-            .and_then(|e| e.as_str())
-            .map(|s| s.to_string());
-        let tor_endpoint = hints
-            .iter()
-            .find(|h| h.get("transport").and_then(|t| t.as_str()) == Some("tor"))
-            .and_then(|h| h.get("endpoint"))
-            .and_then(|e| e.as_str())
-            .map(|s| s.to_string());
-
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+
+        // Parse and structurally validate the hostile QR/deep-link payload
+        // before using any field semantically.
+        let decoded = parse_pairing_qr_payload_json(payload_json.as_bytes(), now)
+            .map_err(|error| error.safe_description())?;
+        let payload = decoded.payload;
+        let ed_bytes = payload.ed25519_public;
+        let x_bytes = payload.x25519_public;
+        let mesh_x_bytes = decoded.mesh_x25519_public;
+
+        // Derive the canonical peer ID by hashing the Ed25519 public key.
+        // This gives a stable identifier that does not change if the peer
+        // rotates their X25519 preauth key (which happens weekly).
+        let peer_id = payload.peer_id;
+        let name = payload.display_name.clone();
+
+        // Extract optional preauth X25519 public key (their SPK for X3DH).
+        let preauth_pub_bytes = decoded.preauth_x25519_public;
+
+        // Extract transport hints.
+        let clearnet_endpoint = payload
+            .transport_hints
+            .iter()
+            .find(|hint| hint.transport == "clearnet")
+            .and_then(|hint| hint.endpoint.clone());
+        let tor_endpoint = payload
+            .transport_hints
+            .iter()
+            .find(|hint| hint.transport == "tor")
+            .and_then(|hint| hint.endpoint.clone());
 
         let mut contact = ContactRecord::new(
             peer_id,
@@ -152,19 +94,13 @@ impl MeshRuntime {
         // Store ML-KEM-768 encapsulation key if advertised (PQXDH §3.4.1).
         // This enables post-quantum key exchange with this peer; if absent,
         // the session will use classical X3DH only.
-        contact.kem_encapsulation_key = payload
-            .get("kem_pub")
-            .and_then(|v| v.as_str())
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == crate::crypto::x3dh::KEM_EK_SIZE);
+        contact.kem_encapsulation_key = decoded
+            .kem_pub
+            .filter(|bytes| bytes.len() == crate::crypto::x3dh::KEM_EK_SIZE);
 
         // Store their preauth pub — Alice uses it to initiate X3DH.
         if let Some(preauth_bytes) = preauth_pub_bytes {
-            let preauth_sig_opt: Option<Vec<u8>> = payload
-                .get("preauth_sig")
-                .and_then(|v| v.as_str())
-                .and_then(|h| hex::decode(h).ok())
-                .filter(|b| b.len() == 64);
+            let preauth_sig_opt = decoded.preauth_sig.filter(|sig| sig.len() == 64);
             if let Some(sig) = preauth_sig_opt {
                 contact.update_preauth_key_with_sig(preauth_bytes, sig, now);
             } else {
@@ -1238,6 +1174,7 @@ impl MeshRuntime {
                         }],
                         last_seen: now,
                         transport_hints,
+                         prev_hash: None,
                         public_profile: None,
                         services: vec![],
                         sequence: now,

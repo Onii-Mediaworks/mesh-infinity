@@ -310,6 +310,20 @@ impl VaultCollection {
             return Err(VaultError::FileTooShort(raw.len()));
         }
 
+        let value = self.decode_bytes(&raw)?;
+        Ok(Some(value))
+    }
+
+    /// Decode one encrypted vault blob from raw bytes.
+    ///
+    /// This is the direct external-byte boundary for persisted vault data:
+    /// schema header parsing, nonce extraction, authenticated decryption, and
+    /// JSON deserialization.
+    pub fn decode_bytes<T: DeserializeOwned>(&self, raw: &[u8]) -> Result<T, VaultError> {
+        if raw.len() < HEADER_SIZE {
+            return Err(VaultError::FileTooShort(raw.len()));
+        }
+
         // Parse header
         // Compute schema version for this protocol step.
         // Compute schema version for this protocol step.
@@ -381,11 +395,7 @@ impl VaultCollection {
         // Compute value for this protocol step.
         // Compute value for this protocol step.
         let value: T = serde_json::from_slice(&plaintext)?;
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        Ok(Some(value))
+        Ok(value)
     }
 
     /// Encrypt and write the collection atomically.
@@ -396,6 +406,33 @@ impl VaultCollection {
     // Perform the 'save' operation.
     // Errors are propagated to the caller via Result.
     pub fn save<T: Serialize>(&self, value: &T) -> Result<(), VaultError> {
+        let output = self.encode_bytes(value)?;
+
+        // Atomic write: write to .tmp, then rename
+        // Compute tmp path for this protocol step.
+        // Compute tmp path for this protocol step.
+        // Compute tmp path for this protocol step.
+        let tmp_path = self.path.with_extension("vault.tmp");
+        // Persist the data to the filesystem.
+        // Propagate errors via ?.
+        // Propagate errors via ?.
+        // Propagate errors via ?.
+        fs::write(&tmp_path, &output)?;
+        // Propagate errors via the ? operator — callers handle failures.
+        // Propagate errors via ?.
+        // Propagate errors via ?.
+        // Propagate errors via ?.
+        fs::rename(&tmp_path, &self.path)?;
+
+        // Wrap the computed value in the success variant.
+        // Success path — return the computed value.
+        // Success path — return the computed value.
+        // Success path — return the computed value.
+        Ok(())
+    }
+
+    /// Encode one value as an encrypted vault blob without touching the filesystem.
+    pub fn encode_bytes<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, VaultError> {
         // Serialize to the wire format for transmission or storage.
         // Compute json for this protocol step.
         // Compute json for this protocol step.
@@ -464,28 +501,7 @@ impl VaultCollection {
         // Append bytes to the accumulator.
         // Append bytes to the accumulator.
         output.extend_from_slice(&ciphertext);
-
-        // Atomic write: write to .tmp, then rename
-        // Compute tmp path for this protocol step.
-        // Compute tmp path for this protocol step.
-        // Compute tmp path for this protocol step.
-        let tmp_path = self.path.with_extension("vault.tmp");
-        // Persist the data to the filesystem.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        fs::write(&tmp_path, &output)?;
-        // Propagate errors via the ? operator — callers handle failures.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        fs::rename(&tmp_path, &self.path)?;
-
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        Ok(())
+        Ok(output)
     }
 
     /// Delete the collection file.
@@ -743,6 +759,33 @@ mod tests {
         let coll = VaultCollection::new(dir.path(), "missing", &test_master_key()).unwrap();
         let result: Option<TestData> = coll.load().unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_encode_decode_bytes_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let coll = VaultCollection::new(dir.path(), "test", &test_master_key()).unwrap();
+
+        let data = TestData {
+            name: "bytes".into(),
+            count: 7,
+            items: vec!["x".into()],
+        };
+
+        let encoded = coll.encode_bytes(&data).unwrap();
+        let decoded: TestData = coll.decode_bytes(&encoded).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn test_decode_bytes_rejects_short_input() {
+        let dir = TempDir::new().unwrap();
+        let coll = VaultCollection::new(dir.path(), "test", &test_master_key()).unwrap();
+
+        let error = coll
+            .decode_bytes::<TestData>(&[0x01, 0x02, 0x03])
+            .expect_err("short vault blob must be rejected");
+        assert!(matches!(error, VaultError::FileTooShort(3)));
     }
 
     #[test]

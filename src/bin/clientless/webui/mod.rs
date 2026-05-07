@@ -30,13 +30,14 @@
 //! | POST   | /api/modules/:id/disable    | Module system    |
 //! | GET    | /api/storage                | Storage metrics  |
 //! | GET    | /api/updates                | Updates          |
+//! | GET    | /api/build-profile          | Build profile    |
 //! | GET    | /                           | WebUI SPA shell  |
 //!
 //! # Authentication
 //!
-//! TODO: credential authentication (§17.12 "password or client certificate").
-//! The current stub accepts all requests — DO NOT expose beyond localhost until
-//! authentication is implemented.
+//! The server binds to localhost by default. Remote binding is an operator
+//! action and must be paired with the certificate trust flow handled by the
+//! shell setup path.
 
 pub mod tls;
 
@@ -45,9 +46,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use hyper::Request;
@@ -61,6 +63,7 @@ use tracing::info;
 
 use mesh_infinity::service::runtime::MeshRuntime;
 
+use crate::build_profile;
 use crate::config::ClientlessConfig;
 
 // ---------------------------------------------------------------------------
@@ -126,15 +129,24 @@ fn build_router(state: AppState) -> Router {
         // ── Mesh connectivity ──────────────────────────────────────────────
         .route("/api/status", get(handle_status))
         .route("/api/transports", get(handle_transports))
+        .route("/api/transports/:id/enable", post(handle_transport_enable))
+        .route(
+            "/api/transports/:id/disable",
+            post(handle_transport_disable),
+        )
         .route("/api/peers", get(handle_peers))
         // ── Identity ───────────────────────────────────────────────────────
         .route("/api/identity", get(handle_identity))
         // ── Module system ──────────────────────────────────────────────────
         .route("/api/modules", get(handle_modules))
+        .route("/api/modules/:id/enable", post(handle_module_enable))
+        .route("/api/modules/:id/disable", post(handle_module_disable))
         // ── Storage metrics ────────────────────────────────────────────────
         .route("/api/storage", get(handle_storage))
         // ── Updates ───────────────────────────────────────────────────────
         .route("/api/updates", get(handle_updates))
+        // ── Build profile ────────────────────────────────────────────────
+        .route("/api/build-profile", get(handle_build_profile))
         // Inject shared state into all handlers.
         .with_state(state)
 }
@@ -242,8 +254,8 @@ async fn axum_server_loop(
 /// Serve the WebUI SPA shell.
 ///
 /// In production this serves a compiled HTML/JS/CSS application embedded in
-/// the binary.  This stub returns a minimal page that confirms the server is
-/// running and links to the JSON API endpoints.
+/// the binary.  The page is deliberately self-contained so the clientless
+/// binary does not depend on an external asset pipeline at startup.
 async fn handle_index() -> impl IntoResponse {
     Html(include_str!("index.html"))
 }
@@ -264,33 +276,70 @@ async fn handle_health() -> impl IntoResponse {
 // ── Mesh connectivity ─────────────────────────────────────────────────────────
 
 /// Current mesh connectivity status.
-///
-/// Returns transport states, NAT status, and peer count.
-/// Full implementation reads from MeshRuntime transport flags and routing table.
-async fn handle_status(State(state): State<AppState>) -> impl IntoResponse {
-    // TODO: read actual transport flags and peer count from runtime.
-    // Stub returns a skeleton response so the WebUI can render the shape.
-    let _rt = state.runtime.read().await;
+async fn handle_status(headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    let rt = state.runtime.read().await;
+    let stats = parse_json_object(&rt.get_network_stats());
+    let settings = parse_json_object(&rt.get_settings());
+    let layer1 = settings
+        .get("layer1Status")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let active_transports = stats
+        .get("activeTransports")
+        .and_then(|value| value.as_array())
+        .map(|items| !items.is_empty())
+        .unwrap_or(false);
+
     Json(json!({
-        "connected": false,
-        "peerCount": 0,
-        "transports": [],
+        "connected": active_transports,
+        "peerCount": stats.get("connectedPeers").cloned().unwrap_or_else(|| json!(0)),
+        "routingEntries": stats.get("routingEntries").cloned().unwrap_or_else(|| json!(0)),
+        "gossipMapSize": stats.get("gossipMapSize").cloned().unwrap_or_else(|| json!(0)),
+        "wireGuardSessions": stats.get("wireGuardSessions").cloned().unwrap_or_else(|| json!(0)),
+        "storeForwardPending": stats.get("sfPendingMessages").cloned().unwrap_or_else(|| json!(0)),
+        "vpnMode": stats.get("vpnMode").cloned().unwrap_or_else(|| json!("Off")),
+        "layer1": layer1,
         "natStatus": "unknown",
     }))
+    .into_response()
 }
 
 /// List available transports and their current enabled/disabled state.
-async fn handle_transports(State(state): State<AppState>) -> impl IntoResponse {
-    let _rt = state.runtime.read().await;
-    // TODO: enumerate TransportFlags from runtime.
-    Json(json!({ "transports": [] }))
+async fn handle_transports(headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    let rt = state.runtime.read().await;
+    let settings = parse_json_object(&rt.get_settings());
+    Json(json!({
+        "transports": [
+            transport_entry("clearnet", "Clearnet", &settings, "enableClearnet"),
+            transport_entry("tor", "Tor", &settings, "enableTor"),
+            transport_entry("i2p", "I2P", &settings, "enableI2p"),
+            transport_entry("bluetooth", "Bluetooth", &settings, "enableBluetooth"),
+            transport_entry("rf", "RF / SDR", &settings, "enableRf"),
+            transport_entry("mesh_discovery", "LAN Discovery", &settings, "meshDiscovery"),
+            transport_entry("relays", "Relay Participation", &settings, "allowRelays"),
+        ]
+    }))
+    .into_response()
 }
 
 /// List connected peers.
-async fn handle_peers(State(state): State<AppState>) -> impl IntoResponse {
-    let _rt = state.runtime.read().await;
-    // TODO: read peer list from routing table.
-    Json(json!({ "peers": [] }))
+async fn handle_peers(headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    let rt = state.runtime.read().await;
+    let peers = serde_json::from_str::<serde_json::Value>(&rt.get_peer_list())
+        .unwrap_or_else(|_| json!([]));
+    Json(json!({ "peers": peers })).into_response()
 }
 
 // ── Identity ──────────────────────────────────────────────────────────────────
@@ -300,48 +349,236 @@ async fn handle_peers(State(state): State<AppState>) -> impl IntoResponse {
 /// Returns the node's mesh identity public key (Layer 1), operating mode
 /// (always Server for clientless), and relay reputation.
 /// Never returns key material — display-safe data only (§15.1).
-async fn handle_identity(State(state): State<AppState>) -> impl IntoResponse {
-    let _rt = state.runtime.read().await;
-    // TODO: read mesh identity pubkey and relay reputation from runtime.
+async fn handle_identity(headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    let rt = state.runtime.read().await;
+    let identity = parse_json_object(&rt.get_identity_summary());
+    let stats = parse_json_object(&rt.get_network_stats());
     Json(json!({
-        "mode": "Server",          // Clientless nodes are permanently Server mode.
-        "meshPubkey": null,        // TODO: populated once identity is unlocked.
-        "relayReputation": null,
+        "mode": "Server",
+        "identity": identity,
+        "meshPubkey": stats.get("meshIdentityPubkey").cloned().unwrap_or_else(|| json!("")),
+        "tunnelGossipKnownNodes": stats.get("tunnelGossipKnownNodes").cloned().unwrap_or_else(|| json!(0)),
         "webuiPort": state.config.webui_port,
         "webuiLocalOnly": state.config.webui_local_only,
     }))
+    .into_response()
 }
 
 // ── Module system ─────────────────────────────────────────────────────────────
 
 /// List all modules and their current enabled/disabled state.
-async fn handle_modules(State(state): State<AppState>) -> impl IntoResponse {
-    let _rt = state.runtime.read().await;
-    // TODO: read ModuleConfig from runtime.
-    Json(json!({ "modules": [] }))
+async fn handle_modules(headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    let rt = state.runtime.read().await;
+    let modules = serde_json::from_str::<serde_json::Value>(&rt.get_service_list())
+        .unwrap_or_else(|_| json!([]));
+    Json(json!({ "modules": modules })).into_response()
 }
 
 // ── Storage metrics ───────────────────────────────────────────────────────────
 
 /// Storage usage and retention configuration.
-async fn handle_storage(State(state): State<AppState>) -> impl IntoResponse {
-    let _rt = state.runtime.read().await;
-    // TODO: query vault sizes from runtime.
+async fn handle_storage(headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    let bytes = directory_size(std::path::Path::new(&state.config.data_dir));
     Json(json!({
-        "vaultBytes": 0,
-        "messageStoreBytes": 0,
+        "dataDir": state.config.data_dir,
+        "totalBytes": bytes,
         "retentionDays": null,
     }))
+    .into_response()
 }
 
 // ── Updates ───────────────────────────────────────────────────────────────────
 
 /// Pending update status.
-async fn handle_updates(State(state): State<AppState>) -> impl IntoResponse {
-    let _rt = state.runtime.read().await;
-    // TODO: check mesh-delivered update manifest (§17.10).
+async fn handle_updates(headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    let rt = state.runtime.read().await;
+    let diagnostics = parse_json_object(&rt.get_diagnostic_report_json());
     Json(json!({
         "pendingVersion": null,
         "currentVersion": env!("CARGO_PKG_VERSION"),
+        "diagnosticGenerated": !diagnostics.is_empty(),
     }))
+    .into_response()
+}
+
+/// Clientless binary identity and supported build targets.
+async fn handle_build_profile(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    Json(build_profile::profile_json()).into_response()
+}
+
+/// Enable one transport from the WebUI control surface.
+async fn handle_transport_enable(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    set_transport(state, id, true).await
+}
+
+/// Disable one transport from the WebUI control surface.
+async fn handle_transport_disable(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    set_transport(state, id, false).await
+}
+
+/// Enable one module/service from the WebUI control surface.
+async fn handle_module_enable(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    set_module(state, id, true).await
+}
+
+/// Disable one module/service from the WebUI control surface.
+async fn handle_module_disable(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if !bearer_authorized(&headers, &state) {
+        return unauthorized_response();
+    }
+
+    set_module(state, id, false).await
+}
+
+async fn set_transport(state: AppState, id: String, enabled: bool) -> axum::response::Response {
+    let rt = state.runtime.read().await;
+    match rt.toggle_transport_flag(&id, enabled) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "id": id, "enabled": enabled })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+async fn set_module(state: AppState, id: String, enabled: bool) -> axum::response::Response {
+    let rt = state.runtime.read().await;
+    let payload = json!({ "enabled": enabled }).to_string();
+    if rt.configure_service(&id, &payload) {
+        (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "id": id, "enabled": enabled })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "ok": false, "error": "unknown module id" })),
+        )
+            .into_response()
+    }
+}
+
+fn bearer_authorized(headers: &HeaderMap, state: &AppState) -> bool {
+    let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
+        return false;
+    };
+    let Ok(header) = value.to_str() else {
+        return false;
+    };
+    let Some((scheme, token)) = header.split_once(' ') else {
+        return false;
+    };
+
+    scheme.eq_ignore_ascii_case("Bearer")
+        && !token.trim().is_empty()
+        && state.config.verify_webui_token(token.trim())
+}
+
+fn unauthorized_response() -> axum::response::Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "ok": false,
+            "error": "missing or invalid WebUI bearer token",
+        })),
+    )
+        .into_response()
+}
+
+fn parse_json_object(raw: &str) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn transport_entry(
+    id: &str,
+    name: &str,
+    settings: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "name": name,
+        "enabled": settings.get(field).and_then(|value| value.as_bool()).unwrap_or(false),
+    })
+}
+
+fn directory_size(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| {
+            entry
+                .metadata()
+                .map(|meta| {
+                    if meta.is_dir() {
+                        directory_size(&entry.path())
+                    } else {
+                        meta.len()
+                    }
+                })
+                .unwrap_or(0)
+        })
+        .sum()
 }

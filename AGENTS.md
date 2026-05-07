@@ -19,6 +19,29 @@
 - Cloud services are prohibited for all platforms (no Google Play services, Apple cloud services, or Microsoft cloud services).
 - **No stubs, shims, placeholders, or non-functional code.** When a feature requires backend support that does not yet exist, implement it. Do not add fake or no-op implementations unless the user explicitly permits it for a specific case.
 
+## Change Management Requests
+
+Agents must not make speculative, discretionary, or review-driven edits without explicit user approval.
+
+- A direct user request to make a specific edit is approval for that edit only.
+- Broad requests such as "review", "audit", "compare against CVEs", "look for better approaches", "assess", or "recommend" are not approval to change files.
+- Before changing files from a review or audit, present a Change Management Request (CMR) list and wait for user approval.
+- Each CMR must state:
+  - CMR ID
+  - proposed files/sections
+  - proposed change
+  - rationale
+  - risk/blast radius
+  - whether the change is normative spec text, implementation code, audit metadata, or documentation
+- Approved CMRs may be implemented exactly within the approved scope.
+- If implementation reveals materially different scope, risk, or design than the approved CMR described, stop and request a revised approval before continuing.
+- Rejected CMRs must not be implemented.
+- "Request modification" is an instruction to reassess and revise the CMR according to the user's feedback, then re-present the modified CMR for approval. It is not a rejection and not permission to implement.
+- "Please elaborate" is an instruction to explain the CMR's intent, constraints, and tradeoffs in more detail, then re-present either the same CMR with elaboration or a revised CMR for approval. It is not a rejection and not permission to implement.
+- CMRs with requested modifications or elaboration remain active until they are approved, rejected, or superseded by another CMR.
+- CMR records live in `.audits/cmrs/`. Use that folder for proposed, approved, rejected, superseded, and implemented CMR notes.
+- `SPEC.md` must remain a specification. Do not add changelog, local status, sprint progress, CI run results, or implementation diary content to `SPEC.md`; place that material under `.audits/` or another approved non-spec artifact.
+
 ## Product Baselines
 - Use established products as capability baselines, not as product identity.
 - Chat is informed by Signal-class security and clarity, but must be specified and implemented as Mesh Infinity Chat.

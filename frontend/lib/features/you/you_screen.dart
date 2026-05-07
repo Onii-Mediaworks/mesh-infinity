@@ -38,7 +38,9 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../app/app_theme.dart';
+import '../../backend/backend_bridge.dart';
 import '../../backend/models/settings_models.dart';
+import '../../widgets/mask_avatar.dart';
 import '../settings/settings_state.dart';
 import '../settings/screens/profile_edit_screen.dart';
 import '../tidbits/tidbits.dart'; // Copy Confetti §22.12.5 #7, TapTrigger
@@ -51,8 +53,129 @@ import '../tidbits/tidbits.dart'; // Copy Confetti §22.12.5 #7, TapTrigger
 ///
 /// Uses [RefreshIndicator] so the user can pull-to-refresh after editing
 /// their profile in [ProfileEditScreen] to see the updated values.
-class YouScreen extends StatelessWidget {
+class YouScreen extends StatefulWidget {
   const YouScreen({super.key});
+
+  @override
+  State<YouScreen> createState() => _YouScreenState();
+}
+
+class _YouScreenState extends State<YouScreen> {
+  List<_MaskRecord> _masks = const [];
+  bool _masks_loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load_masks();
+  }
+
+  Future<void> _load_masks() async {
+    final raw_masks = context.read<BackendBridge>().fetchMasks();
+    final masks =
+        raw_masks
+            .map(_MaskRecord.from_json)
+            // The You screen manages contextual masks only. Primary/public masks
+            // remain surfaced through the self card and profile flows (§17.2,
+            // §22.11).
+            .where((mask) => !mask.is_public)
+            .toList()
+          ..sort((left, right) {
+            if (left.is_anonymous != right.is_anonymous) {
+              return left.is_anonymous ? 1 : -1;
+            }
+            return left.name.toLowerCase().compareTo(right.name.toLowerCase());
+          });
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _masks = masks;
+      _masks_loading = false;
+    });
+  }
+
+  Future<void> _refresh_all(SettingsState settings) async {
+    await settings.loadAll();
+    await _load_masks();
+  }
+
+  Future<void> _create_mask() async {
+    final name_controller = TextEditingController();
+    bool is_anonymous = false;
+
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (dialog_context) {
+        return StatefulBuilder(
+          builder: (dialog_context, set_dialog_state) {
+            return AlertDialog(
+              title: const Text('New mask'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: name_controller,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Mask name',
+                      hintText: 'Work, Garden, Travel...',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Anonymous mask'),
+                    subtitle: const Text(
+                      'Generate an isolated identity instead of deriving from your self.',
+                    ),
+                    value: is_anonymous,
+                    onChanged: (value) =>
+                        set_dialog_state(() => is_anonymous = value),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialog_context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final ok = context.read<BackendBridge>().createMask(
+                      name: name_controller.text.trim(),
+                      isAnonymous: is_anonymous,
+                    );
+                    Navigator.of(dialog_context).pop(ok);
+                  },
+                  child: const Text('Create'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    name_controller.dispose();
+
+    if (!mounted || created == null) {
+      return;
+    }
+
+    await _load_masks();
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(created ? 'Mask created' : 'Failed to create mask'),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -67,15 +190,17 @@ class YouScreen extends StatelessWidget {
           // completes on app start).  Show a spinner rather than an empty card.
           ? const _LoadingIdentity()
           : RefreshIndicator(
-              onRefresh: settings.loadAll,
+              onRefresh: () => _refresh_all(settings),
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
                   _SelfCard(identity: identity),
                   const SizedBox(height: 24),
-                  // _MasksSection has no constructor arguments because it
-                  // shows a static placeholder until backend mask support lands.
-                  _MasksSection(),
+                  _MasksSection(
+                    masks: _masks,
+                    loading: _masks_loading,
+                    onCreateMask: _create_mask,
+                  ),
                 ],
               ),
             ),
@@ -136,9 +261,9 @@ class _SelfCard extends StatelessWidget {
             // Display name
             Text(
               displayName,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
 
@@ -151,9 +276,9 @@ class _SelfCard extends StatelessWidget {
                 // Copy the FULL peer ID (not the truncated shortId) to the
                 // clipboard so the user can share or use it elsewhere.
                 Clipboard.setData(ClipboardData(text: identity.peerId));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Peer ID copied')),
-                );
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text('Peer ID copied')));
                 // §22.12.5 #7 — tiny confetti burst on peer ID copy.
                 // Keeps the action feel celebratory and confirms to the user
                 // that the tap was recognised.
@@ -162,9 +287,9 @@ class _SelfCard extends StatelessWidget {
               child: Text(
                 shortId,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontFamily: 'monospace',
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
+                  fontFamily: 'monospace',
+                  color: Theme.of(context).colorScheme.outline,
+                ),
               ),
             ),
             const SizedBox(height: 20),
@@ -175,7 +300,8 @@ class _SelfCard extends StatelessWidget {
             // in dark mode) would make the code unscannable.
             QrImageView(
               data: identity.peerId,
-              version: QrVersions.auto, // auto-selects the smallest QR version that fits
+              version: QrVersions
+                  .auto, // auto-selects the smallest QR version that fits
               size: 160,
               backgroundColor: Colors.white,
             ),
@@ -186,8 +312,7 @@ class _SelfCard extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: () => Navigator.push(
                 context,
-                MaterialPageRoute(
-                    builder: (_) => const ProfileEditScreen()),
+                MaterialPageRoute(builder: (_) => const ProfileEditScreen()),
               ),
               icon: const Icon(Icons.edit_outlined, size: 18),
               label: const Text('Edit profile'),
@@ -205,12 +330,17 @@ class _SelfCard extends StatelessWidget {
 
 /// Section showing the user's contextual masks (contextual identities).
 ///
-/// Masks are planned for a future update — this section currently shows a
-/// placeholder explaining what masks are and when they will arrive.
-///
-/// The "New mask" button is disabled (onPressed: null) rather than hidden so
-/// the user can see the feature exists without being able to activate it yet.
 class _MasksSection extends StatelessWidget {
+  const _MasksSection({
+    required this.masks,
+    required this.loading,
+    required this.onCreateMask,
+  });
+
+  final List<_MaskRecord> masks;
+  final bool loading;
+  final Future<void> Function() onCreateMask;
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -220,58 +350,139 @@ class _MasksSection extends StatelessWidget {
           children: [
             Text(
               'Masks',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
             const Spacer(),
-            // Disabled until the backend mask API is implemented.
-            // Showing the button communicates the feature is coming without
-            // making it appear broken.
             TextButton.icon(
-              onPressed: null, // Masks not yet implemented in backend
+              onPressed: onCreateMask,
               icon: const Icon(Icons.add, size: 18),
               label: const Text('New mask'),
             ),
           ],
         ),
         const SizedBox(height: 8),
-        // Empty-state card — explains what masks are so users understand
-        // the placeholder rather than thinking something is broken.
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Center(
-              child: Column(
-                children: [
-                  Icon(
-                    Icons.masks_outlined,
-                    size: 40,
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'No masks',
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Theme.of(context).colorScheme.outline,
-                        ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Masks are contextual identities coming in a future update.',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.outline,
-                        ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
+        if (loading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (masks.isEmpty)
+          _MasksEmptyState(onCreateMask: onCreateMask)
+        else
+          for (final mask in masks) ...[
+            _MaskTile(mask: mask),
+            const SizedBox(height: 8),
+          ],
       ],
     );
   }
+}
+
+class _MasksEmptyState extends StatelessWidget {
+  const _MasksEmptyState({required this.onCreateMask});
+
+  final Future<void> Function() onCreateMask;
+
+  @override
+  Widget build(BuildContext context) {
+    final color_scheme = Theme.of(context).colorScheme;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Column(
+            children: [
+              Icon(Icons.masks_outlined, size: 40, color: color_scheme.outline),
+              const SizedBox(height: 12),
+              Text(
+                'No contextual masks yet',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Masks let you present different identities in different contexts without exposing your root identity directly.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: color_scheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              FilledButton.tonal(
+                onPressed: onCreateMask,
+                child: const Text('Create first mask'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MaskTile extends StatelessWidget {
+  const _MaskTile({required this.mask});
+
+  final _MaskRecord mask;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final badge = mask.is_anonymous ? 'Anonymous' : 'Contextual';
+
+    return Card(
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        leading: MaskAvatar(
+          mask: MaskAvatarData(name: mask.name, avatarColor: mask.avatar_color),
+          size: MaskAvatarSize.medium,
+        ),
+        title: Text(mask.name, style: theme.textTheme.titleSmall),
+        subtitle: Text(
+          '$badge · ${mask.short_peer_id}',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            fontFamily: 'monospace',
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MaskRecord {
+  const _MaskRecord({
+    required this.name,
+    required this.peer_id,
+    required this.avatar_color,
+    required this.is_public,
+    required this.is_anonymous,
+  });
+
+  factory _MaskRecord.from_json(Map<String, dynamic> json) {
+    final color_index = (json['avatarColor'] as num?)?.toInt() ?? 0;
+    return _MaskRecord(
+      name: (json['name'] as String?)?.trim().isNotEmpty == true
+          ? (json['name'] as String).trim()
+          : 'Unnamed mask',
+      peer_id: json['peerId'] as String? ?? '',
+      avatar_color:
+          kMaskAvatarColors[color_index.clamp(0, kMaskAvatarColors.length - 1)],
+      is_public: json['isPublic'] == true,
+      is_anonymous: json['isAnonymous'] == true,
+    );
+  }
+
+  final String name;
+  final String peer_id;
+  final Color avatar_color;
+  final bool is_public;
+  final bool is_anonymous;
+
+  String get short_peer_id =>
+      peer_id.length > 16 ? '${peer_id.substring(0, 16)}…' : peer_id;
 }
 
 // ---------------------------------------------------------------------------

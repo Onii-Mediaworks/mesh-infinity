@@ -28,6 +28,7 @@ import 'package:provider/provider.dart';
 
 import '../../app/app_theme.dart';
 import '../../backend/models/settings_models.dart';
+import 'service_details_sheet.dart';
 import 'services_state.dart';
 
 /// Shows the list of pinned / subscribed mesh services for this user.
@@ -50,8 +51,7 @@ class MyServicesScreen extends StatelessWidget {
             ? const _EmptyServices()
             : GridView.builder(
                 padding: const EdgeInsets.all(12),
-                gridDelegate:
-                    const SliverGridDelegateWithMaxCrossAxisExtent(
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                   // Each card is at most 180 px wide; the grid picks the column
                   // count to fill available width without exceeding this limit.
                   maxCrossAxisExtent: 180,
@@ -86,20 +86,34 @@ class _ServiceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Status colour: green when the service is reachable, grey when off/unknown.
-    final statusColor =
-        service.enabled ? MeshTheme.secGreen : Theme.of(context).colorScheme.outline;
+    final statusColor = service.enabled
+        ? MeshTheme.secGreen
+        : Theme.of(context).colorScheme.outline;
 
     // Status label: shown below the service name in small text.
-    final statusLabel = service.enabled ? 'Available to mesh peers' : 'Off';
+    final transportSummary = service.allowedTransports.isEmpty
+        ? 'all enabled transports'
+        : service.allowedTransports.join(', ');
+    final statusLabel = service.enabled
+        ? 'Available over $transportSummary'
+        : 'Off';
 
     return Card(
       // Clip.antiAlias ensures the InkWell ripple doesn't escape the card's
       // rounded corners.
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        // onTap is a placeholder — tapping the card will eventually open a
-        // detail/settings sheet for this service.
-        onTap: () {},
+        onTap: () => show_service_details_sheet(
+          context: context,
+          icon: Icons.hub_outlined,
+          name: service.name,
+          description: service.description,
+          address: service.address,
+          path: service.path,
+          minTrustLevel: service.minTrustLevel,
+          allowedTransports: service.allowedTransports,
+          statusLabel: statusLabel,
+        ),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -112,7 +126,15 @@ class _ServiceTile extends StatelessWidget {
                   const Spacer(),
                   Switch(
                     value: service.enabled,
-                    onChanged: (value) => state.setEnabled(service.id, value),
+                    onChanged: (value) async {
+                      final ok = await state.setEnabled(service.id, value);
+                      if (!context.mounted || ok) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Could not update ${service.name}.'),
+                        ),
+                      );
+                    },
                     // shrinkWrap reduces the switch's tap target height so it
                     // fits inside the fixed-height card without overflow.
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -150,9 +172,11 @@ class _ServiceTile extends StatelessWidget {
               // Status label in matching colour.
               Text(
                 statusLabel,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: statusColor,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: statusColor),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
 
               // Push the address to the bottom of the fixed-height card.
@@ -163,9 +187,9 @@ class _ServiceTile extends StatelessWidget {
               Text(
                 service.address,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontFamily: 'monospace',
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
+                  fontFamily: 'monospace',
+                  color: Theme.of(context).colorScheme.outline,
+                ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -190,21 +214,24 @@ class _EmptyServices extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.hub_outlined,
-              size: 56, color: Theme.of(context).colorScheme.outline),
+          Icon(
+            Icons.hub_outlined,
+            size: 56,
+            color: Theme.of(context).colorScheme.outline,
+          ),
           const SizedBox(height: 16),
           Text(
             'No services pinned',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
+              color: Theme.of(context).colorScheme.outline,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
             'Browse to discover and pin services from the mesh.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
+              color: Theme.of(context).colorScheme.outline,
+            ),
             textAlign: TextAlign.center,
           ),
         ],

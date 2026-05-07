@@ -606,6 +606,13 @@ pub struct MeshRuntime {
     pub layer1_poll_active: Arc<AtomicBool>,
     /// Join handle for the headless Layer 1 background poll loop.
     pub layer1_poll_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Guard flag for `clear_identity_keys()` (§3.6.4).
+    ///
+    /// Ensures that if both the screen-lock path and the PIN-timeout path
+    /// fire concurrently, key material is wiped exactly once.  The flag is
+    /// reset to `false` after clearing completes so a future `unlock_identity`
+    /// call can re-populate the identity.
+    pub identity_clear_in_progress: Arc<AtomicBool>,
 }
 
 // SAFETY: All mutable state is wrapped in `Mutex`, making MeshRuntime safe
@@ -729,6 +736,8 @@ impl MeshRuntime {
             layer1_poll_active: Arc::new(AtomicBool::new(false)),
             // The join handle is stored so Drop can stop the loop cleanly.
             layer1_poll_thread: Mutex::new(None),
+            // Key-clearing guard starts false; set to true while wipe is in flight.
+            identity_clear_in_progress: Arc::new(AtomicBool::new(false)),
         }
     }
 

@@ -1,0 +1,81 @@
+name: Nightly Quality
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  nightly-fuzz-and-audit:
+    name: nightly-fuzz-and-audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-quality
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid-dev \
+            liblzma-dev \
+            pkg-config
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: fuzz registry consistency
+        run: python3 tests/scripts/check_fuzz_registry.py
+
+      - name: corpus replay
+        run: python3 tests/scripts/replay_fuzz_corpus.py
+
+      - name: cargo test (integration tests)
+        run: cargo test --test integration
+
+      - name: cargo test (simulation tests)
+        run: cargo test --test simulation
+
+      # This is intentionally longer than the per-PR 30-second smoke gate, but
+      # still bounded for GitHub-hosted runners. Full 24-hour or self-hosted
+      # campaigns are still tracked separately in the spec and local audits.
+      - name: extended fuzz — active targets (600s each)
+        run: |
+          python3 - <<'PY' > /tmp/mesh_infinity_active_fuzz_targets.txt
+          import tomllib
+          from pathlib import Path
+
+          registry = tomllib.loads(Path("fuzz/targets.toml").read_text(encoding="utf-8"))
+          for entry in registry["target"]:
+              if entry["status"] == "active":
+                  print(entry["name"])
+          PY
+
+          while IFS= read -r target; do
+            echo "Running nightly fuzz target: ${target}"
+            cargo +nightly fuzz run "${target}" -- -max_total_time=600
+          done < /tmp/mesh_infinity_active_fuzz_targets.txt
+
+      - name: cargo audit
+        run: cargo audit

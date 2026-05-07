@@ -41,8 +41,10 @@ impl<'a> ByteCursor<'a> {
 
     /// Consume up to `max_len` bytes.
     pub fn take_bytes(&mut self, max_len: usize) -> &'a [u8] {
-        let remaining = self.data.len().saturating_sub(self.offset);
+        // Read `wanted` first (consumes one byte from the cursor).
         let wanted = self.take_bounded_usize(max_len);
+        // Recompute remaining AFTER take_bounded_usize has advanced the offset.
+        let remaining = self.data.len().saturating_sub(self.offset);
         let take = wanted.min(remaining);
         let start = self.offset;
         let end = start + take;

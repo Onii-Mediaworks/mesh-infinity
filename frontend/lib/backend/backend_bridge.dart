@@ -683,6 +683,14 @@ class BackendBridge {
     return result == 0;
   }
 
+  /// Wipe in-memory Layer 2/3 key material without touching on-disk vault
+  /// files (§3.6.4).  Called on screen-lock and PIN-timeout.  Returns true
+  /// on success; re-authenticate via [unlockIdentity] before further use.
+  bool lockIdentity() {
+    if (!isAvailable) return false;
+    return _bindings!.lockIdentity(_context) == 0;
+  }
+
   /// Return backend-owned security configuration for app-lock settings.
   Map<String, dynamic>? fetchSecurityConfig() {
     if (!isAvailable) return null;
@@ -2952,6 +2960,10 @@ class _BackendBindings {
           .lookupFunction<UnlockIdentityNative, UnlockIdentityDart>(
             'mi_unlock_identity',
           ),
+      lockIdentity = _lib
+          .lookupFunction<LockIdentityNative, LockIdentityDart>(
+            'mi_lock_identity',
+          ),
       getSecurityConfig = _lib
           .lookupFunction<GetSecurityConfigNative, GetSecurityConfigDart>(
             'mi_get_security_config',
@@ -3479,6 +3491,7 @@ class _BackendBindings {
   final SetClearnetRouteDart setClearnetRoute;
   final CreateIdentityDart createIdentity;
   final UnlockIdentityDart unlockIdentity;
+  final LockIdentityDart lockIdentity;
   final GetSecurityConfigDart getSecurityConfig;
   final SetSecurityConfigDart setSecurityConfig;
   final SetPinDart setPin;
@@ -3980,6 +3993,10 @@ typedef CreateIdentityDart = int Function(Pointer<Void>, Pointer<Utf8>);
 // mi_unlock_identity(ctx, pin: *const c_char) -> i32  (pin may be nullptr for no-PIN)
 typedef UnlockIdentityNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef UnlockIdentityDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_lock_identity(ctx) -> i32  (wipes in-memory key material, §3.6.4)
+typedef LockIdentityNative = Int32 Function(Pointer<Void>);
+typedef LockIdentityDart = int Function(Pointer<Void>);
 
 // mi_get_security_config(ctx) -> *const c_char
 typedef GetSecurityConfigNative = Pointer<Utf8> Function(Pointer<Void>);

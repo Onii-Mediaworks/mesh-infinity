@@ -114,6 +114,12 @@ jobs:
       - name: cargo test (integration tests)
         run: cargo test --test integration
 
+      # Runs the in-process network simulator scenarios from tests/simulation.rs.
+      # These cover the repo-native multi-node cases required by SPEC §21.1.4
+      # without needing physical devices or external infrastructure.
+      - name: cargo test (simulation tests)
+        run: cargo test --test simulation
+
   # ── Flutter quality: analyze + test ───────────────────────────────────────
 
   flutter-quality:
@@ -229,6 +235,13 @@ jobs:
       # targets and committed corpus directories before fuzzing starts.
       - name: fuzz registry consistency
         run: python3 tests/scripts/check_fuzz_registry.py
+
+      # Replay every committed seed input and every committed fixed reproducer
+      # before running any fresh fuzzing. Passing individual files to libFuzzer
+      # re-executes them as regression cases rather than starting a fuzzing
+      # campaign, which keeps this step deterministic in CI.
+      - name: corpus replay
+        run: python3 tests/scripts/replay_fuzz_corpus.py
 
       # Run a short smoke campaign against every active fuzz target listed in
       # the registry. Committed corpus entries seed the fuzzer automatically.

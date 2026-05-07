@@ -127,6 +127,34 @@ const MDNS_TTL: u32 = 4500;
 /// Interval between periodic mDNS re-announcements (seconds).
 const MDNS_ANNOUNCE_INTERVAL_SECS: u64 = 60;
 
+/// Bytes in the length prefix used by Wi-Fi Direct stream framing.
+pub const WIFI_DIRECT_FRAME_HEADER_BYTES: usize = 4;
+
+/// Largest single Wi-Fi Direct frame accepted from a stream peer.
+pub const WIFI_DIRECT_MAX_FRAME_BYTES: usize = 256 * 1024;
+
+/// Encode one Wi-Fi Direct frame with a big-endian u32 length prefix.
+pub fn encode_wifi_direct_frame(frame: &[u8]) -> Option<Vec<u8>> {
+    if frame.is_empty() || frame.len() > WIFI_DIRECT_MAX_FRAME_BYTES {
+        return None;
+    }
+    let mut buf = Vec::with_capacity(WIFI_DIRECT_FRAME_HEADER_BYTES + frame.len());
+    buf.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+    buf.extend_from_slice(frame);
+    Some(buf)
+}
+
+/// Decode and validate a Wi-Fi Direct frame length prefix.
+pub fn decode_wifi_direct_frame_len(
+    len_bytes: [u8; WIFI_DIRECT_FRAME_HEADER_BYTES],
+) -> Option<usize> {
+    let frame_len = u32::from_be_bytes(len_bytes) as usize;
+    if frame_len == 0 || frame_len > WIFI_DIRECT_MAX_FRAME_BYTES {
+        return None;
+    }
+    Some(frame_len)
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Public data types
 // ────────────────────────────────────────────────────────────────────────────
@@ -326,50 +354,6 @@ struct AndroidWifiDirectAdapterState {
     outbound_session_frames: VecDeque<Vec<u8>>,
 }
 
-/// A Wi-Fi Direct session where Rust owns the TCP socket.
-///
-/// # Ownership contract
-///
-/// The session is created when Kotlin calls `mi_wifi_direct_session_fd` with a
-/// connected socket file descriptor.  From that point forward:
-///
-/// - **Kotlin relinquishes** — Kotlin must not call `close()`, `read()`, or
-///   `write()` on the file descriptor or the wrapping `Socket` object after the
-///   JNI call returns.  The JVM's garbage collector may finalize the `Socket`
-///   object and close the fd underneath Rust if Kotlin keeps a reference.
-///   To prevent this, Kotlin must call `socket.fd = null` (or use
-///   `ParcelFileDescriptor.adoptFd(fd)` and then detach) so the JVM no longer
-///   owns the underlying fd.
-///
-/// - **Rust owns** — the `TcpStream` inside this struct is the sole owner.
-///   When this struct is dropped the `TcpStream` destructor runs
-///   `libc::close(fd)`, cleanly releasing the kernel file-descriptor slot.
-///
-/// - **Outbound queue** — frames authored by Rust higher layers (routing,
-///   sessions, gossip) are placed in `outbound` via
-///   `queue_android_wifi_direct_fd_session_frame`.  The Kotlin drain coroutine
-///   calls `mi_wifi_direct_drain_session` in a tight loop; each call writes
-///   as many pending frames as possible directly to the socket without
-///   returning to the Kotlin side between frames.
-#[cfg(target_os = "android")]
-pub struct AndroidWifiDirectSession {
-    /// The Rust-owned TCP stream backed by the fd handed off from Kotlin.
-    ///
-    /// Created with `TcpStream::from_raw_fd(fd)` — the fd is now inside
-    /// the `TcpStream`'s `OwnedFd` and will be closed on drop.
-    pub stream: TcpStream,
-    /// The MAC address of the remote peer, as reported by `WifiP2pDevice`.
-    pub peer_mac: String,
-    /// Frames authored by Rust that are waiting to be written to the socket.
-    ///
-    /// Each entry is a complete application frame (not framed with a length
-    /// prefix at this layer — framing is applied on write so the remote end
-    /// can re-assemble).
-    pub outbound: VecDeque<Vec<u8>>,
-    /// Timestamp of session creation (when the fd was handed off from Kotlin).
-    pub established: std::time::Instant,
-}
-
 /// Return the global Android Wi-Fi Direct adapter state.
 fn android_wifi_direct_adapter_state() -> &'static Mutex<AndroidWifiDirectAdapterState> {
     static STATE: OnceLock<Mutex<AndroidWifiDirectAdapterState>> = OnceLock::new();
@@ -401,6 +385,15 @@ pub fn update_android_adapter_state(
     state.group_owner_address = group_owner_address;
     state.connected_device_address = connected_device_address;
     state.peers = peers;
+
+    #[cfg(target_os = "android")]
+    if !state.connected {
+        state.inbound_session_frames.clear();
+        state.outbound_session_frames.clear();
+        drop(state);
+        clear_wifi_direct_sessions();
+        return;
+    }
 }
 
 /// Queue one pairing payload received by the Android Wi-Fi Direct bridge.
@@ -463,6 +456,28 @@ pub fn dequeue_android_inbound_session_frame() -> Option<Vec<u8>> {
 
 /// Queue one backend-authored generic session frame for Android-native exchange.
 pub fn queue_android_outbound_session_frame(frame: &[u8]) {
+    #[cfg(target_os = "android")]
+    let peer_mac = {
+        let state = android_wifi_direct_adapter_state()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !(state.available && state.enabled && state.connected) {
+            return;
+        }
+        state.connected_device_address.clone()
+    };
+
+    #[cfg(target_os = "android")]
+    if let Some(peer_mac) = peer_mac.as_deref() {
+        let mut registry = android_wifi_direct_session_registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(session) = registry.get_mut(peer_mac) {
+            session.outbound.push_back(frame.to_vec());
+            return;
+        }
+    }
+
     let mut state = android_wifi_direct_adapter_state()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -503,17 +518,16 @@ fn android_wifi_direct_snapshot() -> AndroidWifiDirectAdapterState {
 // a complete refactor of the snapshot pattern.
 
 #[cfg(target_os = "android")]
-pub struct AndroidWifiDirectSession {
+pub struct WifiDirectFdSession {
     /// The Rust-owned TCP stream backed by the fd handed off from Kotlin.
     ///
     /// Created with `TcpStream::from_raw_fd(fd)`.  The fd is now owned by this
     /// `TcpStream` and will be closed by the OS when the struct is dropped.
     ///
-    /// Kotlin MUST NOT use the fd or the `java.net.Socket` object after calling
-    /// `mi_wifi_direct_session_fd`.  If the JVM's garbage collector finalizes
-    /// the `Socket` object it will call `close(fd)` underneath Rust, causing a
-    /// use-after-close.  Kotlin should detach the fd from the JVM object before
-    /// calling the FFI (e.g. via `ParcelFileDescriptor.adoptFd(fd).detachFd()`).
+    /// Kotlin hands Rust a duplicated descriptor produced from
+    /// `ParcelFileDescriptor.fromSocket(socket).dup().detachFd()`.  After this
+    /// call Kotlin must not read or write through its original `Socket`; it may
+    /// close that original descriptor because Rust owns the duplicate.
     pub stream: TcpStream,
     /// MAC address of the remote peer as reported by `WifiP2pDevice`.
     pub peer_mac: String,
@@ -529,13 +543,12 @@ pub struct AndroidWifiDirectSession {
 
 /// Return the global fd-session registry for Android Wi-Fi Direct.
 ///
-/// The registry is a `Mutex<HashMap<peer_mac, AndroidWifiDirectSession>>`.
+/// The registry is a `Mutex<HashMap<peer_mac, WifiDirectFdSession>>`.
 /// All access goes through this function so there is a single, authoritative
 /// global instance — matching the pattern used by `android_wifi_direct_adapter_state`.
 #[cfg(target_os = "android")]
-fn android_wifi_direct_session_registry(
-) -> &'static Mutex<HashMap<String, AndroidWifiDirectSession>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<String, AndroidWifiDirectSession>>> = OnceLock::new();
+fn android_wifi_direct_session_registry() -> &'static Mutex<HashMap<String, WifiDirectFdSession>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, WifiDirectFdSession>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -567,7 +580,11 @@ pub fn register_wifi_direct_session_fd(peer_mac: &str, fd: i32) -> Result<(), St
     // is closed exactly once when the `TcpStream` is dropped.
     let stream = unsafe { TcpStream::from_raw_fd(fd) };
 
-    let session = AndroidWifiDirectSession {
+    let reader_stream = stream
+        .try_clone()
+        .map_err(|e| format!("wifi direct fd clone failed: {e}"))?;
+
+    let session = WifiDirectFdSession {
         stream,
         peer_mac: peer_mac.to_owned(),
         outbound: VecDeque::new(),
@@ -578,6 +595,54 @@ pub fn register_wifi_direct_session_fd(peer_mac: &str, fd: i32) -> Result<(), St
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(peer_mac.to_owned(), session);
+
+    let peer_mac = peer_mac.to_owned();
+    std::thread::spawn(move || {
+        use std::io::Read;
+
+        let mut reader = reader_stream;
+        let _ = reader.set_read_timeout(Some(std::time::Duration::from_millis(250)));
+
+        loop {
+            let mut len_bytes = [0u8; WIFI_DIRECT_FRAME_HEADER_BYTES];
+            match reader.read_exact(&mut len_bytes) {
+                Ok(()) => {}
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    let still_connected = {
+                        android_wifi_direct_adapter_state()
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .connected
+                    };
+                    if !still_connected {
+                        remove_wifi_direct_session(&peer_mac);
+                        return;
+                    }
+                    continue;
+                }
+                Err(_) => {
+                    remove_wifi_direct_session(&peer_mac);
+                    return;
+                }
+            }
+
+            let Some(frame_len) = decode_wifi_direct_frame_len(len_bytes) else {
+                remove_wifi_direct_session(&peer_mac);
+                return;
+            };
+
+            let mut frame = vec![0u8; frame_len];
+            if reader.read_exact(&mut frame).is_err() {
+                remove_wifi_direct_session(&peer_mac);
+                return;
+            }
+
+            enqueue_android_inbound_session_frame(&frame);
+        }
+    });
 
     Ok(())
 }
@@ -611,19 +676,13 @@ pub fn drain_wifi_direct_session(peer_mac: &str) -> Result<usize, String> {
         if frame.is_empty() {
             continue;
         }
-        // Encode the frame length as a 4-byte big-endian prefix.
-        let len_bytes = (frame.len() as u32).to_be_bytes();
-        // Write the header and body in two syscalls.  Both must succeed;
-        // if either fails we return an error and let the caller remove
-        // the session from the registry.
+        let Some(wire_frame) = encode_wifi_direct_frame(&frame) else {
+            continue;
+        };
         session
             .stream
-            .write_all(&len_bytes)
-            .map_err(|e| format!("wifi direct fd write header failed: {e}"))?;
-        session
-            .stream
-            .write_all(&frame)
-            .map_err(|e| format!("wifi direct fd write body failed: {e}"))?;
+            .write_all(&wire_frame)
+            .map_err(|e| format!("wifi direct fd write failed: {e}"))?;
         written += 1;
     }
     Ok(written)
@@ -653,6 +712,15 @@ pub fn remove_wifi_direct_session(peer_mac: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(peer_mac);
+}
+
+/// Remove all registered fd sessions, closing every Rust-owned Wi-Fi Direct socket.
+#[cfg(target_os = "android")]
+pub fn clear_wifi_direct_sessions() {
+    android_wifi_direct_session_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1147,11 +1215,6 @@ impl WifiDirectTransport {
                 .set_read_timeout(Some(std::time::Duration::from_millis(10)))
                 .ok();
 
-            // Frame-length prefix size (4 bytes, big-endian u32).
-            // We frame raw bytes with a length prefix so the socketpair acts
-            // as a message-oriented channel matching the queue semantics.
-            const FRAME_HDR: usize = 4;
-
             loop {
                 // --- Inbound: Android → Rust (frame queues → fd_a) ----------
 
@@ -1159,15 +1222,10 @@ impl WifiDirectTransport {
                 // write them into the socket so the transport manager can read
                 // them via the TcpStream.
                 while let Some(frame) = dequeue_android_inbound_session_frame() {
-                    if frame.is_empty() {
+                    let Some(wire_frame) = encode_wifi_direct_frame(&frame) else {
                         continue;
-                    }
-                    // Encode as length-prefixed frame: [u32 big-endian len][bytes].
-                    let len = frame.len() as u32;
-                    let mut buf = Vec::with_capacity(FRAME_HDR + frame.len());
-                    buf.extend_from_slice(&len.to_be_bytes());
-                    buf.extend_from_slice(&frame);
-                    if sock_a.write_all(&buf).is_err() {
+                    };
+                    if sock_a.write_all(&wire_frame).is_err() {
                         // Socket closed — exit the bridge.
                         return;
                     }
@@ -1177,10 +1235,12 @@ impl WifiDirectTransport {
 
                 // Try to read a length-prefixed frame from the socket.
                 // The read timeout (10 ms) keeps this from blocking inbound relay.
-                let mut hdr = [0u8; FRAME_HDR];
+                let mut hdr = [0u8; WIFI_DIRECT_FRAME_HEADER_BYTES];
                 match sock_a.read_exact(&mut hdr) {
                     Ok(()) => {
-                        let frame_len = u32::from_be_bytes(hdr) as usize;
+                        let Some(frame_len) = decode_wifi_direct_frame_len(hdr) else {
+                            return;
+                        };
                         let mut body = vec![0u8; frame_len];
                         if sock_a.read_exact(&mut body).is_err() {
                             return;
@@ -1305,6 +1365,7 @@ impl WifiDirectTransport {
             s.inbound_session_frames.clear();
             s.outbound_session_frames.clear();
         }
+        clear_wifi_direct_sessions();
         Ok(())
     }
 }

@@ -1054,7 +1054,7 @@ impl Plugin {
 /// monitoring, and debugging. The `duration_ms` field enables detection
 /// of plugins that exceed the CPU time budget.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// HookInvocation — returned by invoke_hook() for each plugin that ran.
+// HookInvocation — returned by invoke_hook_sandboxed() for each plugin that ran.
 // Carries timing data for performance monitoring.
 pub struct HookInvocation {
     /// The name of the hook that was invoked (e.g., "on_message_received").
@@ -1235,7 +1235,7 @@ pub struct PluginRegistry {
     // Linear scan is fine for the expected plugin count (<100).
     plugins: Vec<Plugin>,
     /// Map from hook name to the list of plugin IDs registered for that hook.
-    // Used by invoke_hook() to find which plugins to call.
+    // Used by register_hook() / invoke_hook_sandboxed() to build dispatch tables.
     hooks: HashMap<String, Vec<[u8; 16]>>,
 }
 
@@ -1475,75 +1475,19 @@ impl PluginRegistry {
         Ok(())
     }
 
-    /// Invoke all active plugins registered for a named hook (no-sandbox path).
+    /// Returns the registered subscriber IDs for a hook name.
     ///
-    /// This is the API-framework-only version: it records timing and performs
-    /// status filtering but does NOT execute any WASM code. Output is always
-    /// `None`. It is used by tests and by callers that do not have a
-    /// `PluginSandbox` available (e.g., in environments where WASM execution
-    /// is intentionally disabled or not yet configured).
-    ///
-    /// For real WASM execution, use `invoke_hook_sandboxed()` instead, which
-    /// takes a `PluginSandbox` and actually calls the plugin's `hook_dispatch`
-    /// export.
-    ///
-    /// Each plugin receives the same `input` JSON value. The registry
-    /// records timing for each invocation and returns a `HookInvocation`
-    /// per plugin. Suspended and non-active plugins are skipped.
-    // invoke_hook() — lightweight dispatch without WASM execution.
-    // Returns one HookInvocation (output=None) per eligible active plugin.
-    pub fn invoke_hook(&self, hook_name: &str, input: serde_json::Value) -> Vec<HookInvocation> {
-        // Look up the subscriber list for this hook. Empty vec if no registrations.
-        // Cloning the subscriber list avoids borrow conflicts during iteration.
-        let subscriber_ids = match self.hooks.get(hook_name) {
-            Some(ids) => ids.clone(),
-            // No plugins registered for this hook — return empty results.
-            None => return Vec::new(),
-        };
-
-        // Collect invocation results for each registered, active plugin.
-        // Pre-allocate to the number of subscribers (upper bound).
-        let mut results = Vec::with_capacity(subscriber_ids.len());
-
-        for plugin_id in &subscriber_ids {
-            // Look up the plugin record to check its status.
-            // Skip if the plugin was uninstalled between registration and invocation.
-            let plugin = match self.get(plugin_id) {
-                Some(p) => p,
-                // Plugin was uninstalled — skip silently.
-                None => continue,
-            };
-
-            // Only active plugins receive hook invocations.
-            // Installed, Suspended, and Failed plugins are skipped.
-            if plugin.status != PluginStatus::Active {
-                continue;
-            }
-
-            // Record the start time for performance monitoring.
-            // Uses monotonic Instant to avoid clock skew issues.
-            let start = std::time::Instant::now();
-
-            // No WASM execution in this path — output is always None.
-            // Use invoke_hook_sandboxed() to actually execute plugin code.
-            let output: Option<serde_json::Value> = None;
-
-            // Compute the elapsed time in milliseconds.
-            // This will be compared against MAX_CPU_PER_CALLBACK_MS for timeout detection.
-            let duration_ms = start.elapsed().as_millis() as u64;
-
-            // Build the invocation record with timing and I/O data.
-            // The caller can use this for logging and performance alerts.
-            results.push(HookInvocation {
-                hook_name: hook_name.to_string(),
-                plugin_id: *plugin_id,
-                input: input.clone(),
-                output,
-                duration_ms,
-            });
-        }
-
-        results
+    /// This is a pure state accessor — it does not filter by plugin status.
+    /// Use it in tests to verify that `register_hook` / `uninstall` correctly
+    /// maintain the dispatch table without going through a fake execution path.
+    /// For actual plugin execution, use `invoke_hook_sandboxed()`.
+    // subscribers_for() — dispatch-table accessor for testing and introspection.
+    pub fn subscribers_for(&self, hook_name: &str) -> Vec<[u8; 16]> {
+        // Return a copy of the subscriber list; empty if the hook has no registrations.
+        self.hooks
+            .get(hook_name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Invoke all active plugins registered for a named hook via the WASM sandbox.
@@ -2129,10 +2073,8 @@ mod tests {
         // Uninstall the plugin.
         registry.uninstall(&id).expect("uninstall should succeed");
 
-        // The hook's subscriber list should be empty (or the hook entry removed).
-        // invoke_hook should return no results.
-        let results = registry.invoke_hook("on_message", serde_json::json!({}));
-        assert!(results.is_empty());
+        // The hook's subscriber list should be empty after uninstall.
+        assert!(registry.subscribers_for("on_message").is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -2253,17 +2195,18 @@ mod tests {
             .register_hook("on_message", id)
             .expect("second register_hook should succeed");
 
-        // Activate the plugin so it receives invocations.
+        // Activate the plugin so it is eligible to receive invocations.
         registry.activate(&id).expect("activate should succeed");
 
-        // invoke_hook should produce exactly one invocation (not two).
-        let results = registry.invoke_hook("on_message", serde_json::json!({"text": "hello"}));
-        assert_eq!(results.len(), 1);
+        // After idempotent registration the subscriber list should contain the plugin exactly once.
+        assert_eq!(registry.subscribers_for("on_message").len(), 1);
     }
 
-    /// invoke_hook returns results only for active plugins.
+    /// Only active plugins appear in `list_active()`; all registered plugins appear in
+    /// `subscribers_for()` regardless of status.  Actual invocation filtering (active-only)
+    /// is enforced inside `invoke_hook_sandboxed()`.
     #[test]
-    fn test_invoke_hook_active_only() {
+    fn test_hook_subscribers_and_active_status() {
         // Install two plugins, register both for the same hook.
         let mut registry = PluginRegistry::new();
         let id1 = registry.install(test_manifest(), None).expect("install 1");
@@ -2277,32 +2220,33 @@ mod tests {
             .register_hook("on_message", id2)
             .expect("register 2");
 
+        // Both should appear in the dispatch table regardless of active status.
+        assert_eq!(registry.subscribers_for("on_message").len(), 2);
+
         // Activate only plugin 1.
         registry.activate(&id1).expect("activate 1");
 
-        // invoke_hook should only return a result for the active plugin.
-        let input = serde_json::json!({"text": "test"});
-        let results = registry.invoke_hook("on_message", input);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].plugin_id, id1);
+        // list_active() should return only plugin 1.
+        let active = registry.list_active();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, id1);
 
-        // The hook_name should be recorded correctly.
-        assert_eq!(results[0].hook_name, "on_message");
+        // The dispatch table still contains both subscribers.
+        assert_eq!(registry.subscribers_for("on_message").len(), 2);
     }
 
-    /// invoke_hook for an unregistered hook returns an empty vec.
+    /// `subscribers_for` for an unregistered hook returns an empty vec.
     #[test]
-    fn test_invoke_hook_unknown_hook() {
-        // Invoke a hook that no plugin is registered for.
+    fn test_subscribers_for_unknown_hook() {
+        // No plugins registered — subscriber list should be empty.
         let registry = PluginRegistry::new();
-        let results = registry.invoke_hook("nonexistent_hook", serde_json::json!({}));
-        assert!(results.is_empty());
+        assert!(registry.subscribers_for("nonexistent_hook").is_empty());
     }
 
-    /// invoke_hook records the input and timing data.
+    /// `subscribers_for` reflects registrations made for a hook.
     #[test]
-    fn test_invoke_hook_records_timing() {
-        // Install and activate a plugin, register it for a hook, then invoke.
+    fn test_subscribers_for_records_registration() {
+        // Install and activate a plugin, register it for a hook.
         let mut registry = PluginRegistry::new();
         let id = registry.install(test_manifest(), None).expect("install");
         registry.activate(&id).expect("activate");
@@ -2310,23 +2254,10 @@ mod tests {
             .register_hook("on_data", id)
             .expect("register_hook");
 
-        // Invoke the hook with some input data.
-        let input = serde_json::json!({"key": "value"});
-        let results = registry.invoke_hook("on_data", input.clone());
-
-        // Exactly one invocation should be returned.
-        assert_eq!(results.len(), 1);
-        let inv = &results[0];
-
-        // Input should match what we passed in.
-        assert_eq!(inv.input, input);
-
-        // Output is None in the framework (no real plugin runtime).
-        assert!(inv.output.is_none());
-
-        // Duration should be non-negative (it's u64, so always >= 0).
-        // In practice it should be very small since no real work is done.
-        assert!(inv.duration_ms < 1000);
+        // The hook should have exactly one subscriber.
+        let subs = registry.subscribers_for("on_data");
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0], id);
     }
 
     // -----------------------------------------------------------------------
@@ -2653,44 +2584,55 @@ mod tests {
             .install(manifest, None)
             .expect("install should succeed");
 
-        // Plugin starts as Installed — should not receive hooks.
+        // Plugin starts as Installed — not yet in the active set.
         registry
             .register_hook("on_message_received", id)
             .expect("register hook");
-        let results = registry.invoke_hook("on_message_received", serde_json::json!({}));
+        // Hook dispatch table should contain the subscriber.
+        assert_eq!(registry.subscribers_for("on_message_received").len(), 1);
+        // But list_active() should be empty (plugin is Installed, not Active).
         assert!(
-            results.is_empty(),
-            "Installed plugins should not receive hooks"
+            registry.list_active().is_empty(),
+            "Installed plugin should not appear in list_active()"
         );
 
-        // Activate the plugin — now it should receive hooks.
+        // Activate the plugin — now it is in the active set.
         registry.activate(&id).expect("activate");
-        let results = registry.invoke_hook("on_message_received", serde_json::json!({"m": 1}));
-        assert_eq!(results.len(), 1, "Active plugins should receive hooks");
+        assert_eq!(
+            registry.list_active().len(),
+            1,
+            "Active plugin should appear in list_active()"
+        );
 
         // Check permissions.
         assert!(registry.has_permission(&id, &PluginPermission::ReadMessages));
         assert!(registry.has_permission(&id, &PluginPermission::SendMessages));
         assert!(!registry.has_permission(&id, &PluginPermission::FileAccess));
 
-        // Suspend the plugin — should stop receiving hooks.
+        // Suspend the plugin — no longer in the active set.
         registry.suspend(&id).expect("suspend");
-        let results = registry.invoke_hook("on_message_received", serde_json::json!({}));
         assert!(
-            results.is_empty(),
-            "Suspended plugins should not receive hooks",
+            registry.list_active().is_empty(),
+            "Suspended plugin should not appear in list_active()"
         );
+        // Dispatch table entry is preserved (plugin is still registered for the hook).
+        assert_eq!(registry.subscribers_for("on_message_received").len(), 1);
 
-        // Reactivate — should receive hooks again.
+        // Reactivate — should be in the active set again.
         registry.activate(&id).expect("reactivate");
-        let results = registry.invoke_hook("on_message_received", serde_json::json!({}));
-        assert_eq!(results.len(), 1, "Reactivated plugins should receive hooks");
+        assert_eq!(
+            registry.list_active().len(),
+            1,
+            "Reactivated plugin should appear in list_active()"
+        );
 
         // Uninstall — should clean everything up.
         registry.uninstall(&id).expect("uninstall");
         assert!(registry.list().is_empty());
-        let results = registry.invoke_hook("on_message_received", serde_json::json!({}));
-        assert!(results.is_empty(), "Uninstalled plugins leave no traces");
+        assert!(
+            registry.subscribers_for("on_message_received").is_empty(),
+            "Uninstalled plugin should be removed from hook dispatch table"
+        );
     }
 
     // -----------------------------------------------------------------------

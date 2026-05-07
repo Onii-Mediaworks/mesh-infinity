@@ -120,6 +120,18 @@ object NativeLayer1Bridge {
         return nativeIsLayer1Ready(contextPointer) != 0
     }
 
+    // Push the direct-boot startup snapshot into the Rust runtime before
+    // bootstrap.  Flutter also syncs this state later through its method
+    // channel, but the headless runtime needs it before Flutter exists so
+    // cover-traffic posture and Layer1Ready events reflect boot/unlock state.
+    @Synchronized
+    fun updateStartupState(stateJson: String): Boolean {
+        if (!libLoaded) return false
+        val ptr = contextPointer
+        if (ptr == 0L) return false
+        return nativeUpdateStartupState(ptr, stateJson) == 0
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Keystore-backed identity inject / export (§3.1.1)
     // ─────────────────────────────────────────────────────────────────────────
@@ -221,6 +233,9 @@ object NativeLayer1Bridge {
     // ctx:     MeshContext pointer (cast to Long / jlong).
     // Returns: 1 if Layer 1 is active, 0 otherwise.
     private external fun nativeIsLayer1Ready(ctx: Long): Int
+
+    // JNI declaration for syncing AndroidStartupState before Flutter starts.
+    private external fun nativeUpdateStartupState(ctx: Long, stateJson: String): Int
 
     // JNI declaration for the Keystore inject path.
     //

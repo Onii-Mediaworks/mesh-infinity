@@ -673,7 +673,18 @@ impl MeshRuntime {
         app_ids.sort();
         app_ids.dedup();
 
-        let unresolved_selector_rule_count = config
+        let selector_rules = config.to_rules();
+        let selector_rule_count = selector_rules.len();
+        let unresolved_selector_rule_count = selector_rules
+            .iter()
+            .filter(|rule| {
+                rule.app_selector.domain_pattern.is_some()
+                    || rule.app_selector.ip_range.is_some()
+                    || rule.app_selector.port.is_some()
+            })
+            .count();
+
+        let legacy_unresolved_selector_rule_count = config
             .rules
             .iter()
             .filter(|rule| {
@@ -684,7 +695,8 @@ impl MeshRuntime {
             })
             .count();
 
-        let enabled = vpn.config.mode == RoutingMode::PolicyBased && !app_ids.is_empty();
+        let enabled = vpn.config.mode == RoutingMode::PolicyBased
+            && (!app_ids.is_empty() || selector_rule_count > 0);
         let (allowed_apps, disallowed_apps, app_mode) = match config.mode {
             crate::vpn::app_connector::AppConnectorMode::Allowlist => {
                 (app_ids.clone(), Vec::<String>::new(), "allowlist")
@@ -703,7 +715,10 @@ impl MeshRuntime {
             "allowedApps": allowed_apps,
             "disallowedApps": disallowed_apps,
             "appMode": app_mode,
+            "selectorRules": selector_rules,
+            "selectorRuleCount": selector_rule_count,
             "unresolvedSelectorRuleCount": unresolved_selector_rule_count,
+            "legacyUnresolvedSelectorRuleCount": legacy_unresolved_selector_rule_count,
         })
         .to_string()
     }
@@ -2747,10 +2762,12 @@ impl MeshRuntime {
             "relayParticipationReady": allow_relays && active_transport_type_count > 0,
             "startupServiceStarted": android_startup.startup_service_started,
             "startupServiceForeground": android_startup.startup_service_foreground,
+            "backgroundPollActive": self.layer1_poll_active.load(std::sync::atomic::Ordering::Acquire),
         });
 
         serde_json::json!({
             "started": *self.layer1_participation_started.lock().unwrap_or_else(|e| e.into_inner()),
+            "backgroundPollActive": self.layer1_poll_active.load(std::sync::atomic::Ordering::Acquire),
             "identityLoaded": self.mesh_identity.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
             "activityState": format!("{activity_state:?}").to_lowercase(),
             "threatContext": threat_context as u8,
@@ -2820,25 +2837,25 @@ impl MeshRuntime {
 
     /// Return the full service list as a JSON array string.
     ///
-    /// Each entry includes `id`, `name`, `path`, `address`, `enabled`,
-    /// `minTrustLevel`, and `allowedTransports`.
+    /// Each entry includes `id`, `name`, `description`, `path`, `address`,
+    /// `enabled`, `minTrustLevel`, and `allowedTransports`.
     pub fn get_service_list(&self) -> String {
         let mc = self.module_config.lock().unwrap_or_else(|e| e.into_inner());
         serde_json::json!([
-            {"id":"gardens",      "name":"Gardens",          "path":"/gardens",    "address":"","enabled":mc.social.gardens,            "minTrustLevel":1,"allowedTransports":["mesh","clearnet"]},
-            {"id":"file_sharing", "name":"File Sharing",     "path":"/files",      "address":"","enabled":mc.social.file_sharing,        "minTrustLevel":1,"allowedTransports":["mesh","clearnet"]},
-            {"id":"store_forward","name":"Store & Forward",  "path":"/sf",         "address":"","enabled":mc.social.store_forward,       "minTrustLevel":2,"allowedTransports":["mesh"]},
-            {"id":"notifications","name":"Notifications",    "path":"/notify",     "address":"","enabled":mc.social.notifications,       "minTrustLevel":1,"allowedTransports":["mesh","clearnet","tor"]},
-            {"id":"infinet",      "name":"Infinet",          "path":"/infinet",    "address":"","enabled":mc.network.infinet,            "minTrustLevel":2,"allowedTransports":["mesh"]},
-            {"id":"exit_nodes",   "name":"Exit Nodes",       "path":"/exit",       "address":"","enabled":mc.network.exit_nodes,         "minTrustLevel":3,"allowedTransports":["clearnet","tor"]},
-            {"id":"vpn_mode",     "name":"VPN Mode",         "path":"/vpn",        "address":"","enabled":mc.network.vpn_mode,           "minTrustLevel":2,"allowedTransports":["clearnet","tor"]},
-            {"id":"app_connector","name":"App Connector",    "path":"/connector",  "address":"","enabled":mc.network.app_connector,      "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
-            {"id":"funnel",       "name":"Funnel",           "path":"/funnel",     "address":"","enabled":mc.network.funnel,             "minTrustLevel":3,"allowedTransports":["clearnet"]},
-            {"id":"mnrdp_server", "name":"Remote Desktop",   "path":"/rdp",        "address":"","enabled":mc.protocols.mnrdp_server,     "minTrustLevel":3,"allowedTransports":["mesh","clearnet"]},
-            {"id":"mnsp_server",  "name":"Screen Share",     "path":"/screencast", "address":"","enabled":mc.protocols.screen_share,     "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
-            {"id":"api_gateway",  "name":"API Gateway",      "path":"/api",        "address":"","enabled":mc.protocols.api_gateway,      "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
-            {"id":"print_service","name":"Print Service",    "path":"/print",      "address":"","enabled":mc.protocols.print_service,    "minTrustLevel":2,"allowedTransports":["mesh"]},
-            {"id":"plugins",      "name":"Plugin Runtime",   "path":"/plugins",    "address":"","enabled":mc.plugins.runtime_enabled,    "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+            {"id":"gardens",      "name":"Gardens",          "description":"Host and sync Garden communities on this node.",                         "path":"/gardens",    "address":"","enabled":mc.social.gardens,            "minTrustLevel":1,"allowedTransports":["mesh","clearnet"]},
+            {"id":"file_sharing", "name":"File Sharing",     "description":"Share files and fetch published content from peers.",                    "path":"/files",      "address":"","enabled":mc.social.file_sharing,        "minTrustLevel":1,"allowedTransports":["mesh","clearnet"]},
+            {"id":"store_forward","name":"Store & Forward",  "description":"Hold encrypted deliveries for contacts who are offline.",              "path":"/sf",         "address":"","enabled":mc.social.store_forward,       "minTrustLevel":2,"allowedTransports":["mesh"]},
+            {"id":"notifications","name":"Notifications",    "description":"Relay delivery notices and ambient updates across the mesh.",          "path":"/notify",     "address":"","enabled":mc.social.notifications,       "minTrustLevel":1,"allowedTransports":["mesh","clearnet","tor"]},
+            {"id":"infinet",      "name":"Infinet",          "description":"Expose your decentralized private-network control surface.",           "path":"/infinet",    "address":"","enabled":mc.network.infinet,            "minTrustLevel":2,"allowedTransports":["mesh"]},
+            {"id":"exit_nodes",   "name":"Exit Nodes",       "description":"Let trusted peers route internet traffic through this node.",          "path":"/exit",       "address":"","enabled":mc.network.exit_nodes,         "minTrustLevel":3,"allowedTransports":["clearnet","tor"]},
+            {"id":"vpn_mode",     "name":"VPN Mode",         "description":"Route this device's traffic through the mesh or a selected exit.",     "path":"/vpn",        "address":"","enabled":mc.network.vpn_mode,           "minTrustLevel":2,"allowedTransports":["clearnet","tor"]},
+            {"id":"app_connector","name":"App Connector",    "description":"Apply per-application routing rules over Mesh Infinity.",             "path":"/connector",  "address":"","enabled":mc.network.app_connector,      "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+            {"id":"funnel",       "name":"Funnel",           "description":"Publish selected local services to approved clearnet listeners.",     "path":"/funnel",     "address":"","enabled":mc.network.funnel,             "minTrustLevel":3,"allowedTransports":["clearnet"]},
+            {"id":"mnrdp_server", "name":"Remote Desktop",   "description":"Stream interactive desktop sessions to trusted mesh contacts.",       "path":"/rdp",        "address":"","enabled":mc.protocols.mnrdp_server,     "minTrustLevel":3,"allowedTransports":["mesh","clearnet"]},
+            {"id":"mnsp_server",  "name":"Screen Share",     "description":"Share a view-only screen stream with approved peers.",                "path":"/screencast", "address":"","enabled":mc.protocols.screen_share,     "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+            {"id":"api_gateway",  "name":"API Gateway",      "description":"Expose local HTTP, WebSocket, and RPC endpoints to the mesh.",        "path":"/api",        "address":"","enabled":mc.protocols.api_gateway,      "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
+            {"id":"print_service","name":"Print Service",    "description":"Advertise local printers for mesh-native job submission.",            "path":"/print",      "address":"","enabled":mc.protocols.print_service,    "minTrustLevel":2,"allowedTransports":["mesh"]},
+            {"id":"plugins",      "name":"Plugin Runtime",   "description":"Run permission-gated service plugins on this node.",                  "path":"/plugins",    "address":"","enabled":mc.plugins.runtime_enabled,    "minTrustLevel":2,"allowedTransports":["mesh","clearnet"]},
         ]).to_string()
     }
 
@@ -2998,26 +3015,32 @@ impl MeshRuntime {
             .unwrap_or_else(|| "This device".to_string());
         let mut services = Vec::new();
 
-        let mut push_service =
-            |enabled: bool, id: &str, name: &str, service_type: &str, trust: u8| {
-                if enabled {
-                    services.push(serde_json::json!({
-                        "id": id,
-                        "name": name,
-                        "type": service_type,
-                        "hostPeerId": host_peer_id,
-                        "hostName": host_name,
-                        "address": "",
-                        "trustRequired": trust,
-                    }));
-                }
-            };
+        let mut push_service = |enabled: bool,
+                                id: &str,
+                                name: &str,
+                                service_type: &str,
+                                description: &str,
+                                trust: u8| {
+            if enabled {
+                services.push(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "type": service_type,
+                    "description": description,
+                    "hostPeerId": host_peer_id,
+                    "hostName": host_name,
+                    "address": "",
+                    "trustRequired": trust,
+                }));
+            }
+        };
 
         push_service(
             mc.protocols.mnrdp_server,
             "remoteDesktop",
             "Remote Desktop",
             "remoteDesktop",
+            "Stream your screen or a remote desktop session to trusted peers.",
             3,
         );
         push_service(
@@ -3025,6 +3048,7 @@ impl MeshRuntime {
             "remoteShell",
             "Remote Shell",
             "remoteShell",
+            "Open a secure shell session on this device over the mesh.",
             3,
         );
         push_service(
@@ -3032,6 +3056,7 @@ impl MeshRuntime {
             "fileAccess",
             "File Access",
             "fileAccess",
+            "Browse shared folders and transfer files from this device.",
             2,
         );
         push_service(
@@ -3039,6 +3064,7 @@ impl MeshRuntime {
             "apiGateway",
             "API Gateway",
             "apiGateway",
+            "Reach local HTTP, WebSocket, or RPC services through the mesh.",
             2,
         );
         push_service(
@@ -3046,6 +3072,7 @@ impl MeshRuntime {
             "clipboardSync",
             "Clipboard Sync",
             "clipboardSync",
+            "Share clipboard contents between your approved devices.",
             1,
         );
         push_service(
@@ -3053,6 +3080,7 @@ impl MeshRuntime {
             "screenShare",
             "Screen Share",
             "screenShare",
+            "Offer a view-only display stream to trusted contacts.",
             2,
         );
         push_service(
@@ -3060,6 +3088,7 @@ impl MeshRuntime {
             "printService",
             "Print Service",
             "printService",
+            "Submit print jobs to printers connected to this node.",
             2,
         );
 
@@ -4259,7 +4288,9 @@ mod tests {
         let policy: serde_json::Value =
             serde_json::from_str(&runtime.get_android_vpn_policy()).unwrap();
 
-        assert_eq!(policy["enabled"], false);
+        assert_eq!(policy["enabled"], true);
+        assert_eq!(policy["selectorRuleCount"], 1);
+        assert_eq!(policy["selectorRules"].as_array().unwrap().len(), 1);
         assert_eq!(policy["unresolvedSelectorRuleCount"], 1);
         assert_eq!(policy["disallowedApps"].as_array().unwrap().len(), 0);
     }

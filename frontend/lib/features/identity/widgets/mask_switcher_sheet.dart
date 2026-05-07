@@ -12,6 +12,7 @@ import '../../../app/app_theme.dart';
 import '../../../backend/backend_bridge.dart';
 import '../../../backend/models/settings_models.dart';
 import '../../../widgets/mask_avatar.dart';
+import '../../settings/screens/identity_masks_screen.dart';
 
 /// Shows the MaskSwitcherSheet as a modal bottom sheet.
 ///
@@ -87,8 +88,11 @@ class _MaskSwitcherSheetState extends State<MaskSwitcherSheet> {
                 TextButton(
                   onPressed: () {
                     Navigator.pop(context);
-                    // Navigate to identity management in Settings.
-                    // Full IdentityMasksScreen will be wired here.
+                    Navigator.of(context, rootNavigator: true).push(
+                      MaterialPageRoute(
+                        builder: (_) => const IdentityMasksScreen(),
+                      ),
+                    );
                   },
                   child: const Text('Manage'),
                 ),

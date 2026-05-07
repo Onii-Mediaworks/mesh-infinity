@@ -250,6 +250,8 @@ impl MeshRuntime {
             .unwrap_or_else(|e| e.into_inner());
 
         if participation_started {
+            self.start_layer1_background_poll();
+
             let cover = *self
                 .layer1_cover_traffic
                 .lock()
@@ -281,6 +283,7 @@ impl MeshRuntime {
                     // Whether this bootstrap happened in headless mode
                     // (before the user opened the app).
                     "headless": !self.identity_unlocked,
+                    "backgroundPollActive": self.layer1_poll_active.load(std::sync::atomic::Ordering::Acquire),
                     // Startup milestone context from the Android platform layer.
                     "androidStartup": {
                         "bootCompleted": android_startup.boot_completed,

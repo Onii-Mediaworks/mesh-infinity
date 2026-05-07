@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import java.io.File
+import org.json.JSONObject
 
 // AndroidStartupService — headless Layer 1 startup for Mesh Infinity.
 //
@@ -205,6 +206,8 @@ class AndroidStartupService : Service() {
             Log.w(TAG, "Layer 1 native startup failed: ${e.message}")
         }
 
+        syncStartupStateToRust()
+
         // Step 3: Apply the Keystore secret or persist it for future boots.
         if (keystoreSecret != null) {
             // Step 3a: Keystore blob was available and decrypted successfully.
@@ -230,6 +233,13 @@ class AndroidStartupService : Service() {
         // startLayer1() failed (e.g., library was loaded but storage was not
         // yet available; storage is now available after USER_UNLOCKED).
         bootstrapLayer1IfNeeded()
+    }
+
+    private fun syncStartupStateToRust() {
+        val snapshotJson = JSONObject(AndroidStartupStateStore.snapshot(this)).toString()
+        if (!NativeLayer1Bridge.updateStartupState(snapshotJson)) {
+            Log.d(TAG, "Layer 1 startup state sync deferred: no native context pointer yet.")
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

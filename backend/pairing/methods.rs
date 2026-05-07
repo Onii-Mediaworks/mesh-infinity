@@ -33,7 +33,9 @@
 //! - Expiry timestamp
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
+use crate::error::MeshError;
 use crate::identity::peer_id::PeerId;
 
 // ---------------------------------------------------------------------------
@@ -337,6 +339,20 @@ pub struct TransportHintEntry {
     pub endpoint: Option<String>,
 }
 
+/// Decoded QR/deep-link pairing payload with optional extension fields.
+///
+/// The core `PairingPayload` carries the protocol-required fields that every
+/// pairing method shares. QR and deep-link payloads also advertise a few
+/// optional extension fields used during session bootstrap and routing hints.
+#[derive(Clone, Debug)]
+pub struct DecodedPairingPayload {
+    pub payload: PairingPayload,
+    pub mesh_x25519_public: Option<[u8; 32]>,
+    pub preauth_x25519_public: Option<[u8; 32]>,
+    pub preauth_sig: Option<Vec<u8>>,
+    pub kem_pub: Option<Vec<u8>>,
+}
+
 // Begin the block scope.
 // PairingPayload implementation — core protocol logic.
 // PairingPayload implementation — core protocol logic.
@@ -431,8 +447,160 @@ impl PairingPayload {
     }
 }
 
+fn pairing_invalid(message: impl Into<String>) -> MeshError {
+    MeshError::PairingInvalid(message.into())
+}
+
+fn decode_hex_array<const N: usize>(
+    payload: &serde_json::Value,
+    field: &'static str,
+) -> Result<[u8; N], MeshError> {
+    let hex_value = payload
+        .get(field)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| pairing_invalid(format!("missing {field}")))?;
+    let bytes =
+        hex::decode(hex_value).map_err(|_| pairing_invalid(format!("invalid {field} hex")))?;
+    if bytes.len() != N {
+        return Err(pairing_invalid(format!("invalid {field} length")));
+    }
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn decode_optional_hex_array<const N: usize>(
+    payload: &serde_json::Value,
+    field: &'static str,
+) -> Result<Option<[u8; N]>, MeshError> {
+    match payload.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(hex_value)) => {
+            let bytes = hex::decode(hex_value)
+                .map_err(|_| pairing_invalid(format!("invalid {field} hex")))?;
+            if bytes.len() != N {
+                return Err(pairing_invalid(format!("invalid {field} length")));
+            }
+            let mut out = [0u8; N];
+            out.copy_from_slice(&bytes);
+            Ok(Some(out))
+        }
+        Some(_) => Err(pairing_invalid(format!("{field} must be a string"))),
+    }
+}
+
+fn decode_optional_hex_vec(
+    payload: &serde_json::Value,
+    field: &'static str,
+) -> Result<Option<Vec<u8>>, MeshError> {
+    match payload.get(field) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(hex_value)) => hex::decode(hex_value)
+            .map(Some)
+            .map_err(|_| pairing_invalid(format!("invalid {field} hex"))),
+        Some(_) => Err(pairing_invalid(format!("{field} must be a string"))),
+    }
+}
+
+fn decode_transport_hints(
+    payload: &serde_json::Value,
+) -> Result<Vec<TransportHintEntry>, MeshError> {
+    let Some(value) = payload.get("transport_hints") else {
+        return Ok(Vec::new());
+    };
+    let hints = value
+        .as_array()
+        .ok_or_else(|| pairing_invalid("transport_hints must be an array"))?;
+    let mut decoded = Vec::with_capacity(hints.len());
+    for hint in hints {
+        let transport = hint
+            .get("transport")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| pairing_invalid("transport_hints[].transport missing"))?;
+        let endpoint = match hint.get("endpoint") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(endpoint)) => Some(endpoint.clone()),
+            Some(_) => {
+                return Err(pairing_invalid(
+                    "transport_hints[].endpoint must be a string or null",
+                ));
+            }
+        };
+        decoded.push(TransportHintEntry {
+            transport: transport.to_string(),
+            endpoint,
+        });
+    }
+    Ok(decoded)
+}
+
+/// Parse the JSON payload carried by pairing QR codes and deep links.
+///
+/// This is the external byte boundary for hostile pairing payloads. It performs
+/// structural JSON parsing, hex decoding, and core payload validation before
+/// the service layer uses any field semantically.
+pub fn parse_pairing_qr_payload_json(
+    payload_json: &[u8],
+    now: u64,
+) -> Result<DecodedPairingPayload, MeshError> {
+    let payload_value: serde_json::Value = serde_json::from_slice(payload_json)?;
+
+    let version = payload_value
+        .get("version")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| pairing_invalid("missing version"))?;
+    let version = u8::try_from(version).map_err(|_| pairing_invalid("version out of range"))?;
+
+    let peer_id_hex = payload_value
+        .get("peer_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| pairing_invalid("missing peer_id"))?;
+    let peer_id = PeerId::from_hex(peer_id_hex).map_err(|_| pairing_invalid("invalid peer_id"))?;
+
+    let display_name = match payload_value.get("display_name") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(name)) => Some(name.clone()),
+        Some(_) => return Err(pairing_invalid("display_name must be a string")),
+    };
+
+    let display_name_sig = decode_optional_hex_vec(&payload_value, "display_name_sig")?;
+    let mesh_x25519_public = decode_optional_hex_array(&payload_value, "mesh_x25519_public")?;
+    let preauth_x25519_public = decode_optional_hex_array(&payload_value, "preauth_x25519_public")?;
+    let preauth_sig = decode_optional_hex_vec(&payload_value, "preauth_sig")?;
+    let kem_pub = decode_optional_hex_vec(&payload_value, "kem_pub")?;
+
+    let expiry = payload_value
+        .get("expiry")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| pairing_invalid("missing expiry"))?;
+
+    let payload = PairingPayload {
+        version,
+        peer_id,
+        ed25519_public: decode_hex_array(&payload_value, "ed25519_public")?,
+        x25519_public: decode_hex_array(&payload_value, "x25519_public")?,
+        pairing_token: decode_hex_array(&payload_value, "pairing_token")?,
+        display_name,
+        display_name_sig,
+        transport_hints: decode_transport_hints(&payload_value)?,
+        expiry,
+    };
+
+    payload
+        .validate(now)
+        .map_err(|error| pairing_invalid(error.to_string()))?;
+
+    Ok(DecodedPairingPayload {
+        payload,
+        mesh_x25519_public,
+        preauth_x25519_public,
+        preauth_sig,
+        kem_pub,
+    })
+}
+
 /// Errors when validating a pairing payload.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
 // Begin the block scope.
 // PayloadError — variant enumeration.
 // Match exhaustively to handle every protocol state.
@@ -442,16 +610,20 @@ pub enum PayloadError {
     /// Protocol version not supported.
     // Execute this protocol step.
     // Execute this protocol step.
+    #[error("unsupported version {0}")]
     UnsupportedVersion(u8),
     /// Payload has expired.
+    #[error("expired")]
     Expired,
     /// Peer ID doesn't match the Ed25519 public key.
     // Execute this protocol step.
     // Execute this protocol step.
+    #[error("peer_id mismatch")]
     PeerIdMismatch,
     /// Display name is present but signature is missing.
     // Execute this protocol step.
     // Execute this protocol step.
+    #[error("display name signature missing")]
     MissingDisplayNameSig,
 }
 
@@ -601,6 +773,31 @@ mod tests {
         }
     }
 
+    fn test_payload_json(now: u64) -> String {
+        let payload = test_payload(now);
+        serde_json::json!({
+            "version": payload.version,
+            "peer_id": payload.peer_id.to_hex(),
+            "ed25519_public": hex::encode(payload.ed25519_public),
+            "x25519_public": hex::encode(payload.x25519_public),
+            "pairing_token": hex::encode(payload.pairing_token),
+            "display_name": payload.display_name,
+            "display_name_sig": payload.display_name_sig.map(hex::encode),
+            "transport_hints": [
+                {
+                    "transport": "clearnet",
+                    "endpoint": "127.0.0.1:31337",
+                }
+            ],
+            "expiry": payload.expiry,
+            "mesh_x25519_public": hex::encode([0x77; 32]),
+            "preauth_x25519_public": hex::encode([0x55; 32]),
+            "preauth_sig": hex::encode([0x11; 64]),
+            "kem_pub": hex::encode([0x22; 32]),
+        })
+        .to_string()
+    }
+
     #[test]
     fn test_payload_validates() {
         let now = 1000;
@@ -698,6 +895,44 @@ mod tests {
         assert!(link.contains("ed25519="));
         assert!(link.contains("x25519="));
         assert!(link.contains("token="));
+    }
+
+    #[test]
+    fn test_parse_pairing_qr_payload_json() {
+        let now = 1000;
+        let decoded = parse_pairing_qr_payload_json(test_payload_json(now).as_bytes(), now)
+            .expect("valid QR payload must parse");
+
+        assert_eq!(decoded.payload.peer_id, test_payload(now).peer_id);
+        assert_eq!(decoded.payload.transport_hints.len(), 1);
+        assert_eq!(decoded.mesh_x25519_public, Some([0x77; 32]));
+        assert_eq!(decoded.preauth_x25519_public, Some([0x55; 32]));
+        assert_eq!(decoded.preauth_sig, Some(vec![0x11; 64]));
+        assert_eq!(decoded.kem_pub, Some(vec![0x22; 32]));
+    }
+
+    #[test]
+    fn test_parse_pairing_qr_payload_json_rejects_bad_hex() {
+        let now = 1000;
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&test_payload_json(now)).expect("test payload JSON");
+        payload["ed25519_public"] = serde_json::json!("not-hex");
+
+        let error = parse_pairing_qr_payload_json(payload.to_string().as_bytes(), now)
+            .expect_err("bad ed25519 hex must be rejected");
+        assert!(error.safe_description().contains("ed25519_public"));
+    }
+
+    #[test]
+    fn test_parse_pairing_qr_payload_json_rejects_bad_transport_hints() {
+        let now = 1000;
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&test_payload_json(now)).expect("test payload JSON");
+        payload["transport_hints"] = serde_json::json!({"transport": "clearnet"});
+
+        let error = parse_pairing_qr_payload_json(payload.to_string().as_bytes(), now)
+            .expect_err("non-array transport_hints must be rejected");
+        assert!(error.safe_description().contains("transport_hints"));
     }
 
     #[test]

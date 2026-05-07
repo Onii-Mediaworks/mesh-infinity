@@ -178,7 +178,7 @@ Committed fixed artifacts live under:
 Each fixed artifact directory must contain:
 
 - the minimized reproducer bytes
-- a `README.md` explaining the bug class and the fix
+- a `README.md` explaining the bug class, the fix, and a `Target: <fuzz_target_name>` line for replay automation
 
 ## CI Methodology
 
@@ -222,9 +222,12 @@ Known methodology mismatches resolved or tracked by this document:
 
 - `fuzz/Cargo.toml` must identify itself explicitly as a cargo-fuzz manifest
 - CI must validate the fuzz registry
+- CI must replay committed corpus and fixed reproducers
 - fuzz smoke must cover active targets in normal CI, not just drift silently
-- nightly long fuzzing and simulator/property campaigns remain required even
-  where automation is still being tightened
+- nightly automation now exists for longer fuzzing, integration/simulation
+  replay, and dependency audit
+- full 24-hour-equivalent fuzzing, coverage automation, and deep-analysis
+  tooling remain required where automation is still being tightened
 
 ## Recommended Open-Source Tooling
 

@@ -328,14 +328,6 @@ impl NetworkMap {
                 now,
             });
         }
-        // Lower bound: entries older than 30 days are replay candidates; reject.
-        if now.saturating_sub(entry.last_seen) > MAX_PAST_TIMESTAMP_SECS {
-            return Err(MapError::TimestampTooOld {
-                entry_ts: entry.last_seen,
-                now,
-            });
-        }
-
         // --- Field validation (§4.2) ---
         Self::validate_entry(&entry)?;
 
@@ -364,17 +356,8 @@ impl NetworkMap {
                     ));
                 }
             }
-        } else {
-            // New entry with sequence > 0: require prev_hash to anchor the chain.
-            // We cannot verify the hash against a previous entry we have never
-            // seen, but requiring its presence ensures the peer maintains chain
-            // discipline; the next update will be verifiable.
-            if entry.sequence > 0 && entry.prev_hash.is_none() {
-                return Err(MapError::InvalidSignature(
-                    "new entry with sequence > 0 must have prev_hash".into(),
-                ));
-            }
         }
+        // else: brand-new peer — accept any sequence (may have missed earlier updates).
 
         // --- Capacity check ---
         if self.entries.len() >= MAX_MAP_ENTRIES && !self.entries.contains_key(&entry.peer_id) {

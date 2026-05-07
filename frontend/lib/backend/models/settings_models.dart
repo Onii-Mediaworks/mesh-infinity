@@ -154,7 +154,10 @@ class SettingsModel {
     return SettingsModel(
       nodeMode: nodeMode,
       // .clamp() is used instead of a manual range check for conciseness.
-      threatContext: ((json['threatContext'] as num?)?.toInt() ?? 0).clamp(0, 3),
+      threatContext: ((json['threatContext'] as num?)?.toInt() ?? 0).clamp(
+        0,
+        3,
+      ),
       enableTor: json['enableTor'] as bool? ?? false,
       enableClearnet: json['enableClearnet'] as bool? ?? false,
       clearnetFallback: json['clearnetFallback'] as bool? ?? false,
@@ -265,6 +268,7 @@ class ServiceModel {
   const ServiceModel({
     required this.id,
     required this.name,
+    required this.description,
     required this.path,
     required this.address,
     required this.enabled,
@@ -278,6 +282,9 @@ class ServiceModel {
 
   /// Human-readable service name (e.g. "HTTP Proxy", "File Share").
   final String name;
+
+  /// One-sentence explainer used in service detail and browse surfaces.
+  final String description;
 
   /// The internal service path or endpoint identifier within the Rust service
   /// registry (e.g. "/proxy", "/files").  Not directly shown to the user.
@@ -305,6 +312,7 @@ class ServiceModel {
   factory ServiceModel.fromJson(Map<String, dynamic> json) => ServiceModel(
     id: json['id'] as String? ?? '',
     name: json['name'] as String? ?? '',
+    description: json['description'] as String? ?? '',
     path: json['path'] as String? ?? '',
     address: json['address'] as String? ?? '',
     enabled: json['enabled'] as bool? ?? false,

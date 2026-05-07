@@ -670,6 +670,7 @@ mod tests {
             sequence: seq,
             signature: vec![],
             local_trust: TrustLevel::Unknown,
+            prev_hash: None,
         };
         entry.sign(&signing_key);
         (entry, signing_key)
@@ -703,6 +704,7 @@ mod tests {
             sequence: 1,
             signature: vec![],
             local_trust: TrustLevel::Unknown,
+            prev_hash: None,
         };
         let result = engine.receive_entry(unsigned, &source, TrustLevel::Unknown, 100);
         assert!(result.is_err(), "unsigned entry must be rejected");

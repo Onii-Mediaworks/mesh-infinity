@@ -137,6 +137,56 @@ pub struct FfiMeshConfig {
     pub node_mode: u8,
 }
 
+const MAX_FFI_LOG_LEVEL: u8 = 4;
+const MAX_FFI_NODE_MODE: u8 = 2;
+const MAX_FFI_PEERS: u32 = 100_000;
+const MAX_FFI_CONNECTIONS: u32 = 1_000_000;
+const MIN_WIREGUARD_PORT: u16 = 1024;
+const MAX_WIREGUARD_PORT: u16 = 65535;
+
+fn validate_binary_flag(name: &str, value: u8) -> Result<(), String> {
+    if value <= 1 {
+        return Ok(());
+    }
+    Err(format!("{name} must be 0 or 1"))
+}
+
+fn validate_ffi_config(cfg: &FfiMeshConfig) -> Result<(), String> {
+    if cfg.log_level > MAX_FFI_LOG_LEVEL {
+        return Err(format!(
+            "log_level must be between 0 and {MAX_FFI_LOG_LEVEL}"
+        ));
+    }
+
+    validate_binary_flag("enable_tor", cfg.enable_tor)?;
+    validate_binary_flag("enable_clearnet", cfg.enable_clearnet)?;
+    validate_binary_flag("mesh_discovery", cfg.mesh_discovery)?;
+    validate_binary_flag("allow_relays", cfg.allow_relays)?;
+    validate_binary_flag("enable_i2p", cfg.enable_i2p)?;
+    validate_binary_flag("enable_bluetooth", cfg.enable_bluetooth)?;
+    validate_binary_flag("enable_rf", cfg.enable_rf)?;
+
+    if cfg.wireguard_port > 0 && cfg.wireguard_port < 1024 {
+        return Err("wireguard_port must be 0 or an unprivileged port >= 1024".into());
+    }
+
+    if cfg.max_peers > MAX_FFI_PEERS {
+        return Err(format!("max_peers must be <= {MAX_FFI_PEERS}"));
+    }
+
+    if cfg.max_connections > MAX_FFI_CONNECTIONS {
+        return Err(format!("max_connections must be <= {MAX_FFI_CONNECTIONS}"));
+    }
+
+    if cfg.node_mode > MAX_FFI_NODE_MODE {
+        return Err(format!(
+            "node_mode must be between 0 and {MAX_FFI_NODE_MODE}"
+        ));
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Pre-init error storage
 // ---------------------------------------------------------------------------
@@ -228,6 +278,11 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
     // SAFETY: caller guarantees config is valid and aligned for this call.
     // Compute cfg for this protocol step.
     let cfg = unsafe { &*config };
+
+    if let Err(error) = validate_ffi_config(cfg) {
+        set_preinit_error(&format!("mesh_init: invalid config: {error}"));
+        return ptr::null_mut();
+    }
 
     // On Android: if the headless Layer 1 startup path already created a
     // context (§3.1.1 — Layer 1 starts at device unlock before the app opens),
@@ -583,6 +638,43 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_n
     }
 }
 
+/// Android JNI entry point called by `NativeLayer1Bridge.updateStartupState()`.
+///
+/// The headless startup service owns the first boot/unlock snapshot before
+/// Flutter exists.  Syncing it into Rust before `bootstrap_layer1()` keeps the
+/// activity state, cover-traffic profile, and `Layer1Ready` event aligned with
+/// the actual Android boot milestone instead of defaulting to non-Android
+/// background behavior until the UI attaches.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeUpdateStartupState(
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    ctx: jni::sys::jlong,
+    state_json: jni::objects::JString<'_>,
+) -> jni::sys::jint {
+    if ctx == 0 {
+        return -1;
+    }
+
+    let state_json: String = match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(env.get_string(&state_json)?.into()) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(json) => json,
+        _ => return -1,
+    };
+
+    let runtime = unsafe { &*(ctx as *const MeshContext) };
+    match runtime.update_android_startup_state(&state_json) {
+        Ok(()) => 0,
+        Err(error) => {
+            runtime.set_error(&error);
+            -1
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // JNI entry points for AndroidProximityBridge (Android only)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -670,6 +762,36 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
     let runtime = unsafe { &*(ctx as *const MeshContext) };
     match runtime.drain_wifi_direct_session(&peer_mac) {
         Ok(n) => n as jni::sys::jint,
+        Err(_) => -1,
+    }
+}
+
+/// JNI entry for `AndroidProximityBridge.nativeWifiDirectRemoveSession`.
+///
+/// Drops the Rust-owned Wi-Fi Direct socket for a peer after Android reports a
+/// P2P disconnect or the drain loop observes a socket error.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBridge_nativeWifiDirectRemoveSession(
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    ctx: jni::sys::jlong,
+    peer_mac: jni::objects::JString<'_>,
+) -> jni::sys::jint {
+    if ctx == 0 {
+        return -1;
+    }
+    let peer_mac: String = match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(env.get_string(&peer_mac)?.into()) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(peer_mac) => peer_mac,
+        _ => return -1,
+    };
+    // SAFETY: ctx is the pointer returned by nativeStartLayer1.
+    let runtime = unsafe { &*(ctx as *const MeshContext) };
+    match runtime.remove_wifi_direct_session(&peer_mac) {
+        Ok(()) => 0,
         Err(_) => -1,
     }
 }
@@ -3364,6 +3486,43 @@ pub unsafe extern "C" fn mi_wifi_direct_drain_session(
     };
     match ctx.drain_wifi_direct_session(peer_mac) {
         Ok(n) => n as c_int,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Remove a Rust-owned Wi-Fi Direct session socket.
+///
+/// This is the C ABI counterpart to the Android JNI
+/// `nativeWifiDirectRemoveSession` entry point.  It lets any platform adapter
+/// that hands a socket fd to Rust explicitly release the backend session when
+/// the platform reports disconnect.
+///
+/// # Safety
+///
+/// `ctx` must be non-null.  `peer_mac_ptr` must be a valid null-terminated
+/// UTF-8 string.
+#[no_mangle]
+#[cfg(target_os = "android")]
+pub unsafe extern "C" fn mi_wifi_direct_remove_session(
+    ctx: *mut MeshContext,
+    peer_mac_ptr: *const c_char,
+) -> c_int {
+    if ctx.is_null() || peer_mac_ptr.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*ctx };
+    let peer_mac = match unsafe { std::ffi::CStr::from_ptr(peer_mac_ptr) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            ctx.set_error("mi_wifi_direct_remove_session: peer_mac is not valid UTF-8");
+            return -1;
+        }
+    };
+    match ctx.remove_wifi_direct_session(peer_mac) {
+        Ok(()) => 0,
         Err(e) => {
             ctx.set_error(&e);
             -1
@@ -7322,8 +7481,8 @@ pub unsafe extern "C" fn mi_unpublish_file(ctx: *mut MeshContext, file_id: *cons
 
 /// Return services discovered on the local mesh as a JSON array.
 ///
-/// Each element: `{ "id": str, "name": str, "type": str, "hostPeerId": str,
-/// "hostName": str, "address": str, "trustRequired": u32 }`.
+/// Each element: `{ "id": str, "name": str, "type": str, "description": str,
+/// "hostPeerId": str, "hostName": str, "address": str, "trustRequired": u32 }`.
 ///
 /// # Safety
 /// `ctx` must be non-null.
@@ -7476,6 +7635,34 @@ pub unsafe extern "C" fn mi_decline_message_request(
             -1
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Screen lock (§3.6.4)
+// ---------------------------------------------------------------------------
+
+/// Wipe in-memory Layer 2/3 identity key material without touching on-disk
+/// vault files (§3.6.4).
+///
+/// Called by the screen-lock path (Flutter app goes background / device locks)
+/// and by the PIN-timeout path.  An `AtomicBool` guard inside
+/// `clear_identity_keys()` ensures key material is wiped exactly once even if
+/// both paths fire concurrently.
+///
+/// Returns 0 on success.  The identity must be re-unlocked via
+/// `mi_unlock_identity` before any further operations that require keys.
+///
+/// # Safety
+/// `ctx` must be a non-null pointer from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_lock_identity(ctx: *mut MeshContext) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &mut *ctx };
+    ctx.clear_identity_keys();
+    ctx.identity_unlocked = false;
+    0
 }
 
 // ---------------------------------------------------------------------------

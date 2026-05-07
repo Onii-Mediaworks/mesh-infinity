@@ -37,6 +37,9 @@ cargo-fuzz = true
 # libFuzzer entry point (the `LLVMFuzzerTestOneInput` C symbol).
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1.0"
+ed25519-dalek = "2.0"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 # The main Mesh Infinity crate — provides all parsers under test.
 # `path` points to the workspace root from the fuzz/ subdirectory.
@@ -81,3 +84,77 @@ path = "fuzz_targets/fuzz_pairing_payload.rs"
 [[bin]]
 name = "fuzz_message_frame"
 path = "fuzz_targets/fuzz_message_frame.rs"
+
+# --- Target 4: Four-layer message decryption (§7.2) --------------------------
+#
+# Builds a valid encrypted message, then mutates ciphertext, sender identity,
+# recipient identity, session keys, nonce, ratchet key, and context before
+# calling `decrypt_message()`. This gives the decrypt boundary both successful
+# and adversarial inputs instead of only random early-failure bytes.
+[[bin]]
+name = "fuzz_decrypt_message"
+path = "fuzz_targets/fuzz_decrypt_message.rs"
+
+# --- Target 5: Reachability announcement parse/process (§6.2) ---------------
+#
+# Exercises both the JSON byte boundary for `ReachabilityAnnouncement` and the
+# semantic validation path in `AnnouncementProcessor::process()`. The harness
+# feeds arbitrary JSON plus mutated valid announcements so replay, age, hop,
+# and signature invariants stay fuzzed as the routing layer evolves.
+[[bin]]
+name = "fuzz_parse_routing_announcement"
+path = "fuzz_targets/fuzz_parse_routing_announcement.rs"
+
+# --- Target 6: Pairing QR/deep-link payload parser (§8.3) -------------------
+#
+# Exercises the real hostile-byte boundary for scanned pairing payloads:
+# JSON decode, hex decoding, and semantic validation before service-layer use.
+[[bin]]
+name = "fuzz_parse_pairing_qr"
+path = "fuzz_targets/fuzz_parse_pairing_qr.rs"
+
+# --- Target 7: Vault file decode boundary (§17.9) ---------------------------
+#
+# Exercises the persisted `.vault` blob parser directly: schema header, nonce,
+# AEAD ciphertext, and JSON decode. The harness mutates valid encrypted blobs
+# so both authenticated corruption and structural parse errors are covered.
+[[bin]]
+name = "fuzz_vault_load"
+path = "fuzz_targets/fuzz_vault_load.rs"
+
+# --- Target 8: Identity payload decode boundary (§3.6.2) -------------------
+#
+# Exercises `SelfIdentity::from_payload()`, the direct parser for decrypted
+# identity payload bytes prior to master-key reinjection and KEM derivation.
+[[bin]]
+name = "fuzz_identity_payload"
+path = "fuzz_targets/fuzz_identity_payload.rs"
+
+# --- Target 9: FFI JSON payload boundaries (§17.5) -------------------------
+#
+# Exercises representative JSON strings passed through the C ABI into
+# service-layer setters. The harness keeps payloads bounded and invokes
+# side-effect-light handlers so malformed UI/platform JSON cannot panic or
+# corrupt shared state.
+[[bin]]
+name = "fuzz_ffi_json_inputs"
+path = "fuzz_targets/fuzz_ffi_json_inputs.rs"
+
+# --- Target 10: KCP segment input parser (§5.31) ---------------------------
+#
+# Exercises `KcpState::input()` with arbitrary bytes. KCP segments arrive from
+# peers inside the transport layer, so malformed headers, lengths, command
+# values, and fragments must be dropped without panics or state corruption.
+[[bin]]
+name = "fuzz_kcp_packet"
+path = "fuzz_targets/fuzz_kcp_packet.rs"
+
+# --- Target 11: Stateful network simulator actions (§21.2.6) --------------
+#
+# Decodes arbitrary bytes into bounded multi-node simulator actions and checks
+# invariants after every action. This keeps topology changes, partitions,
+# restart/reload-style transitions, kill-switch behavior, and transport
+# toggling under coverage-guided fuzz pressure.
+[[bin]]
+name = "fuzz_network_sim_actions"
+path = "fuzz_targets/fuzz_network_sim_actions.rs"

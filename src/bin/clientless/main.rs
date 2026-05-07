@@ -30,6 +30,7 @@
 //!                 `com.oniimediaworks.meshinfinity-clientless-debug` (debug)
 //! See §17.16 Build identity for the full scheme.
 
+mod build_profile;
 mod config;
 mod webui;
 
@@ -39,8 +40,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
-use tokio_rustls::TlsAcceptor;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 // The MeshRuntime is the single long-lived state container for the entire
 // backend.  It is the same struct used by the full-client build; the clientless
@@ -87,17 +87,31 @@ async fn main() -> Result<()> {
         local_only = cfg.webui_local_only,
         "configuration loaded"
     );
+    if let Some(token) = cfg.generated_webui_token.as_deref() {
+        info!("generated new WebUI admin token; persist it in the shell credential store");
+        println!("WEBUI_TOKEN={token}");
+    }
 
     // ── Step 2: initialise the Rust backend ───────────────────────────────────
     //
     // MeshRuntime::new() allocates all backend subsystems: identity, crypto,
-    // routing tables, transport managers, module state, event queue.  It does
-    // NOT start any network listeners — those are started explicitly below.
+    // routing tables, transport managers, module state, event queue.  The
+    // clientless profile then performs the same Layer 1 startup sequence as
+    // the native Android unlock path: restore startup posture, load the mesh
+    // identity, reconcile transport listeners, and start relay/gossip/cover
+    // participation when the local prerequisites are available.
     //
     // The runtime is wrapped in Arc<RwLock<>> so the WebUI handler tasks can
     // share it safely across threads without duplicating state.
-    // MeshRuntime::new takes an owned String and returns Self (infallible).
-    let runtime = MeshRuntime::new(cfg.data_dir.clone());
+    let mut runtime = MeshRuntime::new(cfg.data_dir.clone());
+    runtime.load_layer1_startup_config();
+    runtime.initialize_startup_state();
+    if let Err(error) = runtime.reconcile_layer1_runtime() {
+        warn!(error = %error, "clientless Layer 1 transport reconciliation deferred");
+    }
+    if let Err(error) = runtime.bootstrap_layer1() {
+        warn!(error = %error, "clientless Layer 1 bootstrap deferred");
+    }
     let runtime = Arc::new(RwLock::new(runtime));
 
     info!(data_dir = %cfg.data_dir, "backend runtime initialised");

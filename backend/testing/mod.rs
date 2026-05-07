@@ -50,3 +50,6 @@ pub mod simulator;
 
 /// Shared stateful action vocabulary for future simulator fuzzing (SS 21.2).
 pub mod sim;
+
+/// FFI-facing JSON fuzz helpers for service-layer payload boundaries.
+pub mod ffi_json;

@@ -510,6 +510,11 @@ impl MeshRuntime {
             return self.process_delivery_receipt_frame(envelope);
         }
 
+        // Remote killswitch (§3.9, §8.3) — Level 8 (InnerCircle) gate.
+        if frame_type == "remote_wipe" {
+            return self.process_remote_wipe_frame(envelope);
+        }
+
         // Keepalive probes.
         if frame_type == "keepalive" {
             let our_hex = self
@@ -3621,6 +3626,111 @@ impl crate::service::runtime::MeshRuntime {
         } else {
             false
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Remote killswitch (§3.9, §8.3)
+    // -----------------------------------------------------------------------
+
+    /// Processes a `remote_wipe` frame received over the mesh.
+    ///
+    /// Security requirements (§8.3):
+    /// 1. Sender must be a known contact at InnerCircle (Level 8).
+    /// 2. `remote_wipe_enabled` runtime flag must be `true`.
+    /// 3. Frame must carry a valid Ed25519 signature over the canonical
+    ///    killswitch payload, preventing replay of arbitrary JSON objects
+    ///    as wipe commands.
+    ///
+    /// On success: erases all on-disk identity data via the standard killswitch
+    /// path (§3.9.1), pushes a `RemoteWiped` event so the UI can notify the
+    /// user, and returns `true`.  All failures are silent (§16.1 error policy).
+    fn process_remote_wipe_frame(&self, envelope: &serde_json::Value) -> bool {
+        // --- 1. Sender identity resolution ---
+        let sender_hex = match envelope.get("sender").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return false,
+        };
+        let sender_id_bytes: [u8; 32] = match hex::decode(sender_hex) {
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => return false,
+        };
+        let sender_peer_id = crate::identity::peer_id::PeerId(sender_id_bytes);
+
+        // --- 2. Trust gate: sender must be InnerCircle (Level 8, §8.3) ---
+        let contact = match self
+            .contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&sender_peer_id)
+            .cloned()
+        {
+            Some(c) => c,
+            None => return false, // Unknown sender — silent drop.
+        };
+        if contact.trust_level < crate::trust::levels::TrustLevel::InnerCircle {
+            // Insufficient trust — silent drop, no feedback to sender.
+            return false;
+        }
+
+        // --- 3. Remote-wipe feature gate (user must have opted in) ---
+        let enabled = *self
+            .remote_wipe_enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !enabled {
+            return false;
+        }
+
+        // --- 4. Signature verification over canonical killswitch payload ---
+        // Payload: `<domain> || sender_id_bytes || "remote_wipe"`.
+        // The nonce field (if present) is mixed in to prevent cross-device replay.
+        let nonce = envelope
+            .get("nonce")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let sig_hex = match envelope.get("sig").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return false,
+        };
+        let sig_bytes = match hex::decode(sig_hex) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        // Canonical message: sender peer-id bytes || ASCII "remote_wipe" || nonce bytes.
+        let mut canonical_msg = Vec::with_capacity(32 + 11 + nonce.len());
+        canonical_msg.extend_from_slice(&sender_id_bytes);
+        canonical_msg.extend_from_slice(b"remote_wipe");
+        canonical_msg.extend_from_slice(nonce.as_bytes());
+        if !crate::crypto::signing::verify(
+            &contact.ed25519_public,
+            crate::crypto::signing::DOMAIN_KILLSWITCH,
+            &canonical_msg,
+            &sig_bytes,
+        ) {
+            // Bad signature — silent drop.
+            return false;
+        }
+
+        // --- 5. Execute: erase all on-disk identity data (§3.9.1) ---
+        // `standard_erase` overwrites and unlinks vault files.  In-memory state
+        // becomes stale but harmless; the OS reclaims process memory on exit.
+        // Per-spec: process termination is the recommended post-erase action for
+        // high-assurance scenarios (§3.9 security note).
+        let data_dir = std::path::Path::new(&self.data_dir);
+        crate::identity::killswitch::standard_erase(data_dir);
+
+        // Push a RemoteWiped event so the UI can display a notification and
+        // guide the user through recovery before the process exits.
+        self.push_event(
+            "RemoteWiped",
+            serde_json::json!({ "senderPeerId": sender_hex }),
+        );
+
+        true
     }
 }
 

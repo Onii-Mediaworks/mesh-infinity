@@ -25,7 +25,7 @@
 //!
 //! TODO: display certificate fingerprint in the shell UI and WebUI.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};

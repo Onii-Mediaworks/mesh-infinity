@@ -33,64 +33,56 @@ required_by_spec = true
 
 [[target]]
 name = "fuzz_decrypt_message"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/crypto/message_encrypt.rs"
 threat = "malformed ciphertext, nonce, or tag causing panic or false-positive decrypt"
 required_by_spec = true
-unblock_condition = "dedicated cargo-fuzz harness exists for decrypt_message and its byte-level decrypt entry points"
 
 [[target]]
 name = "fuzz_parse_routing_announcement"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/routing/announcement.rs"
 threat = "malformed routing announcement bytes causing panic, replay acceptance, or trust mutation"
 required_by_spec = true
-unblock_condition = "dedicated cargo-fuzz harness exists for ReachabilityAnnouncement parse/process inputs"
 
 [[target]]
 name = "fuzz_parse_pairing_qr"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/pairing/methods.rs"
 threat = "malformed pairing QR payload bytes before semantic pairing use"
 required_by_spec = true
-unblock_condition = "QR-specific decode entry point is extracted and fuzzed separately from generic pairing JSON"
 
 [[target]]
 name = "fuzz_vault_load"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/storage/vault.rs"
 threat = "malformed vault file bytes causing panic, silent corruption, or auth bypass"
 required_by_spec = true
-unblock_condition = "byte-oriented vault-load harness exists for persisted vault file formats"
 
 [[target]]
 name = "fuzz_identity_payload"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/identity/self_identity.rs"
 threat = "malformed identity payload bytes causing panic, key confusion, or partial-load state mutation"
 required_by_spec = true
-unblock_condition = "byte-oriented harness exists for SelfIdentity::from_payload and related load decode paths"
 
 [[target]]
 name = "fuzz_ffi_json_inputs"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/ffi/lib.rs"
 threat = "malformed FFI JSON causing panic, trust mutation, or diagnostic/privacy violations"
 required_by_spec = true
-unblock_condition = "registry-backed fuzz harness exists for JSON-accepting FFI entry points"
 
 [[target]]
 name = "fuzz_kcp_packet"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/transport/kcp.rs"
 threat = "malformed KCP segment bytes causing panic, replay confusion, or state corruption"
 required_by_spec = true
-unblock_condition = "cargo-fuzz target exists around KcpState::input with committed seed corpus"
 
 [[target]]
 name = "fuzz_network_sim_actions"
-status = "blocked-design-pending"
+status = "active"
 owner_module = "backend/testing/sim.rs"
 threat = "arbitrary multi-node action sequences violating routing, trust, identity, or kill-switch invariants"
 required_by_spec = true
-unblock_condition = "stateful simulator action decoder and invariant checker exist and run in CI"

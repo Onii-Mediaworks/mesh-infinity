@@ -210,4 +210,19 @@ impl MeshRuntime {
     pub fn drain_wifi_direct_session(&self, peer_mac: &str) -> Result<usize, String> {
         crate::transport::wifi_direct::drain_wifi_direct_session(peer_mac)
     }
+
+    /// Remove a Rust-owned Wi-Fi Direct fd session after Android reports that
+    /// the P2P group disconnected or the drain loop observes a socket error.
+    #[cfg(target_os = "android")]
+    pub fn remove_wifi_direct_session(&self, peer_mac: &str) -> Result<(), String> {
+        if peer_mac.trim().is_empty() {
+            return Err("peer_mac must not be empty".into());
+        }
+        crate::transport::wifi_direct::remove_wifi_direct_session(peer_mac);
+        self.push_event(
+            "AndroidWiFiDirectSessionFdRemoved",
+            serde_json::json!({ "peerMac": peer_mac }),
+        );
+        Ok(())
+    }
 }

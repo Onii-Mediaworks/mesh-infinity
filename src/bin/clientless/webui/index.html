@@ -3,51 +3,191 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mesh Infinity — Node Management</title>
+  <title>Mesh Infinity Node Management</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #1a1a2e; }
-    h1 { color: #2c6ee2; }
-    .card { border: 1px solid #dde; border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0; }
-    .status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #ccc; margin-right: 6px; }
-    .status.ok { background: #2ecc71; }
-    a { color: #2c6ee2; }
-    code { background: #f4f4f8; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; color: #171923; background: #f6f7fb; }
+    header { background: #10233f; color: white; padding: 18px 24px; }
+    header .bar { max-width: 1120px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    main { max-width: 1120px; margin: 0 auto; padding: 20px; }
+    h1 { margin: 0; font-size: 22px; font-weight: 650; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .panel { background: white; border: 1px solid #d9deea; border-radius: 8px; padding: 16px; }
+    .metric { display: flex; justify-content: space-between; gap: 12px; margin: 8px 0; }
+    .label { color: #596174; }
+    .list { display: grid; gap: 8px; }
+    .row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid #edf0f6; }
+    .row:first-child { border-top: 0; }
+    .name { font-weight: 600; }
+    .muted { color: #687386; font-size: 13px; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #a0a8b8; margin-right: 6px; }
+    .dot.on { background: #15985c; }
+    button { min-width: 72px; border: 1px solid #b8c2d6; border-radius: 6px; background: #ffffff; padding: 7px 10px; cursor: pointer; }
+    header button { min-width: 0; border-color: #5e718f; background: #173457; color: white; }
+    button[data-on="true"] { color: #8d1b1b; border-color: #d7b5b5; }
+    button[data-on="false"] { color: #165d35; border-color: #a9cfb9; }
+    code { background: #eef2f8; padding: 2px 5px; border-radius: 4px; }
   </style>
 </head>
 <body>
-  <h1>Mesh Infinity Node Management</h1>
-  <p>Node Management Interface — <a href="/api/health">API health check</a></p>
+  <header>
+    <div class="bar">
+      <h1>Mesh Infinity Node Management</h1>
+      <button type="button" onclick="resetToken()">Token</button>
+    </div>
+  </header>
+  <main>
+    <section class="grid">
+      <div class="panel">
+        <h2>Node</h2>
+        <div id="status"></div>
+      </div>
+      <div class="panel">
+        <h2>Identity</h2>
+        <div id="identity"></div>
+      </div>
+      <div class="panel">
+        <h2>Storage</h2>
+        <div id="storage"></div>
+      </div>
+      <div class="panel">
+        <h2>Build</h2>
+        <div id="build-profile"></div>
+      </div>
+    </section>
 
-  <div class="card" id="health-card">
-    <h2><span class="status" id="status-dot"></span>Node status</h2>
-    <p id="status-text">Checking…</p>
-  </div>
-
-  <div class="card">
-    <h2>API endpoints</h2>
-    <ul>
-      <li><a href="/api/health"><code>GET /api/health</code></a> — health check</li>
-      <li><a href="/api/status"><code>GET /api/status</code></a> — mesh connectivity</li>
-      <li><a href="/api/transports"><code>GET /api/transports</code></a> — transport states</li>
-      <li><a href="/api/peers"><code>GET /api/peers</code></a> — connected peers</li>
-      <li><a href="/api/identity"><code>GET /api/identity</code></a> — node identity</li>
-      <li><a href="/api/modules"><code>GET /api/modules</code></a> — module states</li>
-      <li><a href="/api/storage"><code>GET /api/storage</code></a> — storage metrics</li>
-      <li><a href="/api/updates"><code>GET /api/updates</code></a> — pending updates</li>
-    </ul>
-  </div>
+    <section class="grid" style="margin-top: 14px;">
+      <div class="panel">
+        <h2>Transports</h2>
+        <div class="list" id="transports"></div>
+      </div>
+      <div class="panel">
+        <h2>Modules</h2>
+        <div class="list" id="modules"></div>
+      </div>
+      <div class="panel">
+        <h2>Peers</h2>
+        <div class="list" id="peers"></div>
+      </div>
+    </section>
+  </main>
 
   <script>
-    fetch('/api/health')
-      .then(r => r.json())
-      .then(data => {
-        document.getElementById('status-dot').className = 'status ok';
-        document.getElementById('status-text').textContent =
-          'Running — version ' + data.version;
-      })
-      .catch(() => {
-        document.getElementById('status-text').textContent = 'Could not reach backend.';
-      });
+    let bearerToken = sessionStorage.getItem('mesh_webui_token') || '';
+
+    function ensureToken() {
+      while (!bearerToken) {
+        const entered = prompt('WebUI token');
+        if (entered === null) throw new Error('WebUI token required');
+        bearerToken = entered || '';
+        bearerToken = bearerToken.trim();
+      }
+      sessionStorage.setItem('mesh_webui_token', bearerToken);
+      return bearerToken;
+    }
+
+    function resetToken() {
+      sessionStorage.removeItem('mesh_webui_token');
+      bearerToken = '';
+      ensureToken();
+      load();
+    }
+
+    const api = (path, options = {}) => fetch(path, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        'Authorization': `Bearer ${ensureToken()}`,
+      },
+    }).then(r => {
+      if (r.status === 401) {
+        sessionStorage.removeItem('mesh_webui_token');
+        bearerToken = '';
+        throw new Error('invalid WebUI token');
+      }
+      if (!r.ok) throw new Error(path + ' failed');
+      return r.json();
+    });
+
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+
+    const metric = (label, value) =>
+      `<div class="metric"><span class="label">${esc(label)}</span><span>${esc(value)}</span></div>`;
+
+    async function toggle(kind, id, on) {
+      await api(`/api/${kind}/${encodeURIComponent(id)}/${on ? 'disable' : 'enable'}`, { method: 'POST' });
+      await load();
+    }
+
+    function renderToggles(container, kind, items) {
+      container.innerHTML = items.map(item => `
+        <div class="row">
+          <div>
+            <div class="name"><span class="dot ${item.enabled ? 'on' : ''}"></span>${esc(item.name)}</div>
+            ${item.description ? `<div class="muted">${esc(item.description)}</div>` : ''}
+          </div>
+          <button data-on="${item.enabled}" onclick="toggle('${kind}', ${JSON.stringify(item.id)}, ${item.enabled})">
+            ${item.enabled ? 'Disable' : 'Enable'}
+          </button>
+        </div>
+      `).join('') || '<div class="muted">No entries.</div>';
+    }
+
+    async function load() {
+      const [health, status, identity, storage, buildProfile, transports, modules, peers] = await Promise.all([
+        api('/api/health'),
+        api('/api/status'),
+        api('/api/identity'),
+        api('/api/storage'),
+        api('/api/build-profile'),
+        api('/api/transports'),
+        api('/api/modules'),
+        api('/api/peers'),
+      ]);
+
+      document.getElementById('status').innerHTML =
+        metric('Version', health.version) +
+        metric('Connected', status.connected ? 'yes' : 'no') +
+        metric('Peers', status.peerCount) +
+        metric('Routing entries', status.routingEntries) +
+        metric('VPN mode', status.vpnMode);
+
+      document.getElementById('identity').innerHTML =
+        metric('Mode', identity.mode) +
+        metric('Peer ID', identity.identity?.peerId || 'locked') +
+        metric('Mesh public key', identity.meshPubkey ? identity.meshPubkey.slice(0, 16) + '...' : 'not loaded') +
+        metric('WebUI', identity.webuiLocalOnly ? 'localhost only' : 'network exposed');
+
+      document.getElementById('storage').innerHTML =
+        metric('Data directory', storage.dataDir) +
+        metric('Total bytes', storage.totalBytes);
+
+      document.getElementById('build-profile').innerHTML =
+        metric('Binary', buildProfile.binary) +
+        metric('Target', buildProfile.currentTarget) +
+        metric('Rust backend', buildProfile.usesSharedRustBackend ? 'yes' : 'no') +
+        metric('Cloud required', buildProfile.requiresCloudServices ? 'yes' : 'no');
+
+      renderToggles(document.getElementById('transports'), 'transports', transports.transports || []);
+      renderToggles(document.getElementById('modules'), 'modules', modules.modules || []);
+
+      document.getElementById('peers').innerHTML = (peers.peers || []).map(peer => `
+        <div class="row">
+          <div>
+            <div class="name">${esc(peer.name)}</div>
+            <div class="muted"><code>${esc(peer.id)}</code></div>
+          </div>
+          <div class="muted">${esc(peer.status)}</div>
+        </div>
+      `).join('') || '<div class="muted">No peers.</div>';
+    }
+
+    load().catch(error => {
+      document.getElementById('status').innerHTML = `<div class="muted">${esc(error.message)}</div>`;
+    });
   </script>
 </body>
 </html>

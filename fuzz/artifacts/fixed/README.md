@@ -14,6 +14,7 @@ fuzz/artifacts/fixed/
 
 Each per-bug `README.md` should explain:
 
+- `Target: <fuzz_target_name>` on its own line so CI can replay the input
 - what the input triggered
 - which parser / state machine was affected
 - whether the issue was security-relevant

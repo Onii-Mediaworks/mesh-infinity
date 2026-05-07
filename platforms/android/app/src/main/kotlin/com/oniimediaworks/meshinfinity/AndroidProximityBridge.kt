@@ -107,7 +107,12 @@ class AndroidProximityBridge(
                         @Suppress("DEPRECATION")
                         intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
                     }
+                    val wasConnected = wifiConnected
+                    val previousPeerMac = wifiConnectedDeviceAddress
                     wifiConnected = info?.isConnected == true
+                    if (wasConnected && !wifiConnected) {
+                        removeRustWifiDirectSession(previousPeerMac)
+                    }
                     requestConnectionInfo()
                     emitWifiState()
                 }
@@ -359,11 +364,13 @@ class AndroidProximityBridge(
             channel,
             object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
+                    val previousPeerMac = wifiConnectedDeviceAddress
                     wifiConnected = false
                     wifiConnectionRole = null
                     wifiGroupOwnerAddress = null
                     wifiConnectedDeviceAddress = null
                     closeWifiPairingServer()
+                    removeRustWifiDirectSession(previousPeerMac)
                     emitWifiState()
                     result.success(true)
                 }
@@ -773,18 +780,17 @@ class AndroidProximityBridge(
     //
     // OWNERSHIP CONTRACT (critical — read before modifying):
     //
-    //   1. We call ParcelFileDescriptor.fromSocket(socket).detachFd().
-    //      detachFd() transfers ownership of the underlying OS file descriptor
-    //      to the caller and marks the ParcelFileDescriptor as closed so the
-    //      JVM's garbage collector will NOT call close(fd) when the object is
-    //      finalized.
+    //   1. We call ParcelFileDescriptor.fromSocket(socket).dup().detachFd().
+    //      The explicit dup keeps this path reliable on old Android releases
+    //      where fromSocket() did not always duplicate the Socket's internal
+    //      FileDescriptor. detachFd() then transfers that duplicate fd to Rust.
     //
     //   2. nativeWifiDirectSessionFd(ctxPtr, peerMac, fd) hands the raw fd to
     //      Rust, which wraps it in a TcpStream via from_raw_fd().  After this
     //      point Rust owns the fd exclusively.
     //
     //   3. We MUST NOT use `socket` or `fd` for any further I/O after step 2.
-    //      The socket reference is abandoned; the JVM object is effectively dead.
+    //      Kotlin closes its original Socket after Rust accepts the duplicate.
     //
     //   4. We start drainWifiDirectSession() on drainExecutor.  This calls
     //      nativeWifiDirectDrainSession in a loop, which flushes Rust's outbound
@@ -800,9 +806,10 @@ class AndroidProximityBridge(
             return
         }
         try {
-            // detachFd() extracts the raw fd and severs the JVM's ownership.
-            // After this call the JVM will NOT close the fd on GC.
-            val pfd = ParcelFileDescriptor.fromSocket(socket)
+            // dup().detachFd() gives Rust a separate fd for the same connected
+            // socket. Kotlin can close the original Socket after Rust accepts
+            // the duplicate without invalidating Rust's TcpStream.
+            val pfd = ParcelFileDescriptor.fromSocket(socket).dup()
             val fd = pfd.detachFd()
             // Hand the fd to Rust.  From this point on Rust owns the fd and
             // will close it when the session struct is dropped.
@@ -811,11 +818,16 @@ class AndroidProximityBridge(
                 // Handoff failed (e.g. adapter not available).  The fd is now
                 // in limbo — close it manually to avoid a leak.
                 try {
-                    android.system.Os.close(android.system.Os.open("/proc/self/fd/$fd", android.system.OsConstants.O_RDONLY, 0))
+                    ParcelFileDescriptor.adoptFd(fd).close()
                 } catch (_: Exception) {
                     // Best-effort close; ignore errors.
                 }
                 return
+            }
+            try {
+                socket.close()
+            } catch (_: Exception) {
+                // Rust owns the duplicated fd; closing the original is best-effort.
             }
             // Start the drain loop so Rust-authored frames reach the socket.
             startWifiDirectDrainLoop(peerMac)
@@ -841,12 +853,24 @@ class AndroidProximityBridge(
             while (wifiConnected) {
                 val n = nativeWifiDirectDrainSession(ctxPtr, peerMac)
                 when {
-                    n < 0 -> break              // socket error — exit drain loop
+                    n < 0 -> {
+                        removeRustWifiDirectSession(peerMac)
+                        break
+                    }
                     n == 0 -> Thread.sleep(5)   // nothing to send — yield briefly
                     // n > 0 — frames were flushed; loop immediately for more
                 }
             }
         }
+    }
+
+    private fun removeRustWifiDirectSession(peerMac: String?) {
+        val ctxPtr = NativeLayer1Bridge.contextPointer
+        val mac = peerMac?.takeIf { it.isNotBlank() } ?: return
+        if (ctxPtr == 0L) {
+            return
+        }
+        nativeWifiDirectRemoveSession(ctxPtr, mac)
     }
 
     // -------------------------------------------------------------------------
@@ -950,6 +974,11 @@ class AndroidProximityBridge(
     ): Int
 
     private external fun nativeWifiDirectDrainSession(
+        ctxPtr: Long,
+        peerMac: String,
+    ): Int
+
+    private external fun nativeWifiDirectRemoveSession(
         ctxPtr: Long,
         peerMac: String,
     ): Int

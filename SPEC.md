@@ -15257,7 +15257,7 @@ The fuzz corpus is committed to `fuzz/corpus/` in the repository. Each target ha
 - Manually added when bugs are found and fixed (regression entries)
 - Pruned periodically to remove entries covered by faster/smaller inputs
 
-Fixed crashers and weird-but-valid bug reproducers live under `fuzz/artifacts/fixed/YYYY-MM-DD-short-bug-name/`. Each fixed-artifact directory MUST contain the minimized reproducer bytes and a short `README.md` explaining the bug class and the fix.
+Fixed crashers and weird-but-valid bug reproducers live under `fuzz/artifacts/fixed/YYYY-MM-DD-short-bug-name/`. Each fixed-artifact directory MUST contain the minimized reproducer bytes and a short `README.md` explaining the bug class, the fix, and the owning fuzz target for replay automation.
 
 Any fuzz crash, parser weirdness, trust escalation, panic, replay bug, sanitizer finding, or simulator invariant failure MUST become:
 
@@ -15477,19 +15477,12 @@ Available from tests and from the debug menu (§21.4.3 Simulation section):
 | Format | `cargo fmt --check` | Yes |
 | Fuzz registry consistency | `python3 tests/scripts/check_fuzz_registry.py` or equivalent | Yes |
 | Fuzz smoke (30–60s per active target) | `cargo fuzz run <target> -- -max_total_time=30..60` | Yes |
-| Corpus replay | committed corpus and fixed-artifact reproducers replayed, or an explicit tracked gap if replay is not yet automated | Yes |
+| Corpus replay | committed active corpus inputs and fixed-artifact reproducers replayed | Yes |
 | Flutter analyze | `flutter analyze` | Yes |
 | Flutter tests | `flutter test` | Yes |
 | Build checks required by current repo policy | repo-native build workflow | Yes |
 
-Current repository enforcement on 2026-04-23:
-
-- `quality.yml` enforces Rust quality checks
-- `quality.yml` enforces Flutter analyze/test
-- `quality.yml` enforces fuzz registry consistency
-- `quality.yml` runs 30-second smoke fuzzing for every `active` target in `fuzz/targets.toml`
-
-The current repository does not yet demonstrate full automated corpus-replay coverage for fixed artifacts or a scheduled nightly fuzz/property workflow. Those remain required and must be landed before claiming full CI compliance with this section.
+Per-PR CI MUST enforce every blocking check in this table. Missing automation is not compliance; if a check cannot run in CI for a temporary operational reason, the exception MUST be documented in the audit tracker and the equivalent check MUST run before merge.
 
 #### 21.6.2 Nightly Requirements
 
@@ -26756,7 +26749,9 @@ Dashboard of services the user has pinned/discovered and is actively using. Show
 
 Empty state: prompt to browse and pin services from the mesh.
 
-Backend: `ServicesState.services` from `bridge.fetchHostingConfig()`.
+Backend: `ServicesState.services` from `bridge.fetchServices()` /
+`mi_get_service_list()`. Hosting configuration is separate and belongs to
+`HostingScreen` via `bridge.fetchHostingConfig()`.
 
 #### 22.54.2 BrowseScreen (sub-page: Browse)
 

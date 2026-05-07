@@ -273,7 +273,7 @@ impl MeshRuntime {
         }
     }
 
-    pub(crate) fn load_layer1_startup_config(&mut self) {
+    pub fn load_layer1_startup_config(&mut self) {
         let path = self.layer1_startup_config_path();
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -386,7 +386,7 @@ impl MeshRuntime {
         self.reconcile_layer1_runtime()
     }
 
-    pub(crate) fn reconcile_layer1_runtime(&self) -> Result<(), String> {
+    pub fn reconcile_layer1_runtime(&self) -> Result<(), String> {
         let flags = self
             .transport_flags
             .lock()
@@ -701,10 +701,40 @@ impl MeshRuntime {
         }
     }
 
-    fn clear_mesh_identity_runtime_state(&self) {
+    /// Wipe in-memory Layer 2/3 identity key material exactly once (§3.6.4).
+    ///
+    /// Safe to call concurrently from both the screen-lock path and the
+    /// PIN-timeout path.  An `AtomicBool` compare-exchange ensures at most
+    /// one thread executes the wipe; the other returns immediately.  The flag
+    /// is reset after the wipe completes so a future `unlock_identity` can
+    /// re-populate keys.
+    ///
+    /// Dropping `Option<SelfIdentity>` triggers `Zeroize` on all key fields
+    /// (`SigningKey`, `StaticSecret`, `Zeroizing<[u8;32]>`).
+    pub fn clear_identity_keys(&self) {
+        use std::sync::atomic::Ordering;
+        // Only one thread executes the wipe; all others return immediately.
+        if self
+            .identity_clear_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        // Dropping the SelfIdentity triggers Zeroize on all key fields.
+        *self.identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // Also clear the Layer 1 mesh identity.
         *self.mesh_identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.sync_tunnel_gossip_identity();
         self.sync_announcement_processor_identity();
+        // Reset flag so unlock_identity() can repopulate after re-authentication.
+        self.identity_clear_in_progress
+            .store(false, Ordering::Release);
+    }
+
+    fn clear_mesh_identity_runtime_state(&self) {
+        // Delegate to clear_identity_keys() so the AtomicBool guard is respected.
+        self.clear_identity_keys();
     }
 
     fn current_pin_wipe_threshold(&self) -> Option<u32> {
@@ -820,8 +850,9 @@ impl MeshRuntime {
     }
 
     fn reset_identity_runtime_state(&mut self) {
+        // Wipe key material first through the guarded path, then clear state.
+        self.clear_identity_keys();
         self.identity_unlocked = false;
-        *self.identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.rooms.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.contacts
             .lock()
@@ -1186,6 +1217,7 @@ impl MeshRuntime {
                     services: vec![],
                     sequence: 1,
                     signature: vec![],
+                    prev_hash: None,
                     local_trust: TrustLevel::InnerCircle,
                 };
                 self_entry.sign(&signing_key);
@@ -1991,8 +2023,9 @@ impl MeshRuntime {
     /// subsequent calls that need vault access will fail until `unlock_identity`
     /// is called again.
     pub fn reset_identity(&mut self) {
+        // Wipe key material through the guarded path before clearing other state.
+        self.clear_identity_keys();
         self.identity_unlocked = false;
-        *self.identity.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.rooms.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.contacts
             .lock()
