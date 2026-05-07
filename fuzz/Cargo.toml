@@ -40,6 +40,8 @@ libfuzzer-sys = "0.4"
 serde_json = "1.0"
 ed25519-dalek = "2.0"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+rand_chacha = "0.9"
+rand_core = "0.6"
 
 # The main Mesh Infinity crate — provides all parsers under test.
 # `path` points to the workspace root from the fuzz/ subdirectory.
@@ -158,3 +160,18 @@ path = "fuzz_targets/fuzz_kcp_packet.rs"
 [[bin]]
 name = "fuzz_network_sim_actions"
 path = "fuzz_targets/fuzz_network_sim_actions.rs"
+
+# Gossip map entry (§4.1, §4.2) — drives insert_gossiped() with attacker bytes.
+[[bin]]
+name = "fuzz_gossip_entry"
+path = "fuzz_targets/fuzz_gossip_entry.rs"
+
+# Sphinx packet peel-layer (§11.3) — drives sphinx_peel_layer() with arbitrary headers.
+[[bin]]
+name = "fuzz_sphinx_packet"
+path = "fuzz_targets/fuzz_sphinx_packet.rs"
+
+# Store-and-forward deposit/retrieve/gc (§13) — attacker-controlled payloads and sigs.
+[[bin]]
+name = "fuzz_store_forward"
+path = "fuzz_targets/fuzz_store_forward.rs"

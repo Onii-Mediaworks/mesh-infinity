@@ -86,3 +86,24 @@ status = "active"
 owner_module = "backend/testing/sim.rs"
 threat = "arbitrary multi-node action sequences violating routing, trust, identity, or kill-switch invariants"
 required_by_spec = true
+
+[[target]]
+name = "fuzz_gossip_entry"
+status = "active"
+owner_module = "backend/network/map.rs"
+threat = "malformed gossip entry bytes causing panic, Sybil promotion, or endpoint injection via insert_gossiped()"
+required_by_spec = true
+
+[[target]]
+name = "fuzz_sphinx_packet"
+status = "active"
+owner_module = "backend/transport/mixnet.rs"
+threat = "malformed Sphinx header bytes causing panic or incorrect layer decryption in sphinx_peel_layer()"
+required_by_spec = true
+
+[[target]]
+name = "fuzz_store_forward"
+status = "active"
+owner_module = "backend/routing/store_forward.rs"
+threat = "malformed S&F deposit payloads, invalid expiry signatures, or overflow in storage cap logic"
+required_by_spec = true

@@ -228,6 +228,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// True when the two PIN fields don't match (shown as error text on confirm).
   bool _pinMismatch = false;
 
+  /// Whether to lock the identity when the phone screen locks (§3.6.4, §22.27).
+  /// Defaults to true — opt-out to reduce protection, not opt-in.
+  bool _requirePinAfterLock = true;
+
+  /// Auto-lock timeout in seconds.  0 = require PIN immediately on screen lock.
+  /// Options mirror §22.27: Immediately / 1 min / 5 min / 15 min.
+  int _lockTimeoutSecs = 0;
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
@@ -406,6 +414,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       setState(() => _error = bridge.getLastError() ?? 'Failed to set PIN.');
       return;
     }
+
+    // Write the screen-lock security config (§3.6.4, §22.27).
+    // Called immediately after PIN is set so the lock behaviour is active
+    // from the user's very first session.
+    bridge.setSecurityConfig({
+      'requirePinAfterLock': _requirePinAfterLock,
+      'lockTimeoutSecs': _lockTimeoutSecs,
+    });
 
     // PIN set successfully — proceed to Done.
     _goTo(_Step.done);
@@ -1179,6 +1195,42 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             errorText: _pinMismatch ? 'PINs do not match' : null,
           ),
         ),
+
+        const SizedBox(height: 20),
+
+        // --- Security controls (§3.6.4, §22.27) ----------------------------
+        // "Require PIN after phone lock" — defaults enabled so users are
+        // protected by default; opt-out is available but not the default path.
+        CheckboxListTile(
+          value: _requirePinAfterLock,
+          onChanged: (v) => setState(() => _requirePinAfterLock = v ?? true),
+          title: const Text('Require PIN after phone locks'),
+          subtitle: const Text(
+            'Locks your identity whenever the screen turns off.',
+          ),
+          controlAffinity: ListTileControlAffinity.leading,
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+        ),
+
+        // Timeout dropdown — only shown when "require after lock" is enabled.
+        if (_requirePinAfterLock) ...[
+          const SizedBox(height: 8),
+          DropdownButtonFormField<int>(
+            initialValue: _lockTimeoutSecs,
+            decoration: const InputDecoration(
+              labelText: 'Lock after',
+              isDense: true,
+            ),
+            items: const [
+              DropdownMenuItem(value: 0,    child: Text('Immediately')),
+              DropdownMenuItem(value: 60,   child: Text('1 minute')),
+              DropdownMenuItem(value: 300,  child: Text('5 minutes')),
+              DropdownMenuItem(value: 900,  child: Text('15 minutes')),
+            ],
+            onChanged: (v) => setState(() => _lockTimeoutSecs = v ?? 0),
+          ),
+        ],
 
         const SizedBox(height: 20),
 
