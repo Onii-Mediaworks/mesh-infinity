@@ -141,9 +141,6 @@ const MAX_FFI_LOG_LEVEL: u8 = 4;
 const MAX_FFI_NODE_MODE: u8 = 2;
 const MAX_FFI_PEERS: u32 = 100_000;
 const MAX_FFI_CONNECTIONS: u32 = 1_000_000;
-const MIN_WIREGUARD_PORT: u16 = 1024;
-const MAX_WIREGUARD_PORT: u16 = 65535;
-
 fn validate_binary_flag(name: &str, value: u8) -> Result<(), String> {
     if value <= 1 {
         return Ok(());
@@ -1919,7 +1916,7 @@ pub unsafe extern "C" fn mi_import_offline_bundle(
 ) -> *const std::os::raw::c_char {
     if ctx.is_null() || data_ptr.is_null() || recipient_x25519_secret_hex.is_null() {
         // Can't call set_response on a null ctx; return a static null-terminated string.
-        return b"{\"ok\":false,\"error\":\"null pointer\"}\0".as_ptr() as *const std::os::raw::c_char;
+        return c"{\"ok\":false,\"error\":\"null pointer\"}".as_ptr();
     }
 
     let ctx_ref = unsafe { &*ctx };

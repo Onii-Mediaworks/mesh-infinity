@@ -40,6 +40,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -337,11 +339,12 @@ fn pad_unwrap(obfuscated: &[u8]) -> Option<Vec<u8>> {
 // the traffic look like a mobile app calling a cloud API endpoint.
 
 fn http_wrap(packet: &[u8]) -> Vec<u8> {
-    // Generate a random 16-hex-char request ID using a simple LCG seeded
-    // from OsRng to avoid an additional heavy dep.
+    // Generate a cryptographically random 16-hex-char request ID to make each
+    // fake HTTP request look distinct.  hex::encode produces lowercase hex,
+    // matching the format real mobile clients use for correlation IDs.
     let mut id_bytes = [0u8; 8];
     OsRng.fill_bytes(&mut id_bytes);
-    let request_id = hex_encode(&id_bytes);
+    let request_id = hex::encode(id_bytes);
 
     let header = format!(
         "POST /api/v1/sync HTTP/1.1\r\n\
@@ -528,7 +531,10 @@ fn base32_decode(s: &str) -> Option<Vec<u8>> {
 }
 
 fn dns_session_id(key: &[u8; 32]) -> String {
-    hex_encode(&key[0..4])
+    // Encode the first 4 bytes of the session key as 8 lowercase hex chars.
+    // This gives both sides a stable, session-scoped domain fragment without
+    // exposing the full key in the DNS query.
+    hex::encode(&key[0..4])
 }
 
 const DNS_LABEL_MAX: usize = 63;
@@ -595,11 +601,6 @@ fn lcg_seed_from_key(key: &[u8; 32]) -> u64 {
         seed ^= (byte as u64) << (i * 8);
     }
     seed
-}
-
-/// Encode a byte slice as lowercase hex.
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,8 +1110,9 @@ fn xmpp_wrap(session_key: &[u8; 32], payload: &[u8]) -> Option<Vec<u8>> {
     let from_jid = jid_from_key(session_key, 0);
     let to_jid = jid_from_key(session_key, 1);
 
-    // Base64-encode the payload for the <body> element.
-    let encoded = base64_encode(payload);
+    // Base64-encode the payload for the <body> element.  Standard alphabet
+    // with padding matches what real XMPP clients produce for binary content.
+    let encoded = BASE64_STANDARD.encode(payload);
 
     let stanza = format!(
         "<message from=\"{from_jid}\" to=\"{to_jid}\" type=\"chat\">\
@@ -1128,7 +1130,9 @@ fn xmpp_unwrap(_session_key: &[u8; 32], frame: &[u8]) -> Option<Vec<u8>> {
     if body_end <= body_start {
         return None;
     }
-    base64_decode(&text[body_start..body_end])
+    // Decode the base64 body back to raw payload bytes.  Returns None on any
+    // padding or character error, which will cause the carrier to reject the frame.
+    BASE64_STANDARD.decode(&text[body_start..body_end]).ok()
 }
 
 // --- Rung 2: DNS subdomain carrier (SurvivalSession) ---
@@ -1222,7 +1226,9 @@ fn email_wrap(_session_key: &[u8; 32], payload: &[u8]) -> Option<Vec<u8>> {
     if payload.len() > 512 {
         return None;
     }
-    let encoded = hex_encode(payload);
+    // Encode as lowercase hex so the X-header contains only printable ASCII.
+    // hex::encode always produces a valid RFC 2822 header value.
+    let encoded = hex::encode(payload);
     let msg = format!(
         "From: noreply@mesh.local\r\n\
          To: relay@mesh.local\r\n\
@@ -1240,27 +1246,10 @@ fn email_unwrap(_session_key: &[u8; 32], frame: &[u8]) -> Option<Vec<u8>> {
     let end = text[start..].find('\r').map(|i| start + i).unwrap_or(text.len());
     let hex_str = &text[start..end];
 
-    // Decode hex string.
-    if hex_str.len() % 2 != 0 {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(hex_str.len() / 2);
-    let hex_bytes = hex_str.as_bytes();
-    for chunk in hex_bytes.chunks(2) {
-        let hi = from_hex_nibble(chunk[0])?;
-        let lo = from_hex_nibble(chunk[1])?;
-        bytes.push((hi << 4) | lo);
-    }
-    Some(bytes)
-}
-
-fn from_hex_nibble(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    // Decode the hex string.  hex::decode returns Err on malformed input
+    // (odd length, non-hex chars) — map that to None so the carrier rejects
+    // the frame cleanly rather than panicking.
+    hex::decode(hex_str).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1284,66 +1273,6 @@ fn jid_from_key(key: &[u8; 32], index: u8) -> String {
     let local = base32_encode(&out[..6]).to_ascii_lowercase();
     let domain = base32_encode(&out[6..10]).to_ascii_lowercase();
     format!("{local}@{domain}.xmpp")
-}
-
-// ---------------------------------------------------------------------------
-// Helper: base64 encode/decode (standard alphabet, no padding)
-// ---------------------------------------------------------------------------
-fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
-        out.push(ALPHABET[(b0 >> 2)] as char);
-        out.push(ALPHABET[((b0 & 3) << 4) | (b1 >> 4)] as char);
-        if chunk.len() > 1 {
-            out.push(ALPHABET[((b1 & 0xF) << 2) | (b2 >> 6)] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(ALPHABET[b2 & 0x3F] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
-
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim();
-    let chars: Vec<u8> = s.bytes().collect();
-    if chars.len() % 4 != 0 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(chars.len() / 4 * 3);
-    for chunk in chars.chunks(4) {
-        let a = b64_val(chunk[0])?;
-        let b = b64_val(chunk[1])?;
-        out.push((a << 2) | (b >> 4));
-        if chunk[2] != b'=' {
-            let c = b64_val(chunk[2])?;
-            out.push(((b & 0xF) << 4) | (c >> 2));
-            if chunk[3] != b'=' {
-                let d = b64_val(chunk[3])?;
-                out.push(((c & 3) << 6) | d);
-            }
-        }
-    }
-    Some(out)
-}
-
-fn b64_val(b: u8) -> Option<u8> {
-    match b {
-        b'A'..=b'Z' => Some(b - b'A'),
-        b'a'..=b'z' => Some(b - b'a' + 26),
-        b'0'..=b'9' => Some(b - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
 }
 
 // ---------------------------------------------------------------------------

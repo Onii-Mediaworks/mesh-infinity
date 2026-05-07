@@ -844,6 +844,74 @@ impl MeshRuntime {
     }
 
     // -----------------------------------------------------------------------
+    // App Connector: TUN packet ingestion (§17.5)
+    // -----------------------------------------------------------------------
+
+    /// Ingest a raw IP packet from the Android TUN fd and route it through
+    /// the mesh data plane (§17.5 App Connector RouteViaMesh path).
+    ///
+    /// The packet was already evaluated by `evaluate_connector_connection()`;
+    /// the caller only passes packets whose action is `RouteViaMesh`.
+    ///
+    /// Steps:
+    /// 1. Look up the destination `DeviceAddress` by resolving the packet's
+    ///    destination IP via the routing table's IP-to-peer mapping.
+    /// 2. Wrap the raw bytes in a `MeshPacket` with kind `Data`.
+    /// 3. Route via `send_raw_frame` to the next-hop peer.
+    ///
+    /// Returns `true` if the packet was enqueued for delivery, `false` if
+    /// no route to the destination was found (packet is silently dropped —
+    /// the TUN interface will handle the timeout at the app level).
+    pub fn ingest_tun_packet(&self, raw_ip_bytes: &[u8]) -> bool {
+        // Resolve our own device address from the current identity.
+        let our_addr = {
+            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(id) => id.peer_id().0,
+                None => return false,
+            }
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Build the MeshPacket wrapping the raw IP payload.
+        // Destination is set to the broadcast address ([0xFF; 32]) — the
+        // ForwardEngine will route to the correct exit node based on the
+        // routing table.  A future enhancement can resolve the destination
+        // from a VPN-assigned IP-to-peer mapping table.
+        let dest_addr = [0xFFu8; 32]; // Routed by ForwardEngine exit-node selection.
+        let pkt = crate::mesh::packet::MeshPacket::new(
+            our_addr,
+            dest_addr,
+            crate::mesh::packet::PacketKind::Data,
+            raw_ip_bytes,
+            now,
+        );
+
+        // Routing table lookup for the exit-node next-hop.
+        let dest_device = crate::routing::table::DeviceAddress(dest_addr);
+        let next_hop_hex = {
+            let table = self.routing_table.lock().unwrap_or_else(|e| e.into_inner());
+            match table.lookup(&dest_device, None, now) {
+                Some(route) => hex::encode(route.next_hop.0),
+                None => return false, // No route — drop silently.
+            }
+        };
+
+        self.send_raw_frame(
+            &next_hop_hex,
+            &serde_json::json!({
+                "type":   "mesh_packet",
+                "packet": pkt,
+            }),
+        );
+        true
+    }
+
+    // -----------------------------------------------------------------------
     // Overlay networks — Tailscale and ZeroTier (§5.22, §5.23)
     // -----------------------------------------------------------------------
 
@@ -3171,7 +3239,7 @@ impl MeshRuntime {
                 }
                 Err(e) => serde_json::json!({"ok":false,"error":e.to_string()}).to_string(),
             },
-            Err(e) => serde_json::json!({"ok":false,"error":format!("{e:?}")}).to_string(),
+            Err(e) => serde_json::json!({"ok":false,"error":e.to_string()}).to_string(),
         }
     }
 

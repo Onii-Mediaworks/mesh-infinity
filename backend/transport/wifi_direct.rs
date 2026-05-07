@@ -1834,12 +1834,10 @@ fn parse_mdns_packet(data: &[u8], src: SocketAddr) -> Option<Vec<MdnsService>> {
                 let kv = parse_txt_rdata(rdata);
                 txt_records.entry(owner.clone()).or_default().extend(kv);
             }
-            DNS_TYPE_SRV => {
+            DNS_TYPE_SRV if rdata.len() >= 6 => {
                 // SRV: priority(2) + weight(2) + port(2) + target
-                if rdata.len() >= 6 {
-                    let port = u16::from_be_bytes([rdata[4], rdata[5]]);
-                    srv_ports.insert(owner.clone(), port);
-                }
+                let port = u16::from_be_bytes([rdata[4], rdata[5]]);
+                srv_ports.insert(owner.clone(), port);
             }
             _ => {}
         }

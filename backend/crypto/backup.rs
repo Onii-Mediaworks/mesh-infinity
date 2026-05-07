@@ -167,7 +167,7 @@ pub enum BackupType {
 }
 
 /// The encrypted backup envelope (serialized to disk / cloud).
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 // Begin the block scope.
 // EncryptedBackup — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -708,6 +708,36 @@ mod tests {
 
         let result = create_backup(b"data", b"12345678", BackupType::Standard, false);
         assert!(result.is_ok());
+    }
+
+    // ── T2-H acceptance criteria (§3.7.4) ─────────────────────────────────────
+
+    #[test]
+    fn cloud_backup_rejects_15_char_passphrase() {
+        // 15 chars — one short of the 16-char minimum for cloud/extended backups.
+        let result = create_backup(b"payload", b"fifteen_chars!!", BackupType::Standard, true);
+        assert!(
+            matches!(result, Err(BackupError::PassphraseTooShort { required: 16, provided: 15 })),
+            "expected PassphraseTooShort for 15-char passphrase"
+        );
+    }
+
+    #[test]
+    fn cloud_backup_accepts_16_char_passphrase() {
+        // Exactly 16 chars — at the minimum.
+        let result = create_backup(b"payload", b"sixteen_chars!!!", BackupType::Standard, true);
+        assert!(result.is_ok(), "16-char passphrase must be accepted");
+    }
+
+    #[test]
+    fn cloud_backup_error_message_is_user_friendly() {
+        let err = create_backup(b"data", b"short", BackupType::Standard, true)
+            .expect_err("short passphrase must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("need") || msg.contains("short") || msg.contains("16"),
+            "error message must be user-friendly, got: {msg}"
+        );
     }
 
     #[test]

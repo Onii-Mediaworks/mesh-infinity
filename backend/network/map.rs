@@ -442,7 +442,7 @@ impl NetworkMap {
 
         // Keep the highest-sequence entry per source.
         let current_best = staged_sources.get(source_id);
-        if current_best.map_or(true, |existing| entry.sequence > existing.sequence) {
+        if current_best.is_none_or(|existing| entry.sequence > existing.sequence) {
             staged_sources.insert(*source_id, entry);
         }
 
@@ -608,7 +608,7 @@ impl NetworkMap {
             | TransportType::PPPoE
             | TransportType::Dialup => {
                 // Short printable ASCII identifier, ≤ 128 bytes.
-                endpoint.len() <= 128 && endpoint.bytes().all(|b| b >= 0x20 && b < 0x7f)
+                endpoint.len() <= 128 && endpoint.bytes().all(|b| (0x20..0x7f).contains(&b))
             }
             // Overlay/mixnet types: node addresses are base32/base64 identifiers
             // or onion-style strings.  Restrict to alphanumeric + safe punctuation
@@ -627,7 +627,7 @@ impl NetworkMap {
             TransportType::DeniableCarrier => {
                 Self::is_valid_clearnet_endpoint(endpoint)
                     || (endpoint.len() <= 256
-                        && endpoint.bytes().all(|b| b >= 0x20 && b < 0x7f))
+                        && endpoint.bytes().all(|b| (0x20..0x7f).contains(&b)))
             }
         }
     }
