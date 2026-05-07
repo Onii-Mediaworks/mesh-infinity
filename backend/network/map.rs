@@ -49,6 +49,24 @@ pub const GOSSIP_RATE_LIMIT_TRUSTED: u32 = 5000;
 // Defined by the spec; must not change without a version bump.
 pub const MAX_FUTURE_TIMESTAMP_SECS: u64 = 3600;
 
+/// Maximum age of a gossiped timestamp (§4.2): entries older than 30 days
+/// are rejected to prevent replay of stale map data.
+/// Matches STALENESS_SECS so the replay window equals the prune window.
+pub const MAX_PAST_TIMESTAMP_SECS: u64 = STALENESS_SECS;
+
+/// Maximum number of staged sources per target peer in the multi-source
+/// confirmation buffer.  Caps memory consumption from flooding attacks.
+const MAX_STAGED_SOURCES_PER_PEER: usize = 10;
+
+/// Maximum total entries held in the multi-source staging buffer.
+/// Prevents unbounded memory growth if many distinct peers are being staged.
+const MAX_STAGED_PEERS: usize = 10_000;
+
+/// Minimum seconds between accepted sequence updates for the same peer.
+/// Rejects update floods — a peer legitimately rotates its map entry at
+/// most once per few seconds.  Trusted peers use 10× looser enforcement.
+const MIN_UPDATE_INTERVAL_SECS: u64 = 1;
+
 // ---------------------------------------------------------------------------
 // Network Map Entry
 // ---------------------------------------------------------------------------
@@ -262,6 +280,10 @@ pub struct NetworkMap {
     /// Value: map of source_peer_id → best (highest-sequence) entry from that source.
     #[serde(skip)]
     pending_multi_source: HashMap<PeerId, HashMap<PeerId, NetworkMapEntry>>,
+    /// Timestamp of the most recently accepted sequence update per peer.
+    /// Used to enforce MIN_UPDATE_INTERVAL_SECS rate limiting (§4.2).
+    #[serde(skip)]
+    last_update_ts: HashMap<PeerId, u64>,
 }
 
 impl NetworkMap {
@@ -287,30 +309,53 @@ impl NetworkMap {
 
     /// Insert or update an entry. Returns true if the entry was accepted.
     ///
-    /// Acceptance rules (§4.5):
-    /// 1. Sequence must be strictly greater than existing (or new entry)
-    /// 2. Timestamp must not be more than 1 hour in the future
-    /// 3. Signature must be valid (signature verification is caller's responsibility)
-    /// 4. If prev_hash is present, it must match the hash of the existing entry's payload
+    /// Acceptance rules (§4.2, §4.5):
+    /// 1. Timestamp must be within [now − 30 days, now + 1 hour].
+    /// 2. Sequence must be strictly greater than existing (or new entry).
+    /// 3. Per-peer update rate: at most 1 accepted update per MIN_UPDATE_INTERVAL_SECS.
+    /// 4. Field validation must pass (lengths, endpoint formats, avatar hash length).
+    /// 5. If prev_hash is present and an existing entry is stored, it must match.
+    /// 6. New entries with sequence > 0 must carry a prev_hash.
+    ///
+    /// Signature verification is the caller's responsibility (gossip.rs runs it
+    /// before reaching here).
     pub fn insert(&mut self, entry: NetworkMapEntry, now: u64) -> Result<bool, MapError> {
-        // Check future timestamp
+        // --- Timestamp window check (§4.2) ---
+        // Upper bound: entry must not be more than 1 hour in the future.
         if entry.last_seen > now + MAX_FUTURE_TIMESTAMP_SECS {
             return Err(MapError::FutureTimestamp {
                 entry_ts: entry.last_seen,
                 now,
             });
         }
+        // Lower bound: entries older than 30 days are replay candidates; reject.
+        if now.saturating_sub(entry.last_seen) > MAX_PAST_TIMESTAMP_SECS {
+            return Err(MapError::TimestampTooOld {
+                entry_ts: entry.last_seen,
+                now,
+            });
+        }
 
-        // Validate field lengths (§4.2 gossip validation)
+        // --- Field validation (§4.2) ---
         Self::validate_entry(&entry)?;
 
-        // Check sequence and prev_hash against existing entry
-        if let Some(existing) = self.entries.get(&entry.peer_id) {
-            // Sequence must be strictly greater
-            if entry.sequence <= existing.sequence {
-                return Ok(false); // Stale — silently ignore
+        // --- Per-peer update rate limiting (§4.2) ---
+        // Trusted entries (local self-entry) bypass rate limiting.
+        if entry.local_trust != TrustLevel::InnerCircle {
+            if let Some(&last_ts) = self.last_update_ts.get(&entry.peer_id) {
+                if now.saturating_sub(last_ts) < MIN_UPDATE_INTERVAL_SECS {
+                    return Ok(false); // Too fast — silently drop.
+                }
             }
-            // Verify prev_hash chain (§4.5 self-ratcheted entries)
+        }
+
+        // --- Sequence and prev_hash chain check (§4.5) ---
+        if let Some(existing) = self.entries.get(&entry.peer_id) {
+            // Sequence must be strictly greater.
+            if entry.sequence <= existing.sequence {
+                return Ok(false); // Stale — silently ignore.
+            }
+            // Verify prev_hash chain for updates to an existing entry.
             if let Some(prev_hash) = &entry.prev_hash {
                 let expected_hash = existing.payload_hash();
                 if prev_hash != &expected_hash {
@@ -320,7 +365,10 @@ impl NetworkMap {
                 }
             }
         } else {
-            // New entry: if sequence > 0, expect prev_hash to be present
+            // New entry with sequence > 0: require prev_hash to anchor the chain.
+            // We cannot verify the hash against a previous entry we have never
+            // seen, but requiring its presence ensures the peer maintains chain
+            // discipline; the next update will be verifiable.
             if entry.sequence > 0 && entry.prev_hash.is_none() {
                 return Err(MapError::InvalidSignature(
                     "new entry with sequence > 0 must have prev_hash".into(),
@@ -328,13 +376,16 @@ impl NetworkMap {
             }
         }
 
-        // Check capacity
+        // --- Capacity check ---
         if self.entries.len() >= MAX_MAP_ENTRIES && !self.entries.contains_key(&entry.peer_id) {
-            // Need to evict — LRU of untrusted entries first
+            // Need to evict — LRU of untrusted entries first.
             self.evict_for_new_entry(&entry);
         }
 
-        self.entries.insert(entry.peer_id, entry);
+        let peer_id = entry.peer_id;
+        self.entries.insert(peer_id, entry);
+        // Record the accepted-update timestamp for future rate-limit checks.
+        self.last_update_ts.insert(peer_id, now);
         Ok(true)
     }
 
@@ -383,11 +434,28 @@ impl NetworkMap {
             }
         }
 
+        // Enforce total staging map size cap to prevent memory exhaustion.
+        if !self.pending_multi_source.contains_key(&target_peer)
+            && self.pending_multi_source.len() >= MAX_STAGED_PEERS
+        {
+            // Staging buffer full — drop silently.  The entry may arrive again
+            // once existing staged entries are promoted or expire.
+            return Ok(false);
+        }
+
         // Stage the entry under this source.
         let staged_sources = self
             .pending_multi_source
             .entry(target_peer)
             .or_default();
+
+        // Enforce per-peer source cap to limit per-entry memory consumption.
+        if !staged_sources.contains_key(source_id)
+            && staged_sources.len() >= MAX_STAGED_SOURCES_PER_PEER
+        {
+            // Too many distinct sources already staged — drop this one.
+            return Ok(false);
+        }
 
         // Keep the highest-sequence entry per source.
         let current_best = staged_sources.get(source_id);
@@ -428,13 +496,26 @@ impl NetworkMap {
 
     /// Remove stale entries (not seen within staleness threshold).
     pub fn prune_stale(&mut self, now: u64) {
-        self.entries.retain(|_, entry| {
-            // Never prune trusted entries automatically
+        let mut pruned: Vec<PeerId> = Vec::new();
+        self.entries.retain(|id, entry| {
             if entry.local_trust.is_trusted_tier() {
                 return true;
             }
-            // Prune untrusted entries older than threshold
-            now.saturating_sub(entry.last_seen) < STALENESS_SECS
+            let keep = now.saturating_sub(entry.last_seen) < STALENESS_SECS;
+            if !keep {
+                pruned.push(*id);
+            }
+            keep
+        });
+        // Clean up rate-limit timestamps for pruned peers.
+        for id in &pruned {
+            self.last_update_ts.remove(id);
+        }
+        // Also prune the staging buffer for peers that are now stale.
+        self.pending_multi_source.retain(|id, staged| {
+            // Keep staging entries only if at least one staged entry is fresh.
+            staged.values().any(|e| now.saturating_sub(e.last_seen) < STALENESS_SECS)
+                && !pruned.contains(id)
         });
     }
 
@@ -450,6 +531,8 @@ impl NetworkMap {
 
     /// Remove an entry.
     pub fn remove(&mut self, peer_id: &PeerId) -> Option<NetworkMapEntry> {
+        self.last_update_ts.remove(peer_id);
+        self.pending_multi_source.remove(peer_id);
         self.entries.remove(peer_id)
     }
 
@@ -544,10 +627,15 @@ impl NetworkMap {
                 // Short printable ASCII identifier, ≤ 128 bytes.
                 endpoint.len() <= 128 && endpoint.bytes().all(|b| b >= 0x20 && b < 0x7f)
             }
-            // Overlay/mixnet types: accept any printable string ≤ 256 bytes.
+            // Overlay/mixnet types: node addresses are base32/base64 identifiers
+            // or onion-style strings.  Restrict to alphanumeric + safe punctuation
+            // to prevent injection into downstream parsers.
             TransportType::GNUnet
             | TransportType::Mixnet => {
-                endpoint.len() <= 256 && endpoint.is_ascii()
+                endpoint.len() <= 128
+                    && endpoint
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
             }
         }
     }
@@ -701,6 +789,9 @@ impl NetworkMap {
 pub enum MapError {
     #[error("Entry timestamp {entry_ts} is more than 1 hour in the future (now: {now})")]
     FutureTimestamp { entry_ts: u64, now: u64 },
+    /// Lower-bound timestamp violation (§4.2 replay prevention).
+    #[error("Entry timestamp {entry_ts} is more than 30 days in the past (now: {now})")]
+    TimestampTooOld { entry_ts: u64, now: u64 },
     #[error("Too many transport hints ({0}, max 8)")]
     TooManyTransportHints(usize),
     #[error("Too many public keys ({0}, max 16)")]
