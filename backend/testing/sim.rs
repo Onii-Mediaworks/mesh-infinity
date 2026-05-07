@@ -102,15 +102,43 @@ pub fn run_action_sequence(actions: &[SimulatorAction]) -> SimulatorRunReport {
 }
 
 /// Small deterministic adapter from abstract fuzz actions to simulator calls.
+///
+/// The runner wraps a [`NetworkSimulator`] and translates abstract
+/// [`SimulatorAction`] values into concrete simulator operations.  It also
+/// maintains auxiliary bookkeeping that the raw simulator does not have:
+///
+/// - `disavowed_pairs`: pairs whose trust has been revoked this session.
+///   A disavowal is permanent — [`SimulatorAction::RestoreLink`] will never
+///   re-enable a disavowed link (unlike a plain partition).
+/// - `killed`: set by [`SimulatorAction::TriggerKillswitch`]; all subsequent
+///   sends are no-ops and the invariant checker verifies permanent partition.
 struct SimulatorActionRunner {
+    /// The underlying in-memory network simulator.
     sim: NetworkSimulator,
+    /// Node IDs created so far by [`SimulatorAction::CreateNode`].
     nodes: Vec<String>,
+    /// All directional links added so far (each bidirectional link is two entries).
     links: Vec<(String, String)>,
+    /// Maximum number of nodes this runner will create.
     max_nodes: usize,
+    /// Monotonically increasing counter stamped on each outgoing packet so
+    /// test payloads are unique and order can be verified.
     sequence: u64,
+    /// Incremented by [`SimulatorAction::RotateKey`]; stamped on payloads so
+    /// tests can distinguish pre- and post-rotation packets.
     key_epoch: u64,
+    /// Set to `true` by [`SimulatorAction::TriggerKillswitch`].  While `true`,
+    /// all send operations are skipped and the invariant checker verifies that
+    /// all links remain fully partitioned.
     killed: bool,
+    /// Toggled by [`SimulatorAction::ToggleTransport`].  When `false`, sends
+    /// are no-ops (unless `force_send` is set) and all links are partitioned.
     transport_enabled: bool,
+    /// Pairs for which trust has been permanently revoked this session.
+    /// Stored as `(from, to)` directional pairs.  Both directions are recorded
+    /// when [`SimulatorAction::DisavowPeer`] fires.  [`restore_links`] skips
+    /// any pair in this list so the partition cannot be accidentally lifted.
+    disavowed_pairs: Vec<(String, String)>,
 }
 
 impl SimulatorActionRunner {
@@ -124,6 +152,7 @@ impl SimulatorActionRunner {
             key_epoch: 0,
             killed: false,
             transport_enabled: true,
+            disavowed_pairs: Vec::new(),
         }
     }
 
@@ -141,7 +170,7 @@ impl SimulatorActionRunner {
             SimulatorAction::RestoreLink => self.restore_links(),
             SimulatorAction::AdvanceTime => self.sim.run(3),
             SimulatorAction::RotateKey => self.rotate_key(),
-            SimulatorAction::DisavowPeer => self.partition_primary_link(),
+            SimulatorAction::DisavowPeer => self.revoke_trust(),
             SimulatorAction::TriggerKillswitch => self.trigger_killswitch(),
             SimulatorAction::RestartNode => self.restart_primary_node(),
             SimulatorAction::ReloadVault => self.sim.tick(),
@@ -221,8 +250,45 @@ impl SimulatorActionRunner {
 
     fn restore_links(&mut self) {
         for (from, to) in self.links.clone() {
-            self.sim.restore(&from, &to);
+            // Never restore a link that has been permanently disavowed.  Trust
+            // revocation is session-scoped: even after a RestoreLink action or
+            // node restart, the disavowed pair stays partitioned.
+            if !self.disavowed_pairs.contains(&(from.clone(), to.clone())) {
+                self.sim.restore(&from, &to);
+            }
         }
+    }
+
+    /// Revoke trust for the primary node pair.
+    ///
+    /// Unlike a plain partition, a trust revocation is recorded in
+    /// `disavowed_pairs` and is permanent for the session: subsequent
+    /// [`SimulatorAction::RestoreLink`] actions will not re-enable the pair's
+    /// link.  Both directions (from→to and to→from) are recorded and
+    /// partitioned so the disavowal is fully bidirectional.
+    fn revoke_trust(&mut self) {
+        // A disavowal requires at least two nodes.
+        self.ensure_min_nodes(2);
+
+        if let Some((from, to)) = self.primary_pair() {
+            // Record both directions as permanently disavowed.  Checking for
+            // duplicates avoids bloating the list on repeated DisavowPeer actions.
+            let fwd = (from.clone(), to.clone());
+            let rev = (to.clone(), from.clone());
+            if !self.disavowed_pairs.contains(&fwd) {
+                self.disavowed_pairs.push(fwd);
+            }
+            if !self.disavowed_pairs.contains(&rev) {
+                self.disavowed_pairs.push(rev);
+            }
+
+            // Apply the physical partition to match the disavowal.
+            self.sim.partition(&from, &to);
+            self.sim.partition(&to, &from);
+        }
+
+        // Advance time so the disavowal is reflected in the next tick's stats.
+        self.sim.tick();
     }
 
     fn rotate_key(&mut self) {
@@ -284,6 +350,13 @@ impl SimulatorActionRunner {
     }
 
     fn add_link(&mut self, from: &str, to: &str, latency: u32) {
+        // Never recreate a link for a disavowed pair.  `sim.add_link()` always
+        // starts the new link at loss_rate=0.0, which would silently undo the
+        // permanent partition that trust revocation requires.
+        if self.disavowed_pairs.contains(&(from.to_string(), to.to_string())) {
+            return;
+        }
+
         self.sim.add_link(from, to, latency, 0.0);
 
         let link = (from.to_string(), to.to_string());
@@ -298,6 +371,11 @@ impl SimulatorActionRunner {
         previous_dropped: u64,
         previous_tick: u64,
     ) {
+        // --- Universal monotonicity invariants ---
+        //
+        // These hold regardless of network state.  Delivered and dropped counts
+        // never go backwards.  Simulated time only moves forward.
+
         assert!(
             self.sim.delivered_packets >= previous_delivered,
             "delivered packet count must be monotonic"
@@ -315,11 +393,48 @@ impl SimulatorActionRunner {
             "action runner must enforce the node bound"
         );
 
+        // All tracked node IDs must still be present in the simulator.
         for id in &self.nodes {
             assert!(
                 self.sim.node(id).is_some(),
                 "tracked simulator node must exist: {id}"
             );
+        }
+
+        // --- Post-kill-switch invariants ---
+        //
+        // After TriggerKillswitch fires, every link the runner knows about must
+        // be fully partitioned (loss_rate = 1.0).  The send_message helper
+        // already guards on `self.killed` so no new sends can succeed, but we
+        // also assert the physical link state to catch any code that bypasses
+        // the guard.
+        if self.killed {
+            for (from, to) in &self.links {
+                // The link might not exist if it was never fully established
+                // (e.g. node created but pair never wired up).  Only assert
+                // links that actually exist in the simulator.
+                if let Some(link) = self.sim.link(from, to) {
+                    assert_eq!(
+                        link.loss_rate, 1.0,
+                        "link {from}->{to} must be fully partitioned after kill-switch"
+                    );
+                }
+            }
+        }
+
+        // --- Post-disavowal invariants ---
+        //
+        // Each pair in disavowed_pairs must maintain loss_rate = 1.0 for the
+        // rest of the session.  restore_links() already skips disavowed pairs,
+        // so this assertion catches any code that accidentally bypasses that
+        // guard or calls sim.restore() directly on a disavowed pair.
+        for (from, to) in &self.disavowed_pairs {
+            if let Some(link) = self.sim.link(from, to) {
+                assert_eq!(
+                    link.loss_rate, 1.0,
+                    "disavowed link {from}->{to} must remain permanently partitioned"
+                );
+            }
         }
     }
 }
