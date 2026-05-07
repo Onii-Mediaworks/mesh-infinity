@@ -64,6 +64,7 @@ pub mod nfc;
 pub mod nl80211;
 pub mod obfuscation;
 pub mod offline;
+pub mod passive_assist;
 pub mod overlay_client;
 pub mod rf_sdr;
 pub mod solver;

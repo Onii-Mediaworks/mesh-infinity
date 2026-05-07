@@ -341,8 +341,19 @@ pub fn solve(input: &SolverInput) -> SolverOutput {
         })
         .collect();
 
-    // If nothing survived Layer 1, we have a failure
+    // If nothing survived Layer 1, try the deniable carrier ladder first
+    // when ThreatContext >= Elevated (§5.26.5, §5.27).  The ladder's QUIC/
+    // HTTP3 / XMPP / DNS rungs work even when all ordinary transports are
+    // filtered.  Only fall through to SolverFailure if Layer 1 also failed
+    // in Normal context, where deniable carriers are not required.
     if candidates.is_empty() {
+        if input.threat_context == ThreatContext::Elevated
+            || input.threat_context == ThreatContext::Critical
+        {
+            // Delegate to the carrier ladder.  The caller is responsible for
+            // routing through CarrierLadder::select() / wrap().
+            return SolverOutput::Single(TransportType::DeniableCarrier);
+        }
         return SolverOutput::Failure(SolverFailure {
             reason: if input.available.iter().all(|t| !t.hardware_available) {
                 FailureReason::NoTransportsAvailable

@@ -106,6 +106,11 @@ pub enum TransportType {
     PPPoE,
     /// Dial-up modem.
     Dialup,
+    /// Deniable carrier ladder (§5.26, §5.27): delegate outbound transport
+    /// selection to the `CarrierLadder` instead of a fixed transport type.
+    /// The ladder selects the highest validated rung available for the current
+    /// session state and threat context.
+    DeniableCarrier,
 }
 
 // Begin the block scope.
@@ -180,6 +185,8 @@ impl TransportType {
             Self::PPPoE => "PPP",
             // Handle this match arm.
             Self::Dialup => "Dial",
+            // Handle this match arm.
+            Self::DeniableCarrier => "Deniable",
         }
     }
 
@@ -433,6 +440,10 @@ impl TransportType {
             Self::Tor | Self::GNUnet => 0.9,
             // Handle this match arm.
             Self::Mixnet => 1.0,
+            // DeniableCarrier delegates actual transport to the carrier ladder.
+            // Score as moderate — the ladder selects stronger anonymization
+            // rungs (QUIC/HTTP3, XMPP, DNS) when available.
+            Self::DeniableCarrier => 0.4,
         }
     }
 
@@ -481,7 +492,10 @@ impl TransportType {
                 // Execute this protocol step.
                 | Self::ZeroTier | Self::Tailscale | Self::GNUnet | Self::Mixnet
                 // Handle this match arm.
-                | Self::BluetoothClassic | Self::NFC => BandwidthClass::High,
+                | Self::BluetoothClassic | Self::NFC
+                // DeniableCarrier: bandwidth depends on selected rung;
+                // report High as the upper bound (QUIC/HTTP3 is high bandwidth).
+                | Self::DeniableCarrier => BandwidthClass::High,
         }
     }
 }

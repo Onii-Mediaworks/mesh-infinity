@@ -620,6 +620,15 @@ impl NetworkMap {
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
             }
+            // DeniableCarrier: the carrier ladder resolves the actual endpoint
+            // address internally; the hint endpoint is an opaque broker locator.
+            // Accept anything that is a valid clearnet endpoint or a short ASCII
+            // identifier — the ladder validates the rest.
+            TransportType::DeniableCarrier => {
+                Self::is_valid_clearnet_endpoint(endpoint)
+                    || (endpoint.len() <= 256
+                        && endpoint.bytes().all(|b| b >= 0x20 && b < 0x7f))
+            }
         }
     }
 
