@@ -175,3 +175,12 @@ path = "fuzz_targets/fuzz_sphinx_packet.rs"
 [[bin]]
 name = "fuzz_store_forward"
 path = "fuzz_targets/fuzz_store_forward.rs"
+
+# --- Target 14: Encrypted offline bundle decode (§5.28) -------------------
+#
+# Drives OfflineBundle::open_as_recipient() with arbitrary bytes to ensure
+# that AEAD failures, bad magic, truncation, and corrupt lengths all return
+# Err without panicking.
+[[bin]]
+name = "fuzz_offline_bundle_decode"
+path = "fuzz_targets/fuzz_offline_bundle_decode.rs"

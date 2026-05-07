@@ -784,6 +784,13 @@ pub enum OfflineError {
     Base45Invalid,
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
+    /// Encrypted bundle wrapper: AEAD authentication tag check failed.
+    /// The bundle may have been tampered with or the wrong key was used.
+    #[error("AEAD authentication failed — bundle tampered or wrong key")]
+    AuthenticationFailed,
+    /// Encrypted bundle wrapper: encryption or key-derivation error.
+    #[error("encryption error: {0}")]
+    EncryptionError(&'static str),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
