@@ -391,21 +391,23 @@ class AndroidAppConnectorVpnService : VpnService() {
                 }
 
                 AndroidVpnPolicyStore.ACTION_ROUTE_VIA_MESH -> {
-                    // Forward the packet through the mesh tunnel.
+                    // Hand the raw IP packet to the Rust mesh data plane.
                     //
-                    // Full tunnel integration: the packet is handed off to the
-                    // Rust backend transport layer via mi_send_raw_packet (to be
-                    // implemented in transport_ops.rs alongside the full data-
-                    // plane).  Until that function is wired up we log the
-                    // decision so it is visible in logcat during development.
-                    //
-                    // TODO(transport): replace this log with a call to
-                    //   MeshNative.sendRawPacket(backendCtxPtr, buffer, 0, length)
-                    //   when the raw-packet ingest path is implemented.
-                    android.util.Log.v(
-                        "AppConnectorVpn",
-                        "RouteViaMesh: $dstIp:$dstPort (domain=$dnsQuestion) len=$length",
+                    // NativeLayer1Bridge.sendRawPacket() calls mi_send_raw_packet
+                    // (§17.5), which invokes TransportOps::ingest_tun_packet() and
+                    // routes the packet to the exit node via the mesh transport
+                    // layer (§5.10).  A false return means the context is not ready
+                    // or no route exists; we drop the packet silently — the
+                    // originating app will observe a connection timeout and retry.
+                    val forwarded = NativeLayer1Bridge.sendRawPacket(
+                        backendCtxPtr, buffer, 0, length,
                     )
+                    if (!forwarded) {
+                        android.util.Log.v(
+                            "AppConnectorVpn",
+                            "RouteViaMesh: dropped (no route) $dstIp:$dstPort len=$length",
+                        )
+                    }
                 }
 
                 else -> {

@@ -3200,6 +3200,68 @@ pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1B
     }
 }
 
+/// JNI entry point for `NativeLayer1Bridge.nativeSendRawPacket`.
+///
+/// Receives a raw IP packet from the Android App Connector VPN tunnel (§5.10,
+/// §17.5) and forwards it into the Rust mesh data plane via
+/// `TransportOps::ingest_tun_packet`.
+///
+/// Returns:
+///   1  — packet accepted and queued for mesh transmission.
+///   0  — empty packet or no mesh route to the destination; packet dropped.
+///  -1  — null/invalid context pointer or JNI error; packet dropped.
+///
+/// # Safety
+///
+/// `ctx_long` must be the value returned by `nativeStartLayer1`.
+/// `packet` must be a valid non-null JNI byte array.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1Bridge_nativeSendRawPacket(
+    mut env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    ctx_long: jni::sys::jlong,
+    packet: jni::objects::JByteArray,
+) -> jni::sys::jint {
+    // Guard: a zero context pointer means the runtime was never allocated.
+    if ctx_long == 0 {
+        return -1;
+    }
+
+    // Retrieve byte array length.
+    let len = match env
+        .with_env(|env| -> jni::errors::Result<_> { Ok(packet.len(env)?) })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(len) => len,
+        _ => return -1,
+    };
+
+    if len == 0 {
+        return 0;
+    }
+
+    // Copy packet bytes from the JVM into a Rust-owned Vec.
+    let bytes: Vec<u8> = match env
+        .with_env(|env| -> jni::errors::Result<_> {
+            let mut buf = vec![0i8; len as usize];
+            packet.get_region(env, 0, &mut buf)?;
+            // SAFETY: i8 and u8 have identical representations; all bit patterns valid.
+            let ubuf: Vec<u8> = unsafe { std::mem::transmute(buf) };
+            Ok(ubuf)
+        })
+        .into_outcome()
+    {
+        jni::Outcome::Ok(b) => b,
+        _ => return -1,
+    };
+
+    // SAFETY: ctx_long was returned by nativeStartLayer1 and is valid while the
+    // startup service holds it (coordinated by HEADLESS_LAYER1_PTR).
+    let ctx = unsafe { &*(ctx_long as *const MeshContext) };
+    if ctx.ingest_tun_packet(&bytes) { 1 } else { 0 }
+}
+
 /// Submit a pairing payload received over Android NFC or Wi-Fi Direct.
 ///
 /// # Safety
@@ -5047,6 +5109,38 @@ pub unsafe extern "C" fn mi_connector_evaluate(
 
     // Return the integer encoding: 0=block, 1=allow_direct, 2=route_via_mesh.
     action.as_ffi_int()
+}
+
+/// Ingest a raw IP packet from the Android TUN fd into the mesh data plane
+/// (§17.5 App Connector `RouteViaMesh` path).
+///
+/// Called by `AndroidAppConnectorVpnService` for every packet whose
+/// `mi_connector_evaluate` result is `ACTION_ROUTE_VIA_MESH` (value 2).
+///
+/// Returns 1 if the packet was accepted and enqueued, 0 if no route exists,
+/// and -1 on invalid arguments.
+///
+/// # Safety
+/// `ctx` must be non-null and from `mesh_init`.
+/// `packet_ptr` must point to at least `packet_len` valid bytes.
+#[no_mangle]
+pub unsafe extern "C" fn mi_send_raw_packet(
+    ctx: *mut MeshContext,
+    packet_ptr: *const u8,
+    packet_len: usize,
+) -> std::os::raw::c_int {
+    // Guard: null context or null pointer are invalid.
+    if ctx.is_null() || packet_ptr.is_null() {
+        return -1;
+    }
+    // Guard: zero-length packet is a no-op, not an error.
+    if packet_len == 0 {
+        return 0;
+    }
+    // SAFETY: caller guarantees ptr..ptr+len is valid for the call duration.
+    let bytes = unsafe { std::slice::from_raw_parts(packet_ptr, packet_len) };
+    let ctx = unsafe { &*ctx };
+    if ctx.ingest_tun_packet(bytes) { 1 } else { 0 }
 }
 
 // ---------------------------------------------------------------------------

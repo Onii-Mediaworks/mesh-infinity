@@ -250,4 +250,35 @@ object NativeLayer1Bridge {
     // Returns: a new 32-byte ByteArray, or null if no identity is loaded.
     // Caller MUST call `.fill(0)` on the returned array after use.
     private external fun nativeExportLayer1Secret(ctx: Long): ByteArray?
+
+    // Ingest a raw IP packet from the App Connector VPN tunnel into the mesh
+    // data plane (§5.10, §17.5).
+    //
+    // The Rust backend receives the raw IP bytes via `mi_send_raw_packet` and
+    // routes the packet over the mesh transport layer.  Call this from the VPN
+    // service when a selector returns ACTION_ROUTE_VIA_MESH.
+    //
+    // ctx:    MeshContext pointer (cast to Long / jlong).
+    // packet: raw IP packet bytes from the TUN fd.
+    // Returns: true if the packet was accepted and queued for transmission.
+    //          false if the context is not ready, the packet is empty, or the
+    //          Rust side rejected it (e.g. no route to the destination peer).
+    @Synchronized
+    fun sendRawPacket(ctx: Long, packet: ByteArray, offset: Int, length: Int): Boolean {
+        if (!libLoaded) return false
+        if (ctx == 0L) return false
+        if (length <= 0) return false
+        // Slice the relevant portion if the caller provided an offset or sub-length.
+        val bytes = if (offset == 0 && length == packet.size) packet
+                    else packet.copyOfRange(offset, offset + length)
+        return nativeSendRawPacket(ctx, bytes) > 0
+    }
+
+    // JNI declaration matching the Rust symbol mi_send_raw_packet.
+    //
+    // ctx:    MeshContext pointer (cast to Long / jlong).
+    // packet: raw IP packet byte array (whole array is passed; offset/length
+    //         trimming happens in sendRawPacket() above before this call).
+    // Returns: 1 on success, 0 for empty/rejected, -1 on error.
+    private external fun nativeSendRawPacket(ctx: Long, packet: ByteArray): Int
 }
