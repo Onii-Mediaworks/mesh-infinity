@@ -56,7 +56,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 // Invariants are enforced at construction time.
 pub struct MeshContext(Box<MeshRuntime>);
 
-// Begin the block scope.
 // Implement Deref for MeshContext.
 impl std::ops::Deref for MeshContext {
     // Type alias for readability.
@@ -64,19 +63,14 @@ impl std::ops::Deref for MeshContext {
     type Target = MeshRuntime;
     /// Deref to the inner `MeshRuntime` so shims can call service methods
     /// directly without an extra `.0` dereference layer.
-    // Perform the 'deref' operation.
-    // Errors are propagated to the caller via Result.
     fn deref(&self) -> &MeshRuntime {
         &self.0
     }
 }
 
-// Begin the block scope.
 // Implement DerefMut for MeshContext.
 impl std::ops::DerefMut for MeshContext {
     /// Mutable deref for methods that mutate `MeshRuntime` state.
-    // Perform the 'deref mut' operation.
-    // Errors are propagated to the caller via Result.
     fn deref_mut(&mut self) -> &mut MeshRuntime {
         &mut self.0
     }
@@ -92,48 +86,34 @@ impl std::ops::DerefMut for MeshContext {
 /// alignment, sizes).  Both sides use `#[repr(C)]` / `@Packed` for a
 /// stable ABI.  See `frontend/lib/backend/backend_bridge.dart`.
 #[repr(C)]
-// Begin the block scope.
 // FfiMeshConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct FfiMeshConfig {
     /// NUL-terminated UTF-8 path to the data directory.  Null = use default.
-    // Execute this protocol step.
     pub config_path: *const c_char,
     /// Logging verbosity: 0 = off, 1 = error, 2 = info, 3 = debug, 4 = trace.
-    // Execute this protocol step.
     pub log_level: u8,
     /// 1 = route traffic through Tor, 0 = disabled.
-    // Execute this protocol step.
     pub enable_tor: u8,
     /// 1 = allow direct clearnet connections, 0 = disabled.
-    // Execute this protocol step.
     pub enable_clearnet: u8,
     /// 1 = enable local-network peer discovery (mDNS/UDP broadcast).
-    // Execute this protocol step.
     pub mesh_discovery: u8,
     /// 1 = allow this node to relay traffic for other peers.
-    // Execute this protocol step.
     pub allow_relays: u8,
     /// 1 = route traffic through I2P garlic routing.
-    // Execute this protocol step.
     pub enable_i2p: u8,
     /// 1 = enable BLE peer discovery and transport.
-    // Execute this protocol step.
     pub enable_bluetooth: u8,
     /// 1 = enable SDR/RF transport (LoRa etc.).
-    // Execute this protocol step.
     pub enable_rf: u8,
     /// UDP port for the WireGuard tunnel.  0 = OS-assigned.
-    // Execute this protocol step.
     pub wireguard_port: u16,
     /// Maximum peers to maintain.  0 = no limit.
-    // Execute this protocol step.
     pub max_peers: u32,
     /// Maximum simultaneous network connections.  0 = no limit.
-    // Execute this protocol step.
     pub max_connections: u32,
     /// Node operating mode: 0 = leaf, 1 = relay, 2 = gateway.
-    // Execute this protocol step.
     pub node_mode: u8,
 }
 
@@ -190,31 +170,21 @@ fn validate_ffi_config(cfg: &FfiMeshConfig) -> Result<(), String> {
 
 // Thread-local store for errors that occur before a `MeshContext` exists.
 // `mi_last_error_message(null)` reads from here after a failed `mesh_init`.
-// Execute this protocol step.
 thread_local! {
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     static PREINIT_ERROR: std::cell::RefCell<Option<CString>> =
-        // Create a new instance with the specified parameters.
-        // Protocol constant.
         const { std::cell::RefCell::new(None) };
 }
 
 /// Store `msg` in the pre-init thread-local error slot.
 ///
 /// Called only from `mesh_init` before a `MeshContext` is available.
-// Perform the 'set preinit error' operation.
-// Errors are propagated to the caller via Result.
 fn set_preinit_error(msg: &str) {
     // Apply the closure to each element.
-    // Execute this protocol step.
     PREINIT_ERROR.with(|e| {
         // `CString::new` only fails on interior NUL bytes; use a fallback.
         *e.borrow_mut() = CString::new(msg)
             // Check the operation outcome without consuming the error.
             .ok()
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
             .or_else(|| CString::new("init error").ok());
     });
 }
@@ -230,15 +200,12 @@ fn set_preinit_error(msg: &str) {
 /// # Safety
 /// Caller must guarantee the pointer is either null or points to a valid,
 /// NUL-terminated C string that lives at least as long as the returned borrow.
-// Execute this protocol step.
 pub(crate) unsafe fn c_str_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
     // Null pointers are treated as "no value provided" throughout the API.
-    // Guard: validate the condition before proceeding.
     if ptr.is_null() {
         return None;
     }
     // SAFETY: caller guarantees non-null, NUL-terminated.
-    // Execute this protocol step.
     unsafe { CStr::from_ptr(ptr) }.to_str().ok()
 }
 
@@ -258,22 +225,15 @@ pub(crate) unsafe fn c_str_to_str<'a>(ptr: *const c_char) -> Option<&'a str> {
 /// duration of this call.  All other pointer fields inside `config` must be
 /// null or point to valid NUL-terminated UTF-8 strings.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshContext {
     // Null config pointer is a programming error on the Dart side.
-    // Guard: validate the condition before proceeding.
     if config.is_null() {
-        // Execute the operation and bind the result.
-        // Execute this protocol step.
         set_preinit_error("mesh_init: config pointer is null");
         // Return the result to the caller.
-        // Return to the caller.
         return ptr::null_mut();
     }
 
     // SAFETY: caller guarantees config is valid and aligned for this call.
-    // Compute cfg for this protocol step.
     let cfg = unsafe { &*config };
 
     if let Err(error) = validate_ffi_config(cfg) {
@@ -322,25 +282,15 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
     }
 
     // Resolve the data-directory path: use the supplied path or a platform default.
-    // Compute dir for this protocol step.
     let dir = if cfg.config_path.is_null() {
         // Default: $HOME/.mesh-infinity (Linux/macOS) or %APPDATA%\mesh-infinity (Windows).
-        // Execute this protocol step.
         dirs_next::data_local_dir()
             // Apply the closure to each element.
-            // Execute this protocol step.
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             .join("mesh-infinity")
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             .to_string_lossy()
             // Chain the operation on the intermediate result.
-            // Execute this protocol step.
             .into_owned()
-    // Begin the block scope.
-    // Fallback when the guard was not satisfied.
     } else {
         // SAFETY: config_path is non-null; caller guarantees valid NUL-terminated UTF-8.
         // Dispatch on the variant.
@@ -348,24 +298,17 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
             // Wrap the found value for the caller.
             // Wrap the found value.
             Some(s) => s.to_string(),
-            // Update the local state.
             // No value available.
             None => {
-                // Execute the operation and bind the result.
-                // Execute this protocol step.
                 set_preinit_error("mesh_init: config_path is not valid UTF-8");
                 // Return the result to the caller.
-                // Return to the caller.
                 return ptr::null_mut();
             }
         }
     };
 
     // Create the data directory if it does not exist yet.
-    // Guard: validate the condition before proceeding.
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        // Execute the operation and bind the result.
-        // Execute this protocol step.
         eprintln!("[mesh_init] WARNING: failed to create data directory {dir:?}: {e}");
     }
 
@@ -391,7 +334,6 @@ pub unsafe extern "C" fn mesh_init(config: *const FfiMeshConfig) -> *mut MeshCon
     runtime.initialize_startup_state();
     let ctx = Box::new(MeshContext(Box::new(runtime)));
     // Invoke the associated function.
-    // Execute this protocol step.
     Box::into_raw(ctx)
 }
 
@@ -902,11 +844,8 @@ pub extern "system" fn Java_com_oniimediaworks_meshinfinity_AndroidProximityBrid
 /// `ctx` must have been returned by `mesh_init` and not yet destroyed.
 /// No other thread may hold a reference to `ctx` at the time of this call.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
     // Null ctx is a no-op rather than a hard error for defensive robustness.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return;
     }
@@ -927,7 +866,6 @@ pub unsafe extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
 
     // SAFETY: `ctx` was allocated by `Box::into_raw` in `mesh_init`; this
     // is the unique ownership-reclaim point.
-    // Execute this protocol step.
     unsafe {
         drop(Box::from_raw(ctx));
     }
@@ -945,16 +883,12 @@ pub unsafe extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
 /// # Safety
 /// `ctx` must be non-null and point to a valid `MeshContext`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_get_last_error(ctx: *mut MeshContext) -> *const c_char {
     // Guard: a null ctx means the runtime was never initialised.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null, valid for the duration of this call.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Return the stored error pointer if one exists, null otherwise.
     // Dispatch on the variant.
@@ -967,7 +901,6 @@ pub unsafe extern "C" fn mi_get_last_error(ctx: *mut MeshContext) -> *const c_ch
         // Wrap the found value for the caller.
         // Wrap the found value.
         Some(s) => s.as_ptr(),
-        // Update the local state.
         // No value available.
         None => ptr::null(),
     }
@@ -981,14 +914,10 @@ pub unsafe extern "C" fn mi_get_last_error(ctx: *mut MeshContext) -> *const c_ch
 /// # Safety
 /// `ctx` must be null or a valid `MeshContext` pointer.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_last_error_message(ctx: *mut MeshContext) -> *const c_char {
     // Null ctx → read from the pre-init thread-local error store.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         // Apply the closure to each element.
-        // Return to the caller.
         return PREINIT_ERROR.with(|e| {
             // Transform the result, mapping errors to the local error type.
             // Transform each element.
@@ -999,7 +928,6 @@ pub unsafe extern "C" fn mi_last_error_message(ctx: *mut MeshContext) -> *const 
         });
     }
     // Non-null ctx → delegate to the standard error accessor.
-    // Execute this protocol step.
     unsafe { mi_get_last_error(ctx) }
 }
 
@@ -1011,8 +939,6 @@ pub unsafe extern "C" fn mi_last_error_message(ctx: *mut MeshContext) -> *const 
 /// # Safety
 /// `_ptr` is ignored.  Passing any pointer is safe; no memory is freed.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_string_free(_ptr: *mut c_char) {
     // No-op: string lifetime is tied to the MeshContext, not the caller.
 }

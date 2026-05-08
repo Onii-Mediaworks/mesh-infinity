@@ -17,19 +17,14 @@ use super::{c_str_to_str, MeshContext};
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_get_peer_list(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no peers.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate peer-list serialisation to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.get_peer_list())
 }
 
@@ -40,19 +35,14 @@ pub unsafe extern "C" fn mi_get_peer_list(ctx: *mut MeshContext) -> *const c_cha
 /// # Safety
 /// `ctx` must be non-null.  `peer_data` must be valid JSON UTF-8.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_pair_peer(ctx: *mut MeshContext, peer_data: *const c_char) -> i32 {
     // Guard: reject null context.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse the pairing payload JSON string.
-    // Compute json str for this protocol step.
     let json_str = match unsafe { c_str_to_str(peer_data) } {
         Some(s) => s,
         None => return -1,
@@ -60,8 +50,6 @@ pub unsafe extern "C" fn mi_pair_peer(ctx: *mut MeshContext, peer_data: *const c
     // Delegate pairing to service layer.
     // Dispatch on the variant.
     match ctx.pair_peer(json_str) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -1007,22 +995,16 @@ pub unsafe extern "C" fn mi_nfc_pop_outbound_frame(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_get_pairing_payload(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no identity to advertise.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate payload construction to service layer.
     // Dispatch on the variant.
     match ctx.get_pairing_payload() {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(json) => ctx.set_response(&json),
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -1037,30 +1019,18 @@ pub unsafe extern "C" fn mi_get_pairing_payload(ctx: *mut MeshContext) -> *const
 /// # Safety
 /// `ctx` must be non-null.  `peer_id` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_set_trust_level(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id: *const c_char,
-    // Execute this protocol step.
     level: u8,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx has no contacts.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse the peer-ID hex string.
-    // Compute pid hex for this protocol step.
     let pid_hex = match unsafe { c_str_to_str(peer_id) } {
         Some(s) => s,
         None => return -1,
@@ -1068,8 +1038,6 @@ pub unsafe extern "C" fn mi_set_trust_level(
     // Delegate trust update to service layer.
     // Dispatch on the variant.
     match ctx.set_trust_level(pid_hex, level) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -1085,22 +1053,12 @@ pub unsafe extern "C" fn mi_set_trust_level(
 /// # Safety
 /// Same as `mi_set_trust_level`.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_trust_attest(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id: *const c_char,
-    // Execute this protocol step.
     level: i32,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Forward to canonical implementation with a u8 cast.
-    // Execute this protocol step.
     unsafe { mi_set_trust_level(ctx, peer_id, level as u8) }
 }
 
@@ -1109,31 +1067,19 @@ pub unsafe extern "C" fn mi_trust_attest(
 /// # Safety
 /// `ctx` must be non-null.  `peer_id` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_trust_verify_json(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx has no contacts.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse the peer-ID hex string.
-    // Compute pid hex for this protocol step.
     let pid_hex = unsafe { c_str_to_str(peer_id) }.unwrap_or("");
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.trust_verify(pid_hex))
 }
 

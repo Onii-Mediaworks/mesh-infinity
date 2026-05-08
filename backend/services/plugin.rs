@@ -1088,40 +1088,28 @@ pub struct HookInvocation {
 // Invariants are enforced at construction time.
 pub struct PluginManifest {
     /// Unique plugin identifier (reverse-domain, e.g., "com.example.myplugin").
-    // Execute this protocol step.
     pub id: String,
     /// Human-readable name.
-    // Execute this protocol step.
     pub name: String,
     /// Plugin version (semver).
-    // Execute this protocol step.
     pub version: String,
     /// Minimum API version required.
-    // Execute this protocol step.
     pub api_version: String,
     /// Description.
-    // Execute this protocol step.
     pub description: Option<String>,
     /// Author name.
-    // Execute this protocol step.
     pub author: Option<String>,
     /// Homepage URL.
-    // Execute this protocol step.
     pub homepage: Option<String>,
     /// License identifier (SPDX).
-    // Execute this protocol step.
     pub license: Option<String>,
     /// Minimum Mesh Infinity version.
-    // Execute this protocol step.
     pub min_mesh_version: Option<String>,
     /// Required permissions.
-    // Execute this protocol step.
     pub required_permissions: Vec<String>,
     /// Optional permissions.
-    // Execute this protocol step.
     pub optional_permissions: Vec<String>,
     /// Resource limits.
-    // Execute this protocol step.
     pub resources: PluginResources,
 }
 
@@ -1131,16 +1119,12 @@ pub struct PluginManifest {
 // Invariants are enforced at construction time.
 pub struct PluginResources {
     /// Maximum memory (MB).
-    // Execute this protocol step.
     pub max_memory_mb: u32,
     /// Maximum persistent storage (MB).
-    // Execute this protocol step.
     pub max_storage_mb: u32,
     /// Maximum CPU time per callback (ms).
-    // Execute this protocol step.
     pub max_cpu_ms_per_call: u64,
     /// Maximum open handles (files, connections).
-    // Execute this protocol step.
     pub max_open_handles: u32,
 }
 
@@ -1178,19 +1162,14 @@ impl Default for PluginResources {
 // Invariants are enforced at construction time.
 pub struct PluginSignature {
     /// Author's Ed25519 public key.
-    // Execute this protocol step.
     pub author_pubkey: [u8; 32],
     /// SHA-256 of the manifest.
-    // Execute this protocol step.
     pub manifest_hash: [u8; 32],
     /// SHA-256 of the WASM binary.
-    // Execute this protocol step.
     pub wasm_hash: [u8; 32],
     /// When the signature was created.
-    // Execute this protocol step.
     pub timestamp: u64,
     /// Ed25519 signature over all above fields.
-    // Execute this protocol step.
     pub signature: Vec<u8>,
 }
 
@@ -1200,17 +1179,14 @@ pub struct PluginSignature {
 // Match exhaustively to handle every protocol state.
 pub enum PluginState {
     /// Installed but not yet started.
-    // Execute this protocol step.
     Installed,
     /// Running normally.
     Running,
     /// Stopped by the user.
     Stopped,
     /// Auto-disabled due to repeated timeouts.
-    // Execute this protocol step.
     Disabled,
     /// Quarantined due to crash loop.
-    // Execute this protocol step.
     Quarantined,
 }
 

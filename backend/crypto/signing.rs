@@ -238,24 +238,12 @@ pub const DOMAIN_PQXDH_KEM: &[u8] = b"meshinfinity-pqxdh-kem-v1";
 /// The signed data is: domain || message.
 /// The domain separator is included INSIDE the signature, so
 /// a signature for one domain cannot be replayed in another.
-// Perform the 'sign' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'sign' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'sign' operation.
-// Errors are propagated to the caller via Result.
 pub fn sign(secret_key_bytes: &[u8; 32], domain: &[u8], message: &[u8]) -> Vec<u8> {
     // Build the signing key from the secret bytes.
     // ed25519_dalek uses the secret key to derive the full keypair.
-    // Compute signing key for this protocol step.
-    // Compute signing key for this protocol step.
-    // Compute signing key for this protocol step.
     let signing_key = ed25519_dalek::SigningKey::from_bytes(secret_key_bytes);
 
     // Build the domain-separated message.
-    // Compute signed data for this protocol step.
-    // Compute signed data for this protocol step.
-    // Compute signed data for this protocol step.
     let mut signed_data = Vec::with_capacity(domain.len() + message.len());
     // Append the data segment to the accumulating buffer.
     // Append bytes to the accumulator.
@@ -270,15 +258,8 @@ pub fn sign(secret_key_bytes: &[u8; 32], domain: &[u8], message: &[u8]) -> Vec<u
 
     // Sign and return the signature bytes.
     use ed25519_dalek::Signer;
-    // Key material — must be zeroized when no longer needed.
-    // Compute sig for this protocol step.
-    // Compute sig for this protocol step.
-    // Compute sig for this protocol step.
     let sig = signing_key.sign(&signed_data);
     // Extract the raw byte representation for wire encoding.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     sig.to_bytes().to_vec()
 }
 
@@ -298,45 +279,14 @@ pub fn sign(secret_key_bytes: &[u8; 32], domain: &[u8], message: &[u8]) -> Vec<u
 /// This is the ONLY function that should be used for signature
 /// verification anywhere in the codebase. Module-specific
 /// `is_empty()` checks are security bypasses.
-// Perform the 'verify' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'verify' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'verify' operation.
-// Errors are propagated to the caller via Result.
 pub fn verify(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     public_key_bytes: &[u8; 32],
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     domain: &[u8],
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     message: &[u8],
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     signature_bytes: &[u8],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
 ) -> bool {
     // Parse the public key. Return false if invalid.
-    // Compute verifying key for this protocol step.
-    // Compute verifying key for this protocol step.
-    // Compute verifying key for this protocol step.
     let verifying_key = match VerifyingKey::from_bytes(public_key_bytes) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(k) => k,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -346,25 +296,11 @@ pub fn verify(
     };
 
     // Parse the signature. Must be exactly 64 bytes.
-    // Guard: validate the condition before proceeding.
-    // Guard: validate the condition before proceeding.
-    // Guard: validate the condition before proceeding.
     if signature_bytes.len() != 64 {
-        // Condition not met — return negative result.
-        // Return to the caller.
-        // Return to the caller.
-        // Return to the caller.
         return false;
     }
     // Ed25519 signature for authentication and integrity.
-    // Compute sig array for this protocol step.
-    // Compute sig array for this protocol step.
-    // Compute sig array for this protocol step.
     let sig_array: [u8; 64] = match signature_bytes.try_into() {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(a) => a,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -373,15 +309,9 @@ pub fn verify(
         Err(_) => return false,
     };
     // Ed25519 signature for authentication and integrity.
-    // Compute signature for this protocol step.
-    // Compute signature for this protocol step.
-    // Compute signature for this protocol step.
     let signature = Signature::from_bytes(&sig_array);
 
     // Build the domain-separated message.
-    // Compute signed data for this protocol step.
-    // Compute signed data for this protocol step.
-    // Compute signed data for this protocol step.
     let mut signed_data = Vec::with_capacity(domain.len() + message.len());
     // Append the data segment to the accumulating buffer.
     // Append bytes to the accumulator.
@@ -406,40 +336,12 @@ pub fn verify(
 /// Use this ONLY for interop with external systems that don't
 /// use domain separation. For all mesh-internal signatures,
 /// use `verify()` with a domain separator.
-// Perform the 'verify raw' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'verify raw' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'verify raw' operation.
-// Errors are propagated to the caller via Result.
 pub fn verify_raw(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     public_key_bytes: &[u8; 32],
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     message: &[u8],
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     signature_bytes: &[u8],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
 ) -> bool {
-    // Key material — must be zeroized when no longer needed.
-    // Compute verifying key for this protocol step.
-    // Compute verifying key for this protocol step.
-    // Compute verifying key for this protocol step.
     let verifying_key = match VerifyingKey::from_bytes(public_key_bytes) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(k) => k,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -448,21 +350,11 @@ pub fn verify_raw(
     };
 
     // Validate the input length to prevent out-of-bounds access.
-    // Guard: validate the condition before proceeding.
-    // Guard: validate the condition before proceeding.
     if signature_bytes.len() != 64 {
-        // Condition not met — return negative result.
-        // Return to the caller.
-        // Return to the caller.
         return false;
     }
     // Ed25519 signature for authentication and integrity.
-    // Compute sig array for this protocol step.
-    // Compute sig array for this protocol step.
     let sig_array: [u8; 64] = match signature_bytes.try_into() {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(a) => a,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -470,8 +362,6 @@ pub fn verify_raw(
         Err(_) => return false,
     };
     // Ed25519 signature for authentication and integrity.
-    // Compute signature for this protocol step.
-    // Compute signature for this protocol step.
     let signature = Signature::from_bytes(&sig_array);
 
     // Verify the signature against the claimed public key.

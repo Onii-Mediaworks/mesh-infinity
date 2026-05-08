@@ -101,7 +101,6 @@ pub const KCP_MAX_RTO_MS: u32 = 5000;
 ///
 /// Controls which frames are retransmitted when lost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-// Begin the block scope.
 // KcpReliabilityMode — variant enumeration.
 // Match exhaustively to handle every protocol state.
 pub enum KcpReliabilityMode {
@@ -110,7 +109,6 @@ pub enum KcpReliabilityMode {
     /// Only keyframes and headers retransmitted.
     /// Delta frames and audio frames accept loss.
     /// Used for video streaming (VP9, AV1).
-    // Execute this protocol step.
     Selective,
     /// No retransmission at all.
     /// Used for voice-only calls where Opus PLC handles loss.
@@ -127,68 +125,45 @@ pub enum KcpReliabilityMode {
 /// Created from the KCP constants and per-tunnel parameters
 /// (like MTU from TunnelAccept).
 #[derive(Clone, Debug)]
-// Begin the block scope.
 // KcpConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct KcpConfig {
     /// Conversation ID (first 4 bytes of WireGuard session key).
-    // Execute this protocol step.
     pub conv: u32,
     /// Path MTU from tunnel negotiation.
-    // Execute this protocol step.
     pub mtu: u16,
     /// Reliability mode.
-    // Execute this protocol step.
     pub mode: KcpReliabilityMode,
     /// Send window size.
-    // Execute this protocol step.
     pub snd_wnd: u32,
     /// Receive window size.
-    // Execute this protocol step.
     pub rcv_wnd: u32,
 }
 
-// Begin the block scope.
 // KcpConfig implementation — core protocol logic.
 impl KcpConfig {
     /// Derive the conv from a WireGuard session key.
     ///
     /// Both sides compute this independently — no round trip.
     /// Takes the first 4 bytes of the session key as a u32 (LE).
-    // Perform the 'conv from session key' operation.
-    // Errors are propagated to the caller via Result.
     pub fn conv_from_session_key(session_key: &[u8; 32]) -> u32 {
         // Invoke the associated function.
-        // Execute this protocol step.
         u32::from_le_bytes([
-            // Execute this protocol step.
             session_key[0],
-            // Execute this protocol step.
             session_key[1],
-            // Execute this protocol step.
             session_key[2],
-            // Execute this protocol step.
             session_key[3],
         ])
     }
 
     /// Create a default config from a session key and MTU.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new(session_key: &[u8; 32], mtu: u16, mode: KcpReliabilityMode) -> Self {
-        // Assemble the instance from the computed fields.
-        // Construct the instance from computed fields.
         Self {
             // Invoke the associated function.
-            // Execute this protocol step.
             conv: Self::conv_from_session_key(session_key),
             mtu,
             mode,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             snd_wnd: KCP_SND_WND,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             rcv_wnd: KCP_RCV_WND,
         }
     }

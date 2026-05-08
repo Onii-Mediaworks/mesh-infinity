@@ -19,17 +19,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use chacha20poly1305::{
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     aead::{Aead, KeyInit},
     // AEAD cipher for authenticated encryption.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     XChaCha20Poly1305,
     XNonce,
 };
@@ -82,7 +73,6 @@ const HEADER_SIZE: usize = 1 + NONCE_SIZE;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
-// Begin the block scope.
 // VaultError — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // VaultError — variant enumeration.
@@ -93,50 +83,19 @@ const HEADER_SIZE: usize = 1 + NONCE_SIZE;
 // Match exhaustively to handle every protocol state.
 pub enum VaultError {
     #[error("IO error: {0}")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Io(#[from] io::Error),
     #[error("HKDF key derivation failed")]
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     HkdfExpand,
     #[error("AEAD encryption failed")]
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     EncryptFailed,
     #[error("AEAD decryption failed — file may be corrupted or wrong key")]
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     DecryptFailed,
     #[error("JSON serialization: {0}")]
     // JSON serialization for wire format.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Serialize(#[from] serde_json::Error),
     #[error("Vault file too short (expected >= {HEADER_SIZE} bytes, got {0})")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     FileTooShort(usize),
     #[error("Unknown schema version {0} (this build supports version {SCHEMA_VERSION})")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     UnknownSchemaVersion(u8),
 }
 
@@ -158,20 +117,11 @@ pub enum VaultError {
 // Invariants are enforced at construction time.
 pub struct VaultCollection {
     /// Path to the `.vault` file
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     path: PathBuf,
     /// Derived encryption key for this collection (32 bytes)
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     key: Zeroizing<[u8; 32]>,
 }
 
-// Begin the block scope.
 // VaultCollection implementation — core protocol logic.
 // VaultCollection implementation — core protocol logic.
 // VaultCollection implementation — core protocol logic.
@@ -181,63 +131,18 @@ impl VaultCollection {
     ///
     /// The `master_key` is the identity master key (§3.6.2).
     /// The `collection_name` provides domain separation (e.g., "rooms", "messages").
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new(
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         data_dir: &Path,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         collection_name: &str,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         master_key: &[u8; 32],
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
     ) -> Result<Self, VaultError> {
         // Resolve the filesystem path for the target resource.
-        // Compute path for this protocol step.
-        // Compute path for this protocol step.
-        // Compute path for this protocol step.
-        // Compute path for this protocol step.
         let path = data_dir.join(format!("{collection_name}.vault"));
 
         // Derive per-collection key: HKDF-SHA256(master_key, info="meshinfinity-storage-v1-<name>")
-        // Compute info for this protocol step.
-        // Compute info for this protocol step.
-        // Compute info for this protocol step.
-        // Compute info for this protocol step.
         let info = format!("meshinfinity-storage-v1-{collection_name}");
         // Set up the HKDF context for domain-separated key derivation.
-        // Compute hk for this protocol step.
-        // Compute hk for this protocol step.
-        // Compute hk for this protocol step.
-        // Compute hk for this protocol step.
         let hk = Hkdf::<Sha256>::new(None, master_key);
-        // Key material — must be zeroized when no longer needed.
-        // Compute key for this protocol step.
-        // Compute key for this protocol step.
-        // Compute key for this protocol step.
-        // Compute key for this protocol step.
         let mut key = Zeroizing::new([0u8; 32]);
         // Expand the pseudorandom key to the required output length.
         // HKDF expand to the target key length.
@@ -252,35 +157,13 @@ impl VaultCollection {
             // Map the error to the local error type.
             .map_err(|_| VaultError::HkdfExpand)?;
 
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(Self { path, key })
     }
 
     /// Read and decrypt the collection. Returns `None` if the file doesn't exist.
-    // Perform the 'load' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'load' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'load' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'load' operation.
-    // Errors are propagated to the caller via Result.
     pub fn load<T: DeserializeOwned>(&self) -> Result<Option<T>, VaultError> {
         // Resolve the filesystem path for the target resource.
-        // Compute raw for this protocol step.
-        // Compute raw for this protocol step.
-        // Compute raw for this protocol step.
-        // Compute raw for this protocol step.
         let raw = match fs::read(&self.path) {
-            // Wrap the computed value in the success variant.
-            // Success path — return the computed value.
-            // Success path — return the computed value.
-            // Success path — return the computed value.
-            // Success path — return the computed value.
             Ok(data) => data,
             // Signal failure to the caller with a descriptive error.
             // Error path — signal failure.
@@ -297,16 +180,7 @@ impl VaultCollection {
         };
 
         // Validate the input length to prevent out-of-bounds access.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if raw.len() < HEADER_SIZE {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(VaultError::FileTooShort(raw.len()));
         }
 
@@ -325,44 +199,20 @@ impl VaultCollection {
         }
 
         // Parse header
-        // Compute schema version for this protocol step.
-        // Compute schema version for this protocol step.
-        // Compute schema version for this protocol step.
-        // Compute schema version for this protocol step.
         let schema_version = raw[0];
         // Bounds check to enforce protocol constraints.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if schema_version > SCHEMA_VERSION {
             // Forward compatibility: unknown schema versions are rejected (§17.0.1 says
             // unknown FIELDS are ignored, but unknown schema VERSIONS are breaking changes)
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(VaultError::UnknownSchemaVersion(schema_version));
         }
 
         // Fresh nonce — must never be reused with the same key.
-        // Compute nonce for this protocol step.
-        // Compute nonce for this protocol step.
-        // Compute nonce for this protocol step.
-        // Compute nonce for this protocol step.
         let nonce = XNonce::from_slice(&raw[1..HEADER_SIZE]);
         // Initialize the AEAD cipher with the derived key material.
-        // Compute ciphertext for this protocol step.
-        // Compute ciphertext for this protocol step.
-        // Compute ciphertext for this protocol step.
-        // Compute ciphertext for this protocol step.
         let ciphertext = &raw[HEADER_SIZE..];
 
         // Decrypt
-        // Compute cipher for this protocol step.
-        // Compute cipher for this protocol step.
-        // Compute cipher for this protocol step.
-        // Compute cipher for this protocol step.
         let cipher = XChaCha20Poly1305::new_from_slice(&*self.key)
             // Transform the result, mapping errors to the local error type.
             // Map the error to the local error type.
@@ -371,10 +221,6 @@ impl VaultCollection {
             // Map the error to the local error type.
             .map_err(|_| VaultError::DecryptFailed)?;
         // Initialize the AEAD cipher with the derived key material.
-        // Compute plaintext for this protocol step.
-        // Compute plaintext for this protocol step.
-        // Compute plaintext for this protocol step.
-        // Compute plaintext for this protocol step.
         let plaintext = cipher
             // Decrypt and authenticate the ciphertext.
             // AEAD-decrypt and authenticate the ciphertext.
@@ -390,75 +236,36 @@ impl VaultCollection {
             .map_err(|_| VaultError::DecryptFailed)?;
 
         // Deserialize JSON (with serde's ignore_unknown_fields for forward compat)
-        // Compute value for this protocol step.
-        // Compute value for this protocol step.
-        // Compute value for this protocol step.
-        // Compute value for this protocol step.
         let value: T = serde_json::from_slice(&plaintext)?;
         Ok(value)
     }
 
     /// Encrypt and write the collection atomically.
-    // Perform the 'save' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'save' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'save' operation.
-    // Errors are propagated to the caller via Result.
     pub fn save<T: Serialize>(&self, value: &T) -> Result<(), VaultError> {
         let output = self.encode_bytes(value)?;
 
         // Atomic write: write to .tmp, then rename
-        // Compute tmp path for this protocol step.
-        // Compute tmp path for this protocol step.
-        // Compute tmp path for this protocol step.
         let tmp_path = self.path.with_extension("vault.tmp");
         // Persist the data to the filesystem.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
         fs::write(&tmp_path, &output)?;
-        // Propagate errors via the ? operator — callers handle failures.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
         fs::rename(&tmp_path, &self.path)?;
 
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(())
     }
 
     /// Encode one value as an encrypted vault blob without touching the filesystem.
     pub fn encode_bytes<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, VaultError> {
         // Serialize to the wire format for transmission or storage.
-        // Compute json for this protocol step.
-        // Compute json for this protocol step.
-        // Compute json for this protocol step.
         let json = serde_json::to_vec(value)?;
 
         // Generate fresh nonce
-        // Compute nonce bytes for this protocol step.
-        // Compute nonce bytes for this protocol step.
-        // Compute nonce bytes for this protocol step.
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         // OS-provided cryptographic random number generator.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         OsRng.fill_bytes(&mut nonce_bytes);
         // Fresh nonce — must never be reused with the same key.
-        // Compute nonce for this protocol step.
-        // Compute nonce for this protocol step.
-        // Compute nonce for this protocol step.
         let nonce = XNonce::from_slice(&nonce_bytes);
 
         // Encrypt
-        // Compute cipher for this protocol step.
-        // Compute cipher for this protocol step.
-        // Compute cipher for this protocol step.
         let cipher = XChaCha20Poly1305::new_from_slice(&*self.key)
             // Transform the result, mapping errors to the local error type.
             // Map the error to the local error type.
@@ -466,9 +273,6 @@ impl VaultCollection {
             // Map the error to the local error type.
             .map_err(|_| VaultError::EncryptFailed)?;
         // Initialize the AEAD cipher with the derived key material.
-        // Compute ciphertext for this protocol step.
-        // Compute ciphertext for this protocol step.
-        // Compute ciphertext for this protocol step.
         let ciphertext = cipher
             // Encrypt the plaintext under the current session key.
             // AEAD-encrypt the plaintext.
@@ -482,11 +286,7 @@ impl VaultCollection {
             .map_err(|_| VaultError::EncryptFailed)?;
 
         // Build output: [schema_version][nonce][ciphertext]
-        // Compute output for this protocol step.
-        // Compute output for this protocol step.
-        // Compute output for this protocol step.
         let mut output = Vec::with_capacity(HEADER_SIZE + ciphertext.len());
-        // Execute the operation and bind the result.
         // Append to the collection.
         // Append to the collection.
         // Append to the collection.
@@ -505,22 +305,12 @@ impl VaultCollection {
     }
 
     /// Delete the collection file.
-    // Perform the 'delete' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'delete' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'delete' operation.
-    // Errors are propagated to the caller via Result.
     pub fn delete(&self) -> Result<(), VaultError> {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
         // Dispatch on the variant.
         // Dispatch on the variant.
         match fs::remove_file(&self.path) {
-            // Wrap the computed value in the success variant.
-            // Success path — return the computed value.
-            // Success path — return the computed value.
-            // Success path — return the computed value.
             Ok(()) => Ok(()),
             // Signal failure to the caller with a descriptive error.
             // Error path — signal failure.
@@ -536,42 +326,19 @@ impl VaultCollection {
     }
 
     /// Check if the collection file exists.
-    // Perform the 'exists' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'exists' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'exists' operation.
-    // Errors are propagated to the caller via Result.
     pub fn exists(&self) -> bool {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.path.exists()
     }
 
     /// Clean up any leftover .tmp files from crashed writes.
-    // Perform the 'cleanup tmp' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup tmp' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup tmp' operation.
-    // Errors are propagated to the caller via Result.
     pub fn cleanup_tmp(&self) -> Result<(), VaultError> {
         // Resolve the filesystem path for the target resource.
-        // Compute tmp path for this protocol step.
-        // Compute tmp path for this protocol step.
-        // Compute tmp path for this protocol step.
         let tmp_path = self.path.with_extension("vault.tmp");
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
         // Dispatch on the variant.
         // Dispatch on the variant.
         match fs::remove_file(&tmp_path) {
-            // Wrap the computed value in the success variant.
-            // Success path — return the computed value.
-            // Success path — return the computed value.
-            // Success path — return the computed value.
             Ok(()) => Ok(()),
             // Signal failure to the caller with a descriptive error.
             // Error path — signal failure.
@@ -599,75 +366,29 @@ impl VaultCollection {
 // VaultManager — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct VaultManager {
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     data_dir: PathBuf,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     master_key: Zeroizing<[u8; 32]>,
 }
 
-// Begin the block scope.
 // VaultManager implementation — core protocol logic.
 // VaultManager implementation — core protocol logic.
 // VaultManager implementation — core protocol logic.
 impl VaultManager {
     /// Create a vault manager with the given data directory and master key.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new(data_dir: PathBuf, master_key: [u8; 32]) -> Self {
-        // Assemble the instance from the computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
         Self {
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             data_dir,
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             master_key: Zeroizing::new(master_key),
         }
     }
 
     /// Open a named collection.
-    // Perform the 'collection' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'collection' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'collection' operation.
-    // Errors are propagated to the caller via Result.
     pub fn collection(&self, name: &str) -> Result<VaultCollection, VaultError> {
-        // Create a new instance with the specified parameters.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         VaultCollection::new(&self.data_dir, name, &self.master_key)
     }
 
     /// Clean up all leftover .tmp files from previous crashes.
-    // Perform the 'cleanup all tmp' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup all tmp' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup all tmp' operation.
-    // Errors are propagated to the caller via Result.
     pub fn cleanup_all_tmp(&self) -> Result<(), VaultError> {
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if let Ok(entries) = fs::read_dir(&self.data_dir) {
             // Iterate over each file entry in the collection.
             // Iterate over each element.
@@ -675,42 +396,19 @@ impl VaultManager {
             // Iterate over each element.
             for entry in entries.flatten() {
                 // Resolve the filesystem path for the target resource.
-                // Compute path for this protocol step.
-                // Compute path for this protocol step.
-                // Compute path for this protocol step.
                 let path = entry.path();
-                // Conditional branch based on the current state.
-                // Guard: validate the condition before proceeding.
-                // Guard: validate the condition before proceeding.
-                // Guard: validate the condition before proceeding.
                 if path.extension().map(|e| e == "tmp").unwrap_or(false) {
                     // Resolve the filesystem path for the target resource.
-                    // Compute   for this protocol step.
-                    // Compute   for this protocol step.
-                    // Compute   for this protocol step.
                     let _ = fs::remove_file(&path);
                 }
             }
         }
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(())
     }
 
     /// Get the data directory path.
-    // Perform the 'data dir' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'data dir' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'data dir' operation.
-    // Errors are propagated to the caller via Result.
     pub fn data_dir(&self) -> &Path {
         // Chain the operation on the intermediate result.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         &self.data_dir
     }
 }

@@ -18,22 +18,16 @@ use super::{c_str_to_str, MeshContext};
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_start_clearnet_listener(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx has no listener to start.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate listener startup to service layer.
     // Dispatch on the variant.
     match ctx.start_clearnet_listener() {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -51,19 +45,14 @@ pub unsafe extern "C" fn mi_start_clearnet_listener(ctx: *mut MeshContext) -> i3
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_stop_clearnet_listener(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx has nothing to stop.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate listener teardown to service layer.
-    // Execute this protocol step.
     ctx.stop_clearnet_listener();
     0
 }
@@ -75,22 +64,16 @@ pub unsafe extern "C" fn mi_stop_clearnet_listener(ctx: *mut MeshContext) -> i32
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_set_clearnet_port(ctx: *mut MeshContext, port: u16) -> i32 {
     // Guard: null ctx has no port to configure.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.set_clearnet_port(port) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -108,28 +91,17 @@ pub unsafe extern "C" fn mi_set_clearnet_port(ctx: *mut MeshContext, port: u16) 
 /// # Safety
 /// `ctx` must be non-null.  `route` must be valid JSON UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_set_clearnet_route(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     route: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx has no routing table to update.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required JSON argument.
-    // Compute json str for this protocol step.
     let json_str = match unsafe { c_str_to_str(route) } {
         Some(s) => s,
         None => return -1,
@@ -137,8 +109,6 @@ pub unsafe extern "C" fn mi_set_clearnet_route(
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.set_clearnet_route(json_str) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -160,22 +130,16 @@ pub unsafe extern "C" fn mi_set_clearnet_route(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_tor_enable(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx cannot enable Tor.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate Tor bootstrap to service layer.
     // Dispatch on the variant.
     match ctx.tor_enable() {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -193,19 +157,14 @@ pub unsafe extern "C" fn mi_tor_enable(ctx: *mut MeshContext) -> i32 {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_tor_disable(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx cannot disable Tor.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate Tor teardown to service layer.
-    // Execute this protocol step.
     ctx.tor_disable();
     0
 }
@@ -215,22 +174,16 @@ pub unsafe extern "C" fn mi_tor_disable(ctx: *mut MeshContext) -> i32 {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_tor_get_onion_address(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no Tor address.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.tor_get_onion_address() {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(addr) => ctx.set_response(&serde_json::json!({"onion_address": addr}).to_string()),
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -245,39 +198,24 @@ pub unsafe extern "C" fn mi_tor_get_onion_address(ctx: *mut MeshContext) -> *con
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_tor_connect(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id_hex_ptr: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     onion_addr_ptr: *const c_char,
-    // Execute this protocol step.
     port: u16,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx or null string args are immediate failures.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() || peer_id_hex_ptr.is_null() || onion_addr_ptr.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees all pointers are valid.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute peer id hex for this protocol step.
     let peer_id_hex = match unsafe { c_str_to_str(peer_id_hex_ptr) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute onion addr for this protocol step.
     let onion_addr = match unsafe { c_str_to_str(onion_addr_ptr) } {
         Some(s) => s,
         None => return -1,
@@ -285,8 +223,6 @@ pub unsafe extern "C" fn mi_tor_connect(
     // Delegate Tor connection to service layer.
     // Dispatch on the variant.
     match ctx.tor_connect(peer_id_hex, onion_addr, port) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -308,19 +244,14 @@ pub unsafe extern "C" fn mi_tor_connect(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_mdns_enable(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx cannot enable mDNS.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate mDNS startup to service layer.
-    // Execute this protocol step.
     ctx.mdns_enable();
     0
 }
@@ -332,19 +263,14 @@ pub unsafe extern "C" fn mi_mdns_enable(ctx: *mut MeshContext) -> i32 {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_mdns_disable(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx cannot disable mDNS.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate mDNS teardown to service layer.
-    // Execute this protocol step.
     ctx.mdns_disable();
     0
 }
@@ -354,19 +280,14 @@ pub unsafe extern "C" fn mi_mdns_disable(ctx: *mut MeshContext) -> i32 {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_mdns_is_running(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx → mDNS is not running.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return 0;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate status query to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.mdns_is_running() {
         1
     } else {
@@ -379,19 +300,14 @@ pub unsafe extern "C" fn mi_mdns_is_running(ctx: *mut MeshContext) -> i32 {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_mdns_get_discovered_peers(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no discovered peers.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate peer-list retrieval to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.mdns_get_discovered_peers())
 }
 
@@ -406,19 +322,14 @@ pub unsafe extern "C" fn mi_mdns_get_discovered_peers(ctx: *mut MeshContext) -> 
 /// # Safety
 /// `ctx` must be non-null.  `mode_json` must be valid JSON UTF-8.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_set_vpn_mode(ctx: *mut MeshContext, mode_json: *const c_char) -> i32 {
     // Guard: null ctx has no VPN to configure.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required JSON argument.
-    // Compute json str for this protocol step.
     let json_str = match unsafe { c_str_to_str(mode_json) } {
         Some(s) => s,
         None => return -1,
@@ -426,8 +337,6 @@ pub unsafe extern "C" fn mi_set_vpn_mode(ctx: *mut MeshContext, mode_json: *cons
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.set_vpn_mode(json_str) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -445,34 +354,21 @@ pub unsafe extern "C" fn mi_set_vpn_mode(ctx: *mut MeshContext, mode_json: *cons
 /// # Safety
 /// `ctx` must be non-null.  `peer_id_hex` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_set_exit_node(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id_hex: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx has no VPN.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required peer-ID argument.
-    // Compute pid for this protocol step.
     let pid = unsafe { c_str_to_str(peer_id_hex) }.unwrap_or("");
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.set_exit_node(pid) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -488,19 +384,14 @@ pub unsafe extern "C" fn mi_set_exit_node(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_get_vpn_status(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no VPN status.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.get_vpn_status())
 }
 
@@ -667,43 +558,27 @@ pub unsafe extern "C" fn mi_send_raw_packet(
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_tailscale_auth_key(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     auth_key: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     control_url: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot authenticate.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute key for this protocol step.
     let key = match unsafe { c_str_to_str(auth_key) } {
         Some(s) => s,
         None => return -1,
     };
     // Fall back to the default value on failure.
-    // Compute url for this protocol step.
     let url = unsafe { c_str_to_str(control_url) }.unwrap_or("");
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.tailscale_auth_key(key, url) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -721,34 +596,21 @@ pub unsafe extern "C" fn mi_tailscale_auth_key(
 /// # Safety
 /// `ctx` must be non-null.  `control_url` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_tailscale_begin_oauth(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     control_url: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot initiate OAuth.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required URL argument.
-    // Compute url for this protocol step.
     let url = unsafe { c_str_to_str(control_url) }.unwrap_or("");
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.tailscale_begin_oauth(url) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -766,52 +628,33 @@ pub unsafe extern "C" fn mi_tailscale_begin_oauth(
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_zerotier_connect(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     api_key: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     controller_url: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     network_ids_json: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot connect to ZeroTier.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute key for this protocol step.
     let key = match unsafe { c_str_to_str(api_key) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute controller for this protocol step.
     let controller = match unsafe { c_str_to_str(controller_url) } {
         Some(s) => s,
         None => return -1,
     };
     // Serialize to the wire format for transmission or storage.
-    // Compute networks for this protocol step.
     let networks = unsafe { c_str_to_str(network_ids_json) }.unwrap_or("[]");
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.zerotier_connect(key, controller, networks) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -1855,19 +1698,14 @@ pub unsafe extern "C" fn mi_zerotier_set_member_authorized_instance(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_overlay_status(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no overlay.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.overlay_status())
 }
 
@@ -1882,28 +1720,17 @@ pub unsafe extern "C" fn mi_overlay_status(ctx: *mut MeshContext) -> *const c_ch
 /// # Safety
 /// `ctx` must be non-null.  `request_json` must be valid JSON UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_losec_request(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     request_json: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx cannot process LoSec requests.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required JSON argument.
-    // Compute json str for this protocol step.
     let json_str = match unsafe { c_str_to_str(request_json) } {
         Some(s) => s,
         None => return ptr::null(),
@@ -1911,8 +1738,6 @@ pub unsafe extern "C" fn mi_losec_request(
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.losec_request(json_str) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(json) => ctx.set_response(&json),
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -1925,19 +1750,14 @@ pub unsafe extern "C" fn mi_losec_request(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_losec_ambient_status(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no ambient status.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.losec_ambient_status())
 }
 
@@ -1952,28 +1772,17 @@ pub unsafe extern "C" fn mi_losec_ambient_status(ctx: *mut MeshContext) -> *cons
 /// # Safety
 /// `ctx` must be non-null.  `peer_id_hex` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_wg_initiate_handshake(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id_hex: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx cannot initiate WireGuard.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required peer-ID argument.
-    // Compute peer hex for this protocol step.
     let peer_hex = match unsafe { c_str_to_str(peer_id_hex) } {
         Some(s) => s,
         None => return ptr::null(),
@@ -1981,8 +1790,6 @@ pub unsafe extern "C" fn mi_wg_initiate_handshake(
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.wg_initiate_handshake(peer_hex) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(json) => ctx.set_response(&json),
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -1997,37 +1804,23 @@ pub unsafe extern "C" fn mi_wg_initiate_handshake(
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_wg_respond_to_handshake(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id_hex: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     init_hex: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx cannot handle WireGuard.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute peer hex for this protocol step.
     let peer_hex = match unsafe { c_str_to_str(peer_id_hex) } {
         Some(s) => s,
         None => return ptr::null(),
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute init hex  for this protocol step.
     let init_hex_ = match unsafe { c_str_to_str(init_hex) } {
         Some(s) => s,
         None => return ptr::null(),
@@ -2035,8 +1828,6 @@ pub unsafe extern "C" fn mi_wg_respond_to_handshake(
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.wg_respond_to_handshake(peer_hex, init_hex_) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(json) => ctx.set_response(&json),
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -2051,37 +1842,23 @@ pub unsafe extern "C" fn mi_wg_respond_to_handshake(
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_wg_complete_handshake(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id_hex: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     response_hex: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot complete handshakes.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute peer hex for this protocol step.
     let peer_hex = match unsafe { c_str_to_str(peer_id_hex) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute resp hex for this protocol step.
     let resp_hex = match unsafe { c_str_to_str(response_hex) } {
         Some(s) => s,
         None => return -1,
@@ -2089,8 +1866,6 @@ pub unsafe extern "C" fn mi_wg_complete_handshake(
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.wg_complete_handshake(peer_hex, resp_hex) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -2112,28 +1887,17 @@ pub unsafe extern "C" fn mi_wg_complete_handshake(
 /// # Safety
 /// `ctx` must be non-null.  `config_json` must be valid JSON UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_sdr_configure(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     config_json: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot configure SDR.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required JSON argument.
-    // Compute json str for this protocol step.
     let json_str = match unsafe { c_str_to_str(config_json) } {
         Some(s) => s,
         None => return -1,
@@ -2141,8 +1905,6 @@ pub unsafe extern "C" fn mi_sdr_configure(
     // Delegate to service layer.
     // Dispatch on the variant.
     match ctx.sdr_configure(json_str) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(()) => 0,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -2158,19 +1920,14 @@ pub unsafe extern "C" fn mi_sdr_configure(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_sdr_status(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no SDR.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.sdr_status())
 }
 
@@ -2179,19 +1936,14 @@ pub unsafe extern "C" fn mi_sdr_status(ctx: *mut MeshContext) -> *const c_char {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_sdr_current_channel(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no SDR channel.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.sdr_current_channel())
 }
 
@@ -2200,21 +1952,16 @@ pub unsafe extern "C" fn mi_sdr_current_channel(ctx: *mut MeshContext) -> *const
 /// # Safety
 /// `_ctx` is unused but retained for ABI consistency.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_sdr_list_profiles(_ctx: *mut MeshContext) -> *const c_char {
     // Profiles are static; no context required.  Delegate to service method.
     // We need a static CString for the response pointer lifetime.
     // Build the list from MeshRuntime if available, else use fallback.
-    // Guard: validate the condition before proceeding.
     if _ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*_ctx };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.sdr_list_profiles())
 }
 
@@ -2223,19 +1970,14 @@ pub unsafe extern "C" fn mi_sdr_list_profiles(_ctx: *mut MeshContext) -> *const 
 /// # Safety
 /// `_ctx` is unused but retained for ABI consistency.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_sdr_list_hardware(_ctx: *mut MeshContext) -> *const c_char {
     // Hardware detection is static; delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if _ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*_ctx };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.sdr_list_hardware())
 }
 

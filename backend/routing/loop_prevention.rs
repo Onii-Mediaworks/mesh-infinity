@@ -96,7 +96,6 @@ pub const MAX_PACKET_CACHE: usize = 500_000;
 /// 256 bits of entropy means collision probability is negligible
 /// even at billions of packets per day across the entire mesh.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-// Execute the operation and bind the result.
 // PacketId — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // PacketId — protocol data structure (see field-level docs).
@@ -119,31 +118,22 @@ pub struct PacketId(pub [u8; 32]);
 /// Delivery receipts travel back through the mesh using normal routing
 /// (they're just packets themselves, with their own packet IDs).
 #[derive(Clone, Debug)]
-// Begin the block scope.
 // DeliveryReceipt — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // DeliveryReceipt — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct DeliveryReceipt {
     /// The packet ID of the delivered packet.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub packet_id: PacketId,
 
     /// The recipient's device address (who received it).
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub recipient: [u8; 32],
 
     /// Unix timestamp when the packet was received.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub timestamp: u64,
 
     /// Ed25519 signature from the recipient.
     /// Signs: packet_id || recipient || timestamp.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub signature: Vec<u8>,
 }
 
@@ -170,28 +160,15 @@ pub struct DeduplicationCache {
     /// Map from packet ID to the timestamp when it was first seen.
     /// Using HashMap for O(1) lookup. LRU eviction is done during
     /// periodic garbage collection, not on every insert.
-    // Execute this protocol step.
-    // Execute this protocol step.
     entries: HashMap<PacketId, u64>,
 }
 
-// Begin the block scope.
 // DeduplicationCache implementation — core protocol logic.
 // DeduplicationCache implementation — core protocol logic.
 impl DeduplicationCache {
     /// Create a new, empty deduplication cache.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new() -> Self {
-        // Assemble the instance from the computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
         Self {
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
-            // Execute this protocol step.
             entries: HashMap::new(),
         }
     }
@@ -203,14 +180,7 @@ impl DeduplicationCache {
     ///
     /// This is a read-only check — call `record()` after forwarding
     /// to add the ID to the cache.
-    // Perform the 'is duplicate' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is duplicate' operation.
-    // Errors are propagated to the caller via Result.
     pub fn is_duplicate(&self, id: &PacketId) -> bool {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.entries.contains_key(id)
     }
 
@@ -221,24 +191,13 @@ impl DeduplicationCache {
     /// If still at capacity, the oldest entry is evicted.
     ///
     /// `now`: current unix timestamp.
-    // Perform the 'record' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'record' operation.
-    // Errors are propagated to the caller via Result.
     pub fn record(&mut self, id: PacketId, now: u64) {
         // If at capacity, evict before inserting.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.entries.len() >= MAX_PACKET_CACHE {
             // Delegate to the instance method.
-            // Execute this protocol step.
-            // Execute this protocol step.
             self.evict(now);
         }
 
-        // Insert into the lookup table for efficient retrieval.
-        // Insert into the map/set.
-        // Insert into the map/set.
         self.entries.insert(id, now);
     }
 
@@ -249,19 +208,12 @@ impl DeduplicationCache {
     ///
     /// This is the most common usage pattern — called on every
     /// incoming packet before forwarding.
-    // Perform the 'check and record' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'check and record' operation.
     pub fn check_and_record(&mut self, id: PacketId, now: u64) -> bool {
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
         if self.is_duplicate(&id) {
             // Return the result to the caller.
-            // Return to the caller.
             return true;
         }
         // Delegate to the instance method.
-        // Execute this protocol step.
         self.record(id, now);
         false
     }
@@ -271,33 +223,20 @@ impl DeduplicationCache {
     /// Removes entries older than DEDUP_WINDOW_SECS.
     /// Should be called periodically (e.g., every 60 seconds)
     /// to keep memory usage bounded.
-    // Perform the 'gc' operation.
-    // Errors are propagated to the caller via Result.
     pub fn gc(&mut self, now: u64) {
-        // Filter the collection, keeping only elements that pass.
-        // Filter elements that match the predicate.
         self.entries.retain(|_, ts| {
             // Clamp the value to prevent overflow or underflow.
-            // Execute this protocol step.
             now.saturating_sub(*ts) <= DEDUP_WINDOW_SECS
         });
     }
 
     /// Number of entries currently in the cache.
-    // Perform the 'len' operation.
-    // Errors are propagated to the caller via Result.
     pub fn len(&self) -> usize {
-        // Mutate the internal state.
-        // Execute this protocol step.
         self.entries.len()
     }
 
     /// Whether the cache is empty.
-    // Perform the 'is empty' operation.
-    // Errors are propagated to the caller via Result.
     pub fn is_empty(&self) -> bool {
-        // Mutate the internal state.
-        // Execute this protocol step.
         self.entries.is_empty()
     }
 
@@ -309,24 +248,17 @@ impl DeduplicationCache {
     ///
     /// First pass: remove entries older than the dedup window.
     /// Second pass (if still full): remove the single oldest entry.
-    // Perform the 'evict' operation.
-    // Errors are propagated to the caller via Result.
     fn evict(&mut self, now: u64) {
         // First: remove expired entries.
-        // Filter elements that match the predicate.
         self.entries.retain(|_, ts| {
             // Clamp the value to prevent overflow or underflow.
-            // Execute this protocol step.
             now.saturating_sub(*ts) <= DEDUP_WINDOW_SECS
         });
 
         // If still at capacity, remove the oldest single entry.
         // This is O(n) but only runs when the cache is full AND
         // nothing has expired — a rare condition in practice.
-        // Guard: validate the condition before proceeding.
         if self.entries.len() >= MAX_PACKET_CACHE {
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
             if let Some(oldest_key) = self
                 // Chain the operation on the intermediate result.
                 .entries
@@ -334,7 +266,6 @@ impl DeduplicationCache {
                 // Create an iterator over the elements.
                 .iter()
                 // Apply the closure to each element.
-                // Execute this protocol step.
                 .min_by_key(|(_, ts)| *ts)
                 // Transform the result, mapping errors to the local error type.
                 // Transform each element.
@@ -351,12 +282,7 @@ impl DeduplicationCache {
 // Trait implementation for protocol conformance.
 // Implement Default for DeduplicationCache.
 impl Default for DeduplicationCache {
-    // Begin the block scope.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
     fn default() -> Self {
-        // Create a new instance with the specified parameters.
-        // Execute this protocol step.
         Self::new()
     }
 }

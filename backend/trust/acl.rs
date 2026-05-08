@@ -48,7 +48,6 @@ use crate::trust::levels::TrustLevel;
 
 /// Whether a rule allows or denies access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-// Begin the block scope.
 // AclPermission — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // AclPermission — variant enumeration.
@@ -71,7 +70,6 @@ pub enum AclPermission {
 /// Subjects are matched in order of specificity:
 /// peer > group > trust range > ANY.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-// Begin the block scope.
 // AclSubject — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // AclSubject — variant enumeration.
@@ -80,36 +78,23 @@ pub enum AclPermission {
 // Match exhaustively to handle every protocol state.
 pub enum AclSubject {
     /// A specific peer by peer ID.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Peer(PeerId),
 
     /// Members of a specific group.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Group([u8; 32]),
 
     /// Anyone at or above a specific trust level.
     /// e.g., `TrustFloor(TrustLevel::Trusted)` = Level 6+.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     TrustFloor(TrustLevel),
 
     /// Anyone in a trust level range (inclusive).
     /// e.g., `TrustRange(Vouched, Acquaintance)` = Levels 2–5.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     TrustRange(TrustLevel, TrustLevel),
 
     /// Anyone at all. Use with extreme caution.
     Any,
 }
 
-// Begin the block scope.
 // AclSubject implementation — core protocol logic.
 // AclSubject implementation — core protocol logic.
 // AclSubject implementation — core protocol logic.
@@ -119,33 +104,11 @@ impl AclSubject {
     /// `peer_id`: the peer to check.
     /// `peer_trust`: the peer's trust level with us.
     /// `peer_groups`: groups the peer belongs to.
-    // Perform the 'matches' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'matches' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'matches' operation.
-    // Errors are propagated to the caller via Result.
     pub fn matches(
         &self,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_id: &PeerId,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_trust: TrustLevel,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_groups: &[[u8; 32]],
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
     ) -> bool {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
@@ -166,10 +129,6 @@ impl AclSubject {
             // Handle Self::TrustRange(low, high).
             // Handle Self::TrustRange(low, high).
             Self::TrustRange(low, high) => {
-                // Process the current step in the protocol.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 peer_trust >= *low && peer_trust <= *high
             }
 
@@ -180,12 +139,6 @@ impl AclSubject {
 
     /// Specificity score for conflict resolution.
     /// More specific subjects win ties between rules at the same position.
-    // Perform the 'specificity' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'specificity' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'specificity' operation.
-    // Errors are propagated to the caller via Result.
     pub fn specificity(&self) -> u8 {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
@@ -200,7 +153,6 @@ impl AclSubject {
             Self::TrustRange(_, _) => 2,
             // Invoke the associated function.
             Self::TrustFloor(_) => 1,
-            // Handle this match arm.
             Self::Any => 0,
         }
     }
@@ -212,7 +164,6 @@ impl AclSubject {
 
 /// What an ACL rule protects (§8.8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-// Begin the block scope.
 // AclTarget — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // AclTarget — variant enumeration.
@@ -221,48 +172,26 @@ impl AclSubject {
 // Match exhaustively to handle every protocol state.
 pub enum AclTarget {
     /// A specific service by name.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Service(String),
 
     /// All services (wildcard).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     AllServices,
 
     /// A specific mesh port.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Port(u32),
 
     /// A specific resource path.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Resource(String),
 
     /// Everything (wildcard — use for default deny).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Everything,
 }
 
-// Begin the block scope.
 // AclTarget implementation — core protocol logic.
 // AclTarget implementation — core protocol logic.
 // AclTarget implementation — core protocol logic.
 impl AclTarget {
     /// Check if a request matches this target.
-    // Perform the 'matches service' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'matches service' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'matches service' operation.
-    // Errors are propagated to the caller via Result.
     pub fn matches_service(&self, service_name: &str) -> bool {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
@@ -271,20 +200,12 @@ impl AclTarget {
         match self {
             // Invoke the associated function.
             Self::Service(name) => name == service_name,
-            // Handle this match arm.
             Self::AllServices | Self::Everything => true,
-            // Update the local state.
             _ => false,
         }
     }
 
     /// Check if a port matches this target.
-    // Perform the 'matches port' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'matches port' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'matches port' operation.
-    // Errors are propagated to the caller via Result.
     pub fn matches_port(&self, port: u32) -> bool {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
@@ -293,9 +214,7 @@ impl AclTarget {
         match self {
             // Invoke the associated function.
             Self::Port(p) => *p == port,
-            // Handle this match arm.
             Self::Everything => true,
-            // Update the local state.
             _ => false,
         }
     }
@@ -311,7 +230,6 @@ impl AclTarget {
 /// and target both match determines the outcome. If no rule
 /// matches, the implicit default is Deny.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
 // AclRule — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // AclRule — protocol data structure (see field-level docs).
@@ -320,33 +238,18 @@ impl AclTarget {
 // Invariants are enforced at construction time.
 pub struct AclRule {
     /// What this rule does (Allow or Deny).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub permission: AclPermission,
 
     /// Who this rule applies to.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub subject: AclSubject,
 
     /// What this rule protects.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub target: AclTarget,
 
     /// Optional human-readable description.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub description: Option<String>,
 
     /// Whether this rule is active.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub enabled: bool,
 }
 
@@ -366,44 +269,20 @@ pub struct AclRule {
 // Invariants are enforced at construction time.
 pub struct AclEngine {
     /// Ordered list of ACL rules.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     rules: Vec<AclRule>,
 }
 
-// Begin the block scope.
 // AclEngine implementation — core protocol logic.
 // AclEngine implementation — core protocol logic.
 // AclEngine implementation — core protocol logic.
 impl AclEngine {
     /// Create a new ACL engine with the given rules.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new(rules: Vec<AclRule>) -> Self {
-        // Assemble the instance from the computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
         Self { rules }
     }
 
     /// Create an empty engine (everything denied by default).
-    // Perform the 'empty' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'empty' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'empty' operation.
-    // Errors are propagated to the caller via Result.
     pub fn empty() -> Self {
-        // Create a new instance with the specified parameters.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
         Self { rules: Vec::new() }
     }
 
@@ -416,185 +295,72 @@ impl AclEngine {
     ///
     /// Returns Allow if a matching Allow rule is found,
     /// Deny if a matching Deny rule is found or no rule matches.
-    // Perform the 'check service' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'check service' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'check service' operation.
-    // Errors are propagated to the caller via Result.
     pub fn check_service(
         &self,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_id: &PeerId,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_trust: TrustLevel,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_groups: &[[u8; 32]],
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         service_name: &str,
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
     ) -> AclPermission {
         // Iterate over each element in the collection.
         // Iterate over each element.
         // Iterate over each element.
         // Iterate over each element.
         for rule in &self.rules {
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if !rule.enabled {
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 continue;
             }
 
             // Check if both subject and target match.
-            // Compute subject match for this protocol step.
-            // Compute subject match for this protocol step.
-            // Compute subject match for this protocol step.
             let subject_match =
-                // Execute the operation and bind the result.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 rule.subject.matches(peer_id, peer_trust, peer_groups);
             // Dispatch based on the variant to apply type-specific logic.
-            // Compute target match for this protocol step.
-            // Compute target match for this protocol step.
-            // Compute target match for this protocol step.
             let target_match = rule.target.matches_service(service_name);
 
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if subject_match && target_match {
                 // Return the result to the caller.
-                // Return to the caller.
-                // Return to the caller.
-                // Return to the caller.
                 return rule.permission;
             }
         }
 
         // No rule matched → implicit Deny.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         AclPermission::Deny
     }
 
     /// Evaluate whether a peer can access a port.
-    // Perform the 'check port' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'check port' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'check port' operation.
-    // Errors are propagated to the caller via Result.
     pub fn check_port(
         &self,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_id: &PeerId,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_trust: TrustLevel,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         peer_groups: &[[u8; 32]],
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         port: u32,
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
     ) -> AclPermission {
         // Iterate over each element in the collection.
         // Iterate over each element.
         // Iterate over each element.
         // Iterate over each element.
         for rule in &self.rules {
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if !rule.enabled {
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 continue;
             }
 
             // Dispatch based on the variant to apply type-specific logic.
-            // Compute subject match for this protocol step.
-            // Compute subject match for this protocol step.
-            // Compute subject match for this protocol step.
             let subject_match =
-                // Execute the operation and bind the result.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 rule.subject.matches(peer_id, peer_trust, peer_groups);
             // Dispatch based on the variant to apply type-specific logic.
-            // Compute target match for this protocol step.
-            // Compute target match for this protocol step.
-            // Compute target match for this protocol step.
             let target_match = rule.target.matches_port(port);
 
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if subject_match && target_match {
                 // Return the result to the caller.
-                // Return to the caller.
-                // Return to the caller.
-                // Return to the caller.
                 return rule.permission;
             }
         }
 
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         AclPermission::Deny
     }
 
     /// Add a rule to the end of the list.
-    // Perform the 'add rule' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'add rule' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'add rule' operation.
-    // Errors are propagated to the caller via Result.
     pub fn add_rule(&mut self, rule: AclRule) {
-        // Execute the operation and bind the result.
         // Append to the collection.
         // Append to the collection.
         // Append to the collection.
@@ -602,48 +368,22 @@ impl AclEngine {
     }
 
     /// Insert a rule at a specific position.
-    // Perform the 'insert rule' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'insert rule' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'insert rule' operation.
-    // Errors are propagated to the caller via Result.
     pub fn insert_rule(&mut self, index: usize, rule: AclRule) {
         // Validate the input length to prevent out-of-bounds access.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if index <= self.rules.len() {
-            // Insert into the lookup table for efficient retrieval.
-            // Insert into the map/set.
-            // Insert into the map/set.
-            // Insert into the map/set.
             self.rules.insert(index, rule);
         }
     }
 
     /// Remove a rule by index.
-    // Perform the 'remove rule' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'remove rule' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'remove rule' operation.
-    // Errors are propagated to the caller via Result.
     pub fn remove_rule(&mut self, index: usize) -> Option<AclRule> {
         // Validate the input length to prevent out-of-bounds access.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if index < self.rules.len() {
             // Remove from the collection and return the evicted value.
             // Wrap the found value.
             // Wrap the found value.
             // Wrap the found value.
             Some(self.rules.remove(index))
-        // Begin the block scope.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
         } else {
             // No value available.
             // No value available.
@@ -653,17 +393,7 @@ impl AclEngine {
     }
 
     /// Number of rules.
-    // Perform the 'rule count' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'rule count' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'rule count' operation.
-    // Errors are propagated to the caller via Result.
     pub fn rule_count(&self) -> usize {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.rules.len()
     }
 }

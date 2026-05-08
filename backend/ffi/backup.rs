@@ -19,41 +19,26 @@ use super::{c_str_to_str, MeshContext};
 /// # Safety
 /// `ctx` must be non-null.  `passphrase` must be non-null, valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_create_backup(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     passphrase: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     backup_type: u8,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx cannot create a backup.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required passphrase.
-    // Compute pass for this protocol step.
     let pass = match unsafe { c_str_to_str(passphrase) } {
         // Wrap the found value for the caller.
         // Wrap the found value.
         Some(s) => s,
-        // Update the local state.
         // No value available.
         None => return ctx.set_response(r#"{"ok":false,"error":"passphrase required"}"#),
     };
     // Delegate to service layer and return the result JSON.
-    // Execute this protocol step.
     ctx.set_response(&ctx.create_backup(pass, backup_type))
 }
 
@@ -250,19 +235,14 @@ pub unsafe extern "C" fn mi_free_bytes(ptr: *mut u8, len: usize) {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_emergency_erase(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx cannot be erased.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null and exclusive access.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &mut *ctx };
     // Dispatch to service layer for the actual wipe.
-    // Execute this protocol step.
     ctx.emergency_erase();
     0
 }
@@ -274,19 +254,14 @@ pub unsafe extern "C" fn mi_emergency_erase(ctx: *mut MeshContext) -> i32 {
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_duress_erase(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx cannot be erased.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null and exclusive access.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &mut *ctx };
     // Dispatch duress wipe to service layer.
-    // Execute this protocol step.
     ctx.duress_erase();
     0
 }

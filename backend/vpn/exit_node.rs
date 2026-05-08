@@ -61,28 +61,16 @@ pub struct DarknetEntry {
     /// The tor bridge for this instance.
     pub tor_bridge: bool,
     /// The i2p router for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub i2p_router: bool,
     /// The yggdrasil for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub yggdrasil: bool,
     /// The mixnet for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub mixnet: bool,
     /// The gnunet for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub gnunet: bool,
     /// The anonet for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub anonet: bool,
     /// The dn42 for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub dn42: bool,
     /// The briar relay for this instance.
     pub briar_relay: bool,
@@ -108,53 +96,35 @@ pub enum ConditionalExitType {
 /// Shared through trusted channels only — never in the public
 /// network map.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
 // ExitNodeAdvertisement — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // ExitNodeAdvertisement — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct ExitNodeAdvertisement {
     /// The exit node's peer ID.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub peer_id: [u8; 32],
     /// What this node can do.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub capabilities: ExitCapabilities,
     /// Network profiles offered.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub network_profiles: Vec<NetworkProfile>,
 }
 
 /// A network profile offered by an exit node.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
 // NetworkProfile — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // NetworkProfile — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct NetworkProfile {
     /// The profile id for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub profile_id: [u8; 16],
     /// The name for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub name: String,
     /// The description for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub description: Option<String>,
     /// The exit type for this instance.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub exit_type: ConditionalExitType,
     /// Whether this profile is mandatory (always applied).
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub mandatory: bool,
 }
 
@@ -165,96 +135,55 @@ pub struct NetworkProfile {
 /// Client-side risk classification for exit nodes.
 /// Never transmitted — computed locally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-// Begin the block scope.
 // ExitTier — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // ExitTier — variant enumeration.
 // Match exhaustively to handle every protocol state.
 pub enum ExitTier {
     /// Named services/domains only. Low risk.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Tier1 = 1,
     /// Darknet entry. Low-medium risk.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Tier2 = 2,
     /// Conditional non-clearnet exit. Medium risk.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Tier3 = 3,
     /// Unconditional clearnet routing. High risk.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Tier4 = 4,
 }
 
 /// Classify an exit node into its highest applicable tier.
-// Perform the 'classify exit tier' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'classify exit tier' operation.
-// Errors are propagated to the caller via Result.
 pub fn classify_exit_tier(caps: &ExitCapabilities) -> ExitTier {
-    // Conditional branch based on the current state.
-    // Guard: validate the condition before proceeding.
-    // Guard: validate the condition before proceeding.
     if caps.clearnet_exit {
         // Return the result to the caller.
-        // Return to the caller.
-        // Return to the caller.
         return ExitTier::Tier4;
     }
     // Validate the input length to prevent out-of-bounds access.
-    // Guard: validate the condition before proceeding.
-    // Guard: validate the condition before proceeding.
     if !caps.conditional_exit.is_empty() {
         // Return the result to the caller.
-        // Return to the caller.
-        // Return to the caller.
         return ExitTier::Tier3;
     }
-    // Conditional branch based on the current state.
-    // Guard: validate the condition before proceeding.
     if caps.darknet_entry.has_any() {
         // Return the result to the caller.
-        // Return to the caller.
         return ExitTier::Tier2;
     }
     // Execute this step in the protocol sequence.
-    // Execute this protocol step.
     ExitTier::Tier1
 }
 
-// Begin the block scope.
 // DarknetEntry implementation — core protocol logic.
 impl DarknetEntry {
     /// Whether any darknet entry capability is present.
-    // Perform the 'has any' operation.
-    // Errors are propagated to the caller via Result.
     pub fn has_any(&self) -> bool {
-        // Mutate the internal state.
-        // Execute this protocol step.
         self.tor_bridge
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             || self.i2p_router
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             || self.yggdrasil
             // Chain the operation on the intermediate result.
-            // Execute this protocol step.
             || self.mixnet
             // Chain the operation on the intermediate result.
-            // Execute this protocol step.
             || self.gnunet
             // Chain the operation on the intermediate result.
-            // Execute this protocol step.
             || self.anonet
             // Chain the operation on the intermediate result.
-            // Execute this protocol step.
             || self.dn42
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             || self.briar_relay
     }
 }

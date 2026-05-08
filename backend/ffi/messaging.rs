@@ -16,19 +16,14 @@ use super::{c_str_to_str, MeshContext};
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_get_room_list(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no rooms.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate room list serialisation to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.get_room_list())
 }
 
@@ -37,11 +32,8 @@ pub unsafe extern "C" fn mi_get_room_list(ctx: *mut MeshContext) -> *const c_cha
 /// # Safety
 /// Same as `mi_get_room_list`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_rooms_json(ctx: *mut MeshContext) -> *const c_char {
     // Forward to the canonical implementation.
-    // Execute this protocol step.
     unsafe { mi_get_room_list(ctx) }
 }
 
@@ -53,46 +45,27 @@ pub unsafe extern "C" fn mi_rooms_json(ctx: *mut MeshContext) -> *const c_char {
 /// `ctx` must be non-null.  `name` must be non-null, valid UTF-8.
 /// `peer_id` may be null or a valid hex peer-ID string.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_create_room(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     name: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     peer_id: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx cannot hold rooms.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null and exclusive access.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &mut *ctx };
     // Parse room name; default to "New Chat" if null.
-    // Compute room name for this protocol step.
     let room_name = unsafe { c_str_to_str(name) }.unwrap_or("New Chat");
     // Parse optional peer ID for DM rooms.
-    // Compute pid str for this protocol step.
     let pid_str = unsafe { c_str_to_str(peer_id) };
     // Delegate room creation to service layer.
     // Dispatch on the variant.
     match ctx.create_room(room_name, pid_str) {
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
         Ok(id_hex) => {
             // Serialize to the wire format for transmission or storage.
-            // Compute json for this protocol step.
             let json = serde_json::json!({"id": id_hex, "name": room_name}).to_string();
-            // Process the current step in the protocol.
-            // Execute this protocol step.
             ctx.set_response(&json)
         }
         // Signal failure to the caller with a descriptive error.
@@ -111,29 +84,22 @@ pub unsafe extern "C" fn mi_create_room(
 /// # Safety
 /// `ctx` must be non-null.  `room_id` must be non-null, valid UTF-8.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_delete_room(ctx: *mut MeshContext, room_id: *const c_char) -> i32 {
     // Guard: reject null context.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required room-ID argument.
-    // Compute rid for this protocol step.
     let rid = match unsafe { c_str_to_str(room_id) } {
         // Wrap the found value for the caller.
         // Wrap the found value.
         Some(s) => s,
-        // Update the local state.
         // No value available.
         None => return -1,
     };
     // Dispatch to service layer; map bool result to 0/-1.
-    // Guard: validate the condition before proceeding.
     if ctx.delete_room(rid) {
         0
     } else {
@@ -146,31 +112,19 @@ pub unsafe extern "C" fn mi_delete_room(ctx: *mut MeshContext, room_id: *const c
 /// # Safety
 /// `ctx` must be non-null.  `room_id` must be non-null, valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_get_messages(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx has no messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required room-ID argument.
-    // Compute rid for this protocol step.
     let rid = unsafe { c_str_to_str(room_id) }.unwrap_or("");
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.get_messages(rid))
 }
 
@@ -179,20 +133,11 @@ pub unsafe extern "C" fn mi_get_messages(
 /// # Safety
 /// Same as `mi_get_messages`.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_messages_json(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Forward to the canonical implementation.
-    // Execute this protocol step.
     unsafe { mi_get_messages(ctx, room_id) }
 }
 
@@ -201,19 +146,14 @@ pub unsafe extern "C" fn mi_messages_json(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_active_room_id(ctx: *mut MeshContext) -> *const c_char {
     // Guard: null ctx has no active room.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate active-room query to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.active_room_id())
 }
 
@@ -237,43 +177,28 @@ pub unsafe extern "C" fn mi_select_room(ctx: *mut MeshContext, room_id: *const c
 /// # Safety
 /// `ctx` must be non-null.  `room_id` and `text` must be valid UTF-8 strings.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_send_text_message(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     text: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot send messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute rid for this protocol step.
     let rid = match unsafe { c_str_to_str(room_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute txt for this protocol step.
     let txt = match unsafe { c_str_to_str(text) } {
         Some(s) if !s.is_empty() => s,
         _ => return -1,
     };
     // Dispatch to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.send_text_message(rid, txt) {
         0
     } else {
@@ -289,26 +214,13 @@ pub unsafe extern "C" fn mi_send_text_message(
 /// # Safety
 /// Same as `mi_send_text_message`.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_send_message(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     _security_mode: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     text: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Forward to the text-message implementation.
-    // Execute this protocol step.
     unsafe { mi_send_text_message(ctx, room_id, text) }
 }
 
@@ -319,34 +231,22 @@ pub unsafe extern "C" fn mi_send_message(
 /// # Safety
 /// `ctx` must be non-null.  `msg_id` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_delete_message(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     msg_id: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot delete messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required message-ID argument.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.delete_message(mid);
     0
 }
@@ -358,52 +258,34 @@ pub unsafe extern "C" fn mi_delete_message(
 /// # Safety
 /// `ctx` must be non-null.  All string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_send_reaction(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     msg_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     emoji: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: reject null context.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse all three required arguments.
-    // Compute rid for this protocol step.
     let rid = match unsafe { c_str_to_str(room_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute emj for this protocol step.
     let emj = match unsafe { c_str_to_str(emoji) } {
         Some(s) if !s.is_empty() => s,
         _ => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.send_reaction(rid, mid, emj) {
         0
     } else {
@@ -418,43 +300,28 @@ pub unsafe extern "C" fn mi_send_reaction(
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_send_read_receipt(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     msg_id: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx has no rooms to mark read.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute rid for this protocol step.
     let rid = match unsafe { c_str_to_str(room_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.send_read_receipt(rid, mid);
     0
 }
@@ -468,36 +335,23 @@ pub unsafe extern "C" fn mi_send_read_receipt(
 /// # Safety
 /// `ctx` must be non-null.  `room_id` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_send_typing_indicator(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Execute this protocol step.
     active: i32,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot broadcast typing events.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required room-ID argument.
-    // Compute rid for this protocol step.
     let rid = match unsafe { c_str_to_str(room_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Execute this protocol step.
     ctx.send_typing_indicator(rid, active != 0);
     0
 }
@@ -509,52 +363,34 @@ pub unsafe extern "C" fn mi_send_typing_indicator(
 /// # Safety
 /// `ctx` must be non-null.  All string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_reply_to_message(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     reply_to: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     text: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot send messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null and exclusive access.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &mut *ctx };
     // Parse all three required arguments.
-    // Compute rid for this protocol step.
     let rid = match unsafe { c_str_to_str(room_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute rto for this protocol step.
     let rto = match unsafe { c_str_to_str(reply_to) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute txt for this protocol step.
     let txt = match unsafe { c_str_to_str(text) } {
         Some(s) if !s.is_empty() => s,
         _ => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.reply_to_message(rid, rto, txt) {
         0
     } else {
@@ -569,43 +405,28 @@ pub unsafe extern "C" fn mi_reply_to_message(
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_edit_message(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     msg_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     new_text: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx has no messages to edit.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required arguments.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute ntxt for this protocol step.
     let ntxt = match unsafe { c_str_to_str(new_text) } {
         Some(s) if !s.is_empty() => s,
         _ => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.edit_message(mid, ntxt) {
         0
     } else {
@@ -620,34 +441,22 @@ pub unsafe extern "C" fn mi_edit_message(
 /// # Safety
 /// `ctx` must be non-null.  `msg_id` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_delete_for_everyone(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     msg_id: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx has no messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required message-ID argument.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.delete_for_everyone(mid).is_some() {
         0
     } else {
@@ -662,43 +471,28 @@ pub unsafe extern "C" fn mi_delete_for_everyone(
 /// # Safety
 /// `ctx` must be non-null.  Both string args must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_forward_message(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     msg_id: *const c_char,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     target_room: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx cannot forward messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null and exclusive access.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &mut *ctx };
     // Parse required arguments.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Dispatch based on the variant to apply type-specific logic.
-    // Compute tgt for this protocol step.
     let tgt = match unsafe { c_str_to_str(target_room) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.forward_message(mid, tgt) {
         0
     } else {
@@ -713,25 +507,19 @@ pub unsafe extern "C" fn mi_forward_message(
 /// # Safety
 /// `ctx` must be non-null.  `msg_id` must be valid UTF-8.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_pin_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
     // Guard: null ctx has no messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required argument.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.pin_message(mid) {
         0
     } else {
@@ -746,25 +534,19 @@ pub unsafe extern "C" fn mi_pin_message(ctx: *mut MeshContext, msg_id: *const c_
 /// # Safety
 /// `ctx` must be non-null.  `msg_id` must be valid UTF-8.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_unpin_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
     // Guard: null ctx has no messages.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required argument.
-    // Compute mid for this protocol step.
     let mid = match unsafe { c_str_to_str(msg_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.unpin_message(mid) {
         0
     } else {
@@ -779,36 +561,23 @@ pub unsafe extern "C" fn mi_unpin_message(ctx: *mut MeshContext, msg_id: *const 
 /// # Safety
 /// `ctx` must be non-null.  `room_id` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_set_disappearing_timer(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     room_id: *const c_char,
-    // Execute this protocol step.
     secs: u64,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> i32 {
     // Guard: null ctx has no rooms.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse required room-ID argument.
-    // Compute rid for this protocol step.
     let rid = match unsafe { c_str_to_str(room_id) } {
         Some(s) => s,
         None => return -1,
     };
     // Delegate to service layer.
-    // Guard: validate the condition before proceeding.
     if ctx.set_disappearing_timer(rid, secs) {
         0
     } else {
@@ -823,31 +592,19 @@ pub unsafe extern "C" fn mi_set_disappearing_timer(
 /// # Safety
 /// `ctx` must be non-null.  `query` must be valid UTF-8.
 #[no_mangle]
-// Process the current step in the protocol.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_search_messages(
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     ctx: *mut MeshContext,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
     query: *const c_char,
-    // Begin the block scope.
-    // Execute this protocol step.
 ) -> *const c_char {
     // Guard: null ctx has no messages to search.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return ptr::null();
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Parse optional query (null → empty → returns []).
-    // Compute q for this protocol step.
     let q = unsafe { c_str_to_str(query) }.unwrap_or("");
     // Delegate full-text search to service layer.
-    // Execute this protocol step.
     ctx.set_response(&ctx.search_messages(q))
 }
 
@@ -858,19 +615,14 @@ pub unsafe extern "C" fn mi_search_messages(
 /// # Safety
 /// `ctx` must be non-null and from `mesh_init`.
 #[no_mangle]
-// Begin the block scope.
-// Execute this protocol step.
 pub unsafe extern "C" fn mi_prune_expired_messages(ctx: *mut MeshContext) -> i32 {
     // Guard: null ctx cannot prune.
-    // Guard: validate the condition before proceeding.
     if ctx.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees non-null.
-    // Compute ctx for this protocol step.
     let ctx = unsafe { &*ctx };
     // Delegate expiry pruning to service layer.
-    // Execute this protocol step.
     ctx.prune_expired_messages();
     0
 }

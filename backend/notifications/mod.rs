@@ -35,7 +35,6 @@ use serde::{Deserialize, Serialize};
 /// Notification delivery tier (§14).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
-// Begin the block scope.
 // NotificationTier — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // NotificationTier — variant enumeration.
@@ -44,24 +43,12 @@ use serde::{Deserialize, Serialize};
 // Match exhaustively to handle every protocol state.
 pub enum NotificationTier {
     /// Persistent mesh tunnel. No third-party exposure.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     MeshTunnel = 1,
     /// UnifiedPush (ntfy/Gotify). Push server sees timing.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     UnifiedPush = 2,
     /// APNs/FCM silent push. Platform vendor sees timing.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     SilentPush = 3,
     /// APNs/FCM rich push. Platform vendor sees timing + content.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     RichPush = 4,
 }
 
@@ -72,7 +59,6 @@ pub enum NotificationTier {
 /// Notification priority level (§14).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
-// Begin the block scope.
 // NotificationPriority — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // NotificationPriority — variant enumeration.
@@ -83,47 +69,27 @@ pub enum NotificationPriority {
     /// Background sync, presence updates. Always batched.
     Low = 0,
     /// Group messages, file offers. 0-60s jitter, coalesced.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Normal = 1,
     /// DMs from trusted peers. 0-10s jitter.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     High = 2,
     /// Calls, pairing requests. Sent immediately.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Urgent = 3,
 }
 
-// Begin the block scope.
 // NotificationPriority implementation — core protocol logic.
 // NotificationPriority implementation — core protocol logic.
 // NotificationPriority implementation — core protocol logic.
 impl NotificationPriority {
     /// Maximum jitter in seconds for this priority.
-    // Perform the 'max jitter secs' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'max jitter secs' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'max jitter secs' operation.
-    // Errors are propagated to the caller via Result.
     pub fn max_jitter_secs(&self) -> u64 {
         // Dispatch based on the variant to apply type-specific logic.
         // Dispatch on the variant.
         // Dispatch on the variant.
         // Dispatch on the variant.
         match self {
-            // Handle this match arm.
             Self::Urgent => 0,
-            // Handle this match arm.
             Self::High => 10,
-            // Handle this match arm.
             Self::Normal => 60,
-            // Handle this match arm.
             Self::Low => 300, // Batched.
         }
     }
@@ -135,7 +101,6 @@ impl NotificationPriority {
 
 /// Push notification platform.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-// Begin the block scope.
 // PushPlatform — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // PushPlatform — variant enumeration.
@@ -148,9 +113,6 @@ pub enum PushPlatform {
     /// Firebase Cloud Messaging.
     FCM,
     /// UnifiedPush (ntfy, Gotify, etc.).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     UnifiedPush,
 }
 
@@ -160,7 +122,6 @@ pub enum PushPlatform {
 
 /// How to reach the push relay for Tier 3/4 notifications.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
 // RelayAddress — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // RelayAddress — variant enumeration.
@@ -169,25 +130,15 @@ pub enum PushPlatform {
 // Match exhaustively to handle every protocol state.
 pub enum RelayAddress {
     /// Relay running as a mesh service (preferred).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     MeshService { service_id: [u8; 16] },
     /// Clearnet URL (fallback).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     ClearnetUrl { url: String },
     /// UnifiedPush endpoint.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     UnifiedPush { endpoint: String },
 }
 
 /// Configuration for push relay registration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
 // PushRelayConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // PushRelayConfig — protocol data structure (see field-level docs).
@@ -196,19 +147,10 @@ pub enum RelayAddress {
 // Invariants are enforced at construction time.
 pub struct PushRelayConfig {
     /// How to reach the relay.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub relay_address: RelayAddress,
     /// Device token (APNs token or FCM registration ID).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub device_token: Vec<u8>,
     /// Which platform this device uses.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub platform: PushPlatform,
 }
 
@@ -218,7 +160,6 @@ pub struct PushRelayConfig {
 
 /// How much content to include in rich push notifications (§14).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-// Begin the block scope.
 // RichPushContentLevel — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // RichPushContentLevel — variant enumeration.
@@ -229,9 +170,6 @@ pub enum RichPushContentLevel {
     /// "New message" (no sender info).
     Minimal,
     /// Sender name + "New message".
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     Standard,
     /// Sender name + message preview.
     Full,
@@ -243,7 +181,6 @@ pub enum RichPushContentLevel {
 
 /// Per-device notification settings.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
 // NotificationConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // NotificationConfig — protocol data structure (see field-level docs).
@@ -252,24 +189,12 @@ pub enum RichPushContentLevel {
 // Invariants are enforced at construction time.
 pub struct NotificationConfig {
     /// Current notification tier.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub tier: NotificationTier,
     /// Push relay config (for Tier 2-4).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub push_relay: Option<PushRelayConfig>,
     /// Rich push content level (Tier 4 only).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub rich_content_level: RichPushContentLevel,
     /// Whether notifications are enabled at all.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub enabled: bool,
 }
 
@@ -278,43 +203,16 @@ pub struct NotificationConfig {
 // Implement Default for NotificationConfig.
 // Implement Default for NotificationConfig.
 impl Default for NotificationConfig {
-    // Begin the block scope.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
     fn default() -> Self {
-        // Assemble the instance from the computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
         Self {
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             tier: NotificationTier::MeshTunnel,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             push_relay: None,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             rich_content_level: RichPushContentLevel::Minimal,
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             enabled: true,
         }
     }
 }
 
-// Begin the block scope.
 // NotificationConfig implementation — core protocol logic.
 // NotificationConfig implementation — core protocol logic.
 // NotificationConfig implementation — core protocol logic.
@@ -322,40 +220,17 @@ impl NotificationConfig {
     /// Whether the current tier is suppressed by threat context.
     ///
     /// Elevated or Critical → Tiers 3 and 4 suppressed (§14.7, §14.8).
-    // Perform the 'is suppressed by threat' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is suppressed by threat' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is suppressed by threat' operation.
-    // Errors are propagated to the caller via Result.
     pub fn is_suppressed_by_threat(&self, tc: ThreatContext) -> bool {
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         !tc.allows_push_notifications() && self.tier >= NotificationTier::SilentPush
     }
 
     /// Get the effective tier considering threat context suppression.
-    // Perform the 'effective tier' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'effective tier' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'effective tier' operation.
-    // Errors are propagated to the caller via Result.
     pub fn effective_tier(&self, tc: ThreatContext) -> NotificationTier {
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.is_suppressed_by_threat(tc) {
             // Fall back to Tier 2 (UnifiedPush) ONLY if the configured relay is
             // actually UnifiedPush.  MeshService and ClearnetUrl relays are
             // Tier 3/4 themselves and are also suppressed under elevated threat
             // context, so they must fall all the way back to Tier 1 (MeshTunnel).
-            // Compute relay is unified push for this protocol step.
-            // Compute relay is unified push for this protocol step.
-            // Compute relay is unified push for this protocol step.
             let relay_is_unified_push = matches!(
                 // Transform the result, mapping errors to the local error type.
                 // Transform each element.
@@ -368,36 +243,12 @@ impl NotificationConfig {
                 // Wrap the found value.
                 Some(RelayAddress::UnifiedPush { .. })
             );
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if relay_is_unified_push {
-                // Process the current step in the protocol.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 NotificationTier::UnifiedPush
-            // Begin the block scope.
-            // Fallback when the guard was not satisfied.
-            // Fallback when the guard was not satisfied.
-            // Fallback when the guard was not satisfied.
             } else {
-                // Process the current step in the protocol.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 NotificationTier::MeshTunnel
             }
-        // Begin the block scope.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
-        // Fallback when the guard was not satisfied.
         } else {
-            // Mutate the internal state.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             self.tier
         }
     }
@@ -413,7 +264,6 @@ impl NotificationConfig {
 /// needs to notify the user. The dispatcher applies jitter,
 /// coalescing, and tier selection.
 #[derive(Clone, Debug)]
-// Begin the block scope.
 // NotificationEvent — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // NotificationEvent — protocol data structure (see field-level docs).
@@ -422,34 +272,16 @@ impl NotificationConfig {
 // Invariants are enforced at construction time.
 pub struct NotificationEvent {
     /// What kind of notification this is.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub priority: NotificationPriority,
     /// A short title (e.g., "New message from Alice").
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub title: String,
     /// The body/preview text (used in Tier 4 rich push).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub body: Option<String>,
     /// Sender peer ID (for sender name resolution).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub sender_id: Option<[u8; 32]>,
     /// Conversation/room ID (for navigation).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub conversation_id: Option<[u8; 32]>,
     /// When the event was created.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub created_at: u64,
 }
 
@@ -470,65 +302,31 @@ pub struct NotificationEvent {
 // Invariants are enforced at construction time.
 pub struct NotificationDispatcher {
     /// Current notification configuration.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub config: NotificationConfig,
 
     /// Pending events waiting for jitter window to close.
     /// Key: conversation_id (or [0;32] for non-conversation events).
     /// Value: (events, earliest_dispatch_time).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pending: std::collections::HashMap<[u8; 32], (Vec<NotificationEvent>, u64)>,
 
     /// Current threat context — governs Tier 3/4 suppression.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub threat_context: ThreatContext,
 }
 
-// Begin the block scope.
 // NotificationDispatcher implementation — core protocol logic.
 // NotificationDispatcher implementation — core protocol logic.
 // NotificationDispatcher implementation — core protocol logic.
 impl NotificationDispatcher {
     /// Create a new dispatcher.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new(config: NotificationConfig) -> Self {
-        // Assemble the instance from the computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
         Self {
             config,
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             pending: std::collections::HashMap::new(),
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             threat_context: ThreatContext::Normal,
         }
     }
 
     /// Update the threat context. Suppresses Tier 3/4 at Elevated or Critical.
-    // Perform the 'set threat context' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'set threat context' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'set threat context' operation.
-    // Errors are propagated to the caller via Result.
     pub fn set_threat_context(&mut self, tc: ThreatContext) {
         // Update the threat context to reflect the new state.
         // Advance threat context state.
@@ -541,63 +339,25 @@ impl NotificationDispatcher {
     ///
     /// The event is buffered until its jitter window closes.
     /// Returns the time when `dispatch_ready()` should be called.
-    // Perform the 'submit' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'submit' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'submit' operation.
-    // Errors are propagated to the caller via Result.
     pub fn submit(&mut self, event: NotificationEvent) -> u64 {
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if !self.config.enabled {
             // Return the result to the caller.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return u64::MAX;
         }
 
-        // Execute the operation and bind the result.
-        // Compute jitter for this protocol step.
-        // Compute jitter for this protocol step.
-        // Compute jitter for this protocol step.
         let jitter = event.priority.max_jitter_secs();
-        // Execute the operation and bind the result.
-        // Compute dispatch at for this protocol step.
-        // Compute dispatch at for this protocol step.
-        // Compute dispatch at for this protocol step.
         let dispatch_at = event.created_at + jitter;
 
         // Unique identifier for lookup and deduplication.
-        // Compute conv id for this protocol step.
-        // Compute conv id for this protocol step.
-        // Compute conv id for this protocol step.
         let conv_id = event.conversation_id.unwrap_or([0u8; 32]);
 
         // Unique identifier for lookup and deduplication.
-        // Compute entry for this protocol step.
-        // Compute entry for this protocol step.
-        // Compute entry for this protocol step.
         let entry = self.pending.entry(conv_id).or_insert_with(|| {
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             (Vec::new(), dispatch_at)
         });
 
         // Use the earliest dispatch time among events in this group.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if dispatch_at < entry.1 {
-            // Execute the operation and bind the result.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             entry.1 = dispatch_at;
         }
 
@@ -614,23 +374,10 @@ impl NotificationDispatcher {
     ///
     /// Returns coalesced notification events grouped by conversation.
     /// Each group becomes a single push notification.
-    // Perform the 'dispatch ready' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'dispatch ready' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'dispatch ready' operation.
-    // Errors are propagated to the caller via Result.
     pub fn dispatch_ready(&mut self, now: u64) -> Vec<CoalescedNotification> {
         // Pre-allocate the buffer to avoid repeated reallocations.
-        // Compute ready for this protocol step.
-        // Compute ready for this protocol step.
-        // Compute ready for this protocol step.
         let mut ready = Vec::new();
 
-        // Key material — must be zeroized when no longer needed.
-        // Compute ready keys for this protocol step.
-        // Compute ready keys for this protocol step.
-        // Compute ready keys for this protocol step.
         let ready_keys: Vec<[u8; 32]> = self
             // Chain the operation on the intermediate result.
             .pending
@@ -660,21 +407,11 @@ impl NotificationDispatcher {
         // Iterate over each element.
         // Iterate over each element.
         for key in ready_keys {
-            // Conditional branch based on the current state.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
-            // Guard: validate the condition before proceeding.
             if let Some((events, _)) = self.pending.remove(&key) {
                 // Configure the operation parameters.
-                // Compute effective tier for this protocol step.
-                // Compute effective tier for this protocol step.
-                // Compute effective tier for this protocol step.
                 let effective_tier = self.config.effective_tier(self.threat_context);
 
                 // Determine the highest priority among coalesced events.
-                // Compute max priority for this protocol step.
-                // Compute max priority for this protocol step.
-                // Compute max priority for this protocol step.
                 let max_priority = events
                     // Create an iterator over the collection elements.
                     // Create an iterator over the elements.
@@ -689,41 +426,19 @@ impl NotificationDispatcher {
                     // Clamp the value to prevent overflow or underflow.
                     .max()
                     // Fall back to the default value on failure.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
                     .unwrap_or(NotificationPriority::Low);
 
                 // Build the coalesced notification.
-                // Compute title for this protocol step.
-                // Compute title for this protocol step.
-                // Compute title for this protocol step.
                 let title = if events.len() == 1 {
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
                     events[0].title.clone()
-                // Begin the block scope.
-                // Fallback when the guard was not satisfied.
-                // Fallback when the guard was not satisfied.
-                // Fallback when the guard was not satisfied.
                 } else {
                     // Format the output for display or logging.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
                     format!("{} new messages", events.len())
                 };
 
                 // Configure the operation parameters.
-                // Compute body for this protocol step.
-                // Compute body for this protocol step.
-                // Compute body for this protocol step.
                 let body = match self.config.rich_content_level {
-                    // Handle this match arm.
                     RichPushContentLevel::Minimal => None,
-                    // Begin the block scope.
                     // Handle RichPushContentLevel::Standard.
                     // Handle RichPushContentLevel::Standard.
                     // Handle RichPushContentLevel::Standard.
@@ -734,45 +449,24 @@ impl NotificationDispatcher {
                         // Transform each element.
                         events.last().map(|e| e.title.clone())
                     }
-                    // Begin the block scope.
                     // Handle RichPushContentLevel::Full.
                     // Handle RichPushContentLevel::Full.
                     // Handle RichPushContentLevel::Full.
                     RichPushContentLevel::Full => {
                         // Transform the result, mapping errors to the local error type.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
-                        // Execute this protocol step.
                         events.last().and_then(|e| e.body.clone())
                     }
                 };
 
-                // Begin the block scope.
                 // Append to the collection.
                 // Append to the collection.
                 // Append to the collection.
                 ready.push(CoalescedNotification {
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
                     tier: effective_tier,
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
                     priority: max_priority,
                     title,
                     body,
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
                     conversation_id: if key == [0u8; 32] { None } else { Some(key) },
-                    // Process the current step in the protocol.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
-                    // Execute this protocol step.
                     event_count: events.len(),
                 });
             }
@@ -782,12 +476,6 @@ impl NotificationDispatcher {
     }
 
     /// Number of pending events across all conversations.
-    // Perform the 'pending count' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'pending count' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'pending count' operation.
-    // Errors are propagated to the caller via Result.
     pub fn pending_count(&self) -> usize {
         // Transform the result, mapping errors to the local error type.
         // Transform each element.
@@ -799,7 +487,6 @@ impl NotificationDispatcher {
 
 /// A coalesced notification ready for delivery.
 #[derive(Clone, Debug)]
-// Begin the block scope.
 // CoalescedNotification — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // CoalescedNotification — protocol data structure (see field-level docs).
@@ -808,34 +495,16 @@ impl NotificationDispatcher {
 // Invariants are enforced at construction time.
 pub struct CoalescedNotification {
     /// Which tier to deliver through.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub tier: NotificationTier,
     /// Highest priority among coalesced events.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub priority: NotificationPriority,
     /// Notification title.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub title: String,
     /// Notification body (Tier 4 only, depending on content level).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub body: Option<String>,
     /// Which conversation this notification is about.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub conversation_id: Option<[u8; 32]>,
     /// Number of events coalesced into this notification.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub event_count: usize,
 }
 

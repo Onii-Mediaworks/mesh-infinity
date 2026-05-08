@@ -79,7 +79,6 @@ const SIGMA_DOMAIN: &[u8] = b"meshinfinity-sigma-v1";
 
 /// Errors during Sigma protocol execution.
 #[derive(Debug, thiserror::Error)]
-// Begin the block scope.
 // SigmaError — variant enumeration.
 // Match exhaustively to handle every protocol state.
 // SigmaError — variant enumeration.
@@ -92,18 +91,10 @@ pub enum SigmaError {
     /// Either the prover does not hold the claimed private key, or the
     /// transcript was corrupted in transit.
     #[error("Sigma verification failed — prover does not hold the private key")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     VerificationFailed,
 
     /// The prover's claimed public key is malformed (not a valid Ed25519 key).
     #[error("Sigma public key is invalid")]
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     InvalidPublicKey,
 }
 
@@ -117,7 +108,6 @@ pub enum SigmaError {
 /// Binds the response to a specific protocol run and prevents the verifier
 /// from pre-selecting a challenge that would match a pre-computed response.
 #[derive(Clone)]
-// Begin the block scope.
 // SigmaCommitment — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 // SigmaCommitment — protocol data structure (see field-level docs).
@@ -126,9 +116,6 @@ pub enum SigmaError {
 // Invariants are enforced at construction time.
 pub struct SigmaCommitment {
     /// 32-byte random nonce, generated fresh per protocol run.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub commitment: [u8; 32],
 }
 
@@ -144,9 +131,6 @@ pub struct SigmaCommitment {
 // Invariants are enforced at construction time.
 pub struct SigmaChallenge {
     /// 32-byte fresh random challenge.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub challenge: [u8; 32],
 }
 
@@ -162,9 +146,6 @@ pub struct SigmaChallenge {
 // Invariants are enforced at construction time.
 pub struct SigmaResponse {
     /// Ed25519 signature bytes (64 bytes).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub response: [u8; 64],
 }
 
@@ -183,13 +164,9 @@ pub struct SigmaResponse {
 // Invariants are enforced at construction time.
 pub struct SigmaProver {
     /// The nonce N sent to the verifier as the commitment.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub commitment: SigmaCommitment,
 }
 
-// Begin the block scope.
 // SigmaProver implementation — core protocol logic.
 // SigmaProver implementation — core protocol logic.
 // SigmaProver implementation — core protocol logic.
@@ -198,32 +175,12 @@ impl SigmaProver {
     ///
     /// The prover sends `commitment` to the verifier before the challenge
     /// is known.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new() -> Self {
         // Fresh nonce — must never be reused with the same key.
-        // Compute nonce for this protocol step.
-        // Compute nonce for this protocol step.
-        // Compute nonce for this protocol step.
         let mut nonce = [0u8; 32];
         // OS-provided cryptographic random number generator.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         OsRng.fill_bytes(&mut nonce);
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         SigmaProver {
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             commitment: SigmaCommitment { commitment: nonce },
         }
     }
@@ -233,32 +190,12 @@ impl SigmaProver {
     /// Signs `SIGMA_DOMAIN || commitment_nonce || challenge` using the
     /// provided `signing_key`.  Consuming `self` ensures the commitment
     /// nonce is not reused.
-    // Perform the 'respond' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'respond' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'respond' operation.
-    // Errors are propagated to the caller via Result.
     pub fn respond(self, challenge: &SigmaChallenge, signing_key: &SigningKey) -> SigmaResponse {
         // Track the count for threshold and bounds checking.
-        // Compute msg for this protocol step.
-        // Compute msg for this protocol step.
-        // Compute msg for this protocol step.
         let msg = build_signed_message(&self.commitment.commitment, &challenge.challenge);
-        // Key material — must be zeroized when no longer needed.
-        // Compute sig for this protocol step.
-        // Compute sig for this protocol step.
-        // Compute sig for this protocol step.
         let sig: Signature = signing_key.sign(&msg);
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         SigmaResponse {
             // Extract the raw byte representation for wire encoding.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             response: sig.to_bytes(),
         }
     }
@@ -269,18 +206,7 @@ impl SigmaProver {
 // Implement Default for SigmaProver.
 // Implement Default for SigmaProver.
 impl Default for SigmaProver {
-    // Begin the block scope.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
     fn default() -> Self {
-        // Create a new instance with the specified parameters.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         Self::new()
     }
 }
@@ -298,23 +224,13 @@ impl Default for SigmaProver {
 // Invariants are enforced at construction time.
 pub struct SigmaVerifier {
     /// The challenge we sent to the prover.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     challenge: SigmaChallenge,
     /// The prover's commitment nonce we received.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     prover_commitment: SigmaCommitment,
     /// The prover's claimed Ed25519 public key.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     prover_public_key: [u8; 32],
 }
 
-// Begin the block scope.
 // SigmaVerifier implementation — core protocol logic.
 // SigmaVerifier implementation — core protocol logic.
 // SigmaVerifier implementation — core protocol logic.
@@ -323,61 +239,24 @@ impl SigmaVerifier {
     ///
     /// The generated challenge must be sent to the prover before calling
     /// `verify()`.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new(commitment: SigmaCommitment, prover_public_key: [u8; 32]) -> Self {
         // Track the count for threshold and bounds checking.
-        // Compute challenge bytes for this protocol step.
-        // Compute challenge bytes for this protocol step.
-        // Compute challenge bytes for this protocol step.
         let mut challenge_bytes = [0u8; 32];
         // OS-provided cryptographic random number generator.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         OsRng.fill_bytes(&mut challenge_bytes);
 
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         SigmaVerifier {
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             challenge: SigmaChallenge {
                 challenge: challenge_bytes,
             },
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             prover_commitment: commitment,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             prover_public_key,
         }
     }
 
     /// Get the challenge to send to the prover.
-    // Perform the 'challenge' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'challenge' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'challenge' operation.
-    // Errors are propagated to the caller via Result.
     pub fn challenge(&self) -> &SigmaChallenge {
         // Chain the operation on the intermediate result.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         &self.challenge
     }
 
@@ -390,17 +269,8 @@ impl SigmaVerifier {
     /// Returns `Ok(())` on success.
     /// Returns `Err(SigmaError::VerificationFailed)` if the signature is wrong.
     /// Returns `Err(SigmaError::InvalidPublicKey)` if the public key is malformed.
-    // Perform the 'verify' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'verify' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'verify' operation.
-    // Errors are propagated to the caller via Result.
     pub fn verify(self, response: &SigmaResponse) -> Result<(), SigmaError> {
         // Parse the claimed public key.
-        // Compute verifying key for this protocol step.
-        // Compute verifying key for this protocol step.
-        // Compute verifying key for this protocol step.
         let verifying_key = VerifyingKey::from_bytes(&self.prover_public_key)
             // Transform the result, mapping errors to the local error type.
             // Map the error to the local error type.
@@ -409,33 +279,16 @@ impl SigmaVerifier {
             .map_err(|_| SigmaError::InvalidPublicKey)?;
 
         // Parse the 64-byte signature.
-        // Compute signature for this protocol step.
-        // Compute signature for this protocol step.
-        // Compute signature for this protocol step.
         let signature = Signature::from_bytes(&response.response);
 
         // Reconstruct the message the prover signed.
-        // Compute msg for this protocol step.
-        // Compute msg for this protocol step.
-        // Compute msg for this protocol step.
         let msg = build_signed_message(
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             &self.prover_commitment.commitment,
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             &self.challenge.challenge,
         );
 
         // Verify the signature.  This is a complete Ed25519 verification —
         // not a length check.  Invalid signatures fail cryptographically.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         verifying_key
             // Verify the signature against the claimed public key.
             // Verify the cryptographic signature.
@@ -457,17 +310,8 @@ impl SigmaVerifier {
 /// Build the message that the prover signs and the verifier reconstructs.
 ///
 /// `SIGMA_DOMAIN || nonce || challenge`
-// Perform the 'build signed message' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'build signed message' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'build signed message' operation.
-// Errors are propagated to the caller via Result.
 fn build_signed_message(nonce: &[u8; 32], challenge: &[u8; 32]) -> Vec<u8> {
     // Pre-allocate the buffer to avoid repeated reallocations.
-    // Compute msg for this protocol step.
-    // Compute msg for this protocol step.
-    // Compute msg for this protocol step.
     let mut msg = Vec::with_capacity(SIGMA_DOMAIN.len() + 64);
     // Append the data segment to the accumulating buffer.
     // Append bytes to the accumulator.
@@ -498,60 +342,23 @@ fn build_signed_message(nonce: &[u8; 32], challenge: &[u8; 32]) -> Vec<u8> {
 ///
 /// Returns `Ok(())` if the prover successfully demonstrated possession of
 /// the private key corresponding to `prover_pub_key`.
-// Perform the 'sigma prove and verify' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'sigma prove and verify' operation.
-// Errors are propagated to the caller via Result.
-// Perform the 'sigma prove and verify' operation.
-// Errors are propagated to the caller via Result.
 pub fn sigma_prove_and_verify(
     // Ed25519 digital signature.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     prover_signing_key: &SigningKey,
-    // Process the current step in the protocol.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     prover_pub_key: &[u8; 32],
-    // Begin the block scope.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
 ) -> Result<(), SigmaError> {
     // Step 1: Prover generates commitment.
-    // Compute prover for this protocol step.
-    // Compute prover for this protocol step.
-    // Compute prover for this protocol step.
     let prover = SigmaProver::new();
-    // Execute the operation and bind the result.
-    // Compute commitment for this protocol step.
-    // Compute commitment for this protocol step.
-    // Compute commitment for this protocol step.
     let commitment = prover.commitment.clone();
 
     // Step 2: Verifier receives commitment and generates challenge.
-    // Compute verifier for this protocol step.
-    // Compute verifier for this protocol step.
-    // Compute verifier for this protocol step.
     let verifier = SigmaVerifier::new(commitment, *prover_pub_key);
     // Initialize the MAC for authentication tag computation.
-    // Compute challenge for this protocol step.
-    // Compute challenge for this protocol step.
-    // Compute challenge for this protocol step.
     let challenge = SigmaChallenge {
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         challenge: verifier.challenge().challenge,
     };
 
     // Step 3: Prover computes response.
-    // Compute response for this protocol step.
-    // Compute response for this protocol step.
-    // Compute response for this protocol step.
     let response = prover.respond(&challenge, prover_signing_key);
 
     // Step 4: Verifier checks response.
