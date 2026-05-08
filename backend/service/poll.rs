@@ -152,6 +152,10 @@ impl MeshRuntime {
         self.advance_gossip_cleanup();
         self.advance_keepalives();
         self.advance_layer1_participation();
+
+        // Phase 7 — Overlay transports: drain inbound frames from ZeroTier and
+        // inject them into the mesh data plane (§5.5 overlay client parity).
+        self.advance_overlay_inbound();
     }
 
     // -----------------------------------------------------------------------
@@ -1339,5 +1343,40 @@ impl MeshRuntime {
             }
         }
         *outbox = remaining;
+    }
+
+    // -----------------------------------------------------------------------
+    // Overlay transport inbound polling (§5.5 — T2-D)
+    // -----------------------------------------------------------------------
+
+    /// Drain inbound Ethernet frames from the ZeroTier data-plane transport and
+    /// inject them into the mesh data plane via `ingest_tun_packet`.
+    ///
+    /// ZeroTier's background receive thread (started by `start_recv`) fills
+    /// `ZeroTierTransport::inbound`; this method drains that buffer each poll
+    /// tick.  Frames are raw Ethernet payloads — they are forwarded identically
+    /// to packets arriving from the Android TUN interface (§17.5).
+    ///
+    /// The method is a no-op when no ZeroTier transport is configured.
+    pub fn advance_overlay_inbound(&self) {
+        let frames: Vec<Vec<u8>> = {
+            let guard = self
+                .zerotier_transport
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(zt) => zt.drain_inbound(),
+                None => return,
+            }
+        };
+
+        for frame in frames {
+            // Strip the 14-byte Ethernet header (dst + src MAC + EtherType) to
+            // obtain the raw IP payload before feeding into ingest_tun_packet.
+            // Frames shorter than 14 bytes are malformed — skip silently.
+            if frame.len() > 14 {
+                self.ingest_tun_packet(&frame[14..]);
+            }
+        }
     }
 }
