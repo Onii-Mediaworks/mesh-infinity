@@ -44,6 +44,7 @@ BACKEND_FEATURE_FLAGS     := --features $(BACKEND_REQUIRED_FEATURES)
         linux-rust-debug linux-rust-release \
         linux-bundle-debug linux-bundle-release \
         linux-debug linux-release \
+        linux-clientless-release \
         windows-rust-debug windows-rust-release \
         windows-bundle-debug windows-bundle-release \
         windows-debug windows-release \
@@ -563,6 +564,103 @@ linux-bundle-debug linux-bundle-release: linux-bundle-%:
 linux-debug linux-release: linux-%:
 	$(MAKE) linux-rust-$*
 	$(MAKE) linux-bundle-$*
+
+# ── Linux: clientless headless node (§17.16) ─────────────────────────────────
+#
+# Builds the `mesh-infinity-clientless` binary for x86_64 Linux and packages
+# it as a deployable tar.gz and DEB suitable for routers and SBCs.
+#
+# Output layout (build/output/linux/clientless/):
+#   mesh-infinity-clientless          — stripped release binary
+#   config/clientless.toml.example    — annotated config template
+#   mesh-infinity-clientless.tar.gz   — binary + config template
+#   mesh-infinity-clientless.deb      — DEB package (requires fpm)
+#
+# DEB package installs to:
+#   /usr/bin/mesh-infinity-clientless
+#   /etc/mesh-infinity/clientless.toml.example
+#   /lib/systemd/system/mesh-infinity.service
+#
+# Usage:
+#   make linux-clientless-release
+#
+# CI dependencies (ubuntu):
+#   ruby-dev && gem install --no-document fpm
+
+linux-clientless-release:
+	@set -euo pipefail; \
+	rust_target="$(BUILD_DIR)/intermediates/linux/clientless"; \
+	out_dir="$(BUILD_DIR)/output/linux/clientless"; \
+	bin_name="mesh-infinity-clientless"; \
+	\
+	mkdir -p "$$rust_target" "$$out_dir/config" "$$out_dir/systemd"; \
+	\
+	CARGO_TARGET_DIR="$$rust_target" \
+	  cargo build --bin mesh-infinity-clientless --release $(BACKEND_FEATURE_FLAGS); \
+	\
+	cp "$$rust_target/release/$$bin_name" "$$out_dir/$$bin_name"; \
+	strip "$$out_dir/$$bin_name"; \
+	\
+	install -m 644 src/bin/clientless/clientless.toml.example \
+	  "$$out_dir/config/clientless.toml.example" 2>/dev/null || \
+	printf '# Mesh Infinity Clientless Node — configuration\n\
+	# Copy to /etc/mesh-infinity/clientless.toml and edit before starting.\n\
+	\n\
+	# Port for the local HTTPS WebUI (§17.12). Default: 7234.\n\
+	port = 7234\n\
+	\n\
+	# Data directory.  Stores identity, vault, and routing state.\n\
+	data_dir = "/var/lib/mesh-infinity"\n\
+	\n\
+	# Set to true to bind the WebUI to all interfaces (requires firewall rule).\n\
+	# Default: false (loopback only).\n\
+	accessible = false\n\
+	' > "$$out_dir/config/clientless.toml.example"; \
+	\
+	printf '[Unit]\n\
+	Description=Mesh Infinity Clientless Node\n\
+	After=network.target\n\
+	\n\
+	[Service]\n\
+	ExecStart=/usr/bin/mesh-infinity-clientless\n\
+	Restart=on-failure\n\
+	RestartSec=5\n\
+	User=mesh-infinity\n\
+	StateDirectory=mesh-infinity\n\
+	\n\
+	[Install]\n\
+	WantedBy=multi-user.target\n\
+	' > "$$out_dir/systemd/mesh-infinity.service"; \
+	\
+	tar -C "$$out_dir" -czf "$$out_dir/$$bin_name.tar.gz" \
+	  "$$bin_name" config systemd; \
+	echo "Binary: $$out_dir/$$bin_name"; \
+	echo "Archive: $$out_dir/$$bin_name.tar.gz"; \
+	\
+	if command -v fpm &>/dev/null; then \
+	  fpm -s dir -t deb \
+	    --name "$$bin_name" \
+	    --version "$(APP_BUILD_LABEL)" \
+	    --architecture amd64 \
+	    --description "Mesh Infinity headless node — WebUI management at localhost:7234" \
+	    --url "https://meshinfinity.io" \
+	    --license "proprietary" \
+	    --maintainer "Mesh Infinity <noreply@meshinfinity.io>" \
+	    --after-install /dev/stdin \
+	    --package "$$out_dir/$$bin_name.deb" \
+	    "$$out_dir/$$bin_name=/usr/bin/$$bin_name" \
+	    "$$out_dir/config/clientless.toml.example=/etc/mesh-infinity/clientless.toml.example" \
+	    "$$out_dir/systemd/mesh-infinity.service=/lib/systemd/system/mesh-infinity.service" \
+	    <<'POSTINST' \
+	#!/bin/sh \
+	id -u mesh-infinity &>/dev/null || useradd --system --no-create-home mesh-infinity \
+	systemctl daemon-reload || true \
+	POSTINST \
+	  && echo "DEB: $$out_dir/$$bin_name.deb" \
+	  || echo "fpm DEB packaging failed — binary and tar.gz are still in $$out_dir"; \
+	else \
+	  echo "fpm not found — skipping DEB packaging. Install with: gem install fpm"; \
+	fi
 
 # ── Windows: Rust only ────────────────────────────────────────────────────────
 #
