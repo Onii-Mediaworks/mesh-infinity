@@ -2212,6 +2212,78 @@ impl MeshRuntime {
     }
 
     // -----------------------------------------------------------------------
+    // Remote killswitch (§3.9.3)
+    // -----------------------------------------------------------------------
+
+    /// Execute a remote killswitch command sent by a peer (§3.9.3).
+    ///
+    /// The spec requires the requesting peer to hold `TrustLevel::InnerCircle`
+    /// (Level 8) before this device executes a wipe.  Any peer below that
+    /// threshold is rejected with an error — the wipe does NOT happen.
+    ///
+    /// ## Security invariant
+    ///
+    /// The trust check is performed against the locally stored contact record,
+    /// not a value supplied by the requester.  An attacker cannot self-elevate
+    /// to InnerCircle by crafting the killswitch message.
+    ///
+    /// ## Acceptance path
+    ///
+    /// On approval the method calls `standard_erase()` and clears all
+    /// in-memory key material, leaving the device in a wiped state
+    /// identical to a local killswitch activation.
+    pub fn execute_remote_killswitch(
+        &mut self,
+        requesting_peer_id_hex: &str,
+    ) -> Result<(), String> {
+        use crate::identity::peer_id::PeerId;
+
+        // ----------------------------------------------------------------
+        // Parse the requesting peer's ID.
+        // ----------------------------------------------------------------
+        let pid_bytes: [u8; 32] = hex::decode(requesting_peer_id_hex)
+            .ok()
+            .filter(|b| b.len() == 32)
+            .and_then(|b| {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                Some(a)
+            })
+            .ok_or_else(|| "Invalid requesting peer ID".to_string())?;
+        let pid = PeerId(pid_bytes);
+
+        // ----------------------------------------------------------------
+        // Look up the peer's stored trust level.
+        // ----------------------------------------------------------------
+        let trust = {
+            let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
+            contacts
+                .get(&pid)
+                .map(|c| c.trust_level)
+                .ok_or_else(|| "Requesting peer is not a known contact".to_string())?
+        };
+
+        // ----------------------------------------------------------------
+        // Trust gate: reject anything below InnerCircle (Level 8).
+        // ----------------------------------------------------------------
+        if trust != TrustLevel::InnerCircle {
+            return Err(format!(
+                "Remote killswitch rejected: peer {} has trust level {:?} (InnerCircle required)",
+                requesting_peer_id_hex, trust,
+            ));
+        }
+
+        // ----------------------------------------------------------------
+        // Approved — execute the wipe.
+        // ----------------------------------------------------------------
+        crate::identity::killswitch::standard_erase(std::path::Path::new(&self.data_dir));
+        self.clear_mesh_identity_runtime_state();
+        self.reset_identity_runtime_state();
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Trust helpers (used by pairing_ops but logically identity-adjacent)
     // -----------------------------------------------------------------------
 

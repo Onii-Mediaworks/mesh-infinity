@@ -45,6 +45,13 @@ pub enum PacketKind {
     // Execute this protocol step.
     // Execute this protocol step.
     CallSignal,
+    /// An administrative command from a trusted peer (§3.9.3).
+    ///
+    /// Payload is a JSON object with a `"type"` field.  Currently only
+    /// `"killswitch"` is defined — additional command types may be added.
+    /// Handled by `MeshRuntime::dispatch_admin_command()` after a trust-level
+    /// check that rejects senders below `TrustLevel::InnerCircle`.
+    AdminCommand,
 }
 
 // ---------------------------------------------------------------------------
