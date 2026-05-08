@@ -40,6 +40,22 @@
 //!
 //! Even trusted peers are rate-limited — a compromised trusted peer
 //! is still a DoS vector.
+//!
+//! # Source Diversity (§4.1 — map size-scaled validation threshold)
+//!
+//! Map entries can be spoofed by a single malicious peer.  To resist
+//! this, once the local map is large enough to attract Sybil attacks,
+//! the engine requires corroboration from multiple independent sources
+//! before promoting a pending entry:
+//!
+//! - Map < 100 entries:  1 source sufficient (startup / small network)
+//! - Map 100–999:        2 independent sources required
+//! - Map ≥ 1000:         3 independent sources required
+//!
+//! While an entry is awaiting enough corroboration it is held in a
+//! pending buffer.  The source that provides the final corroboration
+//! triggers the insert.  Entries older than 24 hours are evicted from
+//! the buffer without being promoted.
 
 use std::collections::HashMap;
 
@@ -55,38 +71,21 @@ use crate::trust::levels::TrustLevel;
 
 /// How long to remember forwarded announcement IDs (prevents re-forwarding).
 /// 24 hours in seconds.
-// DEDUP_WINDOW_SECS — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// DEDUP_WINDOW_SECS — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// DEDUP_WINDOW_SECS — protocol constant.
-// Defined by the spec; must not change without a version bump.
 const DEDUP_WINDOW_SECS: u64 = 24 * 3600;
 
 /// Rate limits by trust level (entries per hour).
-// RATE_LIMIT_UNTRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// RATE_LIMIT_UNTRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// RATE_LIMIT_UNTRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
 const RATE_LIMIT_UNTRUSTED: u32 = 500;
-// Protocol constant.
-// RATE_LIMIT_TRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// RATE_LIMIT_TRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// RATE_LIMIT_TRUSTED — protocol constant.
-// Defined by the spec; must not change without a version bump.
 const RATE_LIMIT_TRUSTED: u32 = 5_000;
-// Protocol constant.
-// RATE_LIMIT_INNER_CIRCLE — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// RATE_LIMIT_INNER_CIRCLE — protocol constant.
-// Defined by the spec; must not change without a version bump.
-// RATE_LIMIT_INNER_CIRCLE — protocol constant.
-// Defined by the spec; must not change without a version bump.
 const RATE_LIMIT_INNER_CIRCLE: u32 = 10_000;
+
+/// Map size thresholds for source diversity (§4.1).
+const DIVERSITY_THRESHOLD_MEDIUM: usize = 100;
+const DIVERSITY_THRESHOLD_LARGE: usize = 1_000;
+
+/// Required independent sources at each size band.
+const SOURCES_REQUIRED_SMALL: usize = 1;
+const SOURCES_REQUIRED_MEDIUM: usize = 2;
+const SOURCES_REQUIRED_LARGE: usize = 3;
 
 // ---------------------------------------------------------------------------
 // Self-Ratcheted Map Entry (§4.5)
@@ -99,46 +98,24 @@ const RATE_LIMIT_INNER_CIRCLE: u32 = 10_000;
 /// makes forks detectable (two entries with the same prev_hash but
 /// different content = the signing key is compromised or duplicated).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Begin the block scope.
-// SelfMapEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// SelfMapEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// SelfMapEntry — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct SelfMapEntry {
     /// The peer ID this entry belongs to.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub peer_id: PeerId,
 
     /// The actual map content (addresses, transport hints, etc.).
     /// Serialized as part of the signed payload.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub content: NetworkMapEntry,
 
     /// SHA-256 hash of the previous self-signed entry.
     /// For the first entry, this is all zeros.
     /// This creates a hash chain that prevents replays and detects forks.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub prev_hash: [u8; 32],
 
     /// When this entry was created (Unix timestamp).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub timestamp: u64,
 
     /// Ed25519 signature by the mask key that owns this peer_id.
     /// Covers: peer_id || content_hash || prev_hash || timestamp.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub signature: Vec<u8>,
 }
 
@@ -151,98 +128,38 @@ pub struct SelfMapEntry {
 /// Used to enforce the per-peer rate limits (§4.2).
 /// A peer that exceeds their limit has further entries silently dropped.
 #[derive(Default)]
-// Begin the block scope.
-// GossipRateTracker — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// GossipRateTracker — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// GossipRateTracker — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct GossipRateTracker {
     /// Map of source_peer_id → (count_this_hour, hour_start_timestamp).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     counters: HashMap<PeerId, (u32, u64)>,
 }
 
-// Begin the block scope.
-// GossipRateTracker implementation — core protocol logic.
-// GossipRateTracker implementation — core protocol logic.
-// GossipRateTracker implementation — core protocol logic.
 impl GossipRateTracker {
     /// Check if a peer is allowed to gossip more entries.
     ///
     /// Returns true if the peer hasn't exceeded their rate limit for
     /// the current hour. Updates the counter if allowed.
-    // Perform the 'check and increment' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'check and increment' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'check and increment' operation.
-    // Errors are propagated to the caller via Result.
     pub fn check_and_increment(
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         &mut self,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         source: &PeerId,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         trust_level: TrustLevel,
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         now: u64,
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
     ) -> bool {
-        // Determine the rate limit based on trust level
-        // Compute limit for this protocol step.
-        // Compute limit for this protocol step.
-        // Compute limit for this protocol step.
         let limit = match trust_level {
-            // Handle this match arm.
             TrustLevel::InnerCircle => RATE_LIMIT_INNER_CIRCLE,
-            // Handle this match arm.
             t if t.is_trusted_tier() => RATE_LIMIT_TRUSTED,
-            // Update the local state.
             _ => RATE_LIMIT_UNTRUSTED,
         };
 
-        // Get or create the counter for this peer
-        // Bind the intermediate result.
-        // Bind the intermediate result.
-        // Bind the intermediate result.
         let (count, hour_start) = self.counters.entry(*source).or_insert((0, now));
 
-        // Reset counter if we've entered a new hour
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
+        // Reset counter on hour boundary.
         if now - *hour_start >= 3600 {
             *count = 0;
             *hour_start = now;
         }
 
-        // Check limit
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if *count >= limit {
-            // Condition not met — return negative result.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
-            return false; // Rate limited — drop silently
+            return false;
         }
 
         *count += 1;
@@ -250,22 +167,8 @@ impl GossipRateTracker {
     }
 
     /// Clean up old entries (peers we haven't heard from in 24+ hours).
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
     pub fn cleanup(&mut self, now: u64) {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.counters
-            // Filter the collection, keeping only elements that pass.
-            // Filter elements that match the predicate.
-            // Filter elements that match the predicate.
-            // Filter elements that match the predicate.
             .retain(|_, (_, hour_start)| now - *hour_start < DEDUP_WINDOW_SECS);
     }
 }
@@ -280,108 +183,122 @@ impl GossipRateTracker {
 /// the deduplication window (24 hours), we don't forward it again.
 /// This prevents amplification storms in the gossip network.
 #[derive(Default)]
-// Begin the block scope.
-// GossipDedup — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// GossipDedup — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// GossipDedup — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
 pub struct GossipDedup {
     /// Set of (announcement_id → timestamp_first_seen).
     /// Persisted to disk across restarts (§4.2).
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     seen: HashMap<[u8; 32], u64>,
 }
 
-// Begin the block scope.
-// GossipDedup implementation — core protocol logic.
-// GossipDedup implementation — core protocol logic.
-// GossipDedup implementation — core protocol logic.
 impl GossipDedup {
     /// Check if we've already seen this announcement.
     /// Returns true if it's new (not seen before).
-    // Perform the 'is new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn is_new(&mut self, announcement_id: &[u8; 32], now: u64) -> bool {
-        // Conditional branch based on the current state.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
         if self.seen.contains_key(announcement_id) {
-            // Process the current step in the protocol.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            false // Already forwarded this one
-                  // Begin the block scope.
-                  // Fallback when the guard was not satisfied.
-                  // Fallback when the guard was not satisfied.
-                  // Fallback when the guard was not satisfied.
+            false
         } else {
-            // Insert into the lookup table for efficient retrieval.
-            // Insert into the map/set.
-            // Insert into the map/set.
-            // Insert into the map/set.
             self.seen.insert(*announcement_id, now);
             true
         }
     }
 
     /// Remove entries older than the deduplication window.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
     pub fn cleanup(&mut self, now: u64) {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.seen
-            // Filter the collection, keeping only elements that pass.
-            // Filter elements that match the predicate.
-            // Filter elements that match the predicate.
-            // Filter elements that match the predicate.
             .retain(|_, first_seen| now - *first_seen < DEDUP_WINDOW_SECS);
     }
 
     /// Number of tracked announcements.
-    // Perform the 'len' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'len' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'len' operation.
-    // Errors are propagated to the caller via Result.
     pub fn len(&self) -> usize {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.seen.len()
     }
 
     /// Returns `true` when no announcements are tracked.
-    // Perform the 'is empty' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is empty' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is empty' operation.
-    // Errors are propagated to the caller via Result.
     pub fn is_empty(&self) -> bool {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.seen.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source Diversity Buffer (§4.1 — map size-scaled validation threshold)
+// ---------------------------------------------------------------------------
+
+/// A pending entry waiting for enough independent source corroboration.
+struct PendingEntry {
+    /// The entry itself (kept for insertion once quorum is met).
+    entry: NetworkMapEntry,
+    /// Distinct peer IDs that have sent us this entry.
+    sources: Vec<PeerId>,
+    /// Timestamp when first seen (for eviction).
+    first_seen: u64,
+}
+
+/// Holds entries that have not yet met the source diversity requirement.
+///
+/// An entry graduates to the live map once `sources.len() >=
+/// required_sources(map_size)`.  Entries older than 24 hours are
+/// evicted without being promoted.
+#[derive(Default)]
+pub struct SourceDiversityBuffer {
+    /// Keyed by (peer_id, sequence) so different versions are tracked separately.
+    pending: HashMap<([u8; 32], u64), PendingEntry>,
+}
+
+impl SourceDiversityBuffer {
+    /// Record a corroboration from `source` for this entry.
+    ///
+    /// Returns `Some(entry)` when the entry has reached the required number
+    /// of independent sources and should be promoted to the live map.
+    /// Returns `None` if more corroboration is still needed.
+    pub fn record(
+        &mut self,
+        entry: NetworkMapEntry,
+        source: &PeerId,
+        map_size: usize,
+        now: u64,
+    ) -> Option<NetworkMapEntry> {
+        let key = (entry.peer_id.0, entry.sequence);
+        let required = required_sources(map_size);
+
+        let pending = self.pending.entry(key).or_insert_with(|| PendingEntry {
+            entry: entry.clone(),
+            sources: Vec::new(),
+            first_seen: now,
+        });
+
+        // Track unique sources only.
+        if !pending.sources.contains(source) {
+            pending.sources.push(*source);
+        }
+
+        if pending.sources.len() >= required {
+            // Quorum reached — remove from buffer and return for insertion.
+            let promoted = self.pending.remove(&key)?;
+            Some(promoted.entry)
+        } else {
+            None
+        }
+    }
+
+    /// Evict entries that have been pending for longer than 24 hours.
+    pub fn cleanup(&mut self, now: u64) {
+        self.pending
+            .retain(|_, p| now - p.first_seen < DEDUP_WINDOW_SECS);
+    }
+
+    /// Number of entries currently awaiting corroboration.
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
+}
+
+/// Required independent sources given the current map size (§4.1).
+pub fn required_sources(map_size: usize) -> usize {
+    if map_size >= DIVERSITY_THRESHOLD_LARGE {
+        SOURCES_REQUIRED_LARGE
+    } else if map_size >= DIVERSITY_THRESHOLD_MEDIUM {
+        SOURCES_REQUIRED_MEDIUM
+    } else {
+        SOURCES_REQUIRED_SMALL
     }
 }
 
@@ -396,240 +313,87 @@ impl GossipDedup {
 /// - Rate limiting per-peer gossip
 /// - Deduplicating announcements
 /// - Merging received entries into the local map
-// GossipEngine — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// GossipEngine — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// GossipEngine — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
+///
+/// Source diversity (§4.1 map size-scaled validation threshold) is enforced
+/// by `NetworkMap::insert_gossiped` — the engine feeds each corroborating
+/// source through separately so the map can count them.
 pub struct GossipEngine {
     /// The local network map.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     pub map: NetworkMap,
     /// Rate tracker for incoming gossip.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     rate_tracker: GossipRateTracker,
     /// Deduplication set for forwarded announcements.
-    // Execute this protocol step.
-    // Execute this protocol step.
-    // Execute this protocol step.
     dedup: GossipDedup,
 }
 
-// Begin the block scope.
-// GossipEngine implementation — core protocol logic.
-// GossipEngine implementation — core protocol logic.
-// GossipEngine implementation — core protocol logic.
 impl GossipEngine {
     /// Create a new gossip engine with an empty map.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn new() -> Self {
-        // Assemble the instance from the computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
-        // Construct the instance from computed fields.
         Self {
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             map: NetworkMap::new(),
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             rate_tracker: GossipRateTracker::default(),
-            // Create a new instance with the specified parameters.
-            // Execute this protocol step.
-            // Execute this protocol step.
-            // Execute this protocol step.
             dedup: GossipDedup::default(),
         }
     }
 
     /// Process an incoming map entry from a gossip peer.
     ///
-    /// Validates the entry, checks rate limits, and merges if valid.
-    /// Returns Ok(true) if the entry was accepted and should be
-    /// forwarded to other peers, Ok(false) if it was valid but not
-    /// new (already known or rate limited), and Err on invalid entries.
-    // Perform the 'receive entry' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'receive entry' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'receive entry' operation.
-    // Errors are propagated to the caller via Result.
+    /// Validates the entry, checks rate limits, and merges into the local
+    /// map.  Source diversity quorum is enforced by `NetworkMap::insert_gossiped`.
+    ///
+    /// Returns `Ok(true)` if the entry was accepted into the live map and
+    /// should be forwarded to other peers, `Ok(false)` if it was valid but
+    /// not yet promoted (awaiting more sources, rate limited, or already
+    /// known), and `Err` on invalid entries.
     pub fn receive_entry(
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         &mut self,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         entry: NetworkMapEntry,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         source_peer: &PeerId,
-        // Process the current step in the protocol.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         source_trust: TrustLevel,
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         now: u64,
-        // Begin the block scope.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
     ) -> Result<bool, MapError> {
-        // Step 1: Verify Ed25519 signature (§4.5 — forgery prevention).
-        //
-        // Every legitimate network map entry received from a remote peer MUST
-        // be signed by its owner's Ed25519 key.  Entries with no public_keys
-        // are unsigned stubs and are not acceptable from remote peers — they
-        // provide no way to cryptographically bind the entry to an identity.
-        //
-        // Unsigned entries are only used in local synthetic/test code where
-        // the calling context is trusted.  From remote gossip, they indicate
-        // a forged or malformed entry and must be rejected outright.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
+        // Unsigned entries are only used in local synthetic/test code.
+        // From remote gossip they indicate forgery and must be rejected.
         if entry.public_keys.is_empty() {
-            // Reject with an explicit error for the caller to handle.
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Err(MapError::InvalidSignature(
-                // Process the current step in the protocol.
-                // Execute this protocol step.
-                // Execute this protocol step.
-                // Execute this protocol step.
                 "remote gossip entry has no public keys — unsigned entries are rejected".into(),
             ));
         }
-        // Propagate errors via the ? operator — callers handle failures.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
-        // Propagate errors via ?.
         entry.verify_signature()?;
 
-        // Step 2: Rate limit check — has this source exceeded their quota?
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
-        // Guard: validate the condition before proceeding.
+        // Silently drop entries from peers that are sending too fast.
         if !self
             .rate_tracker
             .check_and_increment(source_peer, source_trust, now)
         {
-            // Rate limited — silently drop (the source is sending too fast)
-            // Return to the caller.
-            // Return to the caller.
-            // Return to the caller.
             return Ok(false);
         }
 
-        // Step 3: Insert into the local map (validates sequence, timestamp, fields)
-        // Compute accepted for this protocol step.
-        // Compute accepted for this protocol step.
-        // Compute accepted for this protocol step.
+        // Delegate to the map — it handles source diversity staging internally.
         let accepted = self.map.insert_gossiped(entry, source_peer, now)?;
-
-        // Wrap the computed value in the success variant.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
-        // Success path — return the computed value.
         Ok(accepted)
     }
 
     /// Periodic cleanup — remove stale map entries and old tracking data.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'cleanup' operation.
-    // Errors are propagated to the caller via Result.
     pub fn cleanup(&mut self, now: u64) {
-        // Execute the operation and bind the result.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.map.prune_stale(now);
-        // Execute the operation and bind the result.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.rate_tracker.cleanup(now);
-        // Execute the operation and bind the result.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.dedup.cleanup(now);
     }
 
     /// Check if an announcement is new (for forwarding decisions).
-    // Perform the 'is announcement new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is announcement new' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'is announcement new' operation.
-    // Errors are propagated to the caller via Result.
     pub fn is_announcement_new(&mut self, id: &[u8; 32], now: u64) -> bool {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.dedup.is_new(id, now)
     }
 
     /// Get the current map size.
-    // Perform the 'map size' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'map size' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'map size' operation.
-    // Errors are propagated to the caller via Result.
     pub fn map_size(&self) -> usize {
-        // Mutate the internal state.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         self.map.len()
     }
 }
 
-// Trait implementation for protocol conformance.
-// Implement Default for GossipEngine.
-// Implement Default for GossipEngine.
-// Implement Default for GossipEngine.
 impl Default for GossipEngine {
-    // Begin the block scope.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
-    // Perform the 'default' operation.
-    // Errors are propagated to the caller via Result.
     fn default() -> Self {
-        // Create a new instance with the specified parameters.
-        // Execute this protocol step.
-        // Execute this protocol step.
-        // Execute this protocol step.
         Self::new()
     }
 }
@@ -696,7 +460,7 @@ mod tests {
         let source = PeerId([0x01; 32]);
         let unsigned = NetworkMapEntry {
             peer_id: PeerId([0x02; 32]),
-            public_keys: vec![], // no public key → unsigned
+            public_keys: vec![],
             last_seen: 100,
             transport_hints: vec![],
             public_profile: None,
@@ -717,7 +481,6 @@ mod tests {
         let source = PeerId([0x01; 32]);
 
         let (mut entry, _) = make_signed_entry(0x02, 1, 100);
-        // Corrupt the signature.
         if let Some(b) = entry.signature.first_mut() {
             *b ^= 0xFF;
         }
@@ -732,14 +495,12 @@ mod tests {
         let peer = PeerId([0x01; 32]);
         let now = 1000u64;
 
-        // Untrusted: 500/hour limit
         for i in 0..500 {
             assert!(
                 tracker.check_and_increment(&peer, TrustLevel::Unknown, now),
                 "Attempt {i} should be allowed"
             );
         }
-        // 501st should be rejected
         assert!(!tracker.check_and_increment(&peer, TrustLevel::Unknown, now));
     }
 
@@ -748,13 +509,12 @@ mod tests {
         let mut tracker = GossipRateTracker::default();
         let peer = PeerId([0x01; 32]);
 
-        // Fill up the limit
         for _ in 0..500 {
             tracker.check_and_increment(&peer, TrustLevel::Unknown, 1000);
         }
         assert!(!tracker.check_and_increment(&peer, TrustLevel::Unknown, 1000));
 
-        // One hour later — should be allowed again
+        // One hour later — should be allowed again.
         assert!(tracker.check_and_increment(&peer, TrustLevel::Unknown, 4601));
     }
 
@@ -764,7 +524,6 @@ mod tests {
         let peer = PeerId([0x01; 32]);
         let now = 1000u64;
 
-        // Trusted: 5000/hour limit
         for _ in 0..5000 {
             assert!(tracker.check_and_increment(&peer, TrustLevel::Trusted, now));
         }
@@ -776,9 +535,7 @@ mod tests {
         let mut dedup = GossipDedup::default();
         let id = [0x42u8; 32];
 
-        // First time: new
         assert!(dedup.is_new(&id, 100));
-        // Second time: not new
         assert!(!dedup.is_new(&id, 101));
     }
 
@@ -790,11 +547,9 @@ mod tests {
         dedup.is_new(&id, 100);
         assert_eq!(dedup.len(), 1);
 
-        // After 24 hours, should be cleaned up
         dedup.cleanup(100 + DEDUP_WINDOW_SECS + 1);
         assert_eq!(dedup.len(), 0);
 
-        // Now it's "new" again
         assert!(dedup.is_new(&id, 100 + DEDUP_WINDOW_SECS + 2));
     }
 
@@ -803,13 +558,12 @@ mod tests {
         let mut engine = GossipEngine::new();
         let source = PeerId([0x01; 32]);
 
-        // First insert: accepted (seed 0x02 → deterministic peer_id)
         let (entry1, _) = make_signed_entry(0x02, 1, 100);
         assert!(engine
             .receive_entry(entry1, &source, TrustLevel::Unknown, 100)
             .unwrap());
 
-        // Same sequence for the same peer: not accepted (stale)
+        // Same sequence for the same peer: not accepted (stale).
         let (entry2, _) = make_signed_entry(0x02, 1, 200);
         assert!(!engine
             .receive_entry(entry2, &source, TrustLevel::Unknown, 200)
@@ -826,10 +580,152 @@ mod tests {
             .receive_entry(entry1, &source, TrustLevel::Unknown, 100)
             .unwrap();
 
-        // Higher sequence for the same peer: accepted
+        // Higher sequence for the same peer: accepted.
         let (entry2, _) = make_signed_entry(0x02, 2, 200);
         assert!(engine
             .receive_entry(entry2, &source, TrustLevel::Unknown, 200)
             .unwrap());
+    }
+
+    // ------------------------------------------------------------------
+    // T2-C: Source diversity (§4.1 — map size-scaled validation threshold)
+    // ------------------------------------------------------------------
+
+    /// required_sources() returns correct thresholds at all size bands.
+    #[test]
+    fn source_diversity_thresholds_are_correct() {
+        assert_eq!(required_sources(0), 1);
+        assert_eq!(required_sources(99), 1);
+        assert_eq!(required_sources(100), 2);
+        assert_eq!(required_sources(999), 2);
+        assert_eq!(required_sources(1_000), 3);
+        assert_eq!(required_sources(1_000_000), 3);
+    }
+
+    /// A single source is sufficient below the 100-entry threshold.
+    #[test]
+    fn source_diversity_single_source_below_threshold() {
+        let mut buf = SourceDiversityBuffer::default();
+        let (entry, _) = make_signed_entry(0x10, 1, 1000);
+        let source = PeerId([0x01; 32]);
+
+        // map_size = 50 → requires 1 source
+        let result = buf.record(entry, &source, 50, 1000);
+        assert!(result.is_some(), "single source should be enough below 100");
+    }
+
+    /// Two independent sources are required at the medium band (100–999 entries).
+    #[test]
+    fn source_diversity_two_sources_required_at_medium_band() {
+        let mut buf = SourceDiversityBuffer::default();
+        let (entry, _) = make_signed_entry(0x11, 1, 1000);
+        let source_a = PeerId([0x01; 32]);
+        let source_b = PeerId([0x02; 32]);
+
+        // First source at map_size = 150 → not enough yet.
+        let first = buf.record(entry.clone(), &source_a, 150, 1000);
+        assert!(first.is_none(), "one source should not be enough at size 150");
+
+        // Second independent source → quorum reached.
+        let second = buf.record(entry, &source_b, 150, 1001);
+        assert!(
+            second.is_some(),
+            "two independent sources should satisfy medium-band quorum"
+        );
+    }
+
+    /// Three independent sources are required at the large band (≥ 1000 entries).
+    #[test]
+    fn source_diversity_three_sources_required_at_large_band() {
+        let mut buf = SourceDiversityBuffer::default();
+        let (entry, _) = make_signed_entry(0x12, 1, 1000);
+        let source_a = PeerId([0x01; 32]);
+        let source_b = PeerId([0x02; 32]);
+        let source_c = PeerId([0x03; 32]);
+
+        assert!(buf.record(entry.clone(), &source_a, 1_000, 1000).is_none());
+        assert!(buf.record(entry.clone(), &source_b, 1_000, 1001).is_none());
+        let third = buf.record(entry, &source_c, 1_000, 1002);
+        assert!(
+            third.is_some(),
+            "three independent sources should satisfy large-band quorum"
+        );
+    }
+
+    /// Duplicate reports from the same source do not count as independent.
+    #[test]
+    fn source_diversity_same_source_not_double_counted() {
+        let mut buf = SourceDiversityBuffer::default();
+        let (entry, _) = make_signed_entry(0x13, 1, 1000);
+        let source = PeerId([0x01; 32]);
+
+        // Both records are from the same peer — should not satisfy the
+        // medium-band requirement of 2 independent sources.
+        assert!(buf.record(entry.clone(), &source, 150, 1000).is_none());
+        assert!(
+            buf.record(entry, &source, 150, 1001).is_none(),
+            "same source twice must not count as two independent sources"
+        );
+    }
+
+    /// Pending entries older than 24 hours are evicted.
+    #[test]
+    fn source_diversity_buffer_cleanup_evicts_stale_entries() {
+        let mut buf = SourceDiversityBuffer::default();
+        let (entry, _) = make_signed_entry(0x14, 1, 1000);
+        let source = PeerId([0x01; 32]);
+
+        // Add at time 1000 but don't complete the quorum.
+        buf.record(entry, &source, 150, 1000);
+        assert_eq!(buf.pending_count(), 1);
+
+        // After 24h + 1s the entry should be evicted.
+        buf.cleanup(1000 + DEDUP_WINDOW_SECS + 1);
+        assert_eq!(buf.pending_count(), 0);
+    }
+
+    /// GossipEngine enforces source diversity at the medium band via map.insert_gossiped.
+    ///
+    /// Each call to receive_entry passes the entry and its source peer down into
+    /// NetworkMap::insert_gossiped which maintains its own staging buffer.  Two
+    /// independent sources at map_size=100 are required before the entry
+    /// is promoted to the live map.
+    #[test]
+    fn gossip_engine_buffers_entries_when_map_is_medium_size() {
+        let mut engine = GossipEngine::new();
+
+        // Populate the engine with 100 distinct entries (seeds 0x10–0x73).
+        // All arrive from source_a while the map is < 100 (single-source OK).
+        let seeder_source = PeerId([0x01; 32]);
+        for seed in 0x10u8..=0x73u8 {
+            let (e, _) = make_signed_entry(seed, 1, 1000);
+            engine
+                .receive_entry(e, &seeder_source, TrustLevel::Unknown, 1000)
+                .unwrap();
+        }
+        assert_eq!(engine.map_size(), 100);
+
+        // Now map has 100 entries → 2 independent sources required.
+        let (entry, _) = make_signed_entry(0x80, 1, 2000);
+        let source_a = PeerId([0xA0; 32]);
+        let accepted_a = engine
+            .receive_entry(entry.clone(), &source_a, TrustLevel::Unknown, 2000)
+            .unwrap();
+        assert!(
+            !accepted_a,
+            "single source at map_size=100 must not insert immediately"
+        );
+        assert_eq!(engine.map_size(), 100, "map must not grow from single source");
+
+        // Second independent source completes the quorum.
+        let source_b = PeerId([0xB0; 32]);
+        let accepted_b = engine
+            .receive_entry(entry, &source_b, TrustLevel::Unknown, 2001)
+            .unwrap();
+        assert!(
+            accepted_b,
+            "second independent source must complete quorum and insert"
+        );
+        assert_eq!(engine.map_size(), 101);
     }
 }
