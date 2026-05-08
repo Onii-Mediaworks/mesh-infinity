@@ -1034,14 +1034,11 @@ pub mod app;
 mod tests {
     use super::*;
     use super::identity::*;
-    use super::backup::*;
     use super::messaging::*;
     use super::peers::*;
-    use super::files::*;
     use super::events::*;
     use super::network::*;
     use super::transport::*;
-    use super::app::*;
     use std::ffi::CString;
     use std::path::Path;
     use tempfile::TempDir;

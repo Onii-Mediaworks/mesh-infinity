@@ -2233,7 +2233,7 @@ impl MeshRuntime {
     /// in-memory key material, leaving the device in a wiped state
     /// identical to a local killswitch activation.
     pub fn execute_remote_killswitch(
-        &mut self,
+        &self,
         requesting_peer_id_hex: &str,
     ) -> Result<(), String> {
         use crate::identity::peer_id::PeerId;
@@ -2275,10 +2275,26 @@ impl MeshRuntime {
 
         // ----------------------------------------------------------------
         // Approved — execute the wipe.
+        //
+        // Order: (1) erase on-disk material first so no window exists
+        // where memory is clear but disk still readable; (2) clear all
+        // Mutex-protected in-memory state.  `identity_unlocked` is a
+        // plain bool that requires `&mut self`; the caller's next poll
+        // cycle will detect the empty identity and treat the session as
+        // locked.
         // ----------------------------------------------------------------
         crate::identity::killswitch::standard_erase(std::path::Path::new(&self.data_dir));
-        self.clear_mesh_identity_runtime_state();
-        self.reset_identity_runtime_state();
+        self.clear_identity_keys();
+        self.rooms.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.messages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.masks.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
         Ok(())
     }
@@ -2292,6 +2308,108 @@ impl MeshRuntime {
         std::path::Path::new(&self.data_dir)
             .join("identity.dat")
             .exists()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use crate::identity::peer_id::PeerId;
+    use crate::pairing::contact::ContactRecord;
+    use crate::pairing::methods::PairingMethod;
+    use crate::service::runtime::MeshRuntime;
+    use crate::trust::levels::TrustLevel;
+
+    // ------------------------------------------------------------------
+    // T2-G: remote killswitch trust gate (§3.9.3)
+    // ------------------------------------------------------------------
+
+    /// Insert a contact at `trust` into `rt`'s contact store; return hex peer ID.
+    fn add_contact(rt: &MeshRuntime, trust: TrustLevel) -> String {
+        let pid_bytes = [0xABu8; 32];
+        let pid = PeerId(pid_bytes);
+        let contact = ContactRecord::new(pid, [0u8; 32], [0u8; 32], PairingMethod::QrCode, 0);
+        let mut store = rt.contacts.lock().unwrap_or_else(|e| e.into_inner());
+        store.upsert({
+            let mut c = contact;
+            c.set_trust_level(trust);
+            c
+        });
+        hex::encode(pid_bytes)
+    }
+
+    /// A peer below InnerCircle must be rejected; wipe must NOT happen.
+    #[test]
+    fn remote_killswitch_rejected_for_non_inner_circle_peer() {
+        let rt = MeshRuntime::new("target/test-remote-ks-reject".to_string());
+        let peer_hex = add_contact(&rt, TrustLevel::Ally);
+        let result = rt.execute_remote_killswitch(&peer_hex);
+        assert!(result.is_err(), "Ally-level peer must be rejected");
+        assert!(
+            result.unwrap_err().contains("trust level"),
+            "error must mention trust level"
+        );
+    }
+
+    /// An InnerCircle peer must be accepted and the wipe must execute.
+    #[test]
+    fn remote_killswitch_accepted_for_inner_circle_peer() {
+        let rt = MeshRuntime::new("target/test-remote-ks-accept".to_string());
+        let peer_hex = add_contact(&rt, TrustLevel::InnerCircle);
+        assert!(
+            rt.execute_remote_killswitch(&peer_hex).is_ok(),
+            "InnerCircle peer must be accepted"
+        );
+    }
+
+    /// An unknown peer (not in contacts) must be rejected.
+    #[test]
+    fn remote_killswitch_rejected_for_unknown_peer() {
+        let rt = MeshRuntime::new("target/test-remote-ks-unknown".to_string());
+        let result = rt.execute_remote_killswitch(&hex::encode([0xFFu8; 32]));
+        assert!(result.is_err(), "Unknown peer must be rejected");
+    }
+
+    /// An invalid peer ID hex string must be rejected cleanly.
+    #[test]
+    fn remote_killswitch_rejected_for_invalid_peer_id() {
+        let rt = MeshRuntime::new("target/test-remote-ks-invalid".to_string());
+        assert!(rt.execute_remote_killswitch("not-valid-hex").is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // T1-A: clear_identity_keys() atomicity (§3.6.4)
+    // ------------------------------------------------------------------
+
+    /// Two threads calling clear_identity_keys() concurrently must both
+    /// complete without panicking.  The AtomicBool guard ensures the
+    /// clear executes at most once per call pair; after both threads
+    /// finish, identity must be None.
+    #[test]
+    fn clear_identity_keys_concurrent_calls_are_safe() {
+        use std::sync::Arc;
+
+        let rt = Arc::new(MeshRuntime::new(
+            "target/test-clear-identity-concurrent".to_string(),
+        ));
+
+        let rt1 = Arc::clone(&rt);
+        let rt2 = Arc::clone(&rt);
+
+        let t1 = std::thread::spawn(move || rt1.clear_identity_keys());
+        let t2 = std::thread::spawn(move || rt2.clear_identity_keys());
+
+        t1.join().expect("thread 1 must not panic");
+        t2.join().expect("thread 2 must not panic");
+
+        let identity = rt.identity.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            identity.is_none(),
+            "identity must be None after concurrent clear_identity_keys"
+        );
     }
 }
 

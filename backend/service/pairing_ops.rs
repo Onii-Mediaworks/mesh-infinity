@@ -805,13 +805,46 @@ impl MeshRuntime {
                 // Re-inject Message packets through the application pipeline.
                 if pkt.kind == PacketKind::Message {
                     if let Some(payload) = pkt.payload_bytes() {
-                        // Deserialise from JSON bytes before re-injecting.
                         if let Ok(envelope) = serde_json::from_slice::<serde_json::Value>(&payload)
                         {
                             return self.process_inbound_frame(&envelope);
                         }
                     }
                 }
+
+                // Handle admin commands (§3.9.3): trust gate enforced before
+                // any privileged action executes.
+                if pkt.kind == PacketKind::AdminCommand {
+                    let sender_hex = hex::encode(pkt.source);
+                    if let Some(payload) = pkt.payload_bytes() {
+                        if let Ok(cmd) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                            if cmd.get("type").and_then(|t| t.as_str()) == Some("killswitch") {
+                                match self.execute_remote_killswitch(&sender_hex) {
+                                    Ok(()) => {
+                                        self.push_event(
+                                            "RemoteKillswitchExecuted",
+                                            serde_json::json!({ "sender": sender_hex }),
+                                        );
+                                        return true;
+                                    }
+                                    Err(reason) => {
+                                        // Trust gate rejected the command — log and drop.
+                                        self.push_event(
+                                            "AdminCommandRejected",
+                                            serde_json::json!({
+                                                "sender": sender_hex,
+                                                "reason": reason,
+                                            }),
+                                        );
+                                        return false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                }
+
                 self.push_event(
                     "MeshPacketDelivered",
                     serde_json::json!({
