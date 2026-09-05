@@ -1,7 +1,11 @@
 # Mesh Infinity Technical Specification
 
-**Specification version:** 1.5
-**Status:** Active
+**Specification version:** 1.6
+**Status:** Security revision — implementation conformance and independent review required
+**Revision date:** 2026-09-05
+**Authoritative source:** May SPEC.md attachment from “Mesh Infinity Cybersecurity Review”; original preserved as SPEC-v1.5-May-original.md.
+
+**v1.6 scope and precedence:** This revision preserves Mesh Infinity's terminology, architecture, and maximally hostile observer baseline. It replaces the affected v1.5 protocol paths; these are incompatible security changes, not optional extensions. “Double Ratchet” elsewhere names the classical component of the hybrid session, not permission to deploy a classical-only chat session. Historical §7.0.x references retain their subsection numbers under §7.1. Cryptographic profiles and release gates below are normative; prose, illustrative code, performance estimates, UI examples, and legacy filenames cannot override them. This document specifies requirements, not evidence that the existing code meets them. Unresolved implementation pins and review evidence MUST be closed before affected features ship.
 
 ---
 
@@ -91,7 +95,7 @@
   - [6.12 Network Isolation Mode](#612-network-isolation-mode)
 - [7. Message Encryption Scheme](#7-message-encryption-scheme)
   - [7.0 Overview](#70-overview)
-  - [7.1 Inner Session Key Establishment — X3DH + Double Ratchet](#71-inner-session-key-establishment-x3dh-double-ratchet)
+  - [7.1 Inner Session Key Establishment — PQXDH + Triple Ratchet](#71-inner-session-key-establishment-pqxdh-triple-ratchet)
   - [7.2 Four-Layer Encryption](#72-four-layer-encryption)
   - [7.3 Security Properties](#73-security-properties)
   - [7.4 Session Keys for Ongoing Connections](#74-session-keys-for-ongoing-connections)
@@ -695,48 +699,19 @@ Cryptographic primitive negotiation is a connection-level concern, not an identi
 
 #### 3.4.1 Post-Quantum Migration — PQXDH
 
-X3DH (§7.0.2) uses X25519 exclusively. A sufficiently capable quantum computer breaks X25519 via Shor's algorithm, exposing all sessions — including retroactive decryption of traffic collected today ("harvest now, decrypt later"). This is not a theoretical concern under the §2.0 threat model: state-level adversaries routinely perform bulk traffic collection.
+Mesh Infinity v1.6 requires a reviewed PQXDH initial agreement and continuous hybrid ratcheting for every direct-message session, including message requests. Trust controls authorization, private-profile disclosure, and routing preference; it MUST NOT control whether content receives forward-secret session encryption.
 
-**Migration plan — PQXDH (Post-Quantum Extended Diffie-Hellman):**
+**Construction baseline:** Use Signal's *PQXDH revision 3, last updated 2024-01-23*, including its identity binding, disjoint public-key encodings, authenticated prekeys, one-time and last-resort KEM keys, replay analysis, and KEM re-encapsulation defenses. The old Mesh `kem_binding` construction and hand-written master-secret recipe are removed. Source: [PQXDH specification](https://signal.org/docs/specifications/pqxdh/). This selects a published construction; it does not imply Signal wire compatibility.
 
-The X3DH handshake (§7.0.2) will be extended to PQXDH by adding an ML-KEM-768 (FIPS 203) encapsulation alongside the existing X25519 DH operations. The combined secret incorporates both the classical DH output and the KEM shared secret, so security degrades gracefully — if ML-KEM is broken, X25519 still protects; if X25519 is broken, ML-KEM still protects.
+**Mesh session profile `MI-PQXDH-1`:** curve25519, SHA-512, FIPS 203 ML-KEM-768, and ChaCha20-Poly1305; application info `MeshInfinity_PQXDH_1`. PQXDH's own encoding, KDF, signature, and AD rules apply. EncodeEC uses type byte 0x01 followed by the 32-byte X25519 encoding; EncodeKEM uses type byte 0x02 followed by the 1184-byte ML-KEM-768 public key. Parameter names in the PQXDH KDF are exactly `MeshInfinity_PQXDH_1`, `CURVE25519`, `SHA-512`, `ML-KEM-768`. The EC and KEM types MUST NOT be interpreted interchangeably. ML-KEM validation, decapsulation, and implicit rejection MUST use the selected library's FIPS 203 API, not locally reconstructed arithmetic.
 
-```
-// PQXDH extension to §7.0.2
-(pq_ss, kem_ct) = ML-KEM-768.Encapsulate(preauth_B_kem_pub)
+The protocol identity uses the XEdDSA key/signature model defined by PQXDH. Each device publishes an authenticated, versioned binding between that protocol identity and its existing Mesh mask Ed25519 identity; no unchecked Ed25519/X25519 conversion is permitted. Binding replacement invokes existing key-change and safety-number verification policy. Public bindings may make keys linkable; private relationship bindings MUST stay in the appropriate encrypted channel. The identity-binding serialization and selected library integration require independent review and interoperability vectors before release (§21.6.4).
 
-master_secret = HKDF-SHA256(
-    salt = 0x00 * 32,
-    ikm  = 0xFF * 32 || DH1 || DH2 || DH3 || pq_ss,
-    info = "MeshInfinity_PQXDH_v1",
-    len  = 32
-)
-```
+**Prekey service:** §7.0.1 defines lifecycle and resource limits. The signed bundle binds recipient device, protocol version, exact suite, public keys, non-reusable key IDs, generation, validity interval, and protocol identity. Mesh bundle authentication supplements, and MUST NOT replace, PQXDH's required prekey signatures. One-time KEM keys MUST be preferred; an exhausted pool may use a valid, signed last-resort KEM key but never a classical-only fallback. Publish replenishment in bounded batches through privacy-preserving lookup paths; pool depletion and lookup correlation remain metadata risks.
 
-**Wire format — KEM ciphertext in init header:**
+**Downgrade policy:** All v1.6 direct sessions require this hybrid profile or a separately reviewed successor. Missing, stripped, unsupported, or expired suite metadata causes a retry or a visible incompatible-peer state. Absence of an advertised PQ key is not evidence authorizing fallback. Bind the selected suite and offered capabilities to authenticated session establishment. An existing v1.5 session must be replaced by a fresh authenticated v1.6 session; its saved state MUST NOT be relabeled or imported as hybrid state.
 
-```rust
-PqxdhInitHeader {
-    eph_pub:          [u8; 32],       // X25519 ephemeral public key
-    encrypted_ik_pub: [u8; 48],       // Encrypted IK (see §7.0.2 — upgraded to AEAD)
-    kem_ciphertext:   [u8; 1088],     // ML-KEM-768 ciphertext
-    kem_binding:      [u8; 32],       // HMAC-SHA256(eph_DH_secret, kem_ciphertext)
-                                       // Prevents KEM ciphertext substitution attacks —
-                                       // binds the KEM to the ephemeral DH context
-}
-```
-
-`kem_binding` authenticates the KEM ciphertext against the ephemeral DH shared secret. An attacker who intercepts the init message cannot substitute a different KEM ciphertext without also knowing the ephemeral DH secret — the binding check fails on Bob's side.
-
-Bob verifies: `HMAC-SHA256(X25519(preauth_B_secret, eph_pub), kem_ciphertext) == kem_binding`. If mismatch, the init is **silently dropped** — no error is sent to the sender (to prevent oracle attacks). The sender's message times out and is retried via S&F or a fresh X3DH init. This silent-drop behavior applies to ALL X3DH/PQXDH validation failures (bad signature, expired token, unknown preauth key, KEM binding mismatch).
-
-**Preauth key extension:** Each node's preauth key (§7.0.1) adds an ML-KEM-768 encapsulation public key alongside the existing X25519 public key. The KEM public key is distributed through the same paths and with the same trust weights as the X25519 preauth key.
-
-**Implementation schedule:** PQXDH is a v1.0 requirement — not deferred. Sessions initiated without the KEM component (X3DH-only) are accepted during the transition period but flagged in the UI: *"This session uses classical key agreement only. It is not protected against future quantum attacks."*
-
-**X3DH downgrade prevention:** After the transition period (defined as 6 months post-v1.0 release), peers that advertise a KEM public key in their preauth key MUST reject X3DH-only init messages from peers that also advertise a KEM key. A peer can only use X3DH-only when the recipient has no KEM key published. This prevents a MITM from stripping the KEM component.
-
-**Deniability caveat:** PQXDH does not meet the same deniability guarantees as X3DH due to the KEM encapsulation. The KEM ciphertext is bound to the recipient's public key in a non-deniable way. This is an accepted tradeoff — post-quantum security takes precedence over deniability against a quantum adversary. The deniability properties of the Double Ratchet (§7.0.3) and message-level HMAC (§3.5.1) are unaffected.
+**Guarantee limits:** PQXDH supports passive quantum confidentiality and forms of classical deniability; it does not provide post-quantum identity authentication merely because ML-KEM is present. Continuous hybrid FS/PCS is required by §7.0.3. Signed Mesh identity bindings and the four-layer signature envelope have their own evidentiary properties; Mesh MUST NOT claim full-protocol deniability solely from PQXDH or the ratchet. Compromised endpoints and retained plaintext remain outside key-erasure guarantees.
 
 ### 3.5 Deniability and Zero-Knowledge Proofs
 
@@ -753,7 +728,7 @@ For ZKPs specifically, deniability comes from two properties held together: the 
 
 #### 3.5.1 Message-Level Deniability
 
-Messages within trusted channels are authenticated using **HMAC-SHA256 with the ratchet-derived `msg_key`** (produced by the Double Ratchet, §7.0), rather than Ed25519 signatures. Since the `msg_key` is derived from shared ratchet state that both parties possess, neither party can prove to a third party who authored any specific message — both have the cryptographic capability to produce any MAC under that key.
+Messages within trusted channels are authenticated using **HMAC-SHA256 with a separately labelled application-MAC subkey from the hybrid session** (produced by the Double Ratchet, §7.0), rather than Ed25519 signatures. Since the `msg_key` is derived from shared ratchet state that both parties possess, neither party can prove to a third party who authored any specific message — both have the cryptographic capability to produce any MAC under that key.
 
 The `channel_key` from §3.2 serves only as the WireGuard PSK and is not used for message authentication. Message-level deniability is provided entirely by the ratchet-derived `msg_key`.
 
@@ -761,19 +736,29 @@ Ed25519 signatures are applied at the routing layer for hop-by-hop forwarding au
 
 #### 3.5.2 Group Membership Deniability — Ring Signatures
 
-Group operations use **AOS (Abe-Ohkubo-Suzuki) 1-out-of-n ring signatures** over Ed25519 keys to prove membership without revealing which member is acting. Reference: Abe, Ohkubo, Suzuki, "1-out-of-n Signatures from a Variety of Keys" (Asiacrypt 2002). Implementation: use the `ring-signature` or equivalent Rust crate implementing Schnorr-based AOS over Curve25519. The algorithm is standard — the spec does not reproduce it here but the implementation must match the original paper's construction:
+Private and Closed groups use the **AOS cyclic Schnorr 1-out-of-n construction**, concretely profiled below as `MI-AOS-R255-1`. Linkable variants (LSAG/CLSAG), arbitrary “equivalent” crates, and direct reinterpretation of Ed25519 public keys are prohibited. This Mesh parameterization is a design requiring independent cryptographic review, not a claim of a previously audited implementation.
 
-- A ring signature proves the signer holds *one of* the private keys in a set (the ring), without revealing which one
-- Group membership proofs, message authentication, and admin actions all use ring signatures over the current member public key set
-- An external observer can verify that *some* group member performed an action, but cannot determine which member
-- The ring updates as members join or leave
-- **Unlinkable at the ring layer:** AOS ring signatures are unlinkable — two signatures by the same member cannot be correlated by an external observer. This is the correct property for deniability. Linkable variants (LSAG, CLSAG) are explicitly not used.
-- **Attributable inside encryption:** The sender's identity is signed inside the encryption envelope (§7.2 Step 3) before the ring signature is applied. Group members who decrypt the message can verify the sender; external observers see only an unlinkable ring signature proving *some* member acted.
-- **Verification cost:** O(n) in ring size — acceptable for the 300-member group cap (§7.0.4). Each verification requires n Ed25519 scalar multiplications.
+**Group and keys:** Use the prime-order ristretto255 group and canonical encoding/decoding from [RFC 9496](https://www.rfc-editor.org/rfc/rfc9496.html), with its standard generator G and scalar order l. Every membership device generates a separate uniform nonzero scalar x and public key P=xG; it MUST NOT reuse identity, session, or signing scalars. An authenticated membership commit binds P to that member inside the encrypted group. Ring keys provide classical security only. A quantum attacker able to solve discrete logarithms can forge these signatures; they are not a PQ authorization boundary.
 
-The ring signature scheme guarantees deniability at the cryptographic layer. The operational behavior during member transitions — including the superset ring model and rekeying policy — is specified in §8.7 (Trusted Groups).
+**Canonical transcript:** Integers are unsigned big-endian; scalars on the wire are canonical 32-byte little-endian integers less than l. `LP(b)=u32be(len(b)) || b`. The ring is 1–300 unique, non-identity canonical points, sorted lexicographically by their 32-byte encodings. Reject duplicates, noncanonical encodings, invalid points, bad length, or an unrecognized suite before verification. Define:
 
-**Ring signatures are used only in Private and Closed groups** (§8.9). Open and Public groups use attributable Ed25519 signatures — ring signature overhead is not justified when membership is not secret.
+```
+T = LP(ASCII("MeshInfinity/MI-AOS-R255-1"))
+    || group_id[32] || u64be(content_epoch) || roster_commit_hash[32]
+    || u16be(n) || P[0][32] || ... || P[n-1][32]
+    || LP(context_type) || u64be(len(ciphertext)) || SHA512(ciphertext)[64]
+H(T,i,R) = little_endian_integer(SHA512(T || u16be(i) || encode(R))) mod l
+```
+
+`context_type` is exactly ASCII `application` or `membership`; other uses require a new profile. The ciphertext is the entire canonical group envelope being authenticated, including its authenticated header. No external JSON serialization participates in T.
+
+**Sign (signer's sorted index j):** Choose fresh uniform nonzero u. Set `c[(j+1) mod n]=H(T,j,uG)`. For indices i cyclically from j+1 through j−1, choose independent uniform scalar s[i], compute `R=s[i]G+c[i]P[i]`, then `c[(i+1) mod n]=H(T,i,R)`. Set `s[j]=u−c[j]x mod l`. Output `c[0] || s[0] || ... || s[n−1]`. Erase u and temporary scalars; nonce reuse can reveal x. Secret-dependent arithmetic MUST use constant-time implementations.
+
+**Verify:** Require exactly 32(n+1) signature bytes, parse all scalars canonically, start at the supplied c[0], and for i=0..n−1 compute `R=s[i]G+c[i]P[i]` and `c[i+1]=H(T,i,R)`. Accept only if final c[n] equals supplied c[0]. All context is locally authenticated, not trusted from an attacker's claimed roster. Verification is O(n); rate-limit before expensive work without bypassing authentication.
+
+The ring is an anonymous outer authentication layer, separate from MLS content encryption (§8.7). It does not authorize admin actions or quorum votes by itself: those require encrypted, attributable credentials and governance checks. Signatures provide signer ambiguity within the supplied ring, not nonexistence of evidence that a ring member acted. Recipients can identify the inner sender. Ring disclosure reveals pseudonymous members and size; a verifier with identity mappings can enumerate them. Outsiders MUST NOT be given private identity mappings merely to verify a ring. Padding with arbitrary keys is not an approved membership-hiding mechanism.
+
+**Release gate:** Pin the implementation commit, dependency versions, and profile digest. Provide independently produced positive and negative vectors for n=1, n=2, n=300, every signer position, transcript changes, duplicate/invalid points, scalar malleability, truncation, cross-group/epoch/context replay, and RNG failure. Review this profile and its composition with MLS before enabling it outside isolated tests (§21.6.4). Open/Public groups retain attributable authentication inside MLS.
 
 #### 3.5.3 Connection Deniability
 
@@ -941,7 +926,7 @@ Private keys are **never** included in either backup type. This is non-negotiabl
 - Any private key (signing, DH, or derived)
 - Message history
 - Double Ratchet session state
-- Sender Key state
+- MLS group state and separately scoped archive grants
 
 #### 3.7.3 Extended Backup Contents
 
@@ -2451,7 +2436,7 @@ Four named profiles cover primary use cases. Users can also use `Custom` for ful
 
 #### 5.7.4 Frequency Hopping Spread Spectrum (FHSS)
 
-FHSS synchronization uses a shared hop key derived from the X3DH session key via HKDF-SHA256:
+FHSS synchronization uses a shared hop key derived from the PQXDH session key via HKDF-SHA256:
 
 ```
 hop_key = HKDF-SHA256(
@@ -2724,7 +2709,7 @@ anonymization:
 
   Note: Tor score is 0.9 not 1.0 because timing correlation attacks
   remain possible against a sufficiently resourced adversary.
-  The native mixnet tier and Katzenpost defeat timing correlation
+  The native mixnet tier and Katzenpost reduce timing correlation under tested profiles
   by design and score 1.0.
 
 relay_cover_reduction:
@@ -3428,46 +3413,43 @@ libp2p is a modular networking stack underlying IPFS, Ethereum, and many other d
 
 ### 5.25 Native Mixnet Tier
 
-The native mixnet tier is a **routing mode** built on top of the existing wrapper node infrastructure (§4.4), not a separate transport. It adds mixnet properties — fixed-size packets, per-hop batching with deliberate delay, mandatory cover traffic — to produce timing-attack-resistant routing.
+The native mixnet tier is a **routing mode** built on top of the existing wrapper node infrastructure (§4.4), not a separate transport. It adds mixnet properties — fixed-size packets, randomized per-hop delay and mandatory cover traffic — to reduce timing correlation under a measured profile.
 
 This section specifies the protocol. The routing behavior is specified in §6 (Routing).
 
 #### 5.25.1 Design Goals
 
-- Defeat timing correlation attacks that Tor and I2P are vulnerable to
-- No external network dependency — runs on Mesh Infinity infrastructure
-- External nodes can participate using the open base protocol (§5.25.5)
-- Mesh Infinity nodes use a superset of the base protocol with additional trust-graph-aware routing
+- Reduce timing and size correlation under the §2.0 hostile-observer baseline; no unconditional anonymity guarantee.
+- Preserve native wrapper infrastructure and open participation, with authenticated network parameters.
+- Evaluate active tagging, replay, malicious mixes, sparse traffic, and long-term statistical disclosure in addition to passive observers.
 
 #### 5.25.2 Core Properties
 
-**Fixed-size packets:** All mixnet-tier packets are padded to a fixed MTU (default: 1500 bytes). Payload shorter than MTU is padded with random bytes. Payload longer than MTU is split across multiple packets. An observer cannot infer payload size from packet size.
+**Packet geometry:** Each authenticated network profile fixes packet size, Sphinx suite, maximum path length, routing-command encoding, key-epoch duration, allowed key overlap, maximum packet lifetime, cover schedule, and delay distribution. Geometry MUST account for the entire header, authentication data, and payload; `MTU - 32` is not a valid generic payload formula. 1500 bytes is an initial transport budget for evaluation, not a claim that every hybrid Sphinx profile fits. Fragment identifiers and reassembly metadata stay inside recipient-encrypted payloads. Fragment count, timing, and total volume can still leak size.
 
-**Per-hop batching and shuffling:** Each mix node collects packets into a batch window (default: 500ms). At the end of the window, the batch is shuffled and forwarded. An observer watching a mix node sees packets arrive in one order and leave in a different order with a different timing distribution.
+**Mixing:** The production profile MUST use a measured randomized delay strategy, initially Poisson mixing with independently sampled exponential per-hop delays, and a tested client/mix cover schedule. A 500 ms mean delay may be evaluated; fixed synchronized 500 ms batches are not the anonymity guarantee. Maximum delay and truncation effects must be published with classifier results. Delay/cover changes are authenticated network-wide profile changes, not per-user fingerprints.
 
-**Mandatory cover traffic:** Every mix node MUST send at least one packet per batch window, even if its batch is empty. Empty batch windows generate a dummy packet (encrypted padding, indistinguishable from real traffic). A node that goes silent reveals when it has no traffic — mandatory cover traffic prevents this.
-
-**Relay reduces cover obligation:** Per §2.1 principle 9 and §5.10.3, a node actively relaying mixnet traffic generates proportionally less synthetic cover. At full relay throughput, the relay traffic itself satisfies the cover obligation.
+**Cover traffic:** Generate cryptographically valid dummy/loop traffic on schedules independent of application activity. A single packet per empty batch does not hide real traffic bursts. Relay traffic may reduce synthetic cover only within the tested aggregate schedule without exposing occupancy or user activity. Queue overflow, backpressure, restart, and overload behavior MUST be tested. Availability under sustained flooding is bounded; preserving replay state takes priority over accepting more traffic.
 
 #### 5.25.3 Packet Format (Base Protocol)
 
 ```
 MixnetPacket {
-    version:     u8,                          // protocol version
-    packet_id:   [u8; 32],                   // random 256-bit ID, for deduplication
-    onion_layer: [u8; SPHINX_HEADER_SIZE],   // fixed-size encrypted routing header
-                                              // SPHINX_HEADER_SIZE is a compile-time
-                                              // constant derived from max path length;
-                                              // constant size is a core Sphinx property —
-                                              // variable length would reveal path depth
-    payload:     [u8; MTU - 32],             // fixed-size encrypted payload
+    sphinx_header: [u8; PROFILE_HEADER_BYTES],
+    sphinx_payload: [u8; PROFILE_PAYLOAD_BYTES],
 }
+// PROFILE_PACKET_BYTES = PROFILE_HEADER_BYTES + PROFILE_PAYLOAD_BYTES
 ```
 
-The `onion_layer` is decrypted by each hop using Sphinx (the cryptographic packet format used by Lightning Network and Katzenpost). Sphinx provides:
-- Unlinkability: each hop sees only its own decrypted layer; cannot link incoming to outgoing packet
-- Constant-size headers: header size doesn't reveal path length
-- Replay protection: packet IDs are cached per-node for the batch window duration
+Use the complete selected Sphinx/KEMSphinx construction, including blinding, header authentication, payload transformation and final payload authentication. No end-to-end visible `packet_id`, unique additional-data field, stable fragment ID, or end-to-end ciphertext digest may be added outside the onion. Suite identifiers exposed on the wire must be shared by a sufficiently large traffic class, not unique to a packet or user. [Sphinx specification](https://katzenpost.network/docs/specs/sphinx/).
+
+**Hop-local replay state:** Following successful authenticated Sphinx processing, obtain the selected construction's replay tag from hop-secret processing state. Do not invent a tag from mutable payload bytes or transmit the cache key. Atomically test-and-insert `(routing_key_epoch, replay_tag)` before enqueueing or emitting any forward/delivery effect. Concurrent duplicates have at most one accepted processing effect. Payload tampering cannot create a new accepted replay identity for the same header. Apply all construction-specific tagging and payload-integrity checks; header authentication alone is insufficient.
+
+Retain replay entries for the complete period in which the associated routing private key can accept packets, including overlap, maximum transit delay, and clock tolerance. Retire the key and reject its epoch before deleting its cache. A routing-key epoch and a mix delay are independent quantities. At capacity, reject new work or retire the entire key epoch; MUST NOT evict live tags to admit traffic. Validate length, suite and key eligibility before expensive processing; invalid packets cause no informative network error.
+
+Replay state and accepted work MUST be crash-consistent. On restart either restore the complete cache before accepting the same key, or stop using that key and obtain a fresh authenticated epoch. Restoring a private-key backup without matching replay state is prohibited. A crash may lose a packet, but must not cause duplicate forwarding. End-to-end retry creates a fresh onion; application deduplication is separate and encrypted. S&F storage expiry must not extend a mix routing key's acceptance lifetime.
+
+**Profile release gate:** Pin source revision, suite, full wire geometry, key lifetime/overlap, tag derivation and crash strategy in the implementation profile, with independent vectors. Test replay beyond a mix window, across restart/epoch overlap, concurrent duplicates, cache exhaustion, payload/header tagging, malformed routing commands and final-recipient replay. Do not enable a profile whose constants or validation behavior remain unspecified.
 
 #### 5.25.4 Participation Levels
 
@@ -3483,9 +3465,9 @@ External nodes can participate as mix nodes or clients using the base protocol. 
 
 **Base protocol requirements:**
 - Sphinx packet format (§5.25.3)
-- Fixed MTU (1500 bytes, negotiable to 9000 for jumbo frame segments)
-- Mandatory cover traffic per batch window
-- Batch window: 500ms default (negotiable)
+- Fixed packet geometry per authenticated profile; no per-flow jumbo-size negotiation
+- Authenticated cover and randomized-delay profile (§5.25.2)
+- Full-epoch replay protection and crash consistency (§5.25.3)
 - No trust graph awareness required — external nodes forward packets without knowledge of the Mesh Infinity WoT
 
 **Mesh Infinity superset (not required for external nodes):**
@@ -3497,20 +3479,19 @@ The base protocol spec will be published as a standalone document for external i
 
 #### 5.25.6 Katzenpost Compatibility (Experimental)
 
-Katzenpost is an open-source mixnet framework with a compatible design. Katzenpost support in the experimental menu allows:
-- Using Katzenpost mix nodes as an alternative to native mixnet nodes
-- Contributing native Mesh Infinity nodes as Katzenpost-compatible mix nodes
-- Cross-network routing (packets can traverse Katzenpost and Mesh Infinity mixnet segments)
+Katzenpost compatibility remains experimental. Its published specifications include Sphinx, KEMSphinx, replay detection, directory infrastructure, and a PQ Noise wire protocol; compatibility is not a signature or packet-size substitution. [Katzenpost design specifications](https://katzenpost.network/docs/specs/).
 
-Katzenpost uses SPHINCS+ for post-quantum signatures and a slightly different packet format. The experimental integration handles translation at the gateway level. Maturity caveat: Katzenpost is production-quality but small-deployed; its anonymity set is limited by network size.
+A supported integration MUST pin the exact upstream release/commit and interoperate with its selected packet geometry, key epochs, directory trust, replay policy, transports, and client/mailbox behavior. Use a complete reviewed client/gateway integration. Do not claim arbitrary cross-network mix-node interchangeability or transparent onion translation. A gateway that terminates and rebuilds an onion can link segments and changes the trust model; disclose and evaluate that boundary. Test against pinned upstream implementations before exposing interoperability controls.
 
-**Relay participation:** Katzenpost relay enabled by default when Katzenpost is enabled in experimental menu. Same relay_cover_reduction applies.
+Katzenpost's threat model acknowledges residual correlation and long-term disclosure risks. Deployment size and maturity must be measured for the actual target network; no blanket “production-quality” or anonymity-set claim follows from using its format. [Threat model](https://katzenpost.network/docs/threat_model/).
+
+Relay participation remains enabled when the user enables this experimental integration, subject to supported role and measured cover policy. Disabled or incompatible integration must not silently fall back to a weaker route.
 
 ### 5.26 Traffic Camouflage and Primary Carriers
 
-Traffic camouflage addresses a distinct problem from anonymization: not *who* is communicating but *what protocol* appears to be in use. In hostile environments, being identified as a VPN user, or specifically as a WireGuard user, is itself dangerous. Therefore the requirement for Mesh Infinity primary carriers is stronger than "encrypted" and stronger than "obfuscated": **primary carriers MUST NOT be recognizable as VPN traffic at any point on the path.**
+Traffic camouflage addresses a distinct problem from anonymization: not *who* is communicating but *what protocol* appears to be in use. In hostile environments, being identified as a VPN user, or specifically as a WireGuard user, is itself dangerous. Therefore the requirement for Mesh Infinity primary carriers is stronger than "encrypted" and stronger than "obfuscated": **primary carriers MUST meet a documented, empirically tested resistance-to-classification objective against specified observers and active probes. No carrier guarantees unrecognizability on every path.**
 
-This is a hard requirement. When Mesh Infinity controls both ends of a connection, it is unacceptable for the on-path observer to classify the flow as:
+The objective is to reduce reliable classification by an on-path observer as:
 
 - WireGuard
 - generic VPN traffic
@@ -3522,13 +3503,13 @@ The carrier is never the security boundary. All confidentiality, integrity, forw
 
 **Cryptographic layering clarification:** The primary tunnel cryptography remains WireGuard-derived link protection as specified elsewhere in §5.2 and §6. The four-layer Mesh Infinity packet/envelope system (§7) remains the payload/security substrate above transport and is also the mandatory substrate for any non-tunnel deniable carrier. The deniable-carrier work in this section and §5.27 changes how those already-defined cryptographic objects are embedded and transported; it does not replace WireGuard as the primary tunnel cryptography and does not replace the four-layer packet system as the non-tunnel sealed-envelope format.
 
-**This section resolves DQ-3 (traffic obfuscation against targeted surveillance).**
+**DQ-3 remains a continuously evaluated security objective.** Each carrier release MUST publish a versioned test profile: adversary capabilities, named classifier and active-probe implementations, training/test separation, ordinary-traffic baseline, sample counts, false-positive and true-positive rates with confidence intervals, acceptance thresholds, and results. Thresholds must be set before evaluation. Test packet sizes, bursts, interarrival times, nested TLS effects, TLS/QUIC fingerprints where applicable, multiplexing, idle/reconnect behavior, malformed probes, and failure paths on relevant networks. A classifier regression blocks promotion of that carrier profile. Signed updates may retire or replace profiles; unavailable safe carriers produce the existing explicit degraded/blocked state. Never silently expose raw tunnel framing as fallback.
 
 #### 5.26.1 Primary-Carrier Invariants
 
 Every compliant primary carrier MUST satisfy all of:
 
-1. **No VPN recognizability:** The carrier MUST NOT expose a recognizable WireGuard handshake, WireGuard packet structure, or stable VPN fingerprint to a passive observer.
+1. **Measured classification resistance:** The carrier MUST conceal raw WireGuard framing and pass its published passive and active classifier acceptance criteria. Passing is evidence only for the tested adversaries and conditions, not universal invisibility.
 2. **Real protocol behavior:** If the carrier claims to be HTTPS, HTTP/2, HTTP/3, WebSocket, media traffic, or another ordinary protocol family, it MUST implement that family as a valid instance of the protocol rather than emitting fake record headers or static templates.
 3. **No Mesh-distinctive failure signature:** Unauthorized or malformed probes must fail as normal transport failure (timeout, TLS failure, generic application error, dropped request) rather than emitting a Mesh-specific rejection.
 4. **Negotiated camouflage:** Features that affect the visible carrier shape (ALPN, request shape, timing profile, padding regime, stream persistence) MUST be negotiated or locally selected in a way that does not itself create a stable fingerprint.
@@ -4720,7 +4701,7 @@ The store-and-forward mechanism operates above the routing layer. The hop-by-hop
 
 **Self-Disavowed behavior:** When an S&F node receives a `Self-Disavowed` signal for an identity, it immediately halts delivery of any queued outbound messages from that identity. Those messages remain held but undelivered until either the Self-Disavowed status is cleared (at which point normal delivery resumes) or the message expiry timestamp passes (at which point they are discarded). Inbound messages addressed to a Self-Disavowed identity are delivered normally — they were sent before the event and the sender had no reason not to send them. Self-Disavowed means "do not act on this identity's behalf," not "reject everything associated with it."
 
-**Preferred delivery: native mixnet tier (§5.25).** When the mixnet tier is active, S&F messages should be delivered through it rather than directly. Direct S&F delivery leaks timing metadata — the S&F node observes exactly when a message is deposited and when it is retrieved, allowing correlation with the sender and recipient coming online. Delivery through the mixnet tier defeats this: batching and shuffling at each mix hop make the timing of deposit and retrieval events unlinkable from outside. The S&F node still knows a message exists for a given address, but cannot observe the timing of the surrounding network events that would identify the parties.
+**Preferred delivery: native mixnet tier (§5.25).** When the mixnet tier is active, S&F messages should be delivered through it rather than directly. Direct S&F delivery leaks timing metadata — the S&F node observes exactly when a message is deposited and when it is retrieved, allowing correlation with the sender and recipient coming online. Delivery through the mixnet tier reduces correlation according to its measured delay/cover profile (§5.25). S&F nodes still observe deposit/retrieval events; collusion, sparse traffic and long-term observation remain risks.
 
 ### 6.9 LoSec Mode (Low-Security, High-Bandwidth Transport)
 
@@ -5102,7 +5083,7 @@ NetworkIsolationConfig {
 
 This section specifies how messages are encrypted, authenticated, and delivered between peers. The scheme provides Signal-equivalent security properties — per-message forward secrecy, break-in recovery, and deniable authentication — adapted for a decentralized mesh without a central server.
 
-- **§7.1 Key Establishment** — X3DH session initiation with encrypted identity key header, Double Ratchet advancement, group Sender Keys
+- **§7.1 Key Establishment** — PQXDH initialization, continuous hybrid ratcheting, MLS group content epochs
 - **§7.2 Four-Layer Encryption** — the per-message encryption stack: inner signing → trust-channel encryption → outer signing → recipient encryption
 - **§7.3 Security Properties** — property table with mechanisms
 - **§7.4 Session Keys for Ongoing Connections** — handshake-derived session keys for streams and transfers; rekeying policy
@@ -5111,131 +5092,45 @@ This section specifies how messages are encrypted, authenticated, and delivered 
 
 **Layer visibility summary:** Routing nodes see only the Layer 4 outer encrypted blob and destination address. Only the recipient can decrypt Layer 4, after which they verify the Layer 3 signature (relationship-specific mask key), decrypt Layer 2 (trust-channel session key), and verify Layer 1 (inner HMAC). Nothing inside Layer 4 is visible to any party except the intended recipient.
 
-### 7.1 Inner Session Key Establishment — X3DH + Double Ratchet
+### 7.1 Inner Session Key Establishment — PQXDH + Triple Ratchet
 
-The 4-layer scheme (§7.1) uses a per-peer **session key** for Step 2 (trusted-channel encryption). This session key is not static — it is established via **X3DH** on first contact and advanced with every message via the **Double Ratchet**. This gives the chat layer the same cryptographic properties as Signal: authenticated key agreement, per-message forward secrecy, and break-in recovery.
+All direct messages, including requests, use PQXDH (§3.4.1) and the continuous hybrid ratchet below. Trust controls authorization, not encryption. Existing §7.0.x subsection numbers remain for cross-reference stability.
 
-#### 7.0.1 Pre-Key Material — Preauth Key Model
+#### 7.0.1 Preauth Keys and Prekey Lifecycle
 
-Each node maintains and publishes a **preauth key** — a single X25519 keypair per identity/address used purely for encryption/key agreement:
+“Preauth” remains Mesh's bundle-discovery term. Each device stores separate protocol identity, signed EC prekey, EC one-time pool, signed one-time ML-KEM pool and signed last-resort ML-KEM key in prekeys.vault. IDs are device-scoped, unique and never reused, even after restore. Signed metadata binds each ID to exact key, type, device, suite and validity.
 
-- **Cannot be used for signing** — no signing capability, like a TLS public key
-- **No identity attached** — just an encryption endpoint
-- **Single key, not a pool** — no consumption metadata to leak (unlike the Signal OPK model where pool depletion is itself a signal)
+One logical allocator durably reserves one-time bundles before issuance; replicas MUST NOT independently issue the same key. The recipient atomically commits successful consumption, session creation and message acceptance before acknowledgment. Authentication failures do not consume keys. Successful consumption erases the private key. Concurrent reuse cannot create a second session. A duplicate may be recognized by a non-secret replay tombstone but never redelivered or used to reset a ratchet.
 
-**Storage:** The preauth X25519 keypair (and its ML-KEM companion, if PQXDH is active per §3.4.1) is stored in the `prekeys.vault` collection (§17.9), encrypted at rest. Both keys rotate together — rotating the X25519 preauth key automatically invalidates and replaces the ML-KEM key. After rotation, the old private keys are zeroed immediately. Peers who cached the old public key will fail X3DH init and automatically re-fetch the new key from the network map.
+Signed/last-resort keys initially rotate every 7 days. Old unconsumed keys may remain decrypt-only for at most 7 additional days for queued initiations. Bundles expire after 7 days. Retain consumption/issuance tombstones through the whole acceptance interval. Consumed private keys get no grace period. Expired initiations require a new bundle. Shorter intervals are allowed; extensions require profile review.
 
-**Multiple acquisition paths with different trust weights:**
+Prefer one-time KEM keys. Exhaustion permits a valid signed last-resort key with weaker compromise isolation until erasure, never classical fallback. Gossip caches cannot mint or independently allocate one-time keys. Replenish in bounded batches over privacy-preserving discovery paths; lookup/depletion metadata remains a risk. Authenticate identity changes through existing WoT/quarantine rules. Bound pending sessions, allocation and verification work globally and per peer. At capacity reject work without discarding consumption state. Restored devices invalidate outstanding publication and pending sessions unless monotonic state is proven current.
 
-| Path | Trust signal |
-|------|--------------|
-| From network map | Minimum — stranger contact |
-| From trusted mutual friend | Higher — WoT-mediated introduction |
-| Exchanged during in-person pairing | Maximum — direct verification |
+#### 7.0.2 PQXDH Session Initiation (first message to a peer)
 
-**Rotation model — arbitrary and aperiodic:**
-- No schedule, no timer, no predictable trigger
-- **Manual rotation is a first-class, low-friction UI action** — accessible from the profile screen, no warning or confirmation dialog
-- "I'm bored, rotating my key for funsies" is valid and encouraged — arbitrary rotation events carry zero information
+Execute §3.4.1 through the selected reviewed implementation, preserving all required DH/KEM inputs, signatures, KDF, encodings and associated data. Validate recipient device, identity binding, suite, expiry and prekey IDs before content is sent. Reject malformed keys and all-zero X25519 results using validated library APIs.
 
-For X3DH session initiation, the preauth key serves the role of the signed prekey (SPK). The traditional Signal OPK (one-time prekey) pool is not used — the single preauth key model avoids the metadata leakage inherent in pool depletion tracking.
+The logical init contains version, suite, ephemeral key, protocol identity information, selected prekey IDs, KEM ciphertext and first authenticated ciphertext. Enclose it within §7.2 Step 4; the bespoke encrypted-IK subprotocol is retired. Later static-recipient-key compromise can reveal recorded outer headers and signatures. Inner session encryption protects content; metadata FS is a separate property.
 
-#### 7.0.2 X3DH Session Initiation (first message to a peer)
+Piggyback the first message through the construction's authenticated initialization path. Request content stays quarantined under existing UX/attachment/authorization policy. Possession of an observed key is not real-world identity verification. No valid hybrid bundle means queue or incompatibility, never static-only content encryption.
 
-Alice fetches Bob's preauth key (and verifies it if available via a trusted path), then:
+Persist consumption, session state and message deduplication atomically. Invalid cryptographic input causes no distinguishing network response. Retransmit immutable ciphertext; fresh encryption needs fresh ephemeral/KEM randomness and a valid bundle. Do not reuse initial state for different plaintext.
 
-```
-EK_A = generate_x25519_keypair()          // ephemeral key, discarded after
+#### 7.0.3 Continuous Hybrid Ratchet
 
-DH1 = X25519(IK_A_secret,  preauth_B_pub)
-DH2 = X25519(EK_A_secret,  IK_B_pub)
-DH3 = X25519(EK_A_secret,  preauth_B_pub)
+Adopt Signal's Triple Ratchet: classical Double Ratchet plus SPQR using the published ML-KEM Braid SCKA construction. Sources: [Double Ratchet specification §§5–7](https://signal.org/docs/specifications/doubleratchet/) and [SPQR implementation](https://github.com/signalapp/SparsePostQuantumRatchet). Freeze the exact upstream revision and dependencies in the release profile (§21.6.4); a moving URL is not a release pin.
 
-master_secret = HKDF-SHA256(
-    salt = 0x00 * 32,
-    ikm  = 0xFF * 32 || DH1 || DH2 || DH3,
-    info = "MeshInfinity_X3DH_v1",
-    len  = 32
-)
-```
+Initialize both components from independently domain-separated PQXDH outputs through the published integration procedure. Every application key uses the specified hybrid combination of classical and PQ component keys. Classical-only continuation, optional SPQR and ad hoc periodic KEM mixing are prohibited. Fix KDF labels, SCKA parameters, AEAD/nonce construction, header serialization and AD in the reviewed implementation profile with cross-implementation vectors.
 
-Alice then initialises the Double Ratchet as sender (`master_secret`, `preauth_B_pub` as initial ratchet pub).
+Authenticate all classical/SPQR headers and required session/direction/suite context. Application MACs, if retained, use separately labelled subkeys; raw ratchet keys cannot be reused across MAC and AEAD. Erase consumed secrets. Persist advanced sending state and immutable ciphertext atomically before transmission. Retries resend those bytes. Restored send state requires a fresh session.
 
-**Header — `ik_pub` is encrypted, not transmitted in plaintext:**
+Bound skipped keys to 1,000 total per session and 7 days. The implementation profile also fixes SCKA epoch, fragment, memory and work limits before allocation. Invalid ciphertext cannot commit state. Excess gaps require new agreement. Test loss, duplication, reordering, simultaneous initiation, fragment truncation, restart and restore.
 
-An observer who sees multiple X3DH init messages with the same `ik_pub` can correlate them as all originating from the same sender, burning the sender's identity and potentially their relationship with the recipient. To prevent this, `ik_pub` is encrypted before inclusion in the header:
+Symmetric advancement protects erased past keys. Quantum-resistant PCS requires fresh uncompromised SCKA contributions and progress, not just receipt of any message. Classical healing also requires fresh honest entropy after compromise ends. Persistent compromise, one-way stalled exchanges and retained plaintext prevent stronger claims. Track stalled PQ progress and disclose actual security state; never silently downgrade.
 
-```
-// Encrypt ik_pub using AEAD — provides both confidentiality and authenticity
-ik_enc_shared = X25519(EK_A_secret, preauth_B_pub)
-ik_enc_key = HKDF-SHA256(
-    salt = 0x00 * 32,
-    ikm  = ik_enc_shared,
-    info = "MeshInfinity_X3DH_ik_enc_v1",
-    len  = 32
-)
-ik_enc_nonce = HKDF-SHA256(
-    salt = 0x00 * 32,
-    ikm  = ik_enc_shared,
-    info = "MeshInfinity_X3DH_ik_nonce_v1",
-    len  = 12
-)
-encrypted_ik_pub = ChaCha20Poly1305_Encrypt(ik_enc_key, ik_enc_nonce, IK_A_pub)
-// CRITICAL: Result is EXACTLY 48 bytes on the wire:
-//   32 bytes ChaCha20 ciphertext (same length as plaintext Ed25519 pubkey)
-//   16 bytes Poly1305 auth tag (appended, no separator)
-// Receivers MUST reject encrypted_ik_pub ≠ 48 bytes.
-// Common mistake: treating the tag as separate or variable-length.
+#### 7.0.4 Group Encryption — MLS Content Epochs
 
-X3dhInitHeader { eph_pub: EK_A_pub, encrypted_ik_pub: [u8; 48] }
-```
-
-**Why AEAD instead of XOR:** Simple XOR encryption is deterministic — given the same `ik_enc_key` and known plaintext structure (32-byte Ed25519 public key), an observer can perform statistical analysis across multiple sessions to the same recipient. AEAD (ChaCha20-Poly1305) adds both a pseudorandom keystream and an authentication tag, making sessions unlinkable and tamper-evident. The 16-byte auth tag overhead is negligible.
-
-Bob decrypts `encrypted_ik_pub` using the same DH with his preauth secret, verifies the auth tag, reproduces `master_secret`, and initialises the ratchet as receiver. An observer sees only `eph_pub` (random, unique per session) and a 48-byte authenticated ciphertext. Multiple sessions from Alice to Bob are not correlatable by any external observer. A tampered `encrypted_ik_pub` fails the auth tag check, immediately signaling an active MITM attempt.
-
-#### 7.0.3 Double Ratchet
-
-After X3DH the session key advances with every message:
-
-```
-// KDF chain (symmetric ratchet -- advances per message)
-msg_key       = HMAC-SHA256(chain_key, 0x01)
-new_chain_key = HMAC-SHA256(chain_key, 0x02)
-
-// Root key ratchet (DH step -- triggered by each new DH ratchet public key received)
-(new_root_key, new_chain_key) = HKDF-SHA256(
-    salt = root_key,
-    ikm  = X25519(my_ratchet_secret, their_new_ratchet_pub),
-    info = "MeshInfinity_DR_v1",
-    len  = 64                         // first 32: new root; last 32: new chain key
-)
-
-// Message key expansion (key + nonce for AEAD)
-keys       = HKDF-SHA256(salt=0*32, ikm=msg_key, info="MeshInfinity_MK_v1", len=76)
-cipher_key = keys[0..32]
-nonce      = keys[32..44]             // 12 bytes for ChaCha20-Poly1305
-```
-
-The `msg_key` derived here is what Step 2 below uses as `session_key`. Out-of-order delivery is handled by caching up to 1,000 skipped message keys indexed by `(ratchet_pub, msg_number)`.
-
-#### 7.0.4 Group Encryption — Sender Keys
-
-Group chats use **Signal Sender Keys** rather than a static group channel key:
-
-- Each member has a per-group **Sender Key**: `(chain_key: [u8; 32], iteration: u32, signing_key: Ed25519)`
-- On joining, the new member's Sender Key is distributed to each existing member via individual X3DH-encrypted direct messages (the same X3DH path as §7.0 above)
-- Group messages are encrypted with `msg_key` from a single KDF_CK step on the sender's chain — one encryption, decryptable by all members who hold the sender's current chain state
-- Member departure triggers Sender Key rekeying: the admin distributes new Sender Keys to all remaining members; the departed member's key is discarded
-
-**Scalability caveat — O(n) distribution cost:** Sender Key distribution on join or rekeying requires one individually encrypted message per group member. For a group of N members, joining costs O(N) messages. This is acceptable for groups under ~50 members; for larger groups it becomes a meaningful coordination burden. A subgroup key distribution tree (O(log N) messages per hop) is explicitly **out of scope for this spec revision**. The normative v1 decision is:
-
-- soft warning at 50 members,
-- default hard cap at 300 members,
-- operators may lower but not raise the hard cap without a separate protocol revision,
-- large-group optimisation is not implied by the current Sender Key design and must not be assumed by implementations.
-
----
+Trusted groups use MLS membership/content epochs (§8.7); Garden uses separate MLS groups and archival policy (§10.2.5). The Sender Keys plus static shared outer key construction is retired. Legacy Sender Key identifiers do not authorize exporting epoch secrets or private signing keys. Retain the 50-member soft warning and 300-member hard cap; measure actual tree-update costs. Discovery keys MUST NOT derive content keys.
 
 ### 7.2 Four-Layer Encryption
 
@@ -5250,20 +5145,17 @@ Input: plaintext message
 
 Step 1 -- Inner authentication:
   For trusted-channel messages:
-    mac = HMAC-SHA256(ratchet_msg_key, plaintext)  <-- deniable; both parties can produce
+    mac = HMAC-SHA256(labelled_application_mac_subkey, plaintext)  <-- deniable; both parties can produce
     authenticated = plaintext || mac
   For untrusted messages:
     sig = Ed25519_Sign(sender_privkey, plaintext)
     authenticated = plaintext || sig
 
-Step 2 -- Trust-channel encryption (trusted peers only):
-  If mutual_trust:
-    // session_key is the cipher_key derived from the Double Ratchet msg_key (§7.0)
-    // nonce is the 12-byte nonce derived from the same msg_key expansion
-    trust_encrypted = ChaCha20Poly1305_Encrypt(session_key, nonce, authenticated)
-    payload = dr_header || trust_encrypted   // dr_header carries ratchet_pub, prev_n, msg_n
-  Else:
-    payload = authenticated
+Step 2 -- Hybrid session encryption (all direct messages, including requests):
+  require authenticated_v1_6_session_or_valid_PQXDH_init
+  payload = HybridSession_Encrypt(authenticated, bound_context)
+  // Classical + SPQR headers, keys, nonces and AD follow §7.0.3.
+  // Queue/fail closed if unavailable; never skip this layer.
 
 Step 3 -- Outer signing (sender identity verification, inside Step 4):
   // signed by the relationship-specific mask key for this recipient
@@ -5288,7 +5180,7 @@ Step 4 -- Recipient encryption:
   shared = X25519(ephemeral_secret, recipient_x25519_public)
   message_key = HKDF-SHA256(shared, salt=ephemeral_public, info="meshinfinity-message-v1")
   // Deterministic nonce — derived from shared material + context type, not random
-  // Prevents nonce reuse on retry (same message_key + same ephemeral = same nonce)
+  // Retries resend identical ciphertext; fresh encryption requires fresh ephemeral keys
   // Context type provides domain separation across message types
   nonce = HKDF-SHA256(shared, salt=ephemeral_public,
                       info="meshinfinity-nonce-v1-" || context_type)[0..12]
@@ -5302,7 +5194,7 @@ Step 4 -- Recipient encryption:
 
 **Step 3 — Sender identity verification (recipient-side only):** After Step 4 unwrapping, the recipient verifies the Ed25519 signature against the relationship-specific mask key for this sender. This is visible ONLY to the recipient — it is inside Step 4's encryption. It is NOT for relay node authentication. A mismatched key signals tampering or wrong sender identity.
 
-**Step 2 — Trust-channel decryption:** Double Ratchet decryption. Only succeeds if both parties have correct ratchet state.
+**Step 2 — Hybrid session decryption:** Use §7.0.3 for trusted messages and requests; commit state only after authentication.
 
 **Step 1 — Content integrity verification:** HMAC verification. A mismatch here means the plaintext was tampered with after outer layers were intact. This is a critical security event — notify the trusted peer immediately.
 
@@ -5313,10 +5205,10 @@ Step 4 -- Recipient encryption:
 | Property | Mechanism |
 |----------|-----------|
 | Sender authenticity (to recipient) | Inner HMAC with ratchet key (Step 1) — deniable; both parties can produce |
-| Authenticated key agreement | X3DH (§7.0): both IK keys contribute; ik_pub encrypted in header; preauth key verified before first message |
-| Sender correlation resistance | ik_pub encrypted in X3DH header — external observer cannot correlate multiple sessions to same sender |
+| Authenticated key agreement | PQXDH with authenticated device/identity binding; identity authentication remains classical |
+| Sender correlation resistance | Headers enclosed by Step 4; traffic analysis and later static-key compromise remain metadata risks |
 | Per-message forward secrecy | Double Ratchet KDF chain: each message advances the chain; old keys deleted |
-| Break-in recovery | DH ratchet step on every inbound ratchet key; future messages use fresh DH material |
+| Break-in recovery | Requires fresh uncompromised classical/SCKA progress; persistent compromise or stalled progress prevents healing |
 | Trust channel privacy | Step 2 Double Ratchet encryption hides content from any party without ratchet state |
 | Sender identity verification | Step 3 Ed25519 signature by relationship-specific mask key — recipient verifies post-decryption; invisible to all others |
 | Relationship privacy | Step 3 uses relationship-specific mask key, not public mask key; third parties cannot observe the signing identity |
@@ -5367,10 +5259,10 @@ At counter 2^48 (hard threshold):           session STALLS — no further data s
      it sends a rekey handshake message via the Double Ratchet channel
      (which uses the MESSAGING session, not the stalled STREAMING session —
      these are independent per §7.4). The rekey handshake is a lightweight
-     key exchange, not a full X3DH.
+     key exchange, not a full PQXDH.
   -> on rekey success: session resumes with fresh counter from 0; queued data sent
   -> on stall timeout (30 seconds without successful rekey): session is DROPPED.
-     A fresh X3DH handshake and new session key are required to resume.
+     A fresh PQXDH handshake and new session key are required to resume.
      The user sees: "Session expired — reconnecting..." followed by automatic
      re-establishment. Queued data is re-sent on the new session.
 ```
@@ -5385,13 +5277,7 @@ The session never sends past 2^48. If the rekey handshake fails at the hard thre
 
 ### 7.5 Key Ratcheting
 
-The Double Ratchet (§7.0) is the ratcheting mechanism for chat messages. It advances automatically with every message — no timer, no message-count threshold. Properties:
-
-- **Per-message forward secrecy**: every message uses a unique `msg_key` derived by advancing the KDF chain; the chain key from step N cannot recover step N-1
-- **Break-in recovery**: the DH ratchet step, triggered on each inbound ratchet key change, mixes fresh Diffie-Hellman output into the root key; an adversary who captured a chain key cannot predict future chain keys after the next DH step
-- **No re-handshake required**: the ratchet is self-healing; a missed DH ratchet step is caught up automatically on the next received message carrying a new ratchet public key
-
-For streaming sessions (§7.3), rekeying is counter- and time-bounded as specified above.
+All direct messages use §7.0.3 regardless of trust. Per-message symmetric advancement gives past-key separation; fresh classical/PQ contributions provide conditional recovery. Receiving a message alone does not establish healing. Streams retain their separate counter/time limits; classical WireGuard rekeying is not continuous PQ ratcheting for streams.
 
 ### 7.6 Reconnect and Sync
 
@@ -5428,7 +5314,7 @@ This section specifies the complete trust model — how peers are paired, how tr
 - **§8.4 Mutual Trust Promotion** — cryptographic escrow for simultaneous private profile exchange
 - **§8.5 Web of Trust** — endorsement model, propagation floor, safety number verification
 - **§8.6 Trust Revocation** — three complementary mechanisms
-- **§8.7 Trusted Groups** — Sender Key encryption, superset ring model, Group-as-LAN
+- **§8.7 Trusted Groups** — MLS content epochs, committed member removal, Group-as-LAN
 - **§8.8 ACL / Firewall Model** — resource access independent of identity disclosure
 - **§8.9 Network Type Taxonomy** — Private / Closed / Open / Public with transition rules
 - **§8.10 Group Governance** — admin vs quorum actions, degraded operation
@@ -5454,7 +5340,7 @@ Mesh Infinity uses an **8-level trust model** divided into two tiers. The lower 
 
 | Level | Name | Description |
 |-------|------|-------------|
-| 6 | `Trusted` | Entry trusted. Private channel established via X3DH (§7.0), private profile shared via cryptographic escrow (§8.4). Full messaging features enabled. |
+| 6 | `Trusted` | Entry trusted. Private channel established via PQXDH (§7.0), private profile shared via cryptographic escrow (§8.4). Full messaging features enabled. |
 | 7 | `HighlyTrusted` | Top trusted below InnerCircle. Exit node eligibility, elevated capabilities. |
 | 8 | `InnerCircle` | Maximum trust. Required for Friend-Disavowed votes and Compromised declarations. |
 
@@ -5696,9 +5582,9 @@ Promoting a peer to Level 6 (Trusted) triggers a mutual trust promotion protocol
 
 **Cryptographic escrow for simultaneous profile exchange:**
 
-**Two-phase commit protocol — profile escrow is NOT piggybacked on X3DH:**
+**Two-phase commit protocol — profile escrow is NOT piggybacked on PQXDH:**
 
-The profile exchange uses a strict two-phase commit separate from the X3DH handshake. Alice's private profile is never transmitted until both sides have independently committed:
+The profile exchange uses a strict two-phase commit separate from the PQXDH handshake. Alice's private profile is never transmitted until both sides have independently committed:
 
 ```
 Phase 1 — Intent exchange (no profile data transmitted):
@@ -5732,8 +5618,8 @@ Phase 1b — Intent acknowledgment:
 
 Phase 2 — Profile exchange (only after BOTH Intents received and not expired):
   Both sides verify they hold each other's Intent AND both are within validity.
-  Alice sends: EncryptedProfile { ciphertext } encrypted to the X3DH session key.
-  Bob sends: EncryptedProfile { ciphertext } encrypted to the X3DH session key.
+  Alice sends: EncryptedProfile { ciphertext } encrypted to the PQXDH session key.
+  Bob sends: EncryptedProfile { ciphertext } encrypted to the PQXDH session key.
   Both verify: SHA-256(received_ciphertext || peer_id || session_nonce) matches Phase 1 commitment.
   Both decrypt. Exchange complete.
 
@@ -5748,7 +5634,7 @@ The commitment hash binds each party to a specific profile version without revea
 
 **Attack mitigations:**
 1. **Profile size inference** — mitigated by profile padding (see below)
-2. **Replay attacks** — commitments include session nonce and timestamp from the X3DH handshake
+2. **Replay attacks** — commitments include session nonce and timestamp from the PQXDH handshake
 3. **Commitment DOS** — rate limit failed exchanges per peer per time window
 
 **Profile padding requirements:**
@@ -5918,7 +5804,7 @@ Groups have **first-class network identities** enabling discovery through the sa
 **Where the analogy breaks down — security boundaries that must hold:**
 - **Trust levels:** You do not trust a group at Level 7 the way you trust a person. Group membership tiers are separate from peer trust levels.
 - **Pairing:** Joining a group is not pairing with it. Network type (Public/Open/Closed/Private per §8.9) governs joining, not bilateral trust negotiation.
-- **Merging:** Groups cannot merge. Two operational groups merging would collapse their security boundaries — separate membership lists, separate Sender Keys, separate governance suddenly mixed. Group merging is **prohibited**.
+- **Merging:** Groups cannot merge. Two operational groups merging would collapse their security boundaries — separate membership lists, separate content epochs, separate governance suddenly mixed. Group merging is **prohibited**.
 - **Profile exchange:** Groups do not exchange private profiles the way trusted peers do.
 
 **Group membership and peer trust are orthogonal.** Being a member of a group does not grant any peer trust level to other members. Trusting someone highly does not automatically grant them group membership.
@@ -5946,104 +5832,39 @@ Visibility rules:
 
 #### 8.7.2 Group Structure
 
-- A group has a **group keypair** (Ed25519 + X25519) generated by the creator
-- The group public key is shared with all members
-- The group private key is held by **admin members** only
-- Group encryption uses **Signal Sender Keys** (§7.0) — each member has a per-group Sender Key distributed to all other members via individual X3DH-encrypted direct messages
+The group retains its discovery identity and governance roles. Admin-held discovery keys MUST NOT derive content keys. Each authorized device has an independent MLS leaf, credential and signing key, plus a separate ring key for Private/Closed groups. Content uses the reviewed MLS policy (§10.2.5), including per-leaf/per-generation AEAD state. There is no independent static group symmetric key.
 
 #### 8.7.3 Membership Management
 
-- The group creator is the initial admin
-- Admins can add members (by sharing the group public key and Sender Key state over a trusted channel), remove non-admin members, and promote other members to admin (subject to quorum confirmation via vote-to-reject — see §8.10)
-- When a member is removed, the **superset ring model** (§8.7.4) handles the transition period and Sender Key rekeying is triggered
-- Member lists are shared only among members; non-members cannot enumerate the group
+The creator remains initial admin. Changes obey §8.10 governance as well as MLS authentication. Anonymous ring membership cannot itself authorize admin actions or multiple votes. Welcome messages target validated device KeyPackages; private signing keys and raw epoch secrets are not shared.
 
-#### 8.7.4 Superset Ring Model for Member Removal
+Membership uses a parent-linked commit log binding group ID, parent epoch/transcript, roster/roles, ring commitment and content epoch. Per-sender counters do not establish total order. MLS does not itself supply Byzantine consensus: competing valid commits on a parent are a fork. Clients stop sending on conflict and reconcile through an authorized governance checkpoint, never arbitrary arrival order or merged secret state. The checkpoint/anti-equivocation protocol is a release gate (§21.6.4).
 
-During the window between member removal and rekeying completing, the departed member remains cryptographically in the ring signature set. The superset ring model handles this:
+#### 8.7.4 Content Epochs for Member Removal
 
-- **First removal:** Content is encrypted for the reduced ring (excluding the removed member). The outer envelope still uses the full superset ring. External observers see no membership change; the removed member cannot read new content.
-- **Second removal before rekeying completes:** Immediate forced rekeying. No third ring is maintained — the computational and storage cost is too high in large groups (200–300 nodes). The forced rekeying creates a clean new ring for all remaining members.
-- Tolerates exactly one pending removal between rekeyings. The superset ring state is ephemeral — it exists only until the next successful rekeying.
-- **Concurrent admin removals:** If two admins simultaneously remove different members, the first removal to be committed (by sequence number in the group's event log) establishes the superset ring. The second removal triggers immediate forced rekeying. Sequence number ordering is deterministic — both admins see the same order after gossip convergence. No tie-breaking is needed because removal messages carry monotonic sequence numbers assigned by the group's Sender Key state.
-- **Superset ring timeout:** Maximum **24 hours** after the first removal. If rekeying has not completed within 24 hours (e.g., admin offline, network partition), automatic forced rekeying is triggered by any online admin. If no admin is online, a standard quorum (51% of non-admin members) can trigger forced rekeying.
-- **Rekeying failure recovery:** If a forced rekeying announcement fails to deliver to some members (offline, unreachable), those members' Sender Key state falls behind. On reconnect, they follow the re-inclusion flow (§8.7.6) — explicit permission from an active member to receive the new Sender Key. This is correct: a member who missed a rekeying must be verified before receiving new key material.
+Accepting an authorized removal proposal enters RekeyPending and stops new application encryption in the old epoch. Removal becomes effective locally only after an authorized MLS Remove+Commit with fresh UpdatePath entropy unavailable to the removed member is durably installed. Encryption state, roster, ring and authority change atomically.
+
+State: Active(e) -> RekeyPending(e, proposal) -> Active(e+1, committed_roster). Invalid commit, timeout, missing authority or fork leaves sends blocked. Unsent plaintext is encrypted only after the new epoch. Offline members catch up before sending. A partitioned member unaware of removal may still send old ciphertext readable by the removed member. Global instantaneous revocation is impossible; UI distinguishes pending, committed and unreachable states.
+
+After installing removal, old-epoch application messages cannot be accepted as current content. Optional history import labels late/pre-removal traffic. Queues cannot relabel old ciphertext. Previously received content cannot be revoked. Superset rings are historical metadata only, never accepted authorization for new traffic. Concurrent/multiple removals follow the same serialized commit procedure without a pending-removal exception.
 
 #### 8.7.5 Scheduled Rekeying
 
-Rekeying triggers:
-1. **Member removal** (existing) — immediate per superset ring model above
-2. **Scheduled interval** — configurable per group, changeable by admin or quorum action. **Default: 7 days.** This periodic rotation bounds the forward secrecy window for Sender Keys — unlike the Double Ratchet (which advances per-message), Sender Keys provide no forward secrecy within a sending chain. The 7-day default ensures that a compromised Sender Key chain_key exposes at most one week of that sender's group messages.
-3. **On-demand** — any admin can trigger rekeying at any time
-
-Old Sender Key state becomes undecryptable after rotation — this limits retrospective exposure if a member's device is later compromised.
+Removal requires a new epoch before further sends. Joins and security-relevant role changes require authenticated transitions. Retain the 7-day default refresh and on-demand admin refresh. Recovery requires fresh uncompromised contributions, not merely a timer. Delete superseded secrets after bounded receive grace; removal has no old-epoch send grace. Plaintext/history copies are unaffected by secret deletion.
 
 #### 8.7.6 Re-Inclusion of Absent Members
 
-When a member has been offline through one or more rekeying events and their Sender Key state has fallen behind the current ratchet:
-
-1. The member reconnects and detects they are behind the ratchet (cannot decrypt current group messages)
-2. The member sends a signed re-inclusion request to the group
-3. Any member with sufficient trust level (admin, or any member if no admin is available) can re-share the current Sender Key state
-4. Re-inclusion is NOT automatic — it requires an active trust decision from at least one member
-5. The requesting member's identity is verified before re-inclusion
-
-Re-inclusion grants access to **new messages only** — not messages sent during the absence. The ratchet gap is permanent by design. This ensures that a compromised device that was offline during the compromise window cannot retroactively access messages sent in that window.
+An eligible device may replay verified commits when retained state permits. Otherwise governance authorizes a fresh KeyPackage/Welcome and epoch. Verify identity and current eligibility. Removed devices cannot regain access by informal key re-sharing. Never export raw MLS secrets to bypass catch-up. Re-inclusion gives no history by default; separate archival grants follow §10.2.5.
 
 #### 8.7.7 Group Message Delivery
 
-Group messages use the four-layer scheme (§7.2) with two modifications: **Step 4 uses the group's shared symmetric key**, and for Private/Closed groups, **Step 5 applies the AOS ring signature** (§3.5.2).
+MLS PrivateMessage supplies the first four layers' intent: content authentication, inner sender attribution, encryption and group-recipient confidentiality. It replaces nested Sender Keys/static group AEAD. Optional Step 5 remains ring authentication.
 
-**Group key derivation and distribution:**
-- The group has a shared symmetric key derived from the group's X25519 keypair
-- The group key is distributed to each member via individual X3DH-encrypted direct messages on join (same channel as Sender Key distribution)
-- The nonce is derived deterministically from the Sender Key ratchet state to prevent reuse
+Require Active(current_epoch) and a verified governance checkpoint. Call MLS_Protect on plaintext and bound application context, then atomically persist advanced state and immutable ciphertext. Private/Closed groups apply MI-AOS-R255-1 over that complete envelope; Open/Public groups use MLS attribution.
 
-**Complete group message encryption flow (Private/Closed groups):**
+Context binds group, suite, epoch, message type and roster checkpoint. Recipients verify the optional ring, MLS authentication, current membership and application authority. Relay checks are not substitutes for MLS. Do not expose the MLS sender leaf in custom plaintext metadata. Use MLS nonce/generation handling; no independently shared key with sender-chosen nonce is permitted.
 
-```
-Input: plaintext group message
-
-Step 1 — Inner authentication:
-  mac = HMAC-SHA256(sender_key_msg_key, plaintext)
-  authenticated = plaintext || mac
-
-Step 2 — Sender Key encryption:
-  encrypted = SenderKey_Encrypt(sender_chain_key, authenticated)
-
-Step 3 — Sender identity (inside encryption):
-  outer_sig = Ed25519_Sign(sender_mask_privkey, encrypted)
-  signed = encrypted || outer_sig
-
-Step 4 — Group encryption:
-  group_encrypted = ChaCha20Poly1305_Encrypt(group_symmetric_key, nonce, signed)
-
-Step 5 — Ring signature (Private/Closed groups only):
-  ring = current_member_public_key_set
-  ring_sig = AOS_RingSign(sender_privkey, ring, group_encrypted)
-  final = group_encrypted || ring_sig
-```
-
-**Step 5 is the ring signature integration point.** The ring signature is applied to the Step 4 output (the group-encrypted blob). This means:
-- An external observer (routing node) sees `group_encrypted || ring_sig` — they can verify that *some* group member signed this blob, but cannot determine which member (unlinkable AOS property).
-- A group member decrypts Step 4 to reveal `signed`, then verifies the Ed25519 signature in Step 3 to identify the actual sender. **The sender is attributable inside the encryption but anonymous outside it.**
-- For **Open/Public groups** (§8.9): Step 5 is skipped — the Ed25519 signature in Step 3 provides attribution directly, and ring signatures are unnecessary since membership is not secret.
-
-**Verification flow (receiver):**
-```
-1. Verify ring_sig against the member public key set → proves a member sent it
-2. Decrypt Step 4 with group_symmetric_key → reveals signed payload
-3. Verify Ed25519 signature (Step 3) → identifies the actual sender
-4. Decrypt Step 2 with Sender Key → reveals authenticated plaintext
-5. Verify HMAC (Step 1) → confirms content integrity
-```
-
-**Security properties preserved:**
-- Sender identity (Step 3) visible only to group members who hold the group key
-- Ring signature (Step 5) proves group membership to routing nodes without revealing sender
-- Routing nodes see only an encrypted blob + unlinkable ring signature
-- Group key rotation (on member removal) ensures departed members cannot read new messages
-- **Ring size metadata:** The ring signature size is proportional to `|member_public_key_set|`. A routing node can infer approximate group size from the signature length, and track membership changes over time by observing size deltas. This is an accepted tradeoff — ring signatures require the full member set by construction. For groups where size itself is sensitive, consider maintaining a fixed ring size (e.g., always pad to 32 members with dummy keys).
+Devices own independent durable leaf state; cloned backups rejoin instead of reusing generations. Retransmissions reuse identical ciphertext. Revoke group-scoped credentials on the same committed transition. Ring sizes, pseudonymous rosters and MLS group/epoch metadata can disclose activity and membership changes; outer ring authentication does not make transitions invisible.
 
 #### 8.7.8 Group Features
 
@@ -6685,7 +6506,7 @@ The UI MUST NOT collapse `Queued`, `Deposited`, or `Sent` into `Delivered`. For 
 
 Group chats using trusted groups (§8.7):
 
-- Messages are encrypted using Signal Sender Keys (§7.0) with Step 4 using the group's shared symmetric key (§8.7)
+- Messages use MLS PrivateMessage and committed content epochs (§7.0.4, §8.7); there is no static shared outer key.
 - Group admin controls: add/remove members, rename, set avatar, pin messages
 - Group invites are delivered as direct messages to the invited peer
 - Delivery receipts are per-member; the sender sees delivered/read status per group member (opt-out, enabled by default)
@@ -7227,31 +7048,24 @@ Bot messages are visually distinguished in the UI with a bot badge. Bots cannot 
 
 #### 10.2.5 Message History
 
-Message history is encrypted using **MLS (Messaging Layer Security, RFC 9420)**. MLS provides cryptographic group key agreement with O(log n) complexity, per-message forward secrecy, and post-compromise security. It is the correct primitive for Garden's history access requirements.
+Each Garden channel remains an MLS group, with a separate leaf per member device. Use MLS PrivateMessage for application data and verified Proposal/Commit/Welcome processing for membership. The cluster delivers protocol messages but never invents membership secrets.
 
-**Signature scheme requirement — SUF-CMA mandatory:** MLS's TreeKEM security proof (RFC 9420) requires a **strongly unforgeable (SUF-CMA)** signature scheme. Ed25519 satisfies this. ECDSA does not — it is only EUF-CMA, and an adversary can mangle ECDSA signature data in MLS transcripts to violate TreeKEM's consistency property. **Ed25519 must not be substituted with ECDSA for MLS without re-evaluating the security proof.** This constraint applies to all MLS group operations in Garden.
+**Suite policy:** Mesh initially selects MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 (0x0001) from RFC 9420. Ed25519 is a Mesh policy choice; RFC 9420 also defines ECDSA suites and does not categorically prohibit them. [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html). This initial suite is classical, and MUST NOT be advertised as PQ group confidentiality or PQ PCS. The stricter §2.0 deployment profile MUST disable safety-critical group content where quantum-resistant group protection is required until an independently reviewed hybrid MLS profile is available. Hybrid direct messaging remains available.
 
-**MLS fundamentals in Garden context:**
-- Each Garden channel is an MLS group
-- The MLS ratchet tree has one leaf per member
-- Key material advances with each epoch (member add/remove)
-- Messages are encrypted under the epoch key current at send time
+Bind MLS protocol version, suite, extensions and credential capabilities into authenticated group creation and membership policy. Unknown security-critical extensions and unsupported suites fail closed. Migration creates an explicitly authorized successor group with fresh keys and bound old/new group identities, never reinterpretation of old ciphertext. A future PQ/hybrid MLS draft is not a production standard by assertion; pin its exact revision, reviewed implementation and interoperability evidence before activation. Suite agility must not become downgrade permission.
 
-**History access policy (per-channel admin setting, mirroring Discord's "hide history" toggle):**
+**Separate archive hierarchy:** Live MLS secrets MUST be erased after protocol-defined use and a bounded receive window; old MLS epoch secrets, exporters and sender ratchet state MUST NOT be retained as history keys. A client authorized for archiving creates an independent random 256-bit archive key per channel/archive segment, separately from MLS. Each archived object uses a fresh random 256-bit data key, authenticated content/context, and an AEAD-wrapped data key under the segment key. Use a vetted HPKE/AEAD library with specified nonce management, unique object IDs, and AD binding Garden/channel/segment/object/version. Archive encryption is a separate implementation profile and review gate (§21.6.4).
 
-```
-HistoryAccess { Full | FromJoin | None }
-```
+Clients produce archive ciphertext and recipient grants; servers store only those objects. Segment keys are wrapped to explicitly authorized history-reader devices via reviewed HPKE or an authenticated hybrid direct session. Do not reuse an MLS leaf private key as an ad hoc wrapping key. Grants bind recipient device, channel, exact segment range, grant version and authority. No all-time root from which future segment keys can be derived is handed to readers. Rotate the segment with independent randomness on removal and history-policy boundaries; stop archive writes until the transition is committed. Future keys go only to the reduced authorized roster.
 
-- `Full` — new members receive all past epoch keys on join. They can decrypt the complete channel history.
-- `FromJoin` — new members receive only the current epoch key. They can read messages from their join date forward. History before joining is inaccessible.
-- `None` — no history delivered on join. Only live messages while connected.
+HistoryAccess retains Full | FromJoin | None:
+- Full: grant separately encrypted retained archive segments allowed by policy; never distribute old MLS epoch keys.
+- FromJoin: grant only segments starting at the committed join boundary; split segments at joins so a grant cannot expose earlier objects.
+- None: no server archive access is granted; live delivery still uses MLS. This cannot stop a recipient keeping local plaintext.
 
-**Member removal and forward secrecy:** When a member is removed, MLS performs a key rotation — the epoch advances, new key material is generated excluding the removed member. The removed member retains the epoch keys for messages they received; they cannot derive future epoch keys. Re-encryption of historical messages is not performed (expensive, optional, admin-triggered for extreme cases).
+On join, a current authorized client supplies MLS Welcome plus separately authorized archive grants, which may be paginated by the cluster. If no authorized grant issuer is available, history stays unavailable rather than revealing secrets to the server. Removal stops new live/archival grants after its committed epoch; it cannot revoke keys, plaintext or ciphertext already copied by a former member. Re-encrypting stored history cannot erase old copies.
 
-**New member key distribution:** On join, the Garden cluster delivers encrypted epoch key bundles to the new member. For `Full` history access, this is a potentially large bundle of historical epoch keys — delivery is paginated. Each epoch key bundle is encrypted to the new member's MLS leaf key.
-
-**Server blindness:** The Garden cluster stores MLS ciphertext blobs. The cluster nodes do not hold MLS epoch keys unless they are acting as a member with their own identity (e.g., a bot registered to the Garden). The keys live only in connected member clients.
+Retained archives intentionally weaken historical compromise containment for their holders; disclose that archive-key/device compromise may reveal granted retained history. Live MLS FS and archive retention are separate claims. Bound skipped live keys to 7 days/1,000 per group device by default and honor the stricter removal cutoff in §8.7. Archive retention never extends this window. Bots are explicit member identities with scoped leaves/history grants; a server-hosted bot makes its granted content available to that host.
 
 #### 10.2.6 Clustering and Load Balancing
 
@@ -7303,16 +7117,16 @@ A seized Garden node should reveal as little as possible. This section specifies
 | Data | Seized node has | Reasoning |
 |------|----------------|-----------|
 | Message content | Encrypted blobs only | Encrypted under MLS epoch keys held by clients |
-| Sender identity | Not present | Sealed sender — sender ID is inside the MLS ciphertext |
-| Precise message timestamps | Not present | Replaced with 24-hour UTC bucket at the server boundary |
-| Member roster | Encrypted | Membership data encrypted under Garden community key |
-| Channel structure | Encrypted | Channel metadata encrypted under Garden community key |
+| Sender identity | Absent from stored application envelope; potentially inferable live | MLS hides payload identity, not source connections, timing or authorization metadata |
+| Precise message timestamps | Coarsened in application records; observable live | Network arrival time and incidental host logs remain visible to a live observer |
+| Member roster | Encrypted at rest; available to a live host holding community key | Shamir reconstruction does not protect runtime plaintext |
+| Channel structure | Encrypted at rest; available to a live host holding community key | Community-key compromise exposes this metadata, not client-only MLS secrets |
 | Message ordering | Sequence numbers only | Monotonic per-channel, reveals volume not identity |
 | Connections | Current live connections | Members connected at time of seizure are visible at network layer |
 
 ##### 10.2.7.2 Community Key Architecture
 
-The Garden community key is the root of all Garden-level encryption. It must never be persisted to disk in plaintext.
+The Garden community key protects server-managed Garden metadata. It is separate from client-only live MLS and archive keys. It must never be persisted to disk in plaintext.
 
 ```rust
 CommunityKeyModel {
@@ -7332,7 +7146,11 @@ KeySource {
 }
 ```
 
-In a multi-node cluster, the community key is split using Shamir's Secret Sharing across participating nodes. No single node holds the full key. A seized node in a multi-node Garden cannot reconstruct the community key without colluding with enough other nodes to meet the threshold.
+In a multi-node cluster, Shamir shares protect stored/bootstrapping key material only. A node that reconstructs the key holds the complete key while running, as key_in_mem states. A live compromise can recover that key and the metadata it decrypts. A powered-off seizure has threshold protection only if fewer than threshold distinct shares are available and no plaintext keys survive in swap, hibernation, core dumps, snapshots, backups or remanent memory. Several shares on one administrative host are not independent failure domains.
+
+Reconstruction requires authenticated, authorized startup, distinct authenticated shares, protected channels and explicit operator policy; compromise of one node must not automatically authorize peers to send it enough shares. Remove a node by revoking its share and rotating the underlying community key and encrypted metadata, not just resharing the same secret. Existing copies remain exposed.
+
+ExternalHSM is a separate future profile. An HSM that exports the full key, or permits unrestricted decryption to a compromised host, does not meet a stronger claim. Genuine threshold operations require a specified non-reconstructing protocol, access policy and independent review. Do not advertise live-compromise resistance based on the enum alone.
 
 The Garden server's "self" on the mesh is a series of mesh identities controlled by external keys. The Garden community identity is separate from the hosting node's mesh identity. A seized node's mesh identity does not grant access to Garden key material.
 
@@ -7344,7 +7162,9 @@ Message sender identity is encrypted inside the MLS payload — the Garden serve
 - The timestamp bucket
 - The encrypted blob
 
-The server cannot determine who sent any given message. Members' clients decrypt the MLS payload and see the sender identity from within the encryption. This is enforced at the protocol level — messages that include plaintext sender identity in the server-visible envelope are rejected.
+This hides the sender field from application storage but does not prove the server cannot link a submission to an authenticated connection, token, IP address, timing or volume. Reject plaintext sender fields in the envelope; clients identify the sender inside MLS. The default claim is payload sender concealment, not host-unlinkable sealed sender.
+
+A stronger profile requires independently reviewed unlinkable authorization tokens, separation of issuance from redemption, blinded/anonymous submission, replay/spending controls, mix routing and traffic analysis tests. Until that profile is specified and tested, the UI and threat documentation MUST state that a live host may correlate senders. Raft ordering gives crash-fault consistency, not protection from malicious cluster operators or Byzantine equivocation.
 
 ##### 10.2.7.4 Timestamp Coarsening
 
@@ -7353,7 +7173,7 @@ All server-side timestamp records use 24-hour UTC day buckets:
 bucket = floor(unix_timestamp / 86400) * 86400   // midnight UTC
 ```
 
-The precise send timestamp is stored only inside the MLS ciphertext, visible only to Garden members. Within a bucket, message ordering is by sequence number. This prevents correlation of "Alice sent a message at 14:32:07" with network traffic analysis.
+The precise send timestamp is stored only inside the MLS ciphertext, visible only to Garden members. Within a bucket, message ordering is by sequence number. This reduces timestamp precision in retained application records; it does not prevent correlation by a live network or host observer.
 
 UI clients show precise relative timestamps ("3 hours ago", "Yesterday at 2:32 PM") derived from the client-decrypted precise timestamp inside the message — not from server metadata.
 
@@ -8687,7 +8507,7 @@ The node stores the commitment and begins announcing each chunk hash. If a node 
 
 **Level 2 (Trust-gated):** Content and metadata are encrypted with a file key. The file key is distributed through trusted channels to specific peers. Storage nodes hold only encrypted blobs. Best-effort revocability via stop-storing signal — cooperative nodes honor it, but copies already distributed to trusted peers cannot be recalled.
 
-**Level 3 (Group-scoped):** Content and metadata are encrypted with a key distributed through the group key mechanism. Only group members can decrypt. The group can issue a stop-storing signal. Revocability is better than Level 2 because the key distribution is scoped to the group's Sender Key infrastructure.
+**Level 3 (Group-scoped):** Content and metadata are encrypted with a key distributed through the group key mechanism. Only group members can decrypt. The group can issue a stop-storing signal. Revocability is better than Level 2 because the key distribution is scoped to the group's committed membership and archive-grant policy.
 
 **Level 4 (Direct):** Content and metadata are encrypted with a key distributed through a direct trusted-channel message. Only the specific recipient(s) can decrypt. Reliable revocability via stop-storing signal because the distribution is point-to-point and the number of key holders is minimal.
 
@@ -8864,7 +8684,7 @@ Private file sharing delivers files only to intended recipients using the trust 
 
 **Direct transfer to a peer:** Use §11.1 (`FileTransferOffer` → `FileTransferAccept` → chunks). The session key (§7.3) ensures only the paired recipient can decrypt. Files never touch storage nodes.
 
-**Direct transfer to a group:** Same protocol, but the offer is sent to the group channel (§10.1.2). The group's Sender Key (§7.0) encrypts the offer; each group member receives the offer and can accept independently, initiating their own direct transfer session. The file is not broadcast — each recipient fetches independently from the sender.
+**Direct transfer to a group:** Same protocol, but the offer is sent to the group channel (§10.1.2). The current MLS content epoch (§7.0.4) protects the offer; each group member receives the offer and can accept independently, initiating their own direct transfer session. The file is not broadcast — each recipient fetches independently from the sender.
 
 **Shared group file repository:** Groups can maintain a persistent, shared collection of files:
 
@@ -8888,7 +8708,7 @@ GroupFileEntry {
 }
 ```
 
-**File encryption key for group repository entries:** Files in the repository are encrypted with a per-file key (`file_key`). The `file_key` is wrapped with the group's current Sender Key epoch key: `wrapped_key = encrypt(group_epoch_key, file_key)`. The wrapped key is included in the `file_key_hint` field of the `FileManifest` (§11.2.3). When a member fetches the manifest, they unwrap the file key using their copy of the group epoch key. On group rekeying (member removal), existing files remain accessible to members who held the old epoch key; newly uploaded files use the new epoch key.
+**File encryption keys for group repository entries:** Generate an independent random key per file. Distribute an authenticated file-key grant in the current MLS PrivateMessage or through the separate archive-grant hierarchy (§10.2.5). Never export or directly reuse an MLS epoch key as a generic wrapping key. The manifest carries opaque grant references, not raw MLS state. Bind grants to group, file hash, intended devices and committed content/archive epoch. Stop new grants during RekeyPending; new uploads after removal use fresh keys and reduced eligibility. Old holders may retain old keys/files; rewrapping cannot revoke their copies.
 
 Files in a group repository are published to group-scoped distributed storage (§11.2, Level 3) — storage nodes hold only encrypted blobs. Only group members can decrypt. The repository manifest is signed by one or more admins and versioned; members sync it via the group channel on join and on update notifications.
 
@@ -10574,18 +10394,18 @@ Memory locking is not optional -- it is a security requirement on all platforms 
 
 ### 15.2 Ratchet Rotation Policy
 
-The Double Ratchet (§7.0) advances automatically with every message. There is no timer-based or message-count-based rotation threshold. The ratchet is self-healing: a missed DH ratchet step is caught up automatically on the next received message carrying a new ratchet public key.
+The hybrid session follows §7.0.3. Message-key advancement and fresh-entropy recovery are distinct; PQ healing requires SCKA progress after compromise ends. State loss or gaps beyond retention require fresh agreement.
 
 For streaming sessions (§7.3), rekeying is proactive: first attempt at counter 2^44, with escalating retries before the hard threshold at 2^48. Sessions stall rather than send past the threshold.
 
 **Abandoned ratchet state cleanup:**
 
-An X3DH session initiated but never responded to creates pending ratchet state on disk. This accumulates without cleanup. Lifecycle policy:
+An PQXDH session initiated but never responded to creates pending ratchet state on disk. This accumulates without cleanup. Lifecycle policy:
 
 - If vanishing messages is enabled for the conversation: pending ratchet state expires on the same timer as the vanishing messages setting.
-- **Hard cap:** 1 year from initialisation regardless of vanishing messages setting.
-- After cap: pending ratchet state is deleted; the X3DH initiation is treated as failed.
-- A new X3DH initiation is required to establish a session after cleanup.
+- **Hard cap:** 7 days from initialization, and earlier on bundle/session expiry; also enforce bounded global/per-peer pending-state budgets (§7.0.1).
+- After cap: pending ratchet state is deleted; the PQXDH initiation is treated as failed.
+- A new PQXDH initiation is required to establish a session after cleanup.
 
 **Killswitch and ratchet state:**
 
@@ -10608,7 +10428,7 @@ Forward Perfect Secrecy is a cryptographic property -- it applies to data that i
 
 | Data type | PFS applies | Mechanism |
 |-----------|------------|-----------|
-| Message content | Yes | Double Ratchet provides PFS per message |
+| Direct message content, including requests | Yes, subject to erasure | Hybrid session (§7.0.3); retained plaintext/archives are excluded |
 | Private profile data | Yes | Exchanged via encrypted session, covered by session PFS |
 | Trusted-channel communications | Yes | Covered by Double Ratchet PFS |
 | Network map entries | No | Never encrypted to begin with |
@@ -10684,7 +10504,7 @@ Jitter is applied per-flush, not per-message. A flush carries all frames accumul
 5. Hand to WireGuard for encryption.
 6. Obfuscation layer wraps if active (§5.26).
 
-**Synthetic cover traffic generation:** When no real traffic is pending, cover packets are generated at the **same jitter distribution as `Low` priority** (0–250ms uniform random interval). Each cover packet is a full MTU-sized WireGuard payload of cryptographically random bytes, indistinguishable from a real padded frame. This ensures that an observer cannot distinguish idle periods (cover only) from active periods (real + cover) by inter-packet timing analysis — both use the same statistical distribution.
+**Synthetic cover traffic generation:** When no real traffic is pending, cover packets are generated at the **same jitter distribution as `Low` priority** (0–250ms uniform random interval). Each cover packet is a full MTU-sized WireGuard payload of cryptographically random bytes, indistinguishable from a real padded frame. This is a candidate traffic-shaping policy, not a guarantee that idle and active periods are indistinguishable. Aggregate rates, bursts and failure behavior require the empirical evaluation in §5.26; native mixnet cover follows §5.25.
 7. If no real frames pending: generate cover traffic frame (random bytes, path MTU size) and transmit.
 
 
@@ -10949,28 +10769,9 @@ The §10.0.1 `NotificationPriority` mapping is refined for chat to minimize jitt
 
 **"Active conversation" detection:** The Rust backend tracks which `conversation_id` the Flutter UI currently has open (set via `mi_set_active_conversation(id)` FFI call when ThreadScreen mounts, cleared on dispose). Messages for the active conversation receive `High` priority regardless of trust level or group status.
 
-#### 16.9.4 Zero-RTT First Message (Piggybacked X3DH)
+#### 16.9.4 Asynchronous First Message (Piggybacked PQXDH)
 
-The first message to a new peer requires an X3DH key exchange (§7.0.2). In the naive flow, this is two round trips: (1) fetch preauth key, (2) send X3DH init + encrypted message, (3) wait for response confirming session. Signal avoids this by piggybacking the first message on the X3DH init header.
-
-Mesh Infinity does the same:
-
-```
-Alice sends first message to Bob:
-  1. Alice fetches Bob's preauth key (from network map or trusted peer — may already be cached)
-  2. Alice computes X3DH master_secret
-  3. Alice initialises Double Ratchet as sender
-  4. Alice encrypts first message with the ratchet
-  5. Alice sends: X3dhInitHeader + encrypted_first_message  (single packet)
-
-Bob receives:
-  1. Bob decrypts X3DH header, derives master_secret
-  2. Bob initialises Double Ratchet as receiver
-  3. Bob decrypts first message immediately
-  4. Bob's response (if any) completes the ratchet handshake
-```
-
-The first message is deliverable in a **single network round trip** — Alice sends one packet, Bob reads the message. No waiting for Bob's response before Alice's message is readable. If Bob is offline, the piggybacked message is held by S&F (§6.8) and delivered when Bob comes online — Bob still reads it on first receipt without a round-trip exchange.
+A valid cached prekey bundle permits an initial hybrid-encrypted application message without waiting for a recipient response (§7.0.2). Bundle acquisition may require network exchange. Encode/fragment the full PQXDH/Triple Ratchet initiation using the selected transport profile; do not assume it fits one packet. Offline delivery remains subject to prekey validity and bounded retention. This optimization does not bypass one-time consumption, authenticated suite selection or request quarantine.
 
 #### 16.9.5 Conversation Tunnel Prewarming
 
@@ -11020,7 +10821,7 @@ The S&F response is indistinguishable from warmup traffic because both travel th
 
 #### 16.9.8 Mixnet Routing and Chat
 
-The native mixnet tier (§5.25) adds **500ms per hop** of mandatory batching delay. This is correct and necessary for defeating timing correlation attacks. However, **standard chat messages do NOT route through the mixnet tier by default.** The mixnet tier is used when:
+The native mixnet tier (§5.25) adds randomized delay under its tested profile; 500 ms is an initial mean-delay evaluation point, not a fixed delay or guarantee against timing correlation. However, **standard chat messages do NOT route through the mixnet tier by default.** The mixnet tier is used when:
 
 - `ThreatContext::Critical` and the user has explicitly opted into mixnet routing
 - The user has manually selected mixnet routing for a specific conversation
@@ -11223,7 +11024,7 @@ This is the ideal state — the user's own activity actively strengthens the mes
 
 #### 17.0.1 Version Compatibility Strategy
 
-All wire formats, vault collections, and configuration structures follow a **forward-compatible, ignore-unknown** model:
+Non-security application fields may use a forward-compatible ignore-unknown model. **Security exception:** cryptographic profiles, ratchet/vault state, update metadata, permissions, membership epochs and critical extensions MUST reject unsupported mandatory versions/fields. Never drop unknown security state and write the remainder back, lower floors, or reinterpret a newer vault with older code. The following generic compatibility rules apply only outside that exception:
 
 **Wire formats (network map entries, gossip messages, protocol handshakes):**
 - All serialization uses **self-describing format** (JSON for text payloads, length-prefixed fields for binary). Unknown fields in received messages are **silently ignored**, never rejected. A v0.5 node receiving a v1.0 network map entry with a new field (e.g., `post_quantum_prekey`) parses the fields it understands and ignores the rest.
@@ -11234,7 +11035,7 @@ All wire formats, vault collections, and configuration structures follow a **for
 - Schema version is incremented only on **breaking changes** (field removal, type change). Field additions do not increment the schema version — they are ignored by older code via the ignore-unknown rule.
 
 **PQXDH interoperability (§3.4.1):**
-- A v0.5 node (no KEM key) initiating to a v1.0 node (has KEM key): the v1.0 node **accepts the X3DH-only init** because the initiator does not advertise a KEM key. The UI flags the session as classical-only. This is the designed transition behavior — v1.0 nodes reject X3DH-only *only* from peers who also advertise a KEM key (indicating they should be capable of PQXDH but aren't using it).
+- A v1.6 peer rejects classical-only session initiation regardless of advertised capability. Missing PQ metadata cannot authorize fallback. Establish a fresh compatible hybrid session or report incompatibility (§3.4.1).
 
 **Federation bridges (§19.2):**
 - Bridges use **best-effort feature mapping**. If an external platform doesn't support a feature (e.g., Matrix server lacks MSC3381 polls), the bridge falls back to a text representation: `"[Poll] Question: ... Options: ..."`. Missing features never cause bridge failure — they degrade to text.
@@ -11279,7 +11080,7 @@ The architecture must be implementable **consistently across all supported platf
 
    The same logical ABI, capability checks, and authority limits must apply in both modes. A subsystem must not gain broader access merely because it is co-located. Process isolation is therefore a hardening layer, not the thing that makes the design safe.
 
-12. **Isolated workers are optional hardening, not a core dependency.** When a supported platform offers safe process isolation, Mesh Infinity may use isolated workers for risky subsystems. When a platform does not, the same subsystem must still operate securely in-process behind the same narrow boundary. Loss of the worker must fail closed or reduce optional capability, never weaken core guarantees.
+12. **Executable third-party plugin isolation is mandatory.** Android/Linux/macOS/Windows MUST enforce §18.1 OS-isolated workers. If that boundary is unavailable or fails, disable executable plugins; do not fall back in-process. Other built-in subsystems retain their separately specified platform policy.
 
 **FFI model:** Rust exposes a defined FFI surface. Flutter calls into Rust for all operations. Rust calls into Flutter only to deliver display-safe data for rendering. The FFI surface is the security boundary.
 
@@ -11474,9 +11275,9 @@ backend/
     signing.rs     -- message signing and verification helpers
     zkp.rs         -- Sigma protocol, ring signature primitives
     lib.rs         -- SecureBytes wrapper, key material zeroization
-    x3dh.rs        -- X3DH session initiation
+    x3dh.rs        -- PQXDH session initiation
     double_ratchet.rs -- Double Ratchet implementation
-    signal_session.rs -- Combined X3DH + DR session manager
+    signal_session.rs -- Combined PQXDH + DR session manager
     prekeys.rs     -- Pre-key bundle management and rotation
     message_crypto.rs -- Four-layer message encryption/decryption
     pfs.rs         -- Forward secrecy utilities
@@ -11573,7 +11374,7 @@ Everything else belongs in the backend:
 - **`backend/crypto/`** — all cryptographic operations.
 - **`backend/routing/`** — routing table, announcements, store-and-forward.
 - **`backend/messaging/`** — message construction, encryption, delivery.
-- **`backend/groups/`** — group lifecycle, Sender Key management, governance.
+- **`backend/groups/`** — group lifecycle, MLS epoch management, governance.
 - **`backend/network/`** — gossip, network map, threat context.
 - **`backend/identity/`** — identity lifecycle, PIN, killswitch.
 
@@ -12086,58 +11887,25 @@ Compromise of one collection file does not expose others (different derived keys
 
 ### 17.10 Mesh-Delivered Updates
 
-Updates are delivered over the mesh itself -- signed by the project's release keypair, verifiable without a central server, and distributed via the same store-and-forward and distributed storage infrastructure used for everything else.
+Core and executable-plugin updates use **TUF 1.0.36 verification semantics**, or a later explicitly reviewed/pinned revision. Retain mesh distribution, release channels and artifact types; mirrors, gossip, file imports and S&F are all untrusted delivery. A publisher signature and timestamp alone are insufficient. Reference: [TUF specification](https://theupdateframework.github.io/specification/latest/).
 
-**Release objects:**
+**Trust roles:** Ship a pinned root with at least 2-of-3 independently held offline root keys. Separate targets, snapshot and short-lived timestamp roles; scope plugin publisher delegations to exact plugin namespaces. Signed targets bind artifact hash/length, platform, channel, monotonically ordered release number, ABI, permission manifest, SBOM/provenance hashes and security floor. Publisher author signatures remain provenance in addition to repository/delegation authorization. WoT endorsement cannot replace that authorization.
 
-```rust
-ReleaseManifest {
-    release_id:        [u8; 32],      // SHA-256 of canonical manifest bytes
-    version:           String,        // semantic version
-    channel:           ReleaseChannel, // stable | beta | nightly
-    published_at:      u64,
-    min_supported_from: String,       // rollback floor for secure upgrade path
-    artifacts:         Vec<ReleaseArtifact>,
-    bootstrap_manifest: Option<BootstrapManifestRef>, // optional updated §5.27 bootstrap descriptor set
-    notes_hash:        [u8; 32],      // release notes content hash
-    signatures:        Vec<ReleaseSignature>,
-}
+**Client verification:** Use a maintained TUF verifier for complete root, timestamp, snapshot, targets and delegation processing, canonical signed bytes, threshold verification, parent-child hash/length/version consistency, expiry, delegation restrictions and bounded downloads. Persist the highest accepted metadata version for every role and the highest accepted security floor per artifact namespace/channel. This state is separate from replaceable binaries. Verify the entire target chain and artifact before atomic activation. Missing or invalid security metadata is an error, never an ignore-unknown field.
 
-ReleaseArtifact {
-    platform:          String,        // android-arm64, linux-x86_64, etc.
-    artifact_type:     ReleaseArtifactType, // apk | aab | appimage | msi | zip
-    sha256:            [u8; 32],
-    size_bytes:        u64,
-    fetch_addresses:   Vec<MeshUrl>,  // mesh-native fetch endpoints
-}
+Version numbers are ordered integers, not lexicographically compared semantic-version strings. A semantic label is informational. Reject rollback and inconsistent metadata including mix-and-match or unauthorized high-version metadata. Bound sizes, delegation depth and root-update work; verify before committing version advances. A fully compromised authorized role can still deny service within its authority until recovery. Do not claim signatures alone prevent every fast-forward attack.
 
-ReleaseSignature {
-    signer_pubkey:     [u8; 32],      // project root or delegated release key
-    signature:         [u8; 64],      // Ed25519 over canonical manifest
-}
-```
+**Key rotation and revocation:** Process roots sequentially, each authorized by the required old-root and new-root thresholds; do not jump to an attacker-supplied latest root. Persist root version before advancing other roles. Targets/delegations revoke compromised publisher or online keys through the valid trust chain. If the root threshold itself is lost/compromised, recovery requires an authenticated out-of-band trust reset; no in-band arbitrary replacement is safe.
 
-**Verification rules:**
-- Every release manifest MUST be signed by the project root release key or a delegated release key chained to it.
-- Every artifact MUST hash-match the manifest before install.
-- Clients MUST reject updates that attempt rollback below `min_supported_from`.
-- Clients MUST preserve the previous working artifact until the new artifact has passed first-launch validation.
-- Updates received over the mesh are untrusted until signature and hash verification succeed.
+**Freshness:** Default metadata lifetimes: timestamp 24 hours, snapshot 7 days, delegated/targets 30 days, root 365 days; deployments may shorten them. Evaluate expiry at a trusted update-start time with a persisted time lower bound to detect backwards clocks. If trustworthy time cannot be established, refuse new activation and report that freshness is unknown. Offline clients may keep an already installed, locally permitted artifact but MUST NOT call it current or install expired metadata. Unavailable fresh metadata causes visible update-stale state; no scheme can force an eclipsed/offline client to learn a release. Clock rollback, suspension and backup restore must be tested.
 
-**Distribution rules:**
-- Release manifests propagate over store-and-forward and distributed storage.
-- Artifact fetch may use any available mesh transport, but the verification model is identical on every path.
-- Bootstrap descriptor updates are distributed through the same signed manifest path; bootstrap metadata is never updated from unsigned network data.
+**Security floor and crash recovery:** Replace the old remotely replayable min_supported_from rule with a persisted monotonic security release floor. New valid metadata may raise it, never lower it. Keep the previous artifact for first-launch recovery only if it remains authorized, nonrevoked and at/above the remembered floor. If a new security release fails and the prior build is below the floor, enter repair mode (or disable the affected plugin), never automatically activate the vulnerable build. Installing older valid metadata cannot erase a known floor. Pin any recovery artifact and its verification chain.
 
-**User interaction rules:**
-- Security updates may auto-download.
-- Installation still requires platform-appropriate user confirmation unless the platform provides a documented unattended mechanism that preserves signature verification and rollback safety.
-- In `ThreatContext::Critical`, the client MUST NOT auto-switch update channel or trust new bootstrap infrastructure without explicit user approval.
+**Persistence and bootstrap:** Journal metadata/floors and artifact selection transactionally. A crash cannot activate a partially verified artifact or restore obsolete trust state. Restoring application/vault backup must not restore older update floors; use OS-protected monotonic storage where available. On reinstall/state loss, require fresh trusted bootstrap metadata/time and disclose the recovery limit; hardware-free state cannot withstand an attacker rolling back the entire machine. Built-in bootstrap descriptor changes use the same authenticated targets path.
 
-**Supply-chain minimum:**
-- Signed releases are mandatory.
-- Reproducible-build metadata and verifier instructions are part of the release artifact set.
-- If reproducibility data is absent, the release may be installed only after the UI surfaces that supply-chain assurance is reduced.
+**User behavior:** Security updates may auto-download. Installation follows existing platform confirmation/unattended rules. Critical threat context never silently changes channel or bootstrap trust. A plugin requesting more permissions requires approval even when its update signatures validate. File-imported production plugins require the same fresh metadata chain. Developer sideload is an isolated development exception with visible status, separate trust namespace and no production authority.
+
+**Release evidence:** Every release carries a reviewed lockfile inventory, SBOM, build provenance, reproducibility metadata and verifier instructions, bound to the target hashes. Missing evidence blocks production release (§21.6); a warning is not a substitute. Preserve these alongside mesh-delivered artifacts.
 
 ### 17.11 Mesh DNS System
 
@@ -12835,7 +12603,7 @@ Plugins declare which API version they target. The runtime supports multiple API
 
 **Platform availability:**
 
-- **Android / Linux / macOS / Windows:** full Tier 2 executable plugin runtime is in scope, subject to the sandbox, permission, and resource rules in this section. On these platforms, the runtime should prefer the general isolated-worker model from §17.1 rather than unconditional in-process execution.
+- **Android / Linux / macOS / Windows:** full Tier 2 executable plugin runtime is in scope, subject to the sandbox, permission, and resource rules in this section. On these platforms, executable third-party plugins MUST use the OS-isolated worker boundary in §18.1; unavailable isolation disables the capability.
 - **iOS / iPadOS:** third-party executable Tier 2 plugins are **not supported**. The platform's code-signing and App Store policy model make post-install executable plugin distribution and loading non-compliant. On Apple mobile platforms, the Plugins UI may expose only built-in, reviewed functionality that ships inside the app bundle, and it must clearly indicate that user-installed executable plugins are unavailable on this platform.
 
 **Rationale:** Mesh Infinity's plugin model assumes signed WASM modules can be installed, enabled, disabled, updated, and removed by the user after app install. That is compatible with Android and desktop distribution models. On those platforms, process isolation is preferable because plugin code is untrusted. It is not compatible with iOS as a general third-party executable extension model. Mesh Infinity therefore treats iOS as a limited endpoint platform for plugins rather than attempting a weaker companion-app or disguised external-execution architecture.
@@ -12883,7 +12651,7 @@ max_open_handles = 256               # max concurrent open file/network handles
 - **Shutdown timeout:** The `shutdown()` entrypoint has a hard **5-second deadline**. If it doesn't return, the WASM instance is destroyed without waiting. No data loss — the plugin's vault state was last persisted at the previous successful API call.
 - **Storage:** Writes exceeding `max_storage_mb` fail with `StorageQuotaExceeded` error. No data loss — existing data is preserved; only the new write is rejected.
 - **Handles:** Open file/network handles beyond `max_open_handles` are rejected with `HandleLimitExceeded`.
-- **Process isolation (supported platforms):** On Android and desktop platforms, Tier 2 plugins should run inside an isolated worker following the general subsystem-isolation rules from §17.1. The host communicates through a narrow message ABI carrying hook input, hook output, permission checks, and quota events only. A worker compromise must not expose backend internals, identity keys, or raw transport authority. On iOS / iPadOS, this worker model is unavailable because third-party executable plugins are unavailable.
+- **Process isolation (supported platforms):** On Android and desktop platforms, Tier 2 plugins MUST run inside an OS-isolated worker following §17.1 and §18.1. The host communicates through a narrow message ABI carrying hook input, hook output, permission checks, and quota events only. A worker compromise must not expose backend internals, identity keys, or raw transport authority. On iOS / iPadOS, this worker model is unavailable because third-party executable plugins are unavailable.
 
 **Plugin lifecycle:**
 
@@ -12930,9 +12698,9 @@ Plugins are distributed through three channels:
 **Plugin updates:**
 
 Plugins declare their version in the manifest. The runtime checks for updates via the mesh plugin index periodically (default: daily). When an update is available:
-- If the new version requires no additional permissions: auto-update silently (user can disable auto-update per-plugin)
+- If permissions are unchanged and the full fresh §17.10 trust chain validates: auto-update according to user preference.
 - If the new version requires new permissions: prompt the user before updating
-- The old version's WASM binary is kept until the update is confirmed working (rollback on crash within first 60 seconds)
+- Retain the prior binary for first-launch recovery only when §17.10 permits it; crash rollback MUST NOT cross the remembered security floor or revive a revoked artifact.
 
 **Plugin signing:**
 
@@ -12948,7 +12716,7 @@ PluginSignature {
 }
 ```
 
-The runtime rejects unsigned plugins outside of developer mode. Author public keys accumulate trust through the WoT — a plugin signed by a key endorsed by your trusted contacts has a higher default trust than one from an unknown author.
+The runtime rejects unsigned plugins outside developer mode. An author signature proves provenance but production installation also requires §17.10 delegated targets, freshness, rollback/floor checks and artifact/permission hashes. WoT endorsement is advisory, never update authorization.
 
 ### 18.1 Three Tiers of Building on Mesh Infinity
 
@@ -12965,7 +12733,11 @@ Constraints:
 - Cannot access the crypto layer, private keys, or raw transport.
 - Plugin identity is a keypair -- the plugin has its own mesh identity, distinct from the user's masks.
 - Plugin permissions are granted explicitly by the user at install time and adjustable at any time after install.
-- Plugins run in a **WebAssembly (WASM) sandbox** via `wasmtime` on platforms where third-party executable plugins are supported. WASM provides memory-safe-by-construction isolation: plugins cannot access the host filesystem, other plugins' data, or Rust backend internals. All I/O is mediated through explicit WASI capability imports granted per the permission framework (§18.2). On Android and desktop platforms, this runtime should normally be hosted behind the isolated-worker model defined in §17.1. On restrictive platforms, the same plugin ABI may be co-located only if the exact same capability boundaries are preserved. It is **not** available for third-party plugins on iOS / iPadOS; Apple mobile platforms expose only built-in reviewed functionality that ships with the app.
+- Executable third-party plugins MUST run in a patched Wasmtime runtime inside a separate low-authority OS-isolated worker on Android, Linux, macOS and Windows. WASM is defense in depth; a runtime escape must reach only a disposable worker. No in-process fallback is allowed. If isolation cannot be enforced, disable the plugin capability. iOS/iPadOS continue to allow only built-in reviewed functionality shipped with the app.
+
+- Workers receive no vault, identity/session keys, inherited privileged handles, ambient host filesystem, raw network sockets or transport authority. All permitted I/O crosses a narrow authenticated capability broker with per-call authorization, typed bounded messages, resource limits and revocation. Broker validation must treat a worker as compromised; path traversal, confused-deputy access and stale capabilities fail closed. Private plugin storage is scoped and quota-limited.
+- Linux requires namespaces/UID separation, no-new-privileges, syscall filtering and filesystem restrictions; Android uses isolated services with explicitly brokered access; Windows uses AppContainer/restricted tokens and handle controls; macOS uses an enforceable sandboxed helper with restricted entitlements. A separate process, job object or ordinary container alone is not enough. Exact platform policies and negative authority tests are release artifacts.
+- Bound memory, CPU/fuel, execution time, processes and IPC queues. Disable core dumps and secret-bearing diagnostics. Worker death revokes capabilities before restart. New permissions require consent; no restart inherits revoked grants. Test containment assuming arbitrary native code execution inside the worker, including attempts to read vaults, open sockets, spawn children and access host handles.
 
 **Platform note — iOS / iPadOS:**
 
@@ -15481,6 +15253,9 @@ Available from tests and from the debug menu (§21.4.3 Simulation section):
 | Flutter analyze | `flutter analyze` | Yes |
 | Flutter tests | `flutter test` | Yes |
 | Build checks required by current repo policy | repo-native build workflow | Yes |
+| RustSec and OSV audit of all resolved dependencies | cargo audit plus OSV scanner covering Rust/Dart/native/build dependencies | Yes |
+| Lockfile, dependency sources, licenses and patch-floor policy | cargo deny plus reviewed Cargo.lock/pubspec.lock and native lock manifests | Yes |
+| Changed security protocols | vector replay and formal-model regression (§21.6.4) | Yes |
 
 Per-PR CI MUST enforce every blocking check in this table. Missing automation is not compliance; if a check cannot run in CI for a temporary operational reason, the exception MUST be documented in the audit tracker and the equivalent check MUST run before merge.
 
@@ -15506,7 +15281,30 @@ A version is releasable only when:
 4. Crash reproducers are committed as regression corpus or fixed artifacts
 5. All platform release builds required by the repo policy succeed
 6. Coverage exceptions are documented
-7. The spec version number in `SPEC.md` matches the app version in `Cargo.toml`
+7. The release declares specification conformance version 1.6 separately from its application semantic version; do not bump existing code's version merely to imply compliance.
+8. RustSec/OSV scans run against the complete resolved release dependency graph, including transitive, target-specific, build, Dart/Flutter and native/runtime components. Record database revisions and scan time; unavailable/stale audit data blocks the release.
+9. A machine-readable SPDX or CycloneDX SBOM lists shipped components, versions, hashes, licenses and provenance, bound to the artifact through §17.10. Commit/review lockfiles and approved source revisions; no unpinned Git branches or floating release dependencies.
+10. Maintain a reviewed security floor for each security-critical dependency (crypto, MLS/HPKE, WASM, parsing and update verification). Floors identify advisories and patched versions for every supported branch. A floor cannot be lowered by a lockfile refresh. Unknown patched status blocks the affected release.
+11. No unresolved exploitable critical/high issue may ship. Lower-risk advisory exceptions require documented reachability analysis, owner, compensating controls and expiry; blanket advisory ignores and unexplained suppressions are prohibited.
+12. Reproducibility evidence, build provenance, artifact signatures and signed update metadata must match the tagged source and actual artifacts. Build runners handling untrusted changes receive no release/root keys; sign in a separate controlled stage.
+13. Emergency dependency releases have an owner, a patched-version assessment, targeted regression/fuzz evidence, expedited build/signing and security-floor publication. Urgency does not bypass signature, containment or protocol-invariant checks.
+14. §21.6.4 gates must be satisfied for each enabled security-critical feature. Missing automation/evidence is not compliance.
+
+
+#### 21.6.4 Protocol Profiles and Security Review Gates
+
+Before implementation can claim production conformance, each enabled cryptographic profile MUST have a repository-tracked manifest containing source specification revision/hash, implementation/library commit, exact dependency floors, complete wire encodings, domain labels, algorithm parameters, state limits, migration behavior, positive/negative vectors and independent review evidence. Algorithm names and illustrative structs are not implementation pins.
+
+The following are explicit unresolved implementation gates, to be reconciled with the existing repository:
+- PQXDH/Triple Ratchet: pin the reviewed implementation, identity-binding serialization, parameter integration, KDF/AD/nonce/header encodings and vectors. Verify prekey double-spend, last-resort replay, downgrade, invalid keys, SCKA loss/reordering, restart and restored-state invariants.
+- Sphinx: freeze the native suite, geometry, tag derivation, key epochs, capacity/crash policy and delay/cover profile; demonstrate no stable outer correlation field, no duplicate forwarding and tagging resistance.
+- Trusted groups: implement authorized governance checkpoints and fork handling, MLS identity/role binding, removal send barriers, safe rejoin and nonce/generation persistence; test partitions, simultaneous removals and stale sends.
+- Garden: implement independent archive objects/grants and exact HPKE/AEAD profile, segment boundaries and nonce uniqueness. Test that old MLS secrets can be erased while authorized history remains available, and that removed/new members cannot obtain unauthorized segments. Do not claim live host unlinkability or threshold runtime protection without their separate reviewed protocols.
+- Ring authentication: MI-AOS-R255-1 defines the construction; its new parameterization, code pin, cross-implementation vectors and independent cryptographic review remain release gates. No equivalent-crate substitution.
+- Plugins/updates: exercise arbitrary worker-code authority tests on each capable platform and adversarial update cases (expired/replayed/mixed metadata, revoked keys, sequential root rotation, crash rollback, clock rollback, restored state and security floors).
+- Camouflage: freeze classifier acceptance thresholds and test data protocol before running held-out tests; preserve results for each supported carrier profile.
+
+Run maintained formal models in CI for session initialization/ratchet state transitions and group membership/removal/fork invariants, with model revisions and assumptions linked to implementation tests. A symbolic proof does not establish RNG quality, constant-time arithmetic, OS containment or traffic anonymity; those require their own evidence. Independent human cryptographic review and implementation security review remain required for custom compositions. Work may proceed in isolated tests while gates are open; affected features MUST NOT be released as safety-critical compliant functionality.
 
 ---
 
@@ -17045,7 +16843,7 @@ ListTile(
 
 | Mode | Routing | Encryption | Jitter | Cover traffic | Padding | Persistent indicator |
 |------|---------|-----------|--------|---------------|---------|---------------------|
-| Most private | Mixnet (§5.25) + S&F preferred | 4-layer + mixnet Sphinx | 500ms batch window | Full | Yes | Purple chip: "Most private — slower" |
+| Most private | Mixnet (§5.25) + S&F preferred | 4-layer + mixnet Sphinx | Randomized delay (§5.25 profile) | Full | Yes | Purple chip: "Most private — slower" |
 | More private | Standard mesh + minimum 3 hops | 4-layer | `High` (0–50ms) forced | Full | Yes | Blue chip: "More private" |
 | Automatic | Standard mesh (§6.1) | 4-layer | Per §16.9.3 | Normal | Yes | None (default, no indicator) |
 | Fast | 1–2 relay hops (§6.9) | WireGuard only | `High` (0–50ms) | Injected per §6.9.2 | Yes | Amber chip: "Fast mode" |
@@ -27186,13 +26984,13 @@ Sends test messages through specific protocol paths for verification.
 ```
 SectionHeader('Protocol Tests'),
 
-_TestButton('X3DH Handshake', 'Run a full X3DH key agreement with self',
+_TestButton('PQXDH Handshake', 'Run a full PQXDH key agreement with self',
   onRun: debugState.testX3dh),
 _TestButton('Double Ratchet', 'Send 100 messages through ratchet, verify decrypt',
   onRun: debugState.testDoubleRatchet),
 _TestButton('4-Layer Encrypt', 'Encrypt and decrypt a test message through all 4 layers',
   onRun: debugState.testFourLayer),
-_TestButton('Sender Keys', 'Create a group, distribute sender keys, verify group decrypt',
+_TestButton('Group Epochs', 'Create an MLS group, remove a member, verify content isolation',
   onRun: debugState.testSenderKeys),
 _TestButton('S&F Round-Trip', 'Deposit a message in S&F, retrieve it, verify integrity',
   onRun: debugState.testStoreForward),
