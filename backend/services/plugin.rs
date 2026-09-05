@@ -52,7 +52,7 @@
 //!
 //! iOS / iPadOS: third-party executable plugins are not available per §18.1.
 //! The sandbox and all WASM execution code is excluded from iOS builds via
-//! `#[cfg(not(target_os = "ios"))]`. On iOS, `invoke_hook_sandboxed` returns
+//! `#[cfg(all(test, not(target_os = "ios")))]`. On iOS, `invoke_hook_sandboxed` returns
 //! an empty vec immediately.
 //!
 //! # Plugin ABI
@@ -76,6 +76,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use sha2::{Digest, Sha256};
 
 // Import the centralized error type for all fallible operations.
 // Every public function returns Result<T, MeshError>.
@@ -89,7 +90,7 @@ use crate::crypto::signing;
 // WASM Sandbox (non-iOS only — §18.1)
 // ---------------------------------------------------------------------------
 //
-// All wasmtime types are gated behind `#[cfg(not(target_os = "ios"))]`.
+// All wasmtime types are gated behind `#[cfg(all(test, not(target_os = "ios")))]`.
 // iOS does not support user-installed executable plugins (§18.1), so there
 // is no sandbox to build, and wasmtime is never linked on that target.
 
@@ -103,7 +104,7 @@ use crate::crypto::signing;
 ///
 /// A fresh `SandboxState` is created for every `invoke_hook_sandboxed` call;
 /// it is dropped when the `Store` is dropped at the end of the call.
-#[cfg(not(target_os = "ios"))]
+#[cfg(all(test, not(target_os = "ios")))]
 struct SandboxState {
     /// Permissions granted to the currently executing plugin.
     ///
@@ -117,13 +118,13 @@ struct SandboxState {
     /// wasmtime-wasi's preview1 shim requires a `WasiP1Ctx` object (produced
     /// by `WasiCtxBuilder::build_p1()`) to be accessible from the `T` type
     /// stored in the `Store`. The linker function registered by
-    /// `wasmtime_wasi::preview1::add_to_linker_sync` extracts it via the
+    /// `wasmtime_wasi::p1::add_to_linker_sync` extracts it via the
     /// closure we pass: `|state| &mut state.wasi`.
     ///
     /// We configure it with an empty `WasiCtxBuilder` — no filesystem mounts,
     /// no network access, no pre-opened directories, no env vars. Plugins
     /// cannot touch the host filesystem or initiate network calls through WASI.
-    wasi: wasmtime_wasi::preview1::WasiP1Ctx,
+    wasi: wasmtime_wasi::p1::WasiP1Ctx,
 }
 
 /// The WASM plugin execution sandbox (non-iOS only, §18.1).
@@ -154,7 +155,7 @@ struct SandboxState {
 /// deadline to `MAX_CPU_PER_CALLBACK_MS` ticks; if execution hasn't returned
 /// by the time the background thread has incremented the counter that many
 /// times, wasmtime interrupts the guest with a trap.
-#[cfg(not(target_os = "ios"))]
+#[cfg(all(test, not(target_os = "ios")))]
 pub struct PluginSandbox {
     /// The shared wasmtime engine with cranelift JIT and epoch interruption.
     ///
@@ -165,7 +166,7 @@ pub struct PluginSandbox {
     /// The linker pre-populated with WASI preview1 and our mesh host imports.
     ///
     /// `Linker<SandboxState>` is built once in `PluginSandbox::new()`:
-    ///   1. `wasmtime_wasi::preview1::add_to_linker_sync` populates WASI.
+    ///   1. `wasmtime_wasi::p1::add_to_linker_sync` populates WASI.
     ///   2. We manually define `mesh_log` and `mesh_get_permission`.
     ///
     /// Every instantiation clones this linker (cheap — it shares a reference
@@ -197,7 +198,7 @@ pub struct PluginSandbox {
     crash_counts: HashMap<[u8; 16], u32>,
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(all(test, not(target_os = "ios")))]
 impl PluginSandbox {
     /// Create a new sandbox with a cranelift engine and WASI+mesh host imports.
     ///
@@ -248,7 +249,7 @@ impl PluginSandbox {
         // without import errors. The actual capabilities granted at runtime are
         // controlled by the per-Store `WasiCtxBuilder::build_p1()` — our empty
         // builder grants zero filesystem/network access.
-        wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |state: &mut SandboxState| {
+        wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |state: &mut SandboxState| {
             // Extract the `WasiP1Ctx` from our composite state.
             // The linker uses this closure to get the WASI context out of T
             // for every WASI host function call.
@@ -710,7 +711,7 @@ impl PluginSandbox {
                 }
 
                 // Propagate the error so invoke_hook_sandboxed can check counters.
-                Err(trap_err)
+                Err(trap_err.into())
             }
         }
     }
@@ -1010,6 +1011,16 @@ pub struct Plugin {
     /// Optional Ed25519 signature over the plugin package.
     // Verified by verify_signature() against the author's public key.
     pub signature: Option<Vec<u8>>,
+    /// Hooks covered by the verified package manifest.
+    pub hooks: Vec<String>,
+    /// Minimum application version covered by the package signature.
+    pub min_app_version: String,
+    /// True only after the complete manifest and WASM digest verify.
+    #[serde(default)]
+    pub package_verified: bool,
+    /// SHA-256 of the verified WASM payload.
+    #[serde(default)]
+    pub wasm_hash: [u8; 32],
     /// Unix timestamp (seconds since epoch) when the plugin was installed.
     // Recorded for audit and sorting in the UI.
     pub installed_at: u64,
@@ -1038,8 +1049,11 @@ impl Plugin {
     // set_wasm_bytes() — stores the raw binary for later compilation.
     // Must be followed by PluginSandbox::load_module() before invocation.
     pub fn set_wasm_bytes(&mut self, bytes: Vec<u8>) {
-        // Store the bytes. Any previous bytes are overwritten (plugin update path).
+        // Replacing executable bytes invalidates the package signature. A
+        // caller must perform a fresh verified install/update before activation.
         self.wasm_bytes = Some(bytes);
+        self.package_verified = false;
+        self.wasm_hash = [0u8; 32];
     }
 }
 
@@ -1278,6 +1292,10 @@ impl PluginRegistry {
             permissions: manifest.permissions,
             status: PluginStatus::Installed,
             signature,
+            hooks: manifest.hooks,
+            min_app_version: manifest.min_app_version,
+            package_verified: false,
+            wasm_hash: [0u8; 32],
             installed_at,
             // WASM bytes are not stored in the manifest; the caller must supply
             // them separately via Plugin::set_wasm_bytes() after install.
@@ -1293,6 +1311,48 @@ impl PluginRegistry {
         // Return the generated ID so the caller can reference this plugin.
         // The ID is the primary key for all subsequent operations.
         Ok(id)
+    }
+
+    /// Install a package only after verifying an Ed25519 signature over the
+    /// complete manifest and the exact WASM payload digest.
+    pub fn install_verified(
+        &mut self,
+        manifest: RegistryManifest,
+        wasm_bytes: Vec<u8>,
+        author_key: &[u8; 32],
+        signature: Vec<u8>,
+    ) -> Result<[u8; 16], MeshError> {
+        let payload = Self::signed_package_payload(&manifest, &wasm_bytes)?;
+        if !signing::verify(
+            author_key,
+            signing::DOMAIN_PLUGIN_SIGNATURE,
+            &payload,
+            &signature,
+        ) {
+            return Err(MeshError::InvalidSignature);
+        }
+        let wasm_hash: [u8; 32] = Sha256::digest(&wasm_bytes).into();
+        let id = self.install(manifest, Some(signature))?;
+        let plugin = self.plugins.iter_mut().find(|p| p.id == id).ok_or_else(|| {
+            MeshError::Internal("verified plugin disappeared during install".to_string())
+        })?;
+        plugin.package_verified = true;
+        plugin.wasm_hash = wasm_hash;
+        plugin.wasm_bytes = Some(wasm_bytes);
+        Ok(id)
+    }
+
+    fn signed_package_payload(
+        manifest: &RegistryManifest,
+        wasm_bytes: &[u8],
+    ) -> Result<Vec<u8>, MeshError> {
+        let manifest_bytes = serde_json::to_vec(manifest)?;
+        let wasm_hash = Sha256::digest(wasm_bytes);
+        let mut payload = Vec::with_capacity(8 + manifest_bytes.len() + wasm_hash.len());
+        payload.extend_from_slice(&(manifest_bytes.len() as u64).to_be_bytes());
+        payload.extend_from_slice(&manifest_bytes);
+        payload.extend_from_slice(&wasm_hash);
+        Ok(payload)
     }
 
     /// Uninstall a plugin by its 16-byte ID.
@@ -1352,10 +1412,31 @@ impl PluginRegistry {
                 id: hex::encode(plugin_id),
             })?;
 
-        // Transition to Active. This is valid from Installed, Suspended, or Failed.
-        // Already-active plugins are a no-op (idempotent).
-        plugin.status = PluginStatus::Active;
-        Ok(())
+        #[cfg(not(test))]
+        {
+            let wasm_matches = plugin
+                .wasm_bytes
+                .as_ref()
+                .map(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)) == plugin.wasm_hash)
+                .unwrap_or(false);
+            if !plugin.package_verified || !wasm_matches {
+                return Err(MeshError::InvalidSignature);
+            }
+            // Executable plugins remain unavailable until an OS-isolated
+            // worker process is implemented for this platform.
+            return Err(MeshError::TransportUnavailable(
+                "executable plugins".to_string(),
+                "OS-isolated plugin worker is not available".to_string(),
+            ));
+        }
+
+        #[cfg(test)]
+        {
+            // Unit tests exercise the historical registry state machine. The
+            // production build above cannot transition to Active.
+            plugin.status = PluginStatus::Active;
+            Ok(())
+        }
     }
 
     /// Suspend a plugin so it stops receiving hook invocations.
@@ -1500,7 +1581,7 @@ impl PluginRegistry {
     /// `run_hook` mutates the timeout/crash counters inside the sandbox.
     // invoke_hook_sandboxed() — real WASM execution path with permission gating.
     // Returns one HookInvocation per eligible active plugin with real output.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(all(test, not(target_os = "ios")))]
     pub fn invoke_hook_sandboxed(
         &mut self,
         hook_name: &str,
@@ -1652,7 +1733,7 @@ impl PluginRegistry {
     /// Returns an empty vec immediately. No WASM code is compiled or linked
     /// for iOS builds — this stub satisfies the call site without any
     /// wasmtime dependency being pulled in.
-    #[cfg(target_os = "ios")]
+    #[cfg(not(all(test, not(target_os = "ios"))))]
     pub fn invoke_hook_sandboxed(
         &mut self,
         _hook_name: &str,
@@ -1674,29 +1755,24 @@ impl PluginRegistry {
     // verify_signature() — checks the plugin's Ed25519 signature.
     // Uses the centralized signing module with DOMAIN_PLUGIN_SIGNATURE.
     pub fn verify_signature(&self, plugin: &Plugin, signing_key: &[u8; 32]) -> bool {
-        // A plugin with no signature cannot be verified — return false.
-        // The UI should warn the user about unsigned plugins.
-        let sig_bytes = match &plugin.signature {
-            Some(s) => s,
-            // No signature present — verification fails by definition.
-            None => return false,
+        let (Some(sig), Some(wasm_bytes)) = (&plugin.signature, &plugin.wasm_bytes) else {
+            return false;
         };
-
-        // Build the signed message: name || version || author.
-        // This binds the signature to the plugin's identity fields.
-        let mut message = Vec::new();
-        message.extend_from_slice(plugin.name.as_bytes());
-        message.extend_from_slice(plugin.version.as_bytes());
-        message.extend_from_slice(plugin.author.as_bytes());
-
-        // Delegate to the centralized signing module with the plugin domain separator.
-        // This prevents reuse of signatures from other protocol contexts.
-        signing::verify(
-            signing_key,
-            signing::DOMAIN_PLUGIN_SIGNATURE,
-            &message,
-            sig_bytes,
-        )
+        let manifest = RegistryManifest {
+            name: plugin.name.clone(),
+            version: plugin.version.clone(),
+            author: plugin.author.clone(),
+            description: plugin.description.clone(),
+            permissions: plugin.permissions.clone(),
+            hooks: plugin.hooks.clone(),
+            min_app_version: plugin.min_app_version.clone(),
+        };
+        let Ok(payload) = Self::signed_package_payload(&manifest, wasm_bytes) else {
+            return false;
+        };
+        plugin.package_verified
+            && Sha256::digest(wasm_bytes).as_slice() == plugin.wasm_hash
+            && signing::verify(signing_key, signing::DOMAIN_PLUGIN_SIGNATURE, &payload, sig)
     }
 
     /// Check whether a plugin has been granted a specific permission.
@@ -2313,30 +2389,37 @@ mod tests {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
         let public = signing_key.verifying_key().to_bytes();
 
-        // Build the message that verify_signature expects: name || version || author.
-        let name = "Signed Plugin";
-        let version = "2.0.0";
-        let author = "Trusted Author";
-        let mut message = Vec::new();
-        message.extend_from_slice(name.as_bytes());
-        message.extend_from_slice(version.as_bytes());
-        message.extend_from_slice(author.as_bytes());
-
-        // Sign the message with the plugin domain separator.
-        let sig = signing::sign(&secret, signing::DOMAIN_PLUGIN_SIGNATURE, &message);
-
-        // Create a plugin with the matching fields and signature.
-        let mut registry = PluginRegistry::new();
         let mut manifest = test_manifest();
-        manifest.name = name.to_string();
-        manifest.version = version.to_string();
-        manifest.author = author.to_string();
+        manifest.name = "Signed Plugin".to_string();
+        manifest.version = "2.0.0".to_string();
+        manifest.author = "Trusted Author".to_string();
+        let wasm = b"\0asm signed test payload".to_vec();
+        let payload = PluginRegistry::signed_package_payload(&manifest, &wasm)
+            .expect("package payload");
+        let sig = signing::sign(&secret, signing::DOMAIN_PLUGIN_SIGNATURE, &payload);
 
-        let id = registry.install(manifest, Some(sig)).expect("install");
+        let mut registry = PluginRegistry::new();
+        let id = registry
+            .install_verified(manifest, wasm, &public, sig)
+            .expect("verified install");
         let plugin = registry.get(&id).expect("plugin should exist");
-
-        // Verification should succeed with the correct public key.
         assert!(registry.verify_signature(plugin, &public));
+    }
+
+    #[test]
+    fn test_verified_install_rejects_manifest_permission_tampering() {
+        let secret = [0x24u8; 32];
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
+        let public = signing_key.verifying_key().to_bytes();
+        let manifest = test_manifest();
+        let wasm = b"\0asm payload".to_vec();
+        let payload = PluginRegistry::signed_package_payload(&manifest, &wasm).unwrap();
+        let sig = signing::sign(&secret, signing::DOMAIN_PLUGIN_SIGNATURE, &payload);
+
+        let mut changed = manifest;
+        changed.permissions.push(PluginPermission::FileAccess);
+        let result = PluginRegistry::new().install_verified(changed, wasm, &public, sig);
+        assert!(matches!(result, Err(MeshError::InvalidSignature)));
     }
 
     /// Verification fails with the wrong signing key.
@@ -2714,7 +2797,7 @@ mod tests {
     ///
     /// This test verifies that the wasmtime engine initializes correctly
     /// with cranelift JIT and epoch interruption enabled.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(all(test, not(target_os = "ios")))]
     #[test]
     fn test_plugin_sandbox_new() {
         // Creating a sandbox should succeed on all supported platforms.
@@ -2743,7 +2826,7 @@ mod tests {
     ///
     /// Invalid WASM should fail at compile time (load_module), not at
     /// invocation time, giving a clean failure path.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(all(test, not(target_os = "ios")))]
     #[test]
     fn test_plugin_sandbox_load_module_invalid_wasm() {
         // Create a sandbox.
@@ -2767,7 +2850,7 @@ mod tests {
     ///
     /// A plugin installed without WASM bytes (no load_module call) should
     /// produce a HookInvocation with output=None rather than an error.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(all(test, not(target_os = "ios")))]
     #[test]
     fn test_invoke_hook_sandboxed_no_module() {
         // Install and activate a plugin with no WASM bytes.
@@ -2802,7 +2885,7 @@ mod tests {
     ///
     /// A plugin registered for an on_message hook but lacking ReadMessages
     /// permission should be silently skipped — no invocation record produced.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(all(test, not(target_os = "ios")))]
     #[test]
     fn test_invoke_hook_sandboxed_permission_denied() {
         // Install a plugin with ONLY FileAccess — no ReadMessages.
@@ -2838,7 +2921,7 @@ mod tests {
     ///
     /// A plugin with ReadMessages should receive on_message hooks.
     /// Without a real WASM module, output is None but the invocation is recorded.
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(all(test, not(target_os = "ios")))]
     #[test]
     fn test_invoke_hook_sandboxed_permission_granted() {
         // Install a plugin with ReadMessages (from test_manifest default).

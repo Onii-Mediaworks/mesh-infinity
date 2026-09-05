@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
     // AEAD cipher for authenticated encryption.
     ChaCha20Poly1305,
     Nonce,
@@ -72,17 +72,16 @@ const MK_INFO: &[u8] = b"MeshInfinity_MK_v1";
 // Defined by the spec; must not change without a version bump.
 const HDR_ENC_INFO: &[u8] = b"MeshInfinity_HdrEnc_v1";
 
-/// Fixed nonce for header encryption.
+/// Version byte for the randomized ratchet-header envelope.
 ///
-/// Safe to reuse because the header encryption key is unique per root-key
-/// epoch — each DH ratchet step produces a new root key, which in turn
-/// derives a fresh header encryption key.  The nonce only needs to be
-/// non-repeating under a given key, not globally unique.
-// HDR_ENC_NONCE — protocol constant.
+/// The version is authenticated as AEAD associated data. Legacy fixed-nonce
+/// ciphertexts have no version prefix and are rejected rather than retried.
+// HDR_ENC_VERSION — protocol constant.
 // Defined by the spec; must not change without a version bump.
-const HDR_ENC_NONCE: [u8; 12] = [
-    0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-];
+const HDR_ENC_VERSION: u8 = 2;
+
+/// ChaCha20-Poly1305 nonce size carried in each header envelope.
+const HDR_ENC_NONCE_SIZE: usize = 12;
 
 /// Maximum number of skipped message keys to cache per peer.
 /// Prevents memory exhaustion from adversarial skip counters.
@@ -707,10 +706,15 @@ impl DoubleRatchetSession {
 
     /// Encrypt a ratchet header so it is opaque on the wire.
     ///
-    /// Serialises the header to JSON, then encrypts with ChaCha20-Poly1305
-    /// using the provided header encryption key.  The caller is responsible
-    /// for deriving the key from shared state that both parties know
-    /// (typically a static DH shared secret or the session root key).
+    /// Serialises the header to JSON and encrypts it with ChaCha20-Poly1305.
+    /// Every envelope carries a fresh random nonce because production callers
+    /// may derive the header key from long-lived static DH state. Reusing a
+    /// fixed nonce under that key would break AEAD confidentiality and
+    /// authenticity.
+    ///
+    /// Wire format: `version || nonce[12] || ciphertext_and_tag`. The version
+    /// byte is authenticated as associated data so format substitution fails
+    /// closed. The caller is responsible for deriving the shared header key.
     ///
     /// On the wire the encrypted header replaces the plaintext `ratchet_pub`,
     /// `prev_chain_len`, and `msg_num` fields, preventing an observer from
@@ -724,13 +728,27 @@ impl DoubleRatchetSession {
             ChaCha20Poly1305::new_from_slice(key).map_err(|_| RatchetError::EncryptionFailed)?;
         // Serialise the header to a compact JSON representation.
         let header_json = serde_json::to_vec(header).map_err(|_| RatchetError::EncryptionFailed)?;
-        // Encrypt the serialised header with the fixed nonce.
-        // Safe because the key is unique per-session and per-peer.
-        let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
+
+        // Generate a unique nonce for this encryption attempt. Failure of the
+        // operating-system RNG is fatal; no deterministic fallback is safe.
+        let mut nonce_bytes = [0u8; HDR_ENC_NONCE_SIZE];
+        getrandom::fill(&mut nonce_bytes).map_err(|_| RatchetError::EncryptionFailed)?;
+        let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = cipher
-            .encrypt(nonce, header_json.as_slice())
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: header_json.as_slice(),
+                    aad: &[HDR_ENC_VERSION],
+                },
+            )
             .map_err(|_| RatchetError::EncryptionFailed)?;
-        Ok(ciphertext)
+
+        let mut envelope = Vec::with_capacity(1 + HDR_ENC_NONCE_SIZE + ciphertext.len());
+        envelope.push(HDR_ENC_VERSION);
+        envelope.extend_from_slice(&nonce_bytes);
+        envelope.extend_from_slice(&ciphertext);
+        Ok(envelope)
     }
 
     /// Decrypt an encrypted ratchet header received on the wire.
@@ -743,13 +761,30 @@ impl DoubleRatchetSession {
         enc_header: &[u8],
         key: &[u8; 32],
     ) -> Result<RatchetHeader, RatchetError> {
+        // Require a complete versioned envelope plus the 16-byte Poly1305 tag.
+        // Legacy fixed-nonce ciphertexts are intentionally not accepted.
+        const MIN_ENVELOPE_SIZE: usize = 1 + HDR_ENC_NONCE_SIZE + 16;
+        if enc_header.len() < MIN_ENVELOPE_SIZE || enc_header[0] != HDR_ENC_VERSION {
+            return Err(RatchetError::DecryptionFailed);
+        }
+
         // Construct the AEAD cipher from the provided key.
         let cipher =
             ChaCha20Poly1305::new_from_slice(key).map_err(|_| RatchetError::DecryptionFailed)?;
-        // Decrypt the encrypted header bytes.
-        let nonce = Nonce::from_slice(&HDR_ENC_NONCE);
+        let nonce_end = 1 + HDR_ENC_NONCE_SIZE;
+        let nonce = Nonce::from_slice(&enc_header[1..nonce_end]);
+        let ciphertext = &enc_header[nonce_end..];
+
+        // Authenticate both the ciphertext and the format version before
+        // parsing any attacker-controlled plaintext.
         let plaintext = cipher
-            .decrypt(nonce, enc_header)
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ciphertext,
+                    aad: &[HDR_ENC_VERSION],
+                },
+            )
             .map_err(|_| RatchetError::DecryptionFailed)?;
         // Deserialise the JSON header from the decrypted bytes.
         let header: RatchetHeader =
@@ -899,9 +934,7 @@ impl DoubleRatchetSession {
     /// - `hmac_key` → Step 1 (HMAC-SHA256 inner authentication)
     ///
     /// Returns `(cipher_key, nonce, hmac_key)`.
-    pub fn expand_msg_key(
-        msg_key: &[u8; 32],
-    ) -> Result<ExpandedMsgKey, RatchetError> {
+    pub fn expand_msg_key(msg_key: &[u8; 32]) -> Result<ExpandedMsgKey, RatchetError> {
         let mk = expand_message_key(msg_key)?;
         Ok((mk.cipher_key, mk.nonce, mk.hmac_key))
     }
@@ -1545,6 +1578,36 @@ mod tests {
         assert_eq!(decrypted.ratchet_pub, header.ratchet_pub);
         assert_eq!(decrypted.prev_chain_len, header.prev_chain_len);
         assert_eq!(decrypted.msg_num, header.msg_num);
+    }
+
+    #[test]
+    fn test_header_encryption_uses_fresh_nonce() {
+        let key = [0x42u8; 32];
+        let header = RatchetHeader {
+            ratchet_pub: [0xAA; 32],
+            prev_chain_len: 5,
+            msg_num: 10,
+        };
+
+        // Re-encrypting identical plaintext under the same long-lived header
+        // key must produce different nonce-prefixed envelopes.
+        let first = DoubleRatchetSession::encrypt_header_with_key(&header, &key).expect("first");
+        let second = DoubleRatchetSession::encrypt_header_with_key(&header, &key).expect("second");
+        assert_ne!(first, second, "header nonce must never be reused");
+        assert_ne!(&first[1..13], &second[1..13], "nonce prefixes must differ");
+
+        assert!(DoubleRatchetSession::decrypt_header_with_key(&first, &key).is_ok());
+        assert!(DoubleRatchetSession::decrypt_header_with_key(&second, &key).is_ok());
+    }
+
+    #[test]
+    fn test_header_decrypt_rejects_legacy_and_truncated_envelopes() {
+        let key = [0x42u8; 32];
+
+        // A legacy ciphertext has no authenticated v2 envelope. Short inputs
+        // must also fail without slicing beyond their bounds.
+        assert!(DoubleRatchetSession::decrypt_header_with_key(&[0u8; 32], &key).is_err());
+        assert!(DoubleRatchetSession::decrypt_header_with_key(&[HDR_ENC_VERSION], &key).is_err());
     }
 
     #[test]

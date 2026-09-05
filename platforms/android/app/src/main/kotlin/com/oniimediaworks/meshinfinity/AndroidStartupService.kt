@@ -179,9 +179,14 @@ class AndroidStartupService : Service() {
     private fun startLayer1IfNeeded() {
         // Step 1: Attempt to unwrap the hardware-backed secret.
         // Performed BEFORE startLayer1() so we know whether to inject
-        // afterward.  If the Keystore blob is absent or corrupted, this
-        // returns null and Rust will use/generate the file-based key in Step 2.
+        // afterward. A missing blob enters first-run migration; a present
+        // blob that cannot be authenticated blocks Layer 1 startup.
+        val wrappedIdentityExists = keystoreFile.exists()
         val keystoreSecret = tryLoadFromKeystore()
+        if (wrappedIdentityExists && keystoreSecret == null) {
+            Log.e(TAG, "Layer 1 blocked: Android Keystore identity could not be unwrapped.")
+            return
+        }
 
         // Step 2: Allocate or retrieve the Rust MeshRuntime.
         // The CAS guard inside Rust ensures only one runtime is allocated even
@@ -217,15 +222,22 @@ class AndroidStartupService : Service() {
             // Zero the plaintext secret immediately — it is now in Rust memory.
             keystoreSecret.fill(0)
             if (ok) {
+                if (!NativeLayer1Bridge.deleteLegacyPlaintextKey(this)) {
+                    Log.e(TAG, "Layer 1 blocked: legacy plaintext identity could not be removed.")
+                    return
+                }
                 Log.d(TAG, "Layer 1 secret injected from Android Keystore.")
             } else {
-                Log.w(TAG, "Layer 1 Keystore injection failed — using file-based key.")
+                Log.e(TAG, "Layer 1 blocked: Android Keystore injection failed.")
+                return
             }
         } else {
             // Step 3b: No Keystore blob available (first boot or entry lost).
             // Export the key that Rust just loaded/generated from the file and
             // wrap it with the hardware-backed AES key for future boots.
-            wrapAndSaveKeypairIfNeeded()
+            if (!wrapAndSaveKeypairIfNeeded()) {
+                return
+            }
         }
 
         // Step 4: Bootstrap the deeper Layer 1 subsystems if we now have a
@@ -252,9 +264,8 @@ class AndroidStartupService : Service() {
     //   - The ciphertext blob does not exist yet (first boot or Keystore loss).
     //   - Decryption fails (hardware change, tampered blob, etc.).
     //
-    // Failure is non-fatal: the Rust runtime will use the file-based key
-    // (mesh_identity.key) as a fallback, and wrapAndSaveKeypairIfNeeded() will
-    // re-wrap it for subsequent boots.
+    // A caller distinguishes a missing first-run blob from a present blob
+    // that failed authentication. The latter blocks Layer 1 startup.
     private fun tryLoadFromKeystore(): ByteArray? {
         return try {
             // If the blob file does not exist, this is either the first boot
@@ -268,9 +279,7 @@ class AndroidStartupService : Service() {
             //   - The Keystore AES entry was deleted (factory reset of TEE).
             //   - The ciphertext blob on disk is corrupted.
             //   - The device was restored to a new device without re-enrolling.
-            // In all cases we fall back to the file-based key so the node can
-            // still boot.  wrapAndSaveKeypairIfNeeded() will re-wrap after load.
-            Log.w(TAG, "Keystore unwrap failed — falling back to file-based key: ${e.message}")
+            Log.e(TAG, "Keystore unwrap failed; Layer 1 will remain blocked: ${e.message}")
             null
         }
     }
@@ -287,13 +296,16 @@ class AndroidStartupService : Service() {
     // key may rotate (e.g., after an identity reset) but the Keystore blob is
     // sticky until explicitly deleted.  An identity reset should call
     // KeystoreBridge.deleteKey() and delete keystoreFile before regenerating.
-    private fun wrapAndSaveKeypairIfNeeded() {
+    private fun wrapAndSaveKeypairIfNeeded(): Boolean {
         // If the blob already exists from a previous boot, nothing to do.
-        if (keystoreFile.exists()) return
+        if (keystoreFile.exists()) return true
 
         // Export the 32-byte secret that Rust has in memory.  Returns null if
         // the runtime was never allocated or the identity is not loaded yet.
-        val rawSecret = NativeLayer1Bridge.exportLayer1Secret() ?: return
+        val rawSecret = NativeLayer1Bridge.exportLayer1Secret() ?: run {
+            Log.e(TAG, "Layer 1 blocked: no identity is available for Keystore migration.")
+            return false
+        }
 
         try {
             // Wrap with the hardware-backed AES-256-GCM key.
@@ -304,13 +316,24 @@ class AndroidStartupService : Service() {
             // Parent directory was created by getDir() in the lazy initialiser.
             keystoreFile.parentFile?.mkdirs()
             keystoreFile.writeBytes(wrapped)
+            val verified = KeystoreBridge.unwrapKey(keystoreFile.readBytes())
+            try {
+                check(verified.contentEquals(rawSecret)) { "Keystore round-trip mismatch" }
+            } finally {
+                verified.fill(0)
+            }
+            check(NativeLayer1Bridge.deleteLegacyPlaintextKey(this)) {
+                "failed to remove legacy plaintext identity"
+            }
 
-            Log.i(TAG, "Layer 1 secret wrapped and saved to Android Keystore-backed storage.")
+            Log.i(TAG, "Layer 1 secret migrated to Android Keystore-backed storage.")
+            return true
         } catch (e: Exception) {
-            // Wrap or write failure — the node continues with the file-based key.
-            // On the next boot tryLoadFromKeystore() will return null again and
-            // we will retry the wrap.
-            Log.w(TAG, "Keystore wrap/write failed — secret not persisted to Keystore: ${e.message}")
+            // Remove a partial ciphertext so the next startup can retry the
+            // first-run migration without treating it as an existing identity.
+            keystoreFile.delete()
+            Log.e(TAG, "Layer 1 blocked: Keystore wrap/write verification failed: ${e.message}")
+            return false
         } finally {
             // Zero the raw secret bytes immediately regardless of success or
             // failure.  The secret now lives in Rust memory (or the Keystore

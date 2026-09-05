@@ -712,9 +712,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 # iOS/iPadOS rejects.  Additionally, iOS prohibits third-party JIT (W^X).
 # Per §18.1, executable plugins are not available on iOS.  PluginSandbox is
 # already gated with #[cfg(not(target_os = "ios"))] in plugin.rs.
-[target.'cfg(not(target_os = "ios"))'.dependencies]
-wasmtime = { version = "25", features = ["cranelift"] }
-wasmtime-wasi = { version = "25" }
+[target.'cfg(not(target_os = "ios"))'.dev-dependencies]
+wasmtime = { version = "48", features = ["cranelift"] }
+wasmtime-wasi = { version = "48" }
 
 # =============================================================================
 # [dev-dependencies] — dependencies used ONLY during testing

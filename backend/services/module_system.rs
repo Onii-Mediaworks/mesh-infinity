@@ -131,8 +131,12 @@ pub struct AgenticModuleConfig {
 // PluginModuleConfig — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct PluginModuleConfig {
-    /// The runtime enabled for this instance.
+    /// The runtime enabled for this instance. Production activation remains
+    /// blocked until an OS-isolated worker reports availability.
     pub runtime_enabled: bool,
+    /// Executable worker isolation is intentionally unavailable for now.
+    #[serde(default)]
+    pub os_isolated_worker_available: bool,
     /// The installed plugins for this instance.
     pub installed_plugins: HashMap<String, bool>,
 }

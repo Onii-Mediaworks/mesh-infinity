@@ -1138,7 +1138,12 @@ impl MeshRuntime {
                 &preauth_pub,
             ))
         } else {
-            // Static DH fallback.
+            // Only explicitly legacy contacts may omit the authenticated
+            // X3DH init header. A prekey-capable contact without that header
+            // is a downgrade attempt or malformed frame.
+            if contact.preauth_key.is_some() {
+                return None;
+            }
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             guard.as_ref().and_then(|id| {
                 bootstrap_ratchet_session(id, contact)

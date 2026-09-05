@@ -994,15 +994,17 @@ pub fn bootstrap_ratchet_session(
     ),
     String,
 > {
-    // Try X3DH/PQXDH first when the contact advertises a preauth key.
+    // A contact that advertises a preauth key has opted into authenticated
+    // X3DH/PQXDH. Any setup error is terminal: silently retrying static DH
+    // would turn malformed or stripped prekey material into a downgrade.
     if let Some(preauth_bytes) = contact.preauth_key {
-        if let Ok((session, header, pq_ext)) =
-            x3dh_bootstrap_session(our_id, contact, &preauth_bytes)
-        {
-            return Ok((session, Some(header), pq_ext));
-        }
+        let (session, header, pq_ext) =
+            x3dh_bootstrap_session(our_id, contact, &preauth_bytes)?;
+        return Ok((session, Some(header), pq_ext));
     }
-    // Fall back to the static DH path for legacy or minimal contacts.
+
+    // Static DH remains available only for explicitly legacy contacts that
+    // have no advertised preauth key.
     static_dh_bootstrap_session(our_id, contact).map(|s| (s, None, None))
 }
 

@@ -69,6 +69,13 @@ object NativeLayer1Bridge {
         return contextPointer
     }
 
+    /** Remove the legacy plaintext Layer 1 key after verified Keystore migration. */
+    fun deleteLegacyPlaintextKey(context: Context): Boolean {
+        val deviceCtx = context.createDeviceProtectedStorageContext() ?: context
+        val keyFile = File(File(deviceCtx.filesDir, "mesh_infinity_data"), "mesh_identity.key")
+        return !keyFile.exists() || keyFile.delete()
+    }
+
     // Release the startup service's ownership of the native Layer 1 runtime.
     //
     // The Rust backend keeps the runtime alive until both:

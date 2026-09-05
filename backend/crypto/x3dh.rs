@@ -144,8 +144,14 @@ pub enum X3dhError {
     InvalidEncryptedIkSize(usize),
     #[error("KEM binding verification failed — possible ciphertext substitution")]
     KemBindingMismatch,
+    #[error("Preauth bundle signature is missing for an authenticated identity")]
+    PreauthBundleSignatureMissing,
     #[error("Preauth bundle signature is invalid — possible identity binding attack")]
     PreauthBundleSignatureInvalid,
+    #[error("KEM key signature is missing for an authenticated identity")]
+    KemKeySignatureMissing,
+    #[error("Advertised KEM key could not be encapsulated")]
+    KemEncapsulationFailed,
     #[error("Secure memory error: {0}")]
     SecureMemory(#[from] SecureMemoryError),
     #[error("HMAC key error — key was rejected by the MAC implementation")]
@@ -289,29 +295,17 @@ pub fn x3dh_initiate(
     // A non-zero identity key with Some(sig) that fails verification → hard error.
     let identity_is_zero = bob_bundle.identity_ed25519_pub == [0u8; 32];
     if !identity_is_zero {
-        if let Some(ref sig_bytes) = bob_bundle.preauth_sig {
-            let vk = Ed25519VerifyingKey::from_bytes(&bob_bundle.identity_ed25519_pub)
-                // Transform the result, mapping errors to the local error type.
-                // Map the error to the local error type.
-                // Map the error to the local error type.
-                .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
-            // Ed25519 signature for authentication and integrity.
-            let sig = Ed25519Signature::from_slice(sig_bytes)
-                // Transform the result, mapping errors to the local error type.
-                // Map the error to the local error type.
-                // Map the error to the local error type.
-                .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
-            // Invoke the associated function.
-            let msg = PreauthBundle::signed_message(&bob_bundle.preauth_x25519_pub);
-            // Verify the signature against the claimed public key.
-            // Verify the cryptographic signature.
-            // Verify the cryptographic signature.
-            vk.verify(&msg, &sig)
-                // Transform the result, mapping errors to the local error type.
-                // Map the error to the local error type.
-                // Map the error to the local error type.
-                .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
-        }
+        let sig_bytes = bob_bundle
+            .preauth_sig
+            .as_ref()
+            .ok_or(X3dhError::PreauthBundleSignatureMissing)?;
+        let vk = Ed25519VerifyingKey::from_bytes(&bob_bundle.identity_ed25519_pub)
+            .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
+        let sig = Ed25519Signature::from_slice(sig_bytes)
+            .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
+        let msg = PreauthBundle::signed_message(&bob_bundle.preauth_x25519_pub);
+        vk.verify(&msg, &sig)
+            .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
     }
 
     // Compute the three DH values
@@ -369,9 +363,7 @@ pub fn x3dh_initiate(
                     .map_err(|_| X3dhError::PreauthBundleSignatureInvalid)?;
                 true
             } else {
-                // No KEM signature present — skip PQXDH to avoid using an
-                // unsigned (potentially substituted) KEM key.
-                false
+                return Err(X3dhError::KemKeySignatureMissing);
             }
         } else {
             // Zero identity key (legacy bundle) — skip KEM sig check.
@@ -389,11 +381,10 @@ pub fn x3dh_initiate(
                 &mut ikm,
             ) {
                 Some(ph) => (true, Some(ph)),
-                None => (false, None),
+                None => return Err(X3dhError::KemEncapsulationFailed),
             }
         } else {
-            // KEM key is unsigned — fall back to classical X3DH.
-            (false, None)
+            return Err(X3dhError::KemKeySignatureMissing);
         }
     } else {
         // No KEM public key in bundle — classical X3DH.
@@ -1125,9 +1116,23 @@ mod tests {
     }
 
     #[test]
-    fn test_kem_sig_unsigned_kem_key_skips_pqxdh() {
-        // A bundle with a KEM key but no KEM signature should fall back to
-        // classical X3DH (not PQXDH).
+    fn test_known_identity_missing_preauth_signature_is_rejected() {
+        let ik_a_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let ik_a_pub = *X25519Public::from(&ik_a_secret).as_bytes();
+        let (mut bundle, _) = make_bob_bundle_with_kem_sig();
+        bundle.preauth_sig = None;
+
+        let result = x3dh_initiate(&ik_a_secret, &ik_a_pub, &bundle);
+        assert!(matches!(
+            result,
+            Err(X3dhError::PreauthBundleSignatureMissing)
+        ));
+    }
+
+    #[test]
+    fn test_kem_sig_unsigned_kem_key_is_rejected() {
+        // An authenticated bundle that advertises a KEM key must also carry
+        // its identity binding signature.
         let ik_a_secret = X25519Secret::random_from_rng(rand_core::OsRng);
         let ik_a_pub = *X25519Public::from(&ik_a_secret).as_bytes();
 
@@ -1136,11 +1141,9 @@ mod tests {
         bundle.kem_sig = None;
 
         let result = x3dh_initiate(&ik_a_secret, &ik_a_pub, &bundle);
-        assert!(result.is_ok(), "X3DH should succeed without PQXDH");
-        // The session should NOT be post-quantum because the KEM key was unsigned.
         assert!(
-            !result.as_ref().map(|o| o.is_post_quantum).unwrap_or(true),
-            "Session must not be post-quantum when KEM key is unsigned"
+            matches!(result, Err(X3dhError::KemKeySignatureMissing)),
+            "unsigned advertised KEM key must fail closed"
         );
     }
 

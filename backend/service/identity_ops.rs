@@ -668,17 +668,17 @@ impl MeshRuntime {
             return;
         }
 
-        // Write the secret to the fallback file only if it does not already
-        // exist.  We intentionally never re-read this file here — the Keystore
-        // copy was injected above and is now the single source of truth.
-        // The file exists solely as a last-resort recovery path in case the
-        // Keystore entry is lost (§3.1.1 — hardware-backed key is preferred
-        // but must not be the only copy on devices without secure deletion).
+        // A successfully injected hardware-backed identity supersedes any
+        // legacy raw file. Failure to remove it is security-significant and
+        // remains visible rather than silently preserving a plaintext copy.
         let path = self.mesh_identity_path();
-        if !path.exists() {
-            // Best-effort: ignore write errors.  The in-memory identity is
-            // already loaded, so a failed write only affects the fallback path.
-            let _ = std::fs::write(&path, secret);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                self.set_error(&format!(
+                    "Failed to remove legacy plaintext mesh identity: {e}"
+                ));
+                return;
+            }
         }
 
         // Refresh Layer 1 participation flags and start transport subsystems.
