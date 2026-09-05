@@ -361,12 +361,12 @@ meshtastic = { version = "0.1.8", optional = true }
 #
 #   rustls is a pure-Rust TLS implementation with zero external C dependencies.
 #   It has no dlopen-time initialization, so it works safely on Android.
-arti-client = { version = "0.40", features = ["tokio", "rustls", "onion-service-service"] }
-tor-hsservice = { version = "0.40" }
-tor-llcrypto = "0.40"
-tor-cell = "0.40"
-tor-circmgr = "0.40"
-tor-proto = "0.40"
+arti-client = { version = "0.46", features = ["tokio", "rustls", "onion-service-service"] }
+tor-hsservice = { version = "0.46" }
+tor-llcrypto = "0.46"
+tor-cell = "0.46"
+tor-circmgr = "0.46"
+tor-proto = "0.46"
 data-encoding = "2"
 futures = "0.3"
 sha3 = "0.10"
@@ -383,7 +383,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 # Arti supports multiple async runtimes.  This crate provides the glue that
 # lets Arti use tokio (our chosen runtime) instead of its default async-std.
 # Must use the same runtime features ("tokio", "rustls") as arti-client.
-tor-rtcompat = { version = "0.40", features = ["tokio", "rustls"] }
+tor-rtcompat = { version = "0.46", features = ["tokio", "rustls"] }
 
 # --- File transfer -----------------------------------------------------------
 
@@ -409,21 +409,7 @@ bytes = "1.0"
 # ChaCha20-Poly1305 encryption provides the cryptographic integrity guarantee.
 crc32fast = "1.3"
 
-# --- DNS and local discovery -------------------------------------------------
-
-# trust-dns-resolver — async DNS resolver.
-#
-# Used to resolve hostnames to IP addresses via the OS's configured DNS
-# servers.  The async API is important here: a DNS lookup that takes 2 seconds
-# should not block the entire application while waiting.
-trust-dns-resolver = "0.23"
-
-# trust-dns-server — embedded DNS server.
-#
-# Mesh Infinity can optionally run a local DNS server to map mesh peer names
-# (e.g. "alice.mesh") to their current IP addresses on the virtual mesh
-# network interface, without needing an external DNS provider.
-trust-dns-server = "0.23"
+# --- Local discovery ---------------------------------------------------------
 
 # mdns-sd — multicast DNS service discovery (mDNS / DNS-SD).
 #
@@ -443,12 +429,8 @@ mdns-sd = "0.18"
 # compression useless.
 flate2 = "1.0"
 
-# lru — Least-Recently-Used cache with bounded memory.
-#
-# Used for caching decrypted message content and resolved peer addresses.
-# The LRU eviction policy ensures the cache never grows beyond a fixed size:
-# when full, the least-recently-accessed entry is evicted to make room.
-lru = "0.16"
+# Bounded delivery-deduplication caches.
+lru = "0.18.4"
 
 # --- Backend services --------------------------------------------------------
 
@@ -581,9 +563,8 @@ tokio-rustls = "0.26"
 # rustls — TLS implementation used by the WebUI HTTPS server.
 rustls = { version = "0.23", features = ["ring"] }
 
-# rustls-pemfile — parse PEM-encoded certificates and private keys.
-# Used by the clientless WebUI TLS module to load persisted certificates.
-rustls-pemfile = "2"
+# Maintained PEM parsing types used by the clientless TLS endpoint.
+rustls-pki-types = { version = "1", features = ["std"] }
 
 # hyper — HTTP/1.1 and HTTP/2 implementation used directly in the clientless
 # WebUI's TLS accept loop (service_fn adaptor, Request<Incoming>).
@@ -601,10 +582,18 @@ tower = "0.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # libp2p — modular networking stack for GossipSub + Rendezvous + AutoNAT (§5.24).
-libp2p = { version = "0.54", features = ["gossipsub", "rendezvous", "tcp", "noise", "yamux", "autonat", "tokio", "macros"] }
-
-# reed-solomon-erasure — Reed-Solomon error correction for telephone subchannel (§5.16).
-reed-solomon-erasure = "6"
+# Use only the protocol components Mesh actually enables.  Depending on the
+# umbrella crate records optional DNS/mDNS/QUIC/UPnP dependency graphs in the
+# lockfile even when those transports are disabled, which weakens audit gates.
+libp2p-core = "0.43.2"
+libp2p-identity = { version = "0.2.12", features = ["ed25519", "peerid", "rand"] }
+libp2p-swarm = { version = "0.47.1", features = ["macros", "tokio"] }
+libp2p-gossipsub = "0.49.4"
+libp2p-rendezvous = "0.17.0"
+libp2p-autonat = "0.15.0"
+libp2p-tcp = { version = "0.44.1", features = ["tokio"] }
+libp2p-noise = "0.46.1"
+libp2p-yamux = "0.47.0"
 
 # =============================================================================
 # [[bin]] — binary targets
@@ -677,14 +666,6 @@ keyring = "3"
 # structures.  Used to build and parse mesh routing packets at the IP layer
 # when the VPN routing feature is active.
 pnet = "0.35"
-
-# tun-tap — TUN/TAP virtual network interface driver for Linux/macOS.
-#
-# A TUN device is a virtual network interface that routes IP packets through
-# user-space code instead of real hardware.  WireGuard, OpenVPN, and Tailscale
-# all use TUN devices.  Mesh Infinity uses one to intercept and route traffic
-# through the mesh when VPN routing is enabled.
-tun-tap = "0.1"
 
 # Windows-only: virtual network interface library.
 [target.'cfg(windows)'.dependencies]

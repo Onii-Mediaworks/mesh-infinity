@@ -73,12 +73,15 @@ pub const LIBP2P_TCP_PORT: u16 = 4001;
 // libp2p types and abstractions
 // ────────────────────────────────────────────────────────────────────────────
 
-use libp2p::{
-    autonat,
-    gossipsub::{self, IdentTopic, TopicHash},
-    identity::Keypair,
-    noise, rendezvous, tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
-};
+use libp2p_autonat as autonat;
+use libp2p_core::{upgrade, Multiaddr, Transport as _};
+use libp2p_gossipsub::{self as gossipsub, IdentTopic, TopicHash};
+use libp2p_identity::{Keypair, PeerId};
+use libp2p_noise as noise;
+use libp2p_rendezvous as rendezvous;
+use libp2p_swarm::Swarm;
+use libp2p_tcp as tcp;
+use libp2p_yamux as yamux;
 
 /// Events emitted by the libp2p transport.
 #[derive(Debug)]
@@ -282,49 +285,47 @@ impl Libp2pTransport {
 pub async fn build_swarm(
     keypair: Keypair,
     config: &Libp2pConfig,
-) -> Result<(libp2p::Swarm<MeshBehaviour>, IdentTopic, IdentTopic), Box<dyn std::error::Error>> {
+) -> Result<(Swarm<MeshBehaviour>, IdentTopic, IdentTopic), Box<dyn std::error::Error>> {
     let network_map_topic = IdentTopic::new(GOSSIPSUB_NETWORK_MAP_TOPIC);
     let peer_announce_topic = IdentTopic::new(GOSSIPSUB_PEER_ANNOUNCE_TOPIC);
     let fanout = config.gossipsub_fanout;
+    let peer_id = PeerId::from(keypair.public());
 
-    let swarm = SwarmBuilder::with_existing_identity(keypair)
-        .with_tokio()
-        .with_tcp(
-            tcp::Config::default().nodelay(true),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
-        .with_behaviour(|key| {
-            // GossipSub — mesh map propagation.
-            let gs_config = gossipsub::ConfigBuilder::default()
-                .heartbeat_interval(std::time::Duration::from_secs(10))
-                .mesh_n(fanout)
-                .mesh_n_low(fanout / 2)
-                .mesh_n_high(fanout * 2)
-                .validate_messages()
-                .build()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-            let gossipsub = gossipsub::Behaviour::new(
-                gossipsub::MessageAuthenticity::Signed(key.clone()),
-                gs_config,
-            )
-            .map_err(std::io::Error::other)?;
+    // Build exactly the transport stack Mesh specifies.  Avoiding the libp2p
+    // umbrella builder keeps disabled DNS, mDNS, QUIC, and UPnP implementations
+    // out of the resolved dependency graph and therefore out of release SBOMs.
+    let transport = tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
+        .upgrade(upgrade::Version::V1Lazy)
+        .authenticate(noise::Config::new(&keypair)?)
+        .multiplex(yamux::Config::default())
+        .boxed();
 
-            // Rendezvous client — lightweight bootstrap.
-            let rendezvous = rendezvous::client::Behaviour::new(key.clone());
+    let gs_config = gossipsub::ConfigBuilder::default()
+        .heartbeat_interval(std::time::Duration::from_secs(10))
+        .mesh_n(fanout)
+        .mesh_n_low(fanout / 2)
+        .mesh_n_high(fanout * 2)
+        .validate_messages()
+        .build()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let gossipsub = gossipsub::Behaviour::new(
+        gossipsub::MessageAuthenticity::Signed(keypair.clone()),
+        gs_config,
+    )
+    .map_err(std::io::Error::other)?;
 
-            // AutoNAT — detect our reachability.
-            let autonat =
-                autonat::Behaviour::new(PeerId::from(key.public()), autonat::Config::default());
-
-            Ok(MeshBehaviour {
-                gossipsub,
-                rendezvous,
-                autonat,
-            })
-        })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(std::time::Duration::from_secs(60)))
-        .build();
+    let behaviour = MeshBehaviour {
+        gossipsub,
+        rendezvous: rendezvous::client::Behaviour::new(keypair),
+        autonat: autonat::Behaviour::new(peer_id, autonat::Config::default()),
+    };
+    let swarm = Swarm::new(
+        transport,
+        behaviour,
+        peer_id,
+        libp2p_swarm::Config::with_tokio_executor()
+            .with_idle_connection_timeout(std::time::Duration::from_secs(60)),
+    );
 
     Ok((swarm, network_map_topic, peer_announce_topic))
 }
@@ -332,7 +333,8 @@ pub async fn build_swarm(
 /// Combined libp2p behaviour for Mesh Infinity.
 ///
 /// Deliberately excludes Identify, Kademlia, and Circuit Relay.
-#[derive(libp2p::swarm::NetworkBehaviour)]
+#[derive(libp2p_swarm::NetworkBehaviour)]
+#[behaviour(prelude = "libp2p_swarm::derive_prelude")]
 pub struct MeshBehaviour {
     pub gossipsub: gossipsub::Behaviour,
     pub rendezvous: rendezvous::client::Behaviour,

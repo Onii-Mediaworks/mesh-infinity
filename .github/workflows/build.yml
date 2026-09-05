@@ -19,10 +19,50 @@ env:
 
 jobs:
 
+  # Security evidence is generated from the exact committed lockfile before
+  # any platform artifact can be packaged or published.
+  security-evidence:
+    name: security-evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify committed dependency resolution
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Install pinned dependency-audit tools
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-cyclonedx --version 0.5.9 --locked
+
+      - name: RustSec gate
+        run: python3 scripts/security/rustsec_gate.py
+
+      - name: Generate complete CycloneDX SBOM
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          cargo cyclonedx \
+            --format json \
+            --spec-version 1.5 \
+            --target all \
+            --override-filename mesh-infinity.cdx
+          mkdir -p security-evidence
+          mv mesh-infinity.cdx.json security-evidence/
+          cp Cargo.lock security-evidence/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesh-infinity-security-evidence
+          path: security-evidence/
+          retention-days: 90
+
   # ── Android ────────────────────────────────────────────────────────────────
 
   android:
     name: android
+    needs: [security-evidence]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +102,7 @@ jobs:
 
   macos:
     name: macos
+    needs: [security-evidence]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +131,7 @@ jobs:
 
   ios:
     name: ios
+    needs: [security-evidence]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +160,7 @@ jobs:
 
   linux:
     name: linux
+    needs: [security-evidence]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,6 +197,7 @@ jobs:
 
   windows:
     name: windows
+    needs: [security-evidence]
     runs-on: windows-latest
     defaults:
       run:
@@ -284,6 +328,8 @@ jobs:
             dist/**/*.rpm
             dist/**/*.exe
             dist/**/*.zip
+            dist/**/*.json
+            dist/**/*.lock
 
   # ── Full Release ───────────────────────────────────────────────────────────
   # Triggered by pushing a version tag (e.g. git tag v0.3.0 && git push --tags).
@@ -345,3 +391,5 @@ jobs:
             dist/**/*.rpm
             dist/**/*.exe
             dist/**/*.zip
+            dist/**/*.json
+            dist/**/*.lock

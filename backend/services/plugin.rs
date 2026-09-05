@@ -841,6 +841,7 @@ fn parse_permission_str(s: &str) -> PluginPermission {
 ///   - All other hooks have no mandatory permission (custom hooks)
 // hook_name_to_permission() — maps hook strings to the required PluginPermission.
 // Used exclusively by invoke_hook_sandboxed() for pre-dispatch permission gating.
+#[cfg(test)]
 fn hook_name_to_permission(hook_name: &str) -> Option<PluginPermission> {
     // Check each well-known hook prefix and return the corresponding permission.
     // Prefix matching is used so plugin authors can create namespaced variants

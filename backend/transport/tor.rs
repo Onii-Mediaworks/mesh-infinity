@@ -58,7 +58,7 @@ use sha2::Sha256;
 use sha3::{Digest as Sha3Digest, Sha3_256};
 use tokio::runtime::Runtime;
 use tor_circmgr::IsolationToken;
-use tor_proto::client::stream::IncomingStreamRequest;
+use tor_proto::stream::IncomingStreamRequest;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -218,7 +218,6 @@ impl TorTransport {
         let client = runtime
             .block_on(async { arti_client::TorClient::create_bootstrapped(config).await })
             .context("Tor bootstrap")?;
-        let client = Arc::new(client);
 
         // --- Launch hidden service ---
         //

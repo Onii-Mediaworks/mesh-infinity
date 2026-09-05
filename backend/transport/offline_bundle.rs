@@ -257,7 +257,6 @@ fn hkdf_expand(ikm: &[u8], info: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::offline::RoutingMode;
 
     fn make_x25519_pair() -> (X25519Secret, X25519Public) {
         let secret = X25519Secret::random_from_rng(OsRng);

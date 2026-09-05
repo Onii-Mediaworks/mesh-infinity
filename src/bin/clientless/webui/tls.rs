@@ -131,29 +131,22 @@ fn generate_self_signed() -> Result<(String, String)> {
 
 /// Build a `TlsAcceptor` from PEM-encoded certificate and private key strings.
 fn build_tls_acceptor(cert_pem: &str, key_pem: &str) -> Result<TlsAcceptor> {
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    use rustls_pemfile::{certs, pkcs8_private_keys};
+    use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
-    // Parse the certificate chain from PEM.
-    let cert_chain: Vec<CertificateDer<'static>> = {
-        let mut reader = std::io::BufReader::new(cert_pem.as_bytes());
-        certs(&mut reader)
+    // Parse every certificate in the PEM chain with rustls' maintained
+    // pki-types parser. An empty or malformed chain is rejected.
+    let cert_chain: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_slice_iter(cert_pem.as_bytes())
             .collect::<std::result::Result<Vec<_>, _>>()
-            .context("failed to parse certificate PEM")?
-    };
+            .context("failed to parse certificate PEM")?;
+    if cert_chain.is_empty() {
+        anyhow::bail!("no certificate found in PEM");
+    }
 
-    // Parse the private key from PEM (PKCS#8 format, which rcgen produces).
-    // The key must be extracted into a local binding before the reader is
-    // dropped — the iterator borrows the reader, so we collect first.
-    let private_key: PrivateKeyDer<'static> = {
-        let mut reader = std::io::BufReader::new(key_pem.as_bytes());
-        let key = pkcs8_private_keys(&mut reader)
-            .next()
-            .context("no private key found in PEM")?
-            .map(PrivateKeyDer::Pkcs8)
-            .context("failed to parse private key PEM")?;
-        key // reader drops here, before key is moved out
-    };
+    // rcgen emits PKCS#8, but PrivateKeyDer also accepts the other key
+    // encodings rustls supports, keeping this loader safe for rotated keys.
+    let private_key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+        .context("failed to parse private key PEM")?;
 
     // Build the rustls ServerConfig.
     let config = ServerConfig::builder()

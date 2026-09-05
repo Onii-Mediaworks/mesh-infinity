@@ -1,0 +1,13 @@
+# Narrow, reviewed RustSec exceptions permitted by SPEC section 21.6.3.
+# Every exception is exact-version scoped and expires automatically.
+
+version = 1
+
+[[exception]]
+advisory = "RUSTSEC-2023-0071"
+package = "rsa"
+version = "0.9.10"
+expires = "2026-12-05"
+owner = "Mesh Infinity security maintainers"
+rationale = "Arti 0.46 requires RustCrypto RSA for legacy Tor relay identity and PKCS#1 signature verification. Mesh does not expose RSA private-key decryption, the operation affected by Marvin timing key recovery. Arti has no fixed compatible RSA release."
+controls = "Keep Arti current; do not expose tor_llcrypto RSA private-key generation, signing, or decryption through Mesh APIs; re-evaluate on every Arti/RSA update and before expiry."

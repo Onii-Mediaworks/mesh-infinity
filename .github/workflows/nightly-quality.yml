@@ -43,7 +43,7 @@ jobs:
         run: cargo install cargo-fuzz --locked
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: fuzz registry consistency
         run: python3 tests/scripts/check_fuzz_registry.py
@@ -77,8 +77,8 @@ jobs:
             cargo +nightly fuzz run "${target}" -- -max_total_time=600
           done < /tmp/mesh_infinity_active_fuzz_targets.txt
 
-      - name: cargo audit
-        run: cargo audit
+      - name: RustSec gate
+        run: python3 scripts/security/rustsec_gate.py
 
   # ── Coverage (cargo-llvm-cov) ─────────────────────────────────────────────
   #
