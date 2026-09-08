@@ -5,8 +5,7 @@
 use std::os::raw::c_char;
 use std::ptr;
 
-use super::{MeshContext};
-
+use super::MeshContext;
 
 // ---------------------------------------------------------------------------
 // Events (polling)

@@ -485,11 +485,7 @@ impl MembershipManager {
     /// A member leaves voluntarily.
     ///
     /// Returns true if a rekey is needed (always true after a leave).
-    pub fn member_leave(
-        &mut self,
-        member: PeerId,
-        now: u64,
-    ) -> Result<bool, MembershipError> {
+    pub fn member_leave(&mut self, member: PeerId, now: u64) -> Result<bool, MembershipError> {
         if !self.is_member(&member) {
             return Err(MembershipError::NotMember);
         }

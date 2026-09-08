@@ -216,9 +216,6 @@ impl MeshRuntime {
     ///
     /// Idempotent — returns `Ok(())` if Tor is already running.
     pub fn tor_enable(&self) -> Result<(), String> {
-        // Idempotent: if Tor is already running, return success immediately.
-        // This allows Flutter to call tor_enable() on every app resume without
-        // worrying about double-bootstrap.
         if self
             .tor_transport
             .lock()
@@ -227,37 +224,98 @@ impl MeshRuntime {
         {
             return Ok(());
         }
+        if self
+            .tor_bootstrap_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            return Ok(());
+        }
 
-        // Require an unlocked identity because the Tor v3 onion address is
-        // deterministically derived from the identity master key via
-        // HKDF-SHA256 with domain "meshinfinity-tor-service-v1".  This means
-        // the same identity always produces the same onion address, which
-        // allows peers to reach us at a stable .onion even across restarts.
         let (master_key, peer_id_hex) = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             let id = guard.as_ref().ok_or("identity not unlocked")?;
             (*id.master_key, id.peer_id().to_hex())
         };
-
         let state_dir = std::path::PathBuf::from(&self.data_dir);
-        let transport = crate::transport::tor::TorTransport::bootstrap(
-            &master_key,
-            &peer_id_hex,
-            &state_dir,
-            DEFAULT_HS_PORT,
-        )
-        .map_err(|e| format!("Tor bootstrap failed: {e}"))?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self
+            .tor_bootstrap_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(receiver);
 
-        let onion_addr = transport.onion_address.clone();
-        *self.tor_transport.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
+        self.diagnostic_log("tor", "bootstrap_scheduled");
+        let spawn_result = std::thread::Builder::new()
+            .name("mesh-tor-bootstrap".to_string())
+            .spawn(move || {
+                let result = crate::transport::tor::TorTransport::bootstrap(
+                    &master_key,
+                    &peer_id_hex,
+                    &state_dir,
+                    DEFAULT_HS_PORT,
+                )
+                .map_err(|error| format!("Tor bootstrap failed: {error}"));
+                let _ = sender.send(result);
+            });
+        if let Err(error) = spawn_result {
+            *self
+                .tor_bootstrap_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            return Err(format!("Tor bootstrap worker failed: {error}"));
+        }
+
         self.transport_flags
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .tor = true;
         self.save_settings();
-
-        tracing::info!("Tor transport enabled — onion address: {}", onion_addr);
         Ok(())
+    }
+
+    /// Install a completed Tor bootstrap without blocking the UI or poll loop.
+    pub(crate) fn poll_tor_bootstrap(&self) {
+        let result = {
+            let mut pending = self
+                .tor_bootstrap_rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(receiver) = pending.as_ref() else {
+                return;
+            };
+            match receiver.try_recv() {
+                Ok(result) => {
+                    *pending = None;
+                    Some(result)
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    *pending = None;
+                    Some(Err("Tor bootstrap worker disconnected".to_string()))
+                }
+            }
+        };
+
+        match result {
+            Some(Ok(transport)) => {
+                *self.tor_transport.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
+                self.diagnostic_log("tor", "bootstrap_completed");
+                self.push_event(
+                    "TransportUpdated",
+                    serde_json::json!({"transport": "tor", "ready": true}),
+                );
+            }
+            Some(Err(error)) => {
+                self.diagnostic_log("tor", "bootstrap_failed");
+                self.set_error(&error);
+                self.push_event(
+                    "TransportUpdated",
+                    serde_json::json!({"transport": "tor", "ready": false}),
+                );
+            }
+            None => {}
+        }
     }
 
     /// Disable the Tor transport and shut down the hidden service.
@@ -265,6 +323,10 @@ impl MeshRuntime {
     /// Drops the `TorTransport` (which closes the runtime and all circuits).
     /// Idempotent.
     pub fn tor_disable(&self) {
+        *self
+            .tor_bootstrap_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         *self.tor_transport.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.transport_flags
             .lock()

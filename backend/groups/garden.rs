@@ -366,8 +366,8 @@ pub enum AutoModTrigger {
 // Match exhaustively to handle every protocol state.
 pub enum AutoModAction {
     BlockMessage,
-    Timeout(u64), // Duration in seconds.
-    Alert([u8; 32]), // Channel ID to alert.
+    Timeout(u64),      // Duration in seconds.
+    Alert([u8; 32]),   // Channel ID to alert.
     SendLog([u8; 32]), // Channel ID for log.
 }
 

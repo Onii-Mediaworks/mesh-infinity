@@ -455,7 +455,6 @@ pub fn fuzz_cover_traffic(data: &[u8]) -> bool {
             let packet = MixnetPacket::from_bytes(buf);
 
             // Exercise accessors that inspect the parsed packet fields.
-            let _is_dummy = packet.is_dummy();
             let _version = packet.version;
 
             // Round-trip: serialize back and verify the bytes match.
@@ -481,7 +480,7 @@ pub fn fuzz_cover_traffic(data: &[u8]) -> bool {
 
         // Test 3: Also exercise the tick() path, which processes queued
         // packets and may generate cover traffic.
-        node.tick();
+        let _tick_result = node.tick();
     });
 
     // Return true if no panic occurred.

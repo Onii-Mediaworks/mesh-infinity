@@ -284,8 +284,7 @@ impl TunnelReputation {
         // Update the uptime ema to reflect the new state.
         // Advance uptime ema state.
         // Advance uptime ema state.
-        self.uptime_ema =
-            alpha * (ad.uptime_score as f32) + (1.0 - alpha) * self.uptime_ema;
+        self.uptime_ema = alpha * (ad.uptime_score as f32) + (1.0 - alpha) * self.uptime_ema;
         // Update the last seen to reflect the new state.
         // Advance last seen state.
         // Advance last seen state.
@@ -328,10 +327,7 @@ impl TunnelReputation {
         let latency_norm = (1.0 / (1.0 + self.latency_ema / 200.0)).clamp(0.0, 1.0);
         let honesty = if self.honest_reporting { 1.0 } else { 0.0 };
 
-        0.30 * uptime_norm
-            + 0.30 * latency_norm
-            + 0.25 * self.responsiveness
-            + 0.15 * honesty
+        0.30 * uptime_norm + 0.30 * latency_norm + 0.25 * self.responsiveness + 0.15 * honesty
     }
 }
 
@@ -384,11 +380,7 @@ impl TunnelGossipProcessor {
     ///
     /// Returns true if the advertisement was accepted.
     /// Returns false if rate-limited or from a penalized node.
-    pub fn process_advertisement(
-        &mut self,
-        ad: &TunnelAdvertisement,
-        now: u64,
-    ) -> bool {
+    pub fn process_advertisement(&mut self, ad: &TunnelAdvertisement, now: u64) -> bool {
         // Ignore our own advertisements.
         if ad.mesh_pubkey == self.our_pubkey {
             return false;
@@ -437,11 +429,7 @@ impl TunnelGossipProcessor {
     /// Process an incoming CoverageRequest.
     ///
     /// Returns true if we should consider responding (we have capacity).
-    pub fn process_coverage_request(
-        &mut self,
-        req: &CoverageRequest,
-        now: u64,
-    ) -> bool {
+    pub fn process_coverage_request(&mut self, req: &CoverageRequest, now: u64) -> bool {
         if req.target_pubkey == self.our_pubkey {
             return false;
         }

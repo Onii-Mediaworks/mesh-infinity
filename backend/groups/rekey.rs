@@ -285,12 +285,7 @@ impl RekeyManager {
     /// `reason`: why the rekey is being triggered.
     /// `member_count`: total members who need new Sender Key material.
     /// `now`: current unix timestamp.
-    pub fn start_rekey(
-        &mut self,
-        reason: RekeyReason,
-        member_count: usize,
-        now: u64,
-    ) -> u64 {
+    pub fn start_rekey(&mut self, reason: RekeyReason, member_count: usize, now: u64) -> u64 {
         let new_epoch = self.state.current_epoch() + 1;
 
         // Update the state to reflect the new state.

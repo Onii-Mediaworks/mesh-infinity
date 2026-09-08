@@ -721,10 +721,19 @@ mod tests {
         let dir = setup_data_dir();
         let (_erase, _wd) = begin_duress_wind_down(dir.path());
         // Layer 2/3 files must be gone as soon as begin_duress_wind_down returns.
-        assert!(!dir.path().join("identity.key").exists(), "identity.key must be erased");
-        assert!(!dir.path().join("rooms.vault").exists(), "rooms.vault must be erased");
+        assert!(
+            !dir.path().join("identity.key").exists(),
+            "identity.key must be erased"
+        );
+        assert!(
+            !dir.path().join("rooms.vault").exists(),
+            "rooms.vault must be erased"
+        );
         // Layer 1 (mesh_identity.key) must still exist.
-        assert!(dir.path().join("mesh_identity.key").exists(), "mesh_identity.key must be preserved");
+        assert!(
+            dir.path().join("mesh_identity.key").exists(),
+            "mesh_identity.key must be preserved"
+        );
     }
 
     #[test]
@@ -782,7 +791,10 @@ mod tests {
             if s == WindDownState::Complete {
                 break;
             }
-            assert!(Instant::now() < deadline, "wind-down state machine did not advance to Complete");
+            assert!(
+                Instant::now() < deadline,
+                "wind-down state machine did not advance to Complete"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(*state.lock().unwrap(), WindDownState::Complete);

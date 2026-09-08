@@ -115,6 +115,11 @@ transport-rf-meshtastic = ["dep:meshtastic"]
 # is gated behind it.  Enable with: cargo build --features vpn-routing
 vpn-routing = []
 
+# Enables deterministic constructors used by the out-of-workspace cargo-fuzz
+# harnesses. Production builds never enable this feature and continue to seed
+# transport randomness from the operating system.
+fuzzing = []
+
 # =============================================================================
 # [dependencies] — external libraries this project requires
 # =============================================================================
@@ -235,6 +240,11 @@ curve25519-dalek = { version = "4", features = ["rand_core"] }
 # features = ["static_secrets"] lets us construct an X25519 private key from
 # raw bytes (needed when loading a saved identity from disk).
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+
+# sphinx-packet — vetted fixed-size onion packet construction used by the native mixnet.
+sphinx-packet = "0.7.0"
+# The Sphinx crate uses x25519-dalek 3; keep its key type isolated from the app protocol key type.
+x25519-dalek-v3 = { package = "x25519-dalek", version = "3.0.0", features = ["static_secrets", "getrandom", "zeroize"] }
 
 # ed25519-dalek — digital signatures using EdDSA on Curve25519.
 #

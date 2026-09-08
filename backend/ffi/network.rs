@@ -7,7 +7,6 @@ use std::ptr;
 
 use super::{c_str_to_str, MeshContext};
 
-
 // ---------------------------------------------------------------------------
 // Network — settings and threat context
 // ---------------------------------------------------------------------------
@@ -330,4 +329,3 @@ pub unsafe extern "C" fn mi_get_android_vpn_policy(ctx: *mut MeshContext) -> *co
     let ctx = unsafe { &*ctx };
     ctx.set_response(&ctx.get_android_vpn_policy())
 }
-

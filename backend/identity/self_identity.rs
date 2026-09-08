@@ -122,8 +122,7 @@ impl SelfIdentity {
         // OS-provided cryptographic random number generator.
         OsRng.fill_bytes(&mut master_key_bytes);
 
-        let (kem_decapsulation_key, kem_encapsulation_key) =
-            derive_kem_keypair(&master_key_bytes);
+        let (kem_decapsulation_key, kem_encapsulation_key) = derive_kem_keypair(&master_key_bytes);
 
         Self {
             ed25519_signing,
@@ -590,7 +589,9 @@ fn derive_identity_dat_key(master_key: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     // HKDF expand to the target key length.
     // HKDF expand to the target key length.
     hk.expand(b"meshinfinity-identity-dat-v1", &mut *key)
-        .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
+        .expect(
+        "HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len",
+    );
     key
 }
 
@@ -609,9 +610,7 @@ pub fn derive_preauth_keypair(ik_secret: &X25519Secret) -> (X25519Secret, X25519
     // If system time is unavailable (clock regression or platform error),
     // log a warning and refuse to derive — the caller must not use a key
     // derived from an unknown week (which could stop rotation silently).
-    let week = match std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-    {
+    let week = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => d.as_secs() / 604_800,
         // Signal failure to the caller with a descriptive error.
         // Error path — signal failure.
@@ -639,8 +638,9 @@ pub fn derive_preauth_keypair(ik_secret: &X25519Secret) -> (X25519Secret, X25519
     // The preauth key output is exactly 32 bytes — well within the HKDF length limit.
     // HKDF expand to the target key length.
     // HKDF expand to the target key length.
-    hk.expand(info.as_bytes(), &mut *preauth_bytes)
-        .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
+    hk.expand(info.as_bytes(), &mut *preauth_bytes).expect(
+        "HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len",
+    );
 
     let preauth_secret = X25519Secret::from(*preauth_bytes);
     let preauth_pub = X25519Public::from(&preauth_secret);

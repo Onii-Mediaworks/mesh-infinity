@@ -284,9 +284,9 @@ mod tests {
     #[test]
     fn passive_assist_records_multiple_protocols() {
         let engine = PassiveAssistEngine::new(true);
-        engine.observe("10.0.0.1", "10.0.0.2", true, 443, 1000);   // QUIC
-        engine.observe("10.0.0.1", "10.0.0.3", false, 5222, 500);  // XMPP
-        engine.observe("10.0.0.1", "10.0.0.4", true, 53, 64);      // DNS
+        engine.observe("10.0.0.1", "10.0.0.2", true, 443, 1000); // QUIC
+        engine.observe("10.0.0.1", "10.0.0.3", false, 5222, 500); // XMPP
+        engine.observe("10.0.0.1", "10.0.0.4", true, 53, 64); // DNS
         let ctx = engine.cover_context();
         assert!(ctx.has_quic_cover());
         assert!(ctx.has_xmpp_cover());
@@ -305,10 +305,10 @@ mod tests {
 
     #[test]
     fn solver_falls_back_to_deniable_carrier_in_elevated_context() {
-        use crate::network::transport_hint::TransportType;
         use crate::network::threat_context::ThreatContext;
+        use crate::network::transport_hint::TransportType;
         use crate::transport::health::{HealthState, TransportStatus};
-        use crate::transport::solver::{Priority, SolverHint, SolverInput, SolverOutput, solve};
+        use crate::transport::solver::{solve, Priority, SolverHint, SolverInput, SolverOutput};
 
         // All available transports are clearnet — Elevated context blocks them all.
         let input = SolverInput {

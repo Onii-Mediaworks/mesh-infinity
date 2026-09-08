@@ -56,12 +56,12 @@ const ARGON2_P_COST: u32 = 4;
 // BACKOFF_SECS — protocol constant.
 // Defined by the spec; must not change without a version bump.
 const BACKOFF_SECS: [u64; 11] = [
-    0, 0, 0, 0, 0, // attempts 1-5: no delay
-    30, // attempt 6
-    120, // attempt 7: 2 minutes
-    600, // attempt 8: 10 minutes
-    3600, // attempt 9: 1 hour
-    86400, // attempt 10: 24 hours
+    0, 0, 0, 0, 0,      // attempts 1-5: no delay
+    30,     // attempt 6
+    120,    // attempt 7: 2 minutes
+    600,    // attempt 8: 10 minutes
+    3600,   // attempt 9: 1 hour
+    86400,  // attempt 10: 24 hours
     259200, // attempt 11+: 72 hours
 ];
 
@@ -182,10 +182,7 @@ fn derive_key_from_pin(pin: &[u8], salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, P
 /// Wrap (encrypt) an identity key with a PIN.
 ///
 /// Returns the encrypted key blob to store on disk.
-pub fn wrap_key_with_pin(
-    identity_key: &[u8; 32],
-    pin: &[u8],
-) -> Result<PinWrappedKey, PinError> {
+pub fn wrap_key_with_pin(identity_key: &[u8; 32], pin: &[u8]) -> Result<PinWrappedKey, PinError> {
     validate_pin(pin)?;
 
     // Generate salt

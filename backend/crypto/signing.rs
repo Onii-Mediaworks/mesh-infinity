@@ -336,11 +336,7 @@ pub fn verify(
 /// Use this ONLY for interop with external systems that don't
 /// use domain separation. For all mesh-internal signatures,
 /// use `verify()` with a domain separator.
-pub fn verify_raw(
-    public_key_bytes: &[u8; 32],
-    message: &[u8],
-    signature_bytes: &[u8],
-) -> bool {
+pub fn verify_raw(public_key_bytes: &[u8; 32], message: &[u8], signature_bytes: &[u8]) -> bool {
     let verifying_key = match VerifyingKey::from_bytes(public_key_bytes) {
         Ok(k) => k,
         // Signal failure to the caller with a descriptive error.

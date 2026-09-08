@@ -83,6 +83,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../app/app_theme.dart';
+import '../app/debug_logger.dart';
 import '../backend/backend_bridge.dart';
 import '../widgets/mask_avatar.dart';
 
@@ -286,9 +287,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       _error = null;
     });
 
-    // createIdentity() is a synchronous FFI call that generates the keypair
-    // and writes it to disk.  Fast in practice (< 100 ms).
+    await DebugLogger.logAndFlush('onboarding.identity.create.call_started');
+    final timer = Stopwatch()..start();
     final ok = bridge.createIdentity();
+    timer.stop();
+    DebugLogger.log(
+      'onboarding.identity.create.call_returned '
+      'ok=$ok duration_ms=${timer.elapsedMilliseconds}',
+    );
     if (!mounted) return;
 
     if (ok) {
@@ -316,14 +322,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
 
     final newlineIdx = text.indexOf('\n');
-    final passphrase =
-        newlineIdx >= 0 ? text.substring(0, newlineIdx).trim() : text;
-    final backupJson =
-        newlineIdx >= 0 ? text.substring(newlineIdx + 1).trim() : '';
+    final passphrase = newlineIdx >= 0
+        ? text.substring(0, newlineIdx).trim()
+        : text;
+    final backupJson = newlineIdx >= 0
+        ? text.substring(newlineIdx + 1).trim()
+        : '';
 
     if (backupJson.isEmpty) {
-      setState(() => _error =
-          'Paste your passphrase on the first line and the backup JSON below it.');
+      setState(
+        () => _error =
+            'Paste your passphrase on the first line and the backup JSON below it.',
+      );
       return;
     }
 
@@ -347,7 +357,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     } else {
       setState(() {
         _busy = false;
-        _error = bridge.getLastError() ??
+        _error =
+            bridge.getLastError() ??
             'Import failed. Check your passphrase and backup data.';
       });
     }
@@ -505,9 +516,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         // App name in the largest display style.
         Text(
           'Mesh Infinity',
-          style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w700),
         ),
 
         const SizedBox(height: 8),
@@ -516,8 +527,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         Text(
           'Encrypted mesh networking for everyone.',
           style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
           textAlign: TextAlign.center,
         ),
 
@@ -542,8 +553,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     height: 18,
                     child: CircularProgressIndicator(
                       strokeWidth: 2.5,
-                      valueColor:
-                          AlwaysStoppedAnimation<Color>(Colors.white),
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                     ),
                   )
                 : const Icon(Icons.person_add_rounded),
@@ -558,9 +568,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           width: double.infinity,
           height: 52,
           child: OutlinedButton.icon(
-            onPressed: _busy
-                ? null
-                : () => _goTo(_Step.importBackup),
+            onPressed: _busy ? null : () => _goTo(_Step.importBackup),
             icon: const Icon(Icons.download_rounded),
             label: const Text('Import from backup'),
           ),
@@ -606,8 +614,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         Text(
           'Line 1: your passphrase\nLines 2 and below: your backup JSON',
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
 
         const SizedBox(height: 16),
@@ -647,9 +655,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
         // Back to Welcome.
         TextButton(
-          onPressed: _busy
-              ? null
-              : () => _goTo(_Step.welcome),
+          onPressed: _busy ? null : () => _goTo(_Step.welcome),
           child: const Text('Back'),
         ),
 
@@ -716,8 +722,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           child: Text(
             'Avatar color',
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
 
@@ -742,8 +748,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   // which colour is active without requiring an overlay icon.
                   border: selected
                       ? Border.all(
-                          color:
-                              Theme.of(context).colorScheme.onSurface,
+                          color: Theme.of(context).colorScheme.onSurface,
                           width: 3,
                         )
                       : null,
@@ -763,8 +768,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         Text(
           'Shared only with contacts you explicitly trust.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
 
         const SizedBox(height: 28),
@@ -832,8 +837,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         Text(
           'Leave blank to stay anonymous. You can change this anytime in Settings.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
 
         const SizedBox(height: 28),
@@ -851,10 +856,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         const SizedBox(height: 8),
 
         // Skip — also saves (with empty public name) and advances.
-        TextButton(
-          onPressed: _saveProfiles,
-          child: const Text('Skip'),
-        ),
+        TextButton(onPressed: _saveProfiles, child: const Text('Skip')),
 
         const SizedBox(height: 16),
       ],
@@ -895,8 +897,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         // Header — inviting tone, not a legal notice.
         const _StepHeader(
           title: 'How Mesh Infinity works',
-          subtitle:
-              'A few honest things worth knowing before you dive in.',
+          subtitle: 'A few honest things worth knowing before you dive in.',
         ),
 
         const SizedBox(height: 20),
@@ -1017,9 +1018,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           width: double.infinity,
           height: 52,
           child: FilledButton(
-            onPressed: _disclosuresRead
-                ? () => _goTo(_Step.pinSetup)
-                : null,
+            onPressed: _disclosuresRead ? () => _goTo(_Step.pinSetup) : null,
             child: const Text('I understand'),
           ),
         ),
@@ -1223,10 +1222,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               isDense: true,
             ),
             items: const [
-              DropdownMenuItem(value: 0,    child: Text('Immediately')),
-              DropdownMenuItem(value: 60,   child: Text('1 minute')),
-              DropdownMenuItem(value: 300,  child: Text('5 minutes')),
-              DropdownMenuItem(value: 900,  child: Text('15 minutes')),
+              DropdownMenuItem(value: 0, child: Text('Immediately')),
+              DropdownMenuItem(value: 60, child: Text('1 minute')),
+              DropdownMenuItem(value: 300, child: Text('5 minutes')),
+              DropdownMenuItem(value: 900, child: Text('15 minutes')),
             ],
             onChanged: (v) => setState(() => _lockTimeoutSecs = v ?? 0),
           ),
@@ -1318,9 +1317,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               // Confirm the user knows they are skipping — then proceed to Done.
               Expanded(
                 child: TextButton(
-                  style: TextButton.styleFrom(
-                    foregroundColor: cs.error,
-                  ),
+                  style: TextButton.styleFrom(foregroundColor: cs.error),
                   onPressed: () => _goTo(_Step.done),
                   child: const Text('Continue without PIN'),
                 ),
@@ -1426,11 +1423,8 @@ class _BrandLogo extends StatelessWidget {
       'assets/logo.png',
       width: size,
       height: size,
-      errorBuilder: (context, error, _) => Icon(
-        Icons.hub_rounded,
-        size: size,
-        color: MeshTheme.brand,
-      ),
+      errorBuilder: (context, error, _) =>
+          Icon(Icons.hub_rounded, size: size, color: MeshTheme.brand),
     );
   }
 }
@@ -1462,11 +1456,8 @@ class _StepHeader extends StatelessWidget {
           'assets/logo.png',
           width: 56,
           height: 56,
-          errorBuilder: (context, error, _) => const Icon(
-            Icons.hub_rounded,
-            size: 56,
-            color: MeshTheme.brand,
-          ),
+          errorBuilder: (context, error, _) =>
+              const Icon(Icons.hub_rounded, size: 56, color: MeshTheme.brand),
         ),
 
         const SizedBox(height: 8),
@@ -1522,14 +1513,18 @@ class _ErrorBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline_rounded, size: 18, color: cs.onErrorContainer),
+          Icon(
+            Icons.error_outline_rounded,
+            size: 18,
+            color: cs.onErrorContainer,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               message,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: cs.onErrorContainer,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: cs.onErrorContainer),
             ),
           ),
         ],

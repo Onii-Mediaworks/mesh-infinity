@@ -1207,7 +1207,7 @@ impl MeshRuntime {
                         }],
                         last_seen: now,
                         transport_hints,
-                         prev_hash: None,
+                        prev_hash: None,
                         public_profile: None,
                         services: vec![],
                         sequence: now,

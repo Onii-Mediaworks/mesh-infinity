@@ -36,16 +36,15 @@
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
-    ChaCha20Poly1305,
-    Nonce,
+    ChaCha20Poly1305, Nonce,
 };
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
 
-use crate::transport::offline::{build_bundle, parse_bundle, ParsedBundle, RoutingMode};
 use crate::transport::offline::OfflineError;
+use crate::transport::offline::{build_bundle, parse_bundle, ParsedBundle, RoutingMode};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -246,7 +245,8 @@ impl OfflineBundle {
 fn hkdf_expand(ikm: &[u8], info: &[u8]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(None, ikm);
     let mut out = [0u8; 32];
-    hk.expand(info, &mut out).expect("HKDF expand failed — output length is valid");
+    hk.expand(info, &mut out)
+        .expect("HKDF expand failed — output length is valid");
     out
 }
 
@@ -277,23 +277,17 @@ mod tests {
         ];
 
         // Create.
-        let bundle = OfflineBundle::create_for_recipient(
-            &packets,
-            source_id,
-            dest_id,
-            recip_pub.as_bytes(),
-        )
-        .expect("create_for_recipient failed");
+        let bundle =
+            OfflineBundle::create_for_recipient(&packets, source_id, dest_id, recip_pub.as_bytes())
+                .expect("create_for_recipient failed");
 
         // Verify encrypted bytes start with magic.
         assert_eq!(&bundle.encrypted_bytes[..4], &ENCRYPTED_BUNDLE_MAGIC);
 
         // Open.
-        let (_opened, parsed) = OfflineBundle::open_as_recipient(
-            &bundle.encrypted_bytes,
-            &recip_secret.to_bytes(),
-        )
-        .expect("open_as_recipient failed");
+        let (_opened, parsed) =
+            OfflineBundle::open_as_recipient(&bundle.encrypted_bytes, &recip_secret.to_bytes())
+                .expect("open_as_recipient failed");
 
         // Verify inner bundle contents.
         assert_eq!(parsed.header.source_id, source_id);
@@ -321,10 +315,8 @@ mod tests {
         let last = bundle.encrypted_bytes.len() - 1;
         bundle.encrypted_bytes[last] ^= 0xFF;
 
-        let result = OfflineBundle::open_as_recipient(
-            &bundle.encrypted_bytes,
-            &recip_secret.to_bytes(),
-        );
+        let result =
+            OfflineBundle::open_as_recipient(&bundle.encrypted_bytes, &recip_secret.to_bytes());
         assert!(result.is_err());
     }
 
@@ -342,10 +334,8 @@ mod tests {
         )
         .expect("create failed");
 
-        let result = OfflineBundle::open_as_recipient(
-            &bundle.encrypted_bytes,
-            &wrong_secret.to_bytes(),
-        );
+        let result =
+            OfflineBundle::open_as_recipient(&bundle.encrypted_bytes, &wrong_secret.to_bytes());
         assert!(result.is_err());
     }
 
@@ -383,11 +373,19 @@ mod tests {
         let packets: Vec<Vec<u8>> = vec![b"p".to_vec()];
 
         let b1 = OfflineBundle::create_for_recipient(
-            &packets, [0u8; 32], [0u8; 32], recip_pub.as_bytes(),
-        ).expect("b1 create failed");
+            &packets,
+            [0u8; 32],
+            [0u8; 32],
+            recip_pub.as_bytes(),
+        )
+        .expect("b1 create failed");
         let b2 = OfflineBundle::create_for_recipient(
-            &packets, [0u8; 32], [0u8; 32], recip_pub.as_bytes(),
-        ).expect("b2 create failed");
+            &packets,
+            [0u8; 32],
+            [0u8; 32],
+            recip_pub.as_bytes(),
+        )
+        .expect("b2 create failed");
 
         // Bundle IDs must be distinct (random 16-byte values).
         assert_ne!(b1.bundle_id, b2.bundle_id);

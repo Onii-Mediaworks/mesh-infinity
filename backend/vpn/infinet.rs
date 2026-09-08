@@ -629,10 +629,7 @@ impl IpAllocator {
     /// `existing_addrs`: addresses already assigned to other devices.
     ///
     /// Returns an address like "100.65.0.2" (skipping .0.0 and .0.1).
-    pub fn allocate_device_v4(
-        member_subnet: &str,
-        existing_addrs: &[String],
-    ) -> Option<String> {
+    pub fn allocate_device_v4(member_subnet: &str, existing_addrs: &[String]) -> Option<String> {
         // Parse the second octet from the subnet.
         let parts: Vec<&str> = member_subnet.split('.').collect();
         // Validate the input length to prevent out-of-bounds access.
@@ -1125,9 +1122,7 @@ pub fn generate_dns_entries(
                 // Format the output for display or logging.
                 let fqdn = format!(
                     "{}.{}.{}.infinet.meshinfinity",
-                    device.shortname,
-                    member.shortname,
-                    infinet_name
+                    device.shortname, member.shortname, infinet_name
                 );
                 // Append to the collection.
                 // Append to the collection.
@@ -1147,9 +1142,7 @@ pub fn generate_dns_entries(
                 // Format the output for display or logging.
                 let fqdn = format!(
                     "{}.{}.{}.infinet.meshinfinity",
-                    device.shortname,
-                    member.shortname,
-                    infinet_name
+                    device.shortname, member.shortname, infinet_name
                 );
                 // Append to the collection.
                 // Append to the collection.
@@ -1172,10 +1165,7 @@ pub fn generate_dns_entries(
                 // Format the output for display or logging.
                 let fqdn = format!(
                     "{}.{}.{}.{}.infinet.meshinfinity",
-                    service.name,
-                    device.shortname,
-                    member.shortname,
-                    infinet_name
+                    service.name, device.shortname, member.shortname, infinet_name
                 );
                 // Service names resolve to the device's IP.
                 if let Some(ref addr) = device.addr_v4 {

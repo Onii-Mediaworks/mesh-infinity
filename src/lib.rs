@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Mesh Infinity — unified crate root.
 //!
 //! This is the single Rust crate for the Mesh Infinity backend.

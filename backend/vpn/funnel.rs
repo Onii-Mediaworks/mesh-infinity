@@ -66,10 +66,7 @@ pub enum DdnsConfig {
         record_name: String,
     },
     /// deSEC.
-    DeSec {
-        domain: String,
-        api_token: String,
-    },
+    DeSec { domain: String, api_token: String },
     /// RFC 2136 dynamic DNS.
     Rfc2136 {
         server: String,

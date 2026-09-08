@@ -40,8 +40,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -1175,7 +1175,7 @@ fn dns_carrier_wrap(session_key: &[u8; 32], payload: &[u8]) -> Option<Vec<u8>> {
         pkt.extend_from_slice(lb);
     }
     pkt.push(0x00); // root label
-    // QTYPE = A (0x0001), QCLASS = IN (0x0001).
+                    // QTYPE = A (0x0001), QCLASS = IN (0x0001).
     pkt.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
 
     Some(pkt)
@@ -1243,7 +1243,10 @@ fn email_unwrap(_session_key: &[u8; 32], frame: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(frame).ok()?;
     let prefix = "X-Mesh-Data: ";
     let start = text.find(prefix)? + prefix.len();
-    let end = text[start..].find('\r').map(|i| start + i).unwrap_or(text.len());
+    let end = text[start..]
+        .find('\r')
+        .map(|i| start + i)
+        .unwrap_or(text.len());
     let hex_str = &text[start..end];
 
     // Decode the hex string.  hex::decode returns Err on malformed input

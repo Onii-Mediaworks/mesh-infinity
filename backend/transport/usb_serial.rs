@@ -733,14 +733,13 @@ impl UsbSerialTransport {
             let guard = self.fd.lock().unwrap_or_else(|e| e.into_inner());
             let fd = guard.as_ref().copied().ok_or(UsbSerialError::PortNotOpen)?;
             write_all_fd(fd, &frame)?;
+            Ok(())
         }
         #[cfg(not(unix))]
         {
             let _ = frame;
-            return Err(UsbSerialError::PortNotOpen);
+            Err(UsbSerialError::PortNotOpen)
         }
-
-        Ok(())
     }
 
     /// Enqueue `data` for later transmission.

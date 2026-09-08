@@ -45,7 +45,7 @@ rand_core = "0.6"
 
 # The main Mesh Infinity crate — provides all parsers under test.
 # `path` points to the workspace root from the fuzz/ subdirectory.
-mesh-infinity = { path = ".." }
+mesh-infinity = { path = "..", features = ["fuzzing"] }
 
 # cargo-fuzz requires fuzz crates to declare themselves as their own workspace
 # so that Cargo does not try to inherit settings from the parent workspace.
@@ -166,7 +166,7 @@ path = "fuzz_targets/fuzz_network_sim_actions.rs"
 name = "fuzz_gossip_entry"
 path = "fuzz_targets/fuzz_gossip_entry.rs"
 
-# Sphinx packet peel-layer (§11.3) — drives sphinx_peel_layer() with arbitrary headers.
+# Complete native Sphinx receive path (§11.3) — attacker-controlled fixed-size wire frames.
 [[bin]]
 name = "fuzz_sphinx_packet"
 path = "fuzz_targets/fuzz_sphinx_packet.rs"

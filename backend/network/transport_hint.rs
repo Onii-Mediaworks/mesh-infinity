@@ -136,8 +136,13 @@ impl TransportType {
     pub fn is_sdr(&self) -> bool {
         matches!(
             self,
-            Self::RF | Self::LoRa | Self::SdrHf | Self::SdrVhf
-                | Self::SdrUhf | Self::SdrShf | Self::SdrFhss
+            Self::RF
+                | Self::LoRa
+                | Self::SdrHf
+                | Self::SdrVhf
+                | Self::SdrUhf
+                | Self::SdrShf
+                | Self::SdrFhss
         )
     }
 
@@ -145,8 +150,13 @@ impl TransportType {
     pub fn is_proximity(&self) -> bool {
         matches!(
             self,
-            Self::BLE | Self::BluetoothClassic | Self::WiFiDirect
-                | Self::NFC | Self::Ultrasonic | Self::USBSerial | Self::Layer2
+            Self::BLE
+                | Self::BluetoothClassic
+                | Self::WiFiDirect
+                | Self::NFC
+                | Self::Ultrasonic
+                | Self::USBSerial
+                | Self::Layer2
         )
     }
 
@@ -230,9 +240,7 @@ impl TransportType {
     /// and ZeroTier networks without requiring manual pairing.
     pub fn allows_mdns_discovery(&self) -> bool {
         // Delegate to the instance method.
-        self.is_proximity()
-            || matches!(self, Self::Clearnet)
-            || self.is_trusted_context()
+        self.is_proximity() || matches!(self, Self::Clearnet) || self.is_trusted_context()
     }
 
     /// Anonymization score for transport solver (§5.10.3).
@@ -242,9 +250,18 @@ impl TransportType {
         // Dispatch on the variant.
         // Dispatch on the variant.
         match self {
-            Self::Clearnet | Self::WiFiDirect | Self::BLE | Self::BluetoothClassic
-                | Self::USBSerial | Self::Layer2 | Self::CANBus | Self::NFC
-                | Self::Ultrasonic | Self::PPPoE | Self::Dialup | Self::Telephone => 0.0,
+            Self::Clearnet
+            | Self::WiFiDirect
+            | Self::BLE
+            | Self::BluetoothClassic
+            | Self::USBSerial
+            | Self::Layer2
+            | Self::CANBus
+            | Self::NFC
+            | Self::Ultrasonic
+            | Self::PPPoE
+            | Self::Dialup
+            | Self::Telephone => 0.0,
             // Generic RF / LoRa: frequency is observable but content is encrypted.
             // No anonymization beyond encryption — RF direction-finding is possible.
             Self::RF | Self::LoRa | Self::SdrHf | Self::SdrVhf | Self::SdrUhf | Self::SdrShf => 0.0,

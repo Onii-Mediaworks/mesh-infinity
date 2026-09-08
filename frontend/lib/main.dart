@@ -36,6 +36,9 @@
 // with isAvailable = false (showing _FatalErrorApp) rather than throwing an
 // uncaught exception that crashes the Flutter engine entirely.
 
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -88,11 +91,18 @@ class _BootstrapAppState extends State<_BootstrapApp> {
     // Resolve the app-support directory (fast platform-channel call).
     // This is where the Rust backend stores its database, keys, and config.
     final appDir = await getApplicationSupportDirectory();
+    final configuredDebugPath = kDebugMode
+        ? Platform.environment['MESH_CONFIG_PATH']?.trim()
+        : null;
+    final dataPath =
+        configuredDebugPath != null && configuredDebugPath.isNotEmpty
+        ? configuredDebugPath
+        : appDir.path;
 
     // §17.8.1 — initialise file logging before the backend opens so that
     // backend init failures are captured in the rolling log file.
-    // DebugLogger.init is a no-op in release builds (profile-only feature).
-    await DebugLogger.init(appDir.path);
+    // DebugLogger.init is a no-op in release builds.
+    await DebugLogger.init(dataPath);
 
     // Yield to the event loop so Flutter renders the loading spinner before
     // the synchronous FFI call below blocks the thread.
@@ -104,9 +114,13 @@ class _BootstrapAppState extends State<_BootstrapApp> {
     // configPath tells the Rust backend where to find (or create) its files.
     // allowMissing: true returns an unavailable bridge instead of crashing
     // when the native library is absent (useful during development).
-    final bridge = BackendBridge.open(
-      configPath: appDir.path,
-      allowMissing: true,
+    await DebugLogger.logAndFlush('bootstrap.backend.open_started');
+    final timer = Stopwatch()..start();
+    final bridge = BackendBridge.open(configPath: dataPath, allowMissing: true);
+    timer.stop();
+    DebugLogger.log(
+      'bootstrap.backend.open_returned available=${bridge.isAvailable} '
+      'duration_ms=${timer.elapsedMilliseconds}',
     );
 
     // Guard against the widget being disposed during the await above
@@ -138,9 +152,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       debugShowCheckedModeBanner: false,
       theme: MeshTheme.light(),
       darkTheme: MeshTheme.dark(),
-      home: const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      ),
+      home: const Scaffold(body: Center(child: CircularProgressIndicator())),
     );
   }
 }
@@ -180,10 +192,7 @@ class _FatalErrorApp extends StatelessWidget {
                 const Text(
                   'Failed to start Mesh Infinity',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 16),
                 const Text(

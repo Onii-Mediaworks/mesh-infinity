@@ -353,7 +353,10 @@ impl SimulatorActionRunner {
         // Never recreate a link for a disavowed pair.  `sim.add_link()` always
         // starts the new link at loss_rate=0.0, which would silently undo the
         // permanent partition that trust revocation requires.
-        if self.disavowed_pairs.contains(&(from.to_string(), to.to_string())) {
+        if self
+            .disavowed_pairs
+            .contains(&(from.to_string(), to.to_string()))
+        {
             return;
         }
 

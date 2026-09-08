@@ -352,9 +352,10 @@ impl NotificationDispatcher {
         let conv_id = event.conversation_id.unwrap_or([0u8; 32]);
 
         // Unique identifier for lookup and deduplication.
-        let entry = self.pending.entry(conv_id).or_insert_with(|| {
-            (Vec::new(), dispatch_at)
-        });
+        let entry = self
+            .pending
+            .entry(conv_id)
+            .or_insert_with(|| (Vec::new(), dispatch_at));
 
         // Use the earliest dispatch time among events in this group.
         if dispatch_at < entry.1 {

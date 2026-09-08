@@ -46,8 +46,11 @@
 //!
 //! Spec §5.14 — Layer 2 Ethernet transport.
 
+#[cfg(target_os = "linux")]
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Constants

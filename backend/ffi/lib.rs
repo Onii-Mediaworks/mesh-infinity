@@ -943,28 +943,28 @@ pub unsafe extern "C" fn mi_string_free(_ptr: *mut c_char) {
     // No-op: string lifetime is tied to the MeshContext, not the caller.
 }
 
-pub mod identity;
-pub mod backup;
-pub mod messaging;
-pub mod peers;
-pub mod files;
-pub mod events;
-pub mod network;
-pub mod transport;
 pub mod app;
+pub mod backup;
+pub mod events;
+pub mod files;
+pub mod identity;
+pub mod messaging;
+pub mod network;
+pub mod peers;
+pub mod transport;
 
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::events::*;
     use super::identity::*;
     use super::messaging::*;
-    use super::peers::*;
-    use super::events::*;
     use super::network::*;
+    use super::peers::*;
     use super::transport::*;
+    use super::*;
     use std::ffi::CString;
     use std::path::Path;
     use tempfile::TempDir;

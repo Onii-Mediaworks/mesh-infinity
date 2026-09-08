@@ -91,10 +91,7 @@ pub unsafe extern "C" fn mi_set_clearnet_port(ctx: *mut MeshContext, port: u16) 
 /// # Safety
 /// `ctx` must be non-null.  `route` must be valid JSON UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn mi_set_clearnet_route(
-    ctx: *mut MeshContext,
-    route: *const c_char,
-) -> i32 {
+pub unsafe extern "C" fn mi_set_clearnet_route(ctx: *mut MeshContext, route: *const c_char) -> i32 {
     // Guard: null ctx has no routing table to update.
     if ctx.is_null() {
         return -1;
@@ -544,7 +541,11 @@ pub unsafe extern "C" fn mi_send_raw_packet(
     // SAFETY: caller guarantees ptr..ptr+len is valid for the call duration.
     let bytes = unsafe { std::slice::from_raw_parts(packet_ptr, packet_len) };
     let ctx = unsafe { &*ctx };
-    if ctx.ingest_tun_packet(bytes) { 1 } else { 0 }
+    if ctx.ingest_tun_packet(bytes) {
+        1
+    } else {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------

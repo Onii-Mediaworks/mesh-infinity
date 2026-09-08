@@ -75,8 +75,8 @@
 //! signature replay (see `crypto::signing`).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 // Import the centralized error type for all fallible operations.
 // Every public function returns Result<T, MeshError>.
@@ -1334,9 +1334,13 @@ impl PluginRegistry {
         }
         let wasm_hash: [u8; 32] = Sha256::digest(&wasm_bytes).into();
         let id = self.install(manifest, Some(signature))?;
-        let plugin = self.plugins.iter_mut().find(|p| p.id == id).ok_or_else(|| {
-            MeshError::Internal("verified plugin disappeared during install".to_string())
-        })?;
+        let plugin = self
+            .plugins
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| {
+                MeshError::Internal("verified plugin disappeared during install".to_string())
+            })?;
         plugin.package_verified = true;
         plugin.wasm_hash = wasm_hash;
         plugin.wasm_bytes = Some(wasm_bytes);
@@ -1542,10 +1546,7 @@ impl PluginRegistry {
     // subscribers_for() — dispatch-table accessor for testing and introspection.
     pub fn subscribers_for(&self, hook_name: &str) -> Vec<[u8; 16]> {
         // Return a copy of the subscriber list; empty if the hook has no registrations.
-        self.hooks
-            .get(hook_name)
-            .cloned()
-            .unwrap_or_default()
+        self.hooks.get(hook_name).cloned().unwrap_or_default()
     }
 
     /// Invoke all active plugins registered for a named hook via the WASM sandbox.
@@ -2395,8 +2396,8 @@ mod tests {
         manifest.version = "2.0.0".to_string();
         manifest.author = "Trusted Author".to_string();
         let wasm = b"\0asm signed test payload".to_vec();
-        let payload = PluginRegistry::signed_package_payload(&manifest, &wasm)
-            .expect("package payload");
+        let payload =
+            PluginRegistry::signed_package_payload(&manifest, &wasm).expect("package payload");
         let sig = signing::sign(&secret, signing::DOMAIN_PLUGIN_SIGNATURE, &payload);
 
         let mut registry = PluginRegistry::new();

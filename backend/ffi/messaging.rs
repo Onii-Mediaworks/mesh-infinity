@@ -231,10 +231,7 @@ pub unsafe extern "C" fn mi_send_message(
 /// # Safety
 /// `ctx` must be non-null.  `msg_id` must be valid UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn mi_delete_message(
-    ctx: *mut MeshContext,
-    msg_id: *const c_char,
-) -> i32 {
+pub unsafe extern "C" fn mi_delete_message(ctx: *mut MeshContext, msg_id: *const c_char) -> i32 {
     // Guard: null ctx cannot delete messages.
     if ctx.is_null() {
         return -1;
@@ -626,4 +623,3 @@ pub unsafe extern "C" fn mi_prune_expired_messages(ctx: *mut MeshContext) -> i32
     ctx.prune_expired_messages();
     0
 }
-

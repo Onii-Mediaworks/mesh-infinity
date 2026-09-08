@@ -566,6 +566,10 @@ pub struct MeshRuntime {
     pub clearnet_last_keepalive_tx: Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// Tor transport (§5.3).  `Some` when Tor is enabled and bootstrapped.
     pub tor_transport: Mutex<Option<crate::transport::tor::TorTransport>>,
+    /// Pending result from the nonblocking Tor bootstrap worker.
+    pub tor_bootstrap_rx: Mutex<
+        Option<std::sync::mpsc::Receiver<Result<crate::transport::tor::TorTransport, String>>>,
+    >,
     /// Pending WireGuard initiator handshakes awaiting the responder's reply.
     ///
     /// Keyed by responder `PeerId`; consumed by `wg_complete_handshake`.
@@ -732,6 +736,7 @@ impl MeshRuntime {
             clearnet_last_rx: Mutex::new(std::collections::HashMap::new()),
             clearnet_last_keepalive_tx: Mutex::new(std::collections::HashMap::new()),
             tor_transport: Mutex::new(None),
+            tor_bootstrap_rx: Mutex::new(None),
             pending_wg_handshakes: Mutex::new(std::collections::HashMap::new()),
             dedup_msg_cache: Mutex::new(crate::messaging::delivery::DeliveredMessageCache::new()),
             pending_message_requests: Mutex::new(Vec::new()),
@@ -753,6 +758,32 @@ impl MeshRuntime {
     // -----------------------------------------------------------------------
     // Core event helpers
     // -----------------------------------------------------------------------
+
+    /// Append a privacy-safe milestone to the backend debug log.
+    ///
+    /// This code is absent from release builds. Callers must pass only static
+    /// operational state: never keys, identifiers, addresses, or user data.
+    pub fn diagnostic_log(&self, component: &str, event: &str) {
+        #[cfg(debug_assertions)]
+        {
+            use std::io::Write as _;
+            let timestamp_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis());
+            let path = std::path::Path::new(&self.data_dir).join("mesh_infinity_backend_debug.log");
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(file, "{timestamp_ms} [{component}] {event}");
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (component, event);
+        }
+    }
 
     /// Push an event onto the queue.
     ///
@@ -998,8 +1029,7 @@ pub fn bootstrap_ratchet_session(
     // X3DH/PQXDH. Any setup error is terminal: silently retrying static DH
     // would turn malformed or stripped prekey material into a downgrade.
     if let Some(preauth_bytes) = contact.preauth_key {
-        let (session, header, pq_ext) =
-            x3dh_bootstrap_session(our_id, contact, &preauth_bytes)?;
+        let (session, header, pq_ext) = x3dh_bootstrap_session(our_id, contact, &preauth_bytes)?;
         return Ok((session, Some(header), pq_ext));
     }
 

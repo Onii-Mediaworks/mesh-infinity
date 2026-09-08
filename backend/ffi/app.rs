@@ -95,10 +95,7 @@ pub unsafe extern "C" fn mi_group_members(
 /// # Safety
 /// `ctx` must be non-null.  `group_id_hex` must be valid UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn mi_leave_group(
-    ctx: *mut MeshContext,
-    group_id_hex: *const c_char,
-) -> i32 {
+pub unsafe extern "C" fn mi_leave_group(ctx: *mut MeshContext, group_id_hex: *const c_char) -> i32 {
     // Guard: null ctx cannot leave groups.
     if ctx.is_null() {
         return -1;
@@ -239,10 +236,7 @@ pub unsafe extern "C" fn mi_call_offer(
 /// # Safety
 /// `ctx` must be non-null.  `session_desc` must be valid UTF-8.
 #[no_mangle]
-pub unsafe extern "C" fn mi_call_answer(
-    ctx: *mut MeshContext,
-    session_desc: *const c_char,
-) -> i32 {
+pub unsafe extern "C" fn mi_call_answer(ctx: *mut MeshContext, session_desc: *const c_char) -> i32 {
     // Guard: null ctx cannot answer calls.
     if ctx.is_null() {
         return -1;

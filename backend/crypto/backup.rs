@@ -401,7 +401,13 @@ mod tests {
         // 15 chars — one short of the 16-char minimum for cloud/extended backups.
         let result = create_backup(b"payload", b"fifteen_chars!!", BackupType::Standard, true);
         assert!(
-            matches!(result, Err(BackupError::PassphraseTooShort { required: 16, provided: 15 })),
+            matches!(
+                result,
+                Err(BackupError::PassphraseTooShort {
+                    required: 16,
+                    provided: 15
+                })
+            ),
             "expected PassphraseTooShort for 15-char passphrase"
         );
     }

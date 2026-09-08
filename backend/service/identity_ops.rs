@@ -1054,6 +1054,7 @@ impl MeshRuntime {
     ///
     /// Returns `Ok(())` on success, `Err(reason)` on failure.
     pub fn create_identity(&mut self, display_name: Option<String>) -> Result<(), String> {
+        self.diagnostic_log("identity", "create_started");
         // Generate fresh key material.
         let identity = SelfIdentity::generate(display_name);
         let peer_id = identity.peer_id();
@@ -1065,10 +1066,13 @@ impl MeshRuntime {
         identity
             .save_to_disk(data_dir, None)
             .map_err(|e| format!("Failed to persist identity: {e}"))?;
+        self.diagnostic_log("identity", "persist_completed");
 
         // Initialise vault with the identity master key.
         self.activate_identity(identity);
+        self.diagnostic_log("identity", "activation_completed");
         self.ensure_layer1_transport_started()?;
+        self.diagnostic_log("identity", "network_reconcile_returned");
 
         // Emit SettingsUpdated so Flutter knows identity is now live.
         let _ = master_key;
@@ -1099,6 +1103,7 @@ impl MeshRuntime {
             ),
         );
 
+        self.diagnostic_log("identity", "create_completed");
         Ok(())
     }
 
@@ -2232,10 +2237,7 @@ impl MeshRuntime {
     /// On approval the method calls `standard_erase()` and clears all
     /// in-memory key material, leaving the device in a wiped state
     /// identical to a local killswitch activation.
-    pub fn execute_remote_killswitch(
-        &self,
-        requesting_peer_id_hex: &str,
-    ) -> Result<(), String> {
+    pub fn execute_remote_killswitch(&self, requesting_peer_id_hex: &str) -> Result<(), String> {
         use crate::identity::peer_id::PeerId;
 
         // ----------------------------------------------------------------

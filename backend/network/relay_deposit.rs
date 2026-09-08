@@ -46,13 +46,13 @@ use std::collections::HashMap;
 // SIZE_CLASSES — protocol constant.
 // Defined by the spec; must not change without a version bump.
 pub const SIZE_CLASSES: [usize; 8] = [
-    1_024, // Class 0: 1 KB
-    4_096, // Class 1: 4 KB
-    16_384, // Class 2: 16 KB
-    65_536, // Class 3: 64 KB
-    262_144, // Class 4: 256 KB
-    1_048_576, // Class 5: 1 MB
-    4_194_304, // Class 6: 4 MB
+    1_024,      // Class 0: 1 KB
+    4_096,      // Class 1: 4 KB
+    16_384,     // Class 2: 16 KB
+    65_536,     // Class 3: 64 KB
+    262_144,    // Class 4: 256 KB
+    1_048_576,  // Class 5: 1 MB
+    4_194_304,  // Class 6: 4 MB
     16_777_216, // Class 7: 16 MB
 ];
 

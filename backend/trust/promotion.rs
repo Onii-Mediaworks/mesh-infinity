@@ -150,9 +150,7 @@ impl TrustPromotionIntent {
     /// `INTENT_SIG_DOMAIN || commitment || recipient_peer_id || timestamp (BE u64) || expires_at (BE u64) || nonce`
     pub fn signed_message(&self) -> Vec<u8> {
         // Pre-allocate the buffer to avoid repeated reallocations.
-        let mut msg = Vec::with_capacity(
-            INTENT_SIG_DOMAIN.len() + 32 + 32 + 8 + 8 + 32,
-        );
+        let mut msg = Vec::with_capacity(INTENT_SIG_DOMAIN.len() + 32 + 32 + 8 + 8 + 32);
         // Append the data segment to the accumulating buffer.
         // Append bytes to the accumulator.
         // Append bytes to the accumulator.

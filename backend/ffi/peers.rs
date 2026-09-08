@@ -3,8 +3,8 @@
 //! No business logic lives here.
 
 use std::os::raw::c_char;
-use std::ptr;
 use std::os::raw::c_int;
+use std::ptr;
 
 use super::{c_str_to_str, MeshContext};
 
@@ -536,7 +536,11 @@ pub unsafe extern "system" fn Java_com_oniimediaworks_meshinfinity_NativeLayer1B
     // SAFETY: ctx_long was returned by nativeStartLayer1 and is valid while the
     // startup service holds it (coordinated by HEADLESS_LAYER1_PTR).
     let ctx = unsafe { &*(ctx_long as *const MeshContext) };
-    if ctx.ingest_tun_packet(&bytes) { 1 } else { 0 }
+    if ctx.ingest_tun_packet(&bytes) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Submit a pairing payload received over Android NFC or Wi-Fi Direct.
@@ -1082,4 +1086,3 @@ pub unsafe extern "C" fn mi_trust_verify_json(
     // Delegate to service layer.
     ctx.set_response(&ctx.trust_verify(pid_hex))
 }
-

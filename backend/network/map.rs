@@ -427,10 +427,7 @@ impl NetworkMap {
         }
 
         // Stage the entry under this source.
-        let staged_sources = self
-            .pending_multi_source
-            .entry(target_peer)
-            .or_default();
+        let staged_sources = self.pending_multi_source.entry(target_peer).or_default();
 
         // Enforce per-peer source cap to limit per-entry memory consumption.
         if !staged_sources.contains_key(source_id)
@@ -449,10 +446,7 @@ impl NetworkMap {
         // Check if we now have enough independent sources to promote.
         if staged_sources.len() >= required {
             // Select the entry with the highest sequence number.
-            let best = staged_sources
-                .values()
-                .max_by_key(|e| e.sequence)
-                .cloned();
+            let best = staged_sources.values().max_by_key(|e| e.sequence).cloned();
 
             // Remove from staging regardless of whether promotion succeeds.
             self.pending_multi_source.remove(&target_peer);
@@ -497,7 +491,9 @@ impl NetworkMap {
         // Also prune the staging buffer for peers that are now stale.
         self.pending_multi_source.retain(|id, staged| {
             // Keep staging entries only if at least one staged entry is fresh.
-            staged.values().any(|e| now.saturating_sub(e.last_seen) < STALENESS_SECS)
+            staged
+                .values()
+                .any(|e| now.saturating_sub(e.last_seen) < STALENESS_SECS)
                 && !pruned.contains(id)
         });
     }
@@ -584,8 +580,7 @@ impl NetworkMap {
             TransportType::Cjdns => Self::is_valid_cjdns_endpoint(endpoint),
             TransportType::ZeroTier | TransportType::Tailscale => {
                 // These carry IP:port or domain:port addresses on their overlay plane.
-                Self::is_valid_clearnet_endpoint(endpoint)
-                    || Self::is_valid_hostname_port(endpoint)
+                Self::is_valid_clearnet_endpoint(endpoint) || Self::is_valid_hostname_port(endpoint)
             }
             // Proximity and RF transports carry no routable endpoint; if one
             // is present it must be a short, printable identifier only.
@@ -613,12 +608,11 @@ impl NetworkMap {
             // Overlay/mixnet types: node addresses are base32/base64 identifiers
             // or onion-style strings.  Restrict to alphanumeric + safe punctuation
             // to prevent injection into downstream parsers.
-            TransportType::GNUnet
-            | TransportType::Mixnet => {
+            TransportType::GNUnet | TransportType::Mixnet => {
                 endpoint.len() <= 128
-                    && endpoint
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+                    && endpoint.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/')
+                    })
             }
             // DeniableCarrier: the carrier ladder resolves the actual endpoint
             // address internally; the hint endpoint is an opaque broker locator.
@@ -655,7 +649,9 @@ impl NetworkMap {
         // must not be a bare IP address (those are handled by clearnet check).
         !host.is_empty()
             && host.len() <= 253
-            && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
             && !host.starts_with('-')
             && !host.ends_with('-')
     }
@@ -708,7 +704,9 @@ impl NetworkMap {
         }
         // Basic length sanity: I2P addresses are at most 516 chars.
         host.len() <= 516
-            && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
     }
 
     /// Validate a Yggdrasil address: IPv6 in the `200::/7` range.

@@ -111,6 +111,7 @@ impl MeshRuntime {
     /// Called from `mi_poll_events` approximately every 200 ms.
     /// Returns after all non-blocking sub-system steps have been run.
     pub fn advance_clearnet_transport(&self) {
+        self.poll_tor_bootstrap();
         // Phase 1 — Connection management: accept new TCP connections from
         // both clearnet and Tor hidden service listeners.  Tor inbound streams
         // are mixed into the same pending queue so the identification path

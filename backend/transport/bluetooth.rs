@@ -42,8 +42,14 @@ impl BluetoothTransport {
             .try_into()
             .expect("SHA-256 output is always 32 bytes");
         Some([
-            nonce[0], nonce[1], nonce[2], nonce[3],
-            peer_hash[0], peer_hash[1], peer_hash[2], peer_hash[3],
+            nonce[0],
+            nonce[1],
+            nonce[2],
+            nonce[3],
+            peer_hash[0],
+            peer_hash[1],
+            peer_hash[2],
+            peer_hash[3],
         ])
     }
 

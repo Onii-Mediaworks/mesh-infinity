@@ -443,11 +443,8 @@ impl RoutingTable {
         }
 
         // Bind the computed value for subsequent use.
-        let dominated = self.is_dominated_by_existing(
-            self.public.get(&entry.destination),
-            &entry,
-            now,
-        );
+        let dominated =
+            self.is_dominated_by_existing(self.public.get(&entry.destination), &entry, now);
 
         // Only insert if the new route is not dominated by the existing one.
         if !dominated {
@@ -462,12 +459,7 @@ impl RoutingTable {
     ///
     /// Similar to update_public but scoped to a specific group.
     /// Creates the group's routing table if it doesn't exist yet.
-    pub fn update_group(
-        &mut self,
-        group: GroupId,
-        entry: RoutingEntry,
-        now: u64,
-    ) -> bool {
+    pub fn update_group(&mut self, group: GroupId, entry: RoutingEntry, now: u64) -> bool {
         let group_table = self.groups.entry(group).or_default();
 
         // Enforce per-group capacity.
@@ -526,9 +518,7 @@ impl RoutingTable {
     pub fn update_local(&mut self, entry: RoutingEntry) -> bool {
         // Local plane is small (direct connections only), so we
         // simply insert/update without complex eviction.
-        if self.local.len() < MAX_LOCAL_ENTRIES
-            || self.local.contains_key(&entry.destination)
-        {
+        if self.local.len() < MAX_LOCAL_ENTRIES || self.local.contains_key(&entry.destination) {
             self.local.insert(entry.destination, entry);
             true
         } else {
@@ -540,12 +530,7 @@ impl RoutingTable {
     ///
     /// BLE routes are short-lived and don't go through the normal
     /// reachability announcement process.
-    pub fn update_ble(
-        &mut self,
-        token: BleToken,
-        entry: EphemeralRoutingEntry,
-        now: u64,
-    ) {
+    pub fn update_ble(&mut self, token: BleToken, entry: EphemeralRoutingEntry, now: u64) {
         // Evict expired BLE entries first.
         self.ble_ephemeral.retain(|_, e| !e.is_expired(now));
 

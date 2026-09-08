@@ -128,9 +128,7 @@ impl AclSubject {
             // Handle Self::TrustRange(low, high).
             // Handle Self::TrustRange(low, high).
             // Handle Self::TrustRange(low, high).
-            Self::TrustRange(low, high) => {
-                peer_trust >= *low && peer_trust <= *high
-            }
+            Self::TrustRange(low, high) => peer_trust >= *low && peer_trust <= *high,
 
             // Match anyone.
             Self::Any => true,
@@ -312,8 +310,7 @@ impl AclEngine {
             }
 
             // Check if both subject and target match.
-            let subject_match =
-                rule.subject.matches(peer_id, peer_trust, peer_groups);
+            let subject_match = rule.subject.matches(peer_id, peer_trust, peer_groups);
             // Dispatch based on the variant to apply type-specific logic.
             let target_match = rule.target.matches_service(service_name);
 
@@ -345,8 +342,7 @@ impl AclEngine {
             }
 
             // Dispatch based on the variant to apply type-specific logic.
-            let subject_match =
-                rule.subject.matches(peer_id, peer_trust, peer_groups);
+            let subject_match = rule.subject.matches(peer_id, peer_trust, peer_groups);
             // Dispatch based on the variant to apply type-specific logic.
             let target_match = rule.target.matches_port(port);
 

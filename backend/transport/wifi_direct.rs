@@ -494,7 +494,7 @@ pub fn dequeue_android_outbound_session_frame() -> Option<Vec<u8>> {
     state.outbound_session_frames.pop_front()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "android")]
 /// Snapshot the current Android Wi-Fi Direct adapter state.
 fn android_wifi_direct_snapshot() -> AndroidWifiDirectAdapterState {
     android_wifi_direct_adapter_state()

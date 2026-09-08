@@ -98,7 +98,7 @@ required_by_spec = true
 name = "fuzz_sphinx_packet"
 status = "active"
 owner_module = "backend/transport/mixnet.rs"
-threat = "malformed Sphinx header bytes causing panic or incorrect layer decryption in sphinx_peel_layer()"
+threat = "malformed native mixnet frames causing panic, replay-state mutation, or unauthenticated Sphinx delivery"
 required_by_spec = true
 
 [[target]]
@@ -106,4 +106,12 @@ name = "fuzz_store_forward"
 status = "active"
 owner_module = "backend/routing/store_forward.rs"
 threat = "malformed S&F deposit payloads, invalid expiry signatures, or overflow in storage cap logic"
+required_by_spec = true
+
+
+[[target]]
+name = "fuzz_offline_bundle_decode"
+status = "active"
+owner_module = "backend/transport/offline_bundle.rs"
+threat = "malformed encrypted offline bundles causing panic, unauthenticated plaintext release, or partial decode"
 required_by_spec = true

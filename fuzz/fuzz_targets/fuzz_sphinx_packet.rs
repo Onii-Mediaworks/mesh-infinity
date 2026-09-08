@@ -1,38 +1,33 @@
-// Fuzz target: Sphinx packet peel-layer (§11.3 mixnet transport)
+// Fuzz target: complete native Sphinx packet receive path (§11.3 mixnet transport)
 //
-// Drives `sphinx_peel_layer()` with arbitrary header bytes and a random node
-// private key to ensure:
-// - No panics on malformed or truncated headers.
-// - All error paths return `Err` rather than panicking.
-// - No unsafe memory access when the header contains garbage values.
+// Feeds attacker-controlled fixed-size wire frames and routing keys through
+// `MixnetNode::receive()` to exercise framing, epoch selection, Sphinx parsing,
+// authentication, replay handling, and final payload rejection without panic.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use mesh_infinity::transport::mixnet::{sphinx_peel_layer, SPHINX_HEADER_SIZE};
-use rand_chacha::ChaCha20Rng;
-use rand_chacha::rand_core::SeedableRng;
+use mesh_infinity::transport::mixnet::{MixRole, MixnetNode, MIXNET_MTU};
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 32 + SPHINX_HEADER_SIZE {
-        // Need at least: 32 bytes node privkey + SPHINX_HEADER_SIZE bytes header.
+    if data.len() < 32 {
         return;
     }
 
-    // First 32 bytes → node private key.
-    let mut privkey = [0u8; 32];
-    privkey.copy_from_slice(&data[..32]);
+    let mut private_key = [0u8; 32];
+    private_key.copy_from_slice(&data[..32]);
 
-    // Next SPHINX_HEADER_SIZE bytes → header to peel.
-    let header_bytes = &data[32..32 + SPHINX_HEADER_SIZE];
-    let header: &[u8; SPHINX_HEADER_SIZE] = header_bytes.try_into().unwrap();
+    let mut wire = [0u8; MIXNET_MTU];
+    let available = data.len() - 32;
+    let wire_len = available.min(MIXNET_MTU);
+    wire[..wire_len].copy_from_slice(&data[32..32 + wire_len]);
 
-    // Seed an RNG deterministically from the fuzz input so runs are reproducible.
-    let mut seed = [0u8; 32];
-    let remaining = &data[32 + SPHINX_HEADER_SIZE..];
-    let seed_len = seed.len().min(remaining.len());
-    seed[..seed_len].copy_from_slice(&remaining[..seed_len]);
-    let mut rng = ChaCha20Rng::from_seed(seed);
+    let epoch = if wire_len >= 9 {
+        u64::from_be_bytes(wire[1..9].try_into().expect("fixed epoch slice"))
+    } else {
+        0
+    };
+    let mut node =
+        MixnetNode::new_with_epoch_and_seed(MixRole::MixNode, epoch, private_key, private_key);
 
-    // Must not panic regardless of input.
-    let _ = sphinx_peel_layer(header, &privkey, &mut rng);
+    let _ = node.receive(&wire);
 });

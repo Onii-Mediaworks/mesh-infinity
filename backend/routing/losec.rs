@@ -150,8 +150,8 @@ impl ConnectionMode {
         // Dispatch on the variant.
         match self {
             Self::Standard => (1, 255), // Variable, routing decides.
-            Self::LoSec => (1, 2), // Fixed 1-2 hops.
-            Self::Direct => (0, 0), // No relay.
+            Self::LoSec => (1, 2),      // Fixed 1-2 hops.
+            Self::Direct => (0, 0),     // No relay.
         }
     }
 
@@ -745,8 +745,7 @@ impl AmbientTrafficMonitor {
         // Update the traffic variance to reflect the new state.
         // Advance traffic variance state.
         // Advance traffic variance state.
-        self.traffic_variance =
-            (1.0 - alpha) * self.traffic_variance + alpha * diff * diff;
+        self.traffic_variance = (1.0 - alpha) * self.traffic_variance + alpha * diff * diff;
     }
 
     /// Whether LoSec is currently available based on ambient traffic.

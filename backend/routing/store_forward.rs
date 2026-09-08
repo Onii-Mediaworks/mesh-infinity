@@ -723,9 +723,7 @@ impl StoreForwardServer {
         }
 
         // Sort by priority (highest first), then deposit time (oldest first).
-        deliverable.sort_by(|a, b| {
-            b.priority.cmp(&a.priority)
-        });
+        deliverable.sort_by(|a, b| b.priority.cmp(&a.priority));
 
         // Execute this step in the protocol sequence.
         deliverable
@@ -746,9 +744,9 @@ impl StoreForwardServer {
         for queue in self.queues.values_mut() {
             // Remove expired and delivered messages.
             let before_len = queue.messages.len();
-            queue.messages.retain(|msg| {
-                !msg.delivered && msg.request.expiry > now
-            });
+            queue
+                .messages
+                .retain(|msg| !msg.delivered && msg.request.expiry > now);
 
             // Recalculate total stored bytes after removal.
             let removed_bytes: u64 = (before_len - queue.messages.len()) as u64;
@@ -972,8 +970,7 @@ impl StoreForwardServer {
                     return true;
                 }
                 // Normal path: release when the silence window elapses.
-                now.saturating_sub(*last_cancellation)
-                    >= *cancellation_window_secs as u64
+                now.saturating_sub(*last_cancellation) >= *cancellation_window_secs as u64
             }
         }
     }

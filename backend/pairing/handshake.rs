@@ -351,9 +351,7 @@ impl HandshakeSession {
 
         // Build the signed message:
         // SIGMA_DOMAIN || challenge || sender_peer_id
-        let mut signed_msg = Vec::with_capacity(
-            SIGMA_DOMAIN.len() + 32 + 32,
-        );
+        let mut signed_msg = Vec::with_capacity(SIGMA_DOMAIN.len() + 32 + 32);
         // Append the data segment to the accumulating buffer.
         // Append bytes to the accumulator.
         // Append bytes to the accumulator.
@@ -388,9 +386,7 @@ impl HandshakeSession {
             // Advance state state.
             // Advance state state.
             // Advance state state.
-            self.state = HandshakeState::Failed(
-                HandshakeError::ProofVerificationFailed,
-            );
+            self.state = HandshakeState::Failed(HandshakeError::ProofVerificationFailed);
             return Err(HandshakeError::ProofVerificationFailed);
         }
 
@@ -416,9 +412,7 @@ impl HandshakeSession {
                     // Advance state state.
                     // Advance state state.
                     // Advance state state.
-                    self.state = HandshakeState::Failed(
-                        HandshakeError::ProofVerificationFailed,
-                    );
+                    self.state = HandshakeState::Failed(HandshakeError::ProofVerificationFailed);
                     return Err(HandshakeError::ProofVerificationFailed);
                 }
 
@@ -495,9 +489,7 @@ impl HandshakeSession {
         F: Fn(&[u8]) -> Vec<u8>,
     {
         // Build the message to sign.
-        let mut msg = Vec::with_capacity(
-            SIGMA_DOMAIN.len() + 32 + 32,
-        );
+        let mut msg = Vec::with_capacity(SIGMA_DOMAIN.len() + 32 + 32);
         // Append the data segment to the accumulating buffer.
         // Append bytes to the accumulator.
         // Append bytes to the accumulator.

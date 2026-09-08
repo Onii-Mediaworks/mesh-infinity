@@ -192,12 +192,7 @@ impl CallState {
     /// `is_video`: whether video is enabled.
     /// `our_peer_id`: our own peer ID.
     /// `now`: current unix timestamp.
-    pub fn new_outgoing(
-        call_id: [u8; 32],
-        is_video: bool,
-        our_peer_id: PeerId,
-        now: u64,
-    ) -> Self {
+    pub fn new_outgoing(call_id: [u8; 32], is_video: bool, our_peer_id: PeerId, now: u64) -> Self {
         Self {
             call_id,
             is_video,

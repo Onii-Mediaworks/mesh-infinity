@@ -113,15 +113,27 @@ pub unsafe extern "C" fn mi_create_offline_bundle(
     }
 
     let source_bytes = match hex::decode(source_hex) {
-        Ok(b) if b.len() == 32 => { let mut arr = [0u8; 32]; arr.copy_from_slice(&b); arr }
+        Ok(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&b);
+            arr
+        }
         _ => return std::ptr::null_mut(),
     };
     let dest_bytes = match hex::decode(dest_hex) {
-        Ok(b) if b.len() == 32 => { let mut arr = [0u8; 32]; arr.copy_from_slice(&b); arr }
+        Ok(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&b);
+            arr
+        }
         _ => return std::ptr::null_mut(),
     };
     let recip_pub = match hex::decode(recip_hex) {
-        Ok(b) if b.len() == 32 => { let mut arr = [0u8; 32]; arr.copy_from_slice(&b); arr }
+        Ok(b) if b.len() == 32 => {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&b);
+            arr
+        }
         _ => return std::ptr::null_mut(),
     };
 
@@ -172,9 +184,12 @@ pub unsafe extern "C" fn mi_import_offline_bundle(
     let ctx_ref = unsafe { &*ctx };
 
     let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
-    let secret_hex = match unsafe { std::ffi::CStr::from_ptr(recipient_x25519_secret_hex) }.to_str() {
+    let secret_hex = match unsafe { std::ffi::CStr::from_ptr(recipient_x25519_secret_hex) }.to_str()
+    {
         Ok(s) => s,
-        Err(_) => return ctx_ref.set_response("{\"ok\":false,\"error\":\"invalid UTF-8 in secret hex\"}"),
+        Err(_) => {
+            return ctx_ref.set_response("{\"ok\":false,\"error\":\"invalid UTF-8 in secret hex\"}")
+        }
     };
 
     let secret_bytes: [u8; 32] = match hex::decode(secret_hex) {
@@ -183,7 +198,10 @@ pub unsafe extern "C" fn mi_import_offline_bundle(
             arr.copy_from_slice(&b);
             arr
         }
-        _ => return ctx_ref.set_response("{\"ok\":false,\"error\":\"secret_hex must be 64 hex chars\"}"),
+        _ => {
+            return ctx_ref
+                .set_response("{\"ok\":false,\"error\":\"secret_hex must be 64 hex chars\"}")
+        }
     };
 
     let (_bundle, parsed) = match crate::transport::offline_bundle::OfflineBundle::open_as_recipient(
@@ -265,4 +283,3 @@ pub unsafe extern "C" fn mi_duress_erase(ctx: *mut MeshContext) -> i32 {
     ctx.duress_erase();
     0
 }
-

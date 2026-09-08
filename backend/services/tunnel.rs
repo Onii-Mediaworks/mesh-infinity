@@ -92,9 +92,7 @@ pub enum ServiceTarget {
         port: Option<u32>,
     },
     /// Address a service by service ID.
-    ById {
-        service_id: [u8; 16],
-    },
+    ById { service_id: [u8; 16] },
 }
 
 // ---------------------------------------------------------------------------
@@ -281,11 +279,7 @@ pub struct TunnelSession {
 // TunnelSession implementation — core protocol logic.
 impl TunnelSession {
     /// Create a new tunnel session.
-    pub fn new(
-        request: &TunnelRequest,
-        mtu: u16,
-        now: u64,
-    ) -> Self {
+    pub fn new(request: &TunnelRequest, mtu: u16, now: u64) -> Self {
         Self {
             session_id: request.session_id,
             target: request.target.clone(),
@@ -575,11 +569,7 @@ impl TunnelManager {
     ///
     /// For unfragmented data, returns the payload directly.
     /// For fragmented data, buffers until all fragments arrive.
-    pub fn process_data(
-        &mut self,
-        data: &TunnelData,
-        now: u64,
-    ) -> Option<Vec<u8>> {
+    pub fn process_data(&mut self, data: &TunnelData, now: u64) -> Option<Vec<u8>> {
         // Update session activity.
         if let Some(session) = self.sessions.get_mut(&data.session_id) {
             session.record_recv(data.payload.len() as u64, now);
@@ -599,12 +589,8 @@ impl TunnelManager {
             // Wrap the found value.
             // Wrap the found value.
             Some(frag) => {
-                self.reassembler.process(
-                    data.session_id,
-                    frag,
-                    data.payload.clone(),
-                    now,
-                )
+                self.reassembler
+                    .process(data.session_id, frag, data.payload.clone(), now)
             }
         }
     }

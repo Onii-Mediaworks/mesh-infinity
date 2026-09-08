@@ -5,16 +5,13 @@ import 'package:path_provider/path_provider.dart';
 
 // §17.8.1 Debug Logging
 //
-// Active only in Flutter profile builds (kProfileMode == true), which
-// corresponds to Makefile "debug" targets.  Writes a rolling log to a
+// Active in Flutter debug and profile builds, including the Makefile
+// "debug" targets.  Writes a rolling log to a
 // platform-appropriate externally accessible location so testers can
 // retrieve diagnostics without a connected debugger.
 //
-// We intentionally use *profile* builds rather than debug builds for field
-// testing: profile builds have AOT-compiled Dart (realistic performance) but
-// still include the Flutter service extension infrastructure that lets us
-// measure frame times.  A pure debug build runs in JIT mode and would give
-// misleading timing numbers.
+// Profile builds remain useful for realistic performance measurements, while
+// debug builds retain the same diagnostic coverage for development testing.
 //
 // Platform log paths:
 //   Android  — getExternalStorageDirectory() (app-specific external storage,
@@ -71,14 +68,12 @@ class DebugLogger {
   /// main.dart via path_provider.  It is passed in rather than looked up
   /// here to avoid duplicating the async lookup.
   ///
-  /// Does nothing in release builds (kProfileMode is false there), so this
+  /// Does nothing in release builds, so this
   /// is safe to leave in the call site unconditionally.
   static Future<void> init(String appSupportPath) async {
-    // kProfileMode is a Flutter compile-time constant that is true only in
-    // `flutter run --profile` / `flutter build --profile` output.  In
-    // release builds the entire body of this function is dead-code-eliminated
-    // by the compiler, so there is zero runtime overhead.
-    if (!kProfileMode) return;
+    // kReleaseMode is a Flutter compile-time constant. In release builds the
+    // entire body is dead-code-eliminated, so there is no logging overhead.
+    if (kReleaseMode) return;
 
     // Ask the platform for the right directory, then make sure it exists.
     // create(recursive: true) is a no-op if the directory already exists,
@@ -95,7 +90,7 @@ class DebugLogger {
     // makes it easy to correlate log entries with crash reports or user-
     // reported "it broke at 3pm" style feedback.
     final banner =
-        '=== Mesh Infinity profile build started ${DateTime.now().toIso8601String()} ===';
+        '=== Mesh Infinity non-release build started ${DateTime.now().toIso8601String()} ===';
     _writeLine(banner);
 
     // Shadow the global debugPrint function pointer with our own closure.
@@ -115,6 +110,12 @@ class DebugLogger {
   /// has not been initialised yet (or is running in a release build) the call
   /// is silently ignored rather than throwing.
   static void log(String message) => _writeLine(message);
+
+  /// Write and flush a milestone before entering a synchronous native call.
+  static Future<void> logAndFlush(String message) async {
+    _writeLine(message);
+    await _sink?.flush();
+  }
 
   // ── internals ────────────────────────────────────────────────────────────
 
@@ -173,7 +174,7 @@ class DebugLogger {
     // Double-guard: also checked at the top of init(), but callers like log()
     // can be invoked before init() in release builds, so we gate here too to
     // make the no-op contract unconditional.
-    if (!kProfileMode) return;
+    if (kReleaseMode) return;
 
     final sink = _sink;
     // If init() was never called, or if rotation temporarily closed the sink,

@@ -3693,10 +3693,7 @@ impl crate::service::runtime::MeshRuntime {
         // --- 4. Signature verification over canonical killswitch payload ---
         // Payload: `<domain> || sender_id_bytes || "remote_wipe"`.
         // The nonce field (if present) is mixed in to prevent cross-device replay.
-        let nonce = envelope
-            .get("nonce")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let nonce = envelope.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
         let sig_hex = match envelope.get("sig").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return false,

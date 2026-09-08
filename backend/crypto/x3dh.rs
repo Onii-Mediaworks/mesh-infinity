@@ -460,8 +460,7 @@ pub fn x3dh_respond(
     let ek_a_pub = X25519Public::from(header.eph_pub);
 
     // Decrypt Alice's IK
-    let ik_a_pub_bytes =
-        decrypt_ik_pub(&header.encrypted_ik_pub, preauth_b_secret, &ek_a_pub)?;
+    let ik_a_pub_bytes = decrypt_ik_pub(&header.encrypted_ik_pub, preauth_b_secret, &ek_a_pub)?;
     // Invoke the associated function.
     let ik_a_pub = X25519Public::from(ik_a_pub_bytes);
 
@@ -802,10 +801,7 @@ pub fn pqxdh_decapsulate(
 /// reuse even when the same DH output appears in multiple contexts.
 /// Returns `X3dhError::HmacKeyError` rather than panicking if the key is
 /// somehow rejected — HMAC accepts any length but we must not unwind through FFI.
-fn compute_kem_binding(
-    eph_dh_shared: &[u8],
-    kem_ciphertext: &[u8],
-) -> Result<[u8; 32], X3dhError> {
+fn compute_kem_binding(eph_dh_shared: &[u8], kem_ciphertext: &[u8]) -> Result<[u8; 32], X3dhError> {
     // Initialize the MAC for authentication tag computation.
     let mut mac =
         // SHA-256 cryptographic hash.

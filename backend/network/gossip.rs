@@ -624,7 +624,10 @@ mod tests {
 
         // First source at map_size = 150 → not enough yet.
         let first = buf.record(entry.clone(), &source_a, 150, 1000);
-        assert!(first.is_none(), "one source should not be enough at size 150");
+        assert!(
+            first.is_none(),
+            "one source should not be enough at size 150"
+        );
 
         // Second independent source → quorum reached.
         let second = buf.record(entry, &source_b, 150, 1001);
@@ -715,7 +718,11 @@ mod tests {
             !accepted_a,
             "single source at map_size=100 must not insert immediately"
         );
-        assert_eq!(engine.map_size(), 100, "map must not grow from single source");
+        assert_eq!(
+            engine.map_size(),
+            100,
+            "map must not grow from single source"
+        );
 
         // Second independent source completes the quorum.
         let source_b = PeerId([0xB0; 32]);

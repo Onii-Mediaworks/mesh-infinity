@@ -150,10 +150,7 @@ pub fn score_path(entry: &RoutingEntry, now: u64) -> f32 {
 /// with fewer hops wins (secondary tiebreaker).
 ///
 /// `now` is the current unix timestamp for staleness checking.
-pub fn select_best_path(
-    candidates: &[RoutingEntry],
-    now: u64,
-) -> Option<&RoutingEntry> {
+pub fn select_best_path(candidates: &[RoutingEntry], now: u64) -> Option<&RoutingEntry> {
     // Validate the input length to prevent out-of-bounds access.
     if candidates.is_empty() {
         // No result available — signal absence to the caller.
@@ -192,10 +189,7 @@ pub fn select_best_path(
 ///
 /// Useful for diagnostics and for the UI to show alternative
 /// routes. Each element is (score, entry reference).
-pub fn rank_paths(
-    candidates: &[RoutingEntry],
-    now: u64,
-) -> Vec<(f32, &RoutingEntry)> {
+pub fn rank_paths(candidates: &[RoutingEntry], now: u64) -> Vec<(f32, &RoutingEntry)> {
     // Bind the computed value for subsequent use.
     let mut scored: Vec<(f32, &RoutingEntry)> = candidates
         // Create an iterator over the collection elements.

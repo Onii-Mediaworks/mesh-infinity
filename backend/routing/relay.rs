@@ -557,12 +557,7 @@ impl RelayManager {
     ///
     /// Checks per-session and total bandwidth caps before allowing.
     /// Returns true if the forward was allowed, false if rate-limited.
-    pub fn forward(
-        &mut self,
-        session_id: &[u8; 32],
-        bytes: u64,
-        now: u64,
-    ) -> bool {
+    pub fn forward(&mut self, session_id: &[u8; 32], bytes: u64, now: u64) -> bool {
         // Reset total rate counter if in a new second.
         if now != self.total_rate_window_start {
             // Update the total bytes this second to reflect the new state.
