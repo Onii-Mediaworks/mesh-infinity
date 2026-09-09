@@ -23,6 +23,24 @@ use crate::service::runtime::{MeshRuntime, TransportFlags, DEFAULT_HS_PORT};
 use crate::vpn::app_connector::AppConnectorConfig;
 use crate::vpn::routing_mode::RoutingMode;
 
+/// Bind a UDP discovery socket that can coexist with other local Mesh nodes.
+///
+/// Discovery packets are untrusted until the signed challenge-response step,
+/// so sharing this well-known receive port does not weaken peer authentication.
+fn bind_reusable_discovery_socket(
+    address: std::net::SocketAddr,
+) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_broadcast(true)?;
+    socket.bind(&address.into())?;
+    let socket: std::net::UdpSocket = socket.into();
+    socket.set_nonblocking(true)?;
+    Ok(socket)
+}
+
 impl MeshRuntime {
     // -----------------------------------------------------------------------
     // Clearnet TCP transport
@@ -391,17 +409,13 @@ impl MeshRuntime {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if sock_guard.is_none() {
-                match std::net::UdpSocket::bind("0.0.0.0:7235") {
-                    Ok(socket) => {
-                        // Broadcast + non-blocking so the poll loop can drain
-                        // packets without blocking.
-                        let _ = socket.set_broadcast(true);
-                        let _ = socket.set_nonblocking(true);
-                        *sock_guard = Some(socket);
-                    }
+                let address = std::net::SocketAddr::from(([0, 0, 0, 0], 7_235));
+                match bind_reusable_discovery_socket(address) {
+                    Ok(socket) => *sock_guard = Some(socket),
                     Err(_) => {
-                        // Port in use or permission denied — still mark as running;
-                        // receive side will be silent but announce still attempted.
+                        // Discovery remains authenticated, but without this socket
+                        // the node cannot announce or receive local presence.
+                        self.diagnostic_log("mdns", "shared_bind_failed");
                     }
                 }
             }
@@ -4340,6 +4354,16 @@ mod tests {
         AppConnectorApp, AppConnectorConfig, AppConnectorMode, AppConnectorRule, AppSelector,
         RoutingTarget,
     };
+
+    #[test]
+    fn discovery_socket_allows_multiple_local_nodes() {
+        let first = bind_reusable_discovery_socket(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap();
+        let shared_address = first.local_addr().unwrap();
+        let second = bind_reusable_discovery_socket(shared_address).unwrap();
+
+        assert_eq!(second.local_addr().unwrap(), shared_address);
+    }
 
     #[test]
     fn android_vpn_policy_uses_backend_owned_allowlist_rules() {

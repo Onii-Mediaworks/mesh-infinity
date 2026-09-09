@@ -628,7 +628,9 @@ class BackendBridge {
   String? completeDeviceEnrollment(String requestJson) {
     if (!isAvailable) return null;
     final ptr = requestJson.toNativeUtf8();
-    final result = _readString(_bindings!.completeDeviceEnrollment(_context, ptr));
+    final result = _readString(
+      _bindings!.completeDeviceEnrollment(_context, ptr),
+    );
     calloc.free(ptr);
     return result;
   }
@@ -1616,7 +1618,8 @@ class BackendBridge {
   /// Toggle whether mesh relay is preferred over DERP for Tailscale.
   bool tailscaleSetPreferMeshRelay(bool enabled) {
     if (!isAvailable) return false;
-    return _bindings!.tailscaleSetPreferMeshRelay(_context, enabled ? 1 : 0) == 0;
+    return _bindings!.tailscaleSetPreferMeshRelay(_context, enabled ? 1 : 0) ==
+        0;
   }
 
   /// Select or clear the active Tailscale exit node by peer name.
@@ -1678,7 +1681,8 @@ class BackendBridge {
   /// Toggle whether mesh relay is preferred over vendor relay for ZeroTier.
   bool zerotierSetPreferMeshRelay(bool enabled) {
     if (!isAvailable) return false;
-    return _bindings!.zerotierSetPreferMeshRelay(_context, enabled ? 1 : 0) == 0;
+    return _bindings!.zerotierSetPreferMeshRelay(_context, enabled ? 1 : 0) ==
+        0;
   }
 
   /// Authorize or deauthorize a ZeroTier member on a specific network.
@@ -1867,8 +1871,11 @@ class BackendBridge {
     if (!isAvailable) return false;
     final idPtr = instanceId.toNativeUtf8();
     final urlPtr = controlUrl.toNativeUtf8();
-    final result =
-        _bindings!.tailscaleBeginOAuthInstance(_context, idPtr, urlPtr);
+    final result = _bindings!.tailscaleBeginOAuthInstance(
+      _context,
+      idPtr,
+      urlPtr,
+    );
     calloc.free(idPtr);
     calloc.free(urlPtr);
     return result == 0;
@@ -1912,8 +1919,11 @@ class BackendBridge {
     if (!isAvailable) return false;
     final idPtr = instanceId.toNativeUtf8();
     final peerPtr = peerName.toNativeUtf8();
-    final result =
-        _bindings!.tailscaleSetExitNodeInstance(_context, idPtr, peerPtr);
+    final result = _bindings!.tailscaleSetExitNodeInstance(
+      _context,
+      idPtr,
+      peerPtr,
+    );
     calloc.free(idPtr);
     calloc.free(peerPtr);
     return result == 0;
@@ -1924,8 +1934,11 @@ class BackendBridge {
     if (!isAvailable) return false;
     final idPtr = instanceId.toNativeUtf8();
     final tokenPtr = token.toNativeUtf8();
-    final result =
-        _bindings!.tailscaleCompleteOAuthInstance(_context, idPtr, tokenPtr);
+    final result = _bindings!.tailscaleCompleteOAuthInstance(
+      _context,
+      idPtr,
+      tokenPtr,
+    );
     calloc.free(idPtr);
     calloc.free(tokenPtr);
     return result == 0;
@@ -2042,8 +2055,11 @@ class BackendBridge {
     if (!isAvailable) return false;
     final idPtr = instanceId.toNativeUtf8();
     final netPtr = networkId.toNativeUtf8();
-    final result =
-        _bindings!.zerotierJoinNetworkInstance(_context, idPtr, netPtr);
+    final result = _bindings!.zerotierJoinNetworkInstance(
+      _context,
+      idPtr,
+      netPtr,
+    );
     calloc.free(idPtr);
     calloc.free(netPtr);
     return result == 0;
@@ -2058,8 +2074,11 @@ class BackendBridge {
     if (!isAvailable) return false;
     final idPtr = instanceId.toNativeUtf8();
     final netPtr = networkId.toNativeUtf8();
-    final result =
-        _bindings!.zerotierLeaveNetworkInstance(_context, idPtr, netPtr);
+    final result = _bindings!.zerotierLeaveNetworkInstance(
+      _context,
+      idPtr,
+      netPtr,
+    );
     calloc.free(idPtr);
     calloc.free(netPtr);
     return result == 0;
@@ -2637,6 +2656,11 @@ Pointer<Void> _initContext(
       ? int.tryParse((Platform.environment['MESH_WIREGUARD_PORT'] ?? '').trim())
       : null;
 
+  // Local multi-node testing needs direct listeners and should not start four
+  // independent Tor clients. The override is compiled out of release builds.
+  final localTestNode =
+      kDebugMode && Platform.environment['MESH_LOCAL_TEST_NODE'] == '1';
+
   // Convert the optional config path string into a native C pointer.
   // If no path is given, use the null pointer (Rust interprets this as "default").
   final configPathPtr = resolvedPath != null
@@ -2662,10 +2686,12 @@ Pointer<Void> _initContext(
     ..configPath = configPathPtr
     ..logLevel =
         2 // 2 = INFO level in Rust's log crate convention
-    ..enableTor =
-        1 // Start with Tor enabled by default
-    ..enableClearnet =
-        0 // Clearnet disabled by default (privacy-first posture)
+    ..enableTor = localTestNode
+        ? 0
+        : 1 // Local test nodes avoid redundant Tor clients
+    ..enableClearnet = localTestNode
+        ? 1
+        : 0 // Direct transport is test-only by default
     ..meshDiscovery =
         1 // Enable local-network peer discovery
     ..allowRelays =
@@ -2804,46 +2830,56 @@ class _BackendBindings {
       pairPeer = _lib.lookupFunction<PairPeerNative, PairPeerDart>(
         'mi_pair_peer',
       ),
-      androidProximityStateJson = _lib.lookupFunction<
-        AndroidProximityStateJsonNative,
-        AndroidProximityStateJsonDart
-      >('mi_android_proximity_state_json'),
-      androidStartupStateJson = _lib.lookupFunction<
-        AndroidStartupStateJsonNative,
-        AndroidStartupStateJsonDart
-      >('mi_android_startup_state_json'),
-      androidProximityUpdateState = _lib.lookupFunction<
-        AndroidProximityUpdateStateNative,
-        AndroidProximityUpdateStateDart
-      >('mi_android_proximity_update_state'),
-      androidStartupUpdateState = _lib.lookupFunction<
-        AndroidStartupUpdateStateNative,
-        AndroidStartupUpdateStateDart
-      >('mi_android_startup_update_state'),
-      androidProximityIngestPairingPayload = _lib.lookupFunction<
-        AndroidProximityIngestPairingPayloadNative,
-        AndroidProximityIngestPairingPayloadDart
-      >('mi_android_proximity_ingest_pairing_payload'),
-      androidWifiDirectQueuePairingPayload = _lib.lookupFunction<
-        AndroidWifiDirectQueuePairingPayloadNative,
-        AndroidWifiDirectQueuePairingPayloadDart
-      >('mi_android_wifi_direct_queue_pairing_payload'),
-      androidWifiDirectDequeuePairingPayload = _lib.lookupFunction<
-        AndroidWifiDirectDequeuePairingPayloadNative,
-        AndroidWifiDirectDequeuePairingPayloadDart
-      >('mi_android_wifi_direct_dequeue_pairing_payload'),
-      androidWifiDirectIngestSessionFrame = _lib.lookupFunction<
-        AndroidWifiDirectIngestSessionFrameNative,
-        AndroidWifiDirectIngestSessionFrameDart
-      >('mi_android_wifi_direct_ingest_session_frame'),
-      androidWifiDirectQueueSessionFrame = _lib.lookupFunction<
-        AndroidWifiDirectQueueSessionFrameNative,
-        AndroidWifiDirectQueueSessionFrameDart
-      >('mi_android_wifi_direct_queue_session_frame'),
-      androidWifiDirectDequeueSessionFrame = _lib.lookupFunction<
-        AndroidWifiDirectDequeueSessionFrameNative,
-        AndroidWifiDirectDequeueSessionFrameDart
-      >('mi_android_wifi_direct_dequeue_session_frame'),
+      androidProximityStateJson = _lib
+          .lookupFunction<
+            AndroidProximityStateJsonNative,
+            AndroidProximityStateJsonDart
+          >('mi_android_proximity_state_json'),
+      androidStartupStateJson = _lib
+          .lookupFunction<
+            AndroidStartupStateJsonNative,
+            AndroidStartupStateJsonDart
+          >('mi_android_startup_state_json'),
+      androidProximityUpdateState = _lib
+          .lookupFunction<
+            AndroidProximityUpdateStateNative,
+            AndroidProximityUpdateStateDart
+          >('mi_android_proximity_update_state'),
+      androidStartupUpdateState = _lib
+          .lookupFunction<
+            AndroidStartupUpdateStateNative,
+            AndroidStartupUpdateStateDart
+          >('mi_android_startup_update_state'),
+      androidProximityIngestPairingPayload = _lib
+          .lookupFunction<
+            AndroidProximityIngestPairingPayloadNative,
+            AndroidProximityIngestPairingPayloadDart
+          >('mi_android_proximity_ingest_pairing_payload'),
+      androidWifiDirectQueuePairingPayload = _lib
+          .lookupFunction<
+            AndroidWifiDirectQueuePairingPayloadNative,
+            AndroidWifiDirectQueuePairingPayloadDart
+          >('mi_android_wifi_direct_queue_pairing_payload'),
+      androidWifiDirectDequeuePairingPayload = _lib
+          .lookupFunction<
+            AndroidWifiDirectDequeuePairingPayloadNative,
+            AndroidWifiDirectDequeuePairingPayloadDart
+          >('mi_android_wifi_direct_dequeue_pairing_payload'),
+      androidWifiDirectIngestSessionFrame = _lib
+          .lookupFunction<
+            AndroidWifiDirectIngestSessionFrameNative,
+            AndroidWifiDirectIngestSessionFrameDart
+          >('mi_android_wifi_direct_ingest_session_frame'),
+      androidWifiDirectQueueSessionFrame = _lib
+          .lookupFunction<
+            AndroidWifiDirectQueueSessionFrameNative,
+            AndroidWifiDirectQueueSessionFrameDart
+          >('mi_android_wifi_direct_queue_session_frame'),
+      androidWifiDirectDequeueSessionFrame = _lib
+          .lookupFunction<
+            AndroidWifiDirectDequeueSessionFrameNative,
+            AndroidWifiDirectDequeueSessionFrameDart
+          >('mi_android_wifi_direct_dequeue_session_frame'),
       localIdentityJson = _lib
           .lookupFunction<LocalIdentityJsonNative, LocalIdentityJsonDart>(
             'mi_local_identity_json',
@@ -2851,18 +2887,21 @@ class _BackendBindings {
       devicesJson = _lib.lookupFunction<DevicesJsonNative, DevicesJsonDart>(
         'mi_devices_json',
       ),
-      createDeviceEnrollmentRequest = _lib.lookupFunction<
-        CreateDeviceEnrollmentRequestNative,
-        CreateDeviceEnrollmentRequestDart
-      >('mi_create_device_enrollment_request'),
-      completeDeviceEnrollment = _lib.lookupFunction<
-        CompleteDeviceEnrollmentNative,
-        CompleteDeviceEnrollmentDart
-      >('mi_complete_device_enrollment'),
-      acceptDeviceEnrollment = _lib.lookupFunction<
-        AcceptDeviceEnrollmentNative,
-        AcceptDeviceEnrollmentDart
-      >('mi_accept_device_enrollment'),
+      createDeviceEnrollmentRequest = _lib
+          .lookupFunction<
+            CreateDeviceEnrollmentRequestNative,
+            CreateDeviceEnrollmentRequestDart
+          >('mi_create_device_enrollment_request'),
+      completeDeviceEnrollment = _lib
+          .lookupFunction<
+            CompleteDeviceEnrollmentNative,
+            CompleteDeviceEnrollmentDart
+          >('mi_complete_device_enrollment'),
+      acceptDeviceEnrollment = _lib
+          .lookupFunction<
+            AcceptDeviceEnrollmentNative,
+            AcceptDeviceEnrollmentDart
+          >('mi_accept_device_enrollment'),
       removeDevice = _lib.lookupFunction<RemoveDeviceNative, RemoveDeviceDart>(
         'mi_remove_device',
       ),
@@ -2960,10 +2999,9 @@ class _BackendBindings {
           .lookupFunction<UnlockIdentityNative, UnlockIdentityDart>(
             'mi_unlock_identity',
           ),
-      lockIdentity = _lib
-          .lookupFunction<LockIdentityNative, LockIdentityDart>(
-            'mi_lock_identity',
-          ),
+      lockIdentity = _lib.lookupFunction<LockIdentityNative, LockIdentityDart>(
+        'mi_lock_identity',
+      ),
       getSecurityConfig = _lib
           .lookupFunction<GetSecurityConfigNative, GetSecurityConfigDart>(
             'mi_get_security_config',
@@ -2979,10 +3017,9 @@ class _BackendBindings {
       removePin = _lib.lookupFunction<RemovePinNative, RemovePinDart>(
         'mi_remove_pin',
       ),
-      setDuressPin = _lib
-          .lookupFunction<SetDuressPinNative, SetDuressPinDart>(
-            'mi_set_duress_pin',
-          ),
+      setDuressPin = _lib.lookupFunction<SetDuressPinNative, SetDuressPinDart>(
+        'mi_set_duress_pin',
+      ),
       changeDuressPin = _lib
           .lookupFunction<ChangeDuressPinNative, ChangeDuressPinDart>(
             'mi_change_duress_pin',
@@ -3106,28 +3143,25 @@ class _BackendBindings {
           .lookupFunction<TailscaleBeginOAuthNative, TailscaleBeginOAuthDart>(
             'mi_tailscale_begin_oauth',
           ),
-      tailscaleCompleteOAuth = _lib.lookupFunction<
-        TailscaleCompleteOAuthNative,
-        TailscaleCompleteOAuthDart
-      >(
-        'mi_tailscale_complete_oauth',
-      ),
+      tailscaleCompleteOAuth = _lib
+          .lookupFunction<
+            TailscaleCompleteOAuthNative,
+            TailscaleCompleteOAuthDart
+          >('mi_tailscale_complete_oauth'),
       tailscaleReoauth = _lib
           .lookupFunction<TailscaleReauthNative, TailscaleReauthDart>(
             'mi_tailscale_reauthenticate',
           ),
-      tailscaleStartBackgroundPoll = _lib.lookupFunction<
-        TailscaleStartBackgroundPollNative,
-        TailscaleStartBackgroundPollDart
-      >(
-        'mi_tailscale_start_background_poll',
-      ),
-      tailscaleStopBackgroundPoll = _lib.lookupFunction<
-        TailscaleStopBackgroundPollNative,
-        TailscaleStopBackgroundPollDart
-      >(
-        'mi_tailscale_stop_background_poll',
-      ),
+      tailscaleStartBackgroundPoll = _lib
+          .lookupFunction<
+            TailscaleStartBackgroundPollNative,
+            TailscaleStartBackgroundPollDart
+          >('mi_tailscale_start_background_poll'),
+      tailscaleStopBackgroundPoll = _lib
+          .lookupFunction<
+            TailscaleStopBackgroundPollNative,
+            TailscaleStopBackgroundPollDart
+          >('mi_tailscale_stop_background_poll'),
       tailscaleDisconnect = _lib
           .lookupFunction<TailscaleDisconnectNative, TailscaleDisconnectDart>(
             'mi_tailscale_disconnect',
@@ -3136,12 +3170,11 @@ class _BackendBindings {
           .lookupFunction<TailscaleRefreshNative, TailscaleRefreshDart>(
             'mi_tailscale_refresh',
           ),
-      tailscaleSetPreferMeshRelay = _lib.lookupFunction<
-        TailscaleSetPreferMeshRelayNative,
-        TailscaleSetPreferMeshRelayDart
-      >(
-        'mi_tailscale_set_prefer_mesh_relay',
-      ),
+      tailscaleSetPreferMeshRelay = _lib
+          .lookupFunction<
+            TailscaleSetPreferMeshRelayNative,
+            TailscaleSetPreferMeshRelayDart
+          >('mi_tailscale_set_prefer_mesh_relay'),
       tailscaleSetExitNode = _lib
           .lookupFunction<TailscaleSetExitNodeNative, TailscaleSetExitNodeDart>(
             'mi_tailscale_set_exit_node',
@@ -3162,110 +3195,128 @@ class _BackendBindings {
           .lookupFunction<ZeroTierJoinNetworkNative, ZeroTierJoinNetworkDart>(
             'mi_zerotier_join_network',
           ),
-      zerotierSetPreferMeshRelay = _lib.lookupFunction<
-        ZeroTierSetPreferMeshRelayNative,
-        ZeroTierSetPreferMeshRelayDart
-      >(
-        'mi_zerotier_set_prefer_mesh_relay',
-      ),
-      zerotierSetMemberAuthorized = _lib.lookupFunction<
-        ZeroTierSetMemberAuthorizedNative,
-        ZeroTierSetMemberAuthorizedDart
-      >(
-        'mi_zerotier_set_member_authorized',
-      ),
+      zerotierSetPreferMeshRelay = _lib
+          .lookupFunction<
+            ZeroTierSetPreferMeshRelayNative,
+            ZeroTierSetPreferMeshRelayDart
+          >('mi_zerotier_set_prefer_mesh_relay'),
+      zerotierSetMemberAuthorized = _lib
+          .lookupFunction<
+            ZeroTierSetMemberAuthorizedNative,
+            ZeroTierSetMemberAuthorizedDart
+          >('mi_zerotier_set_member_authorized'),
       zerotierProbeRoots = _lib
           .lookupFunction<ZeroTierProbeRootsNative, ZeroTierProbeRootsDart>(
             'mi_zerotier_probe_roots',
           ),
-      tailscaleListInstances = _lib.lookupFunction<
-        TailscaleListInstancesNative,
-        TailscaleListInstancesDart
-      >('mi_tailscale_list_instances'),
-      tailscaleAddInstance = _lib.lookupFunction<
-        TailscaleAddInstanceNative,
-        TailscaleAddInstanceDart
-      >('mi_tailscale_add_instance'),
-      tailscaleRemoveInstance = _lib.lookupFunction<
-        TailscaleRemoveInstanceNative,
-        TailscaleRemoveInstanceDart
-      >('mi_tailscale_remove_instance'),
-      tailscaleSetPriorityInstance = _lib.lookupFunction<
-        TailscaleSetPriorityInstanceNative,
-        TailscaleSetPriorityInstanceDart
-      >('mi_tailscale_set_priority'),
-      tailscaleAuthKeyInstance = _lib.lookupFunction<
-        TailscaleAuthKeyInstanceNative,
-        TailscaleAuthKeyInstanceDart
-      >('mi_tailscale_auth_key_instance'),
-      tailscaleBeginOAuthInstance = _lib.lookupFunction<
-        TailscaleBeginOAuthInstanceNative,
-        TailscaleBeginOAuthInstanceDart
-      >('mi_tailscale_begin_oauth_instance'),
-      tailscaleDisconnectInstance = _lib.lookupFunction<
-        TailscaleDisconnectInstanceNative,
-        TailscaleDisconnectInstanceDart
-      >('mi_tailscale_disconnect_instance'),
-      tailscaleRefreshInstance = _lib.lookupFunction<
-        TailscaleRefreshInstanceNative,
-        TailscaleRefreshInstanceDart
-      >('mi_tailscale_refresh_instance'),
-      tailscaleSetPreferMeshRelayInstance = _lib.lookupFunction<
-        TailscaleSetPreferMeshRelayInstanceNative,
-        TailscaleSetPreferMeshRelayInstanceDart
-      >('mi_tailscale_set_prefer_mesh_relay_instance'),
-      tailscaleSetExitNodeInstance = _lib.lookupFunction<
-        TailscaleSetExitNodeInstanceNative,
-        TailscaleSetExitNodeInstanceDart
-      >('mi_tailscale_set_exit_node_instance'),
-      tailscaleCompleteOAuthInstance = _lib.lookupFunction<
-        TailscaleCompleteOAuthInstanceNative,
-        TailscaleCompleteOAuthInstanceDart
-      >('mi_tailscale_complete_oauth_instance'),
-      tailscaleReauthInstance = _lib.lookupFunction<
-        TailscaleReauthInstanceNative,
-        TailscaleReauthInstanceDart
-      >('mi_tailscale_reauthenticate_instance'),
-      zerotierListInstances = _lib.lookupFunction<
-        ZeroTierListInstancesNative,
-        ZeroTierListInstancesDart
-      >('mi_zerotier_list_instances'),
-      zerotierAddInstance = _lib.lookupFunction<
-        ZeroTierAddInstanceNative,
-        ZeroTierAddInstanceDart
-      >('mi_zerotier_add_instance'),
-      zerotierRemoveInstance = _lib.lookupFunction<
-        ZeroTierRemoveInstanceNative,
-        ZeroTierRemoveInstanceDart
-      >('mi_zerotier_remove_instance'),
-      zerotierSetPriorityInstance = _lib.lookupFunction<
-        ZeroTierSetPriorityInstanceNative,
-        ZeroTierSetPriorityInstanceDart
-      >('mi_zerotier_set_priority'),
-      zerotierRefreshInstance = _lib.lookupFunction<
-        ZeroTierRefreshInstanceNative,
-        ZeroTierRefreshInstanceDart
-      >('mi_zerotier_refresh_instance'),
-      zerotierDisconnectInstance = _lib.lookupFunction<
-        ZeroTierDisconnectInstanceNative,
-        ZeroTierDisconnectInstanceDart
-      >('mi_zerotier_disconnect_instance'),
-      zerotierJoinNetworkInstance = _lib.lookupFunction<
-        ZeroTierJoinNetworkInstanceNative,
-        ZeroTierJoinNetworkInstanceDart
-      >('mi_zerotier_join_network_instance'),
-      zerotierLeaveNetworkInstance = _lib.lookupFunction<
-        ZeroTierLeaveNetworkInstanceNative,
-        ZeroTierLeaveNetworkInstanceDart
-      >('mi_zerotier_leave_network_instance'),
-      zerotierSetPreferMeshRelayInstance = _lib.lookupFunction<
-        ZeroTierSetPreferMeshRelayInstanceNative,
-        ZeroTierSetPreferMeshRelayInstanceDart
-      >('mi_zerotier_set_prefer_mesh_relay_instance'),
-      zerotierSetMemberAuthorizedInstance = _lib.lookupFunction<
-        ZeroTierSetMemberAuthorizedInstanceNative,
-        ZeroTierSetMemberAuthorizedInstanceDart
-      >('mi_zerotier_set_member_authorized_instance'),
+      tailscaleListInstances = _lib
+          .lookupFunction<
+            TailscaleListInstancesNative,
+            TailscaleListInstancesDart
+          >('mi_tailscale_list_instances'),
+      tailscaleAddInstance = _lib
+          .lookupFunction<TailscaleAddInstanceNative, TailscaleAddInstanceDart>(
+            'mi_tailscale_add_instance',
+          ),
+      tailscaleRemoveInstance = _lib
+          .lookupFunction<
+            TailscaleRemoveInstanceNative,
+            TailscaleRemoveInstanceDart
+          >('mi_tailscale_remove_instance'),
+      tailscaleSetPriorityInstance = _lib
+          .lookupFunction<
+            TailscaleSetPriorityInstanceNative,
+            TailscaleSetPriorityInstanceDart
+          >('mi_tailscale_set_priority'),
+      tailscaleAuthKeyInstance = _lib
+          .lookupFunction<
+            TailscaleAuthKeyInstanceNative,
+            TailscaleAuthKeyInstanceDart
+          >('mi_tailscale_auth_key_instance'),
+      tailscaleBeginOAuthInstance = _lib
+          .lookupFunction<
+            TailscaleBeginOAuthInstanceNative,
+            TailscaleBeginOAuthInstanceDart
+          >('mi_tailscale_begin_oauth_instance'),
+      tailscaleDisconnectInstance = _lib
+          .lookupFunction<
+            TailscaleDisconnectInstanceNative,
+            TailscaleDisconnectInstanceDart
+          >('mi_tailscale_disconnect_instance'),
+      tailscaleRefreshInstance = _lib
+          .lookupFunction<
+            TailscaleRefreshInstanceNative,
+            TailscaleRefreshInstanceDart
+          >('mi_tailscale_refresh_instance'),
+      tailscaleSetPreferMeshRelayInstance = _lib
+          .lookupFunction<
+            TailscaleSetPreferMeshRelayInstanceNative,
+            TailscaleSetPreferMeshRelayInstanceDart
+          >('mi_tailscale_set_prefer_mesh_relay_instance'),
+      tailscaleSetExitNodeInstance = _lib
+          .lookupFunction<
+            TailscaleSetExitNodeInstanceNative,
+            TailscaleSetExitNodeInstanceDart
+          >('mi_tailscale_set_exit_node_instance'),
+      tailscaleCompleteOAuthInstance = _lib
+          .lookupFunction<
+            TailscaleCompleteOAuthInstanceNative,
+            TailscaleCompleteOAuthInstanceDart
+          >('mi_tailscale_complete_oauth_instance'),
+      tailscaleReauthInstance = _lib
+          .lookupFunction<
+            TailscaleReauthInstanceNative,
+            TailscaleReauthInstanceDart
+          >('mi_tailscale_reauthenticate_instance'),
+      zerotierListInstances = _lib
+          .lookupFunction<
+            ZeroTierListInstancesNative,
+            ZeroTierListInstancesDart
+          >('mi_zerotier_list_instances'),
+      zerotierAddInstance = _lib
+          .lookupFunction<ZeroTierAddInstanceNative, ZeroTierAddInstanceDart>(
+            'mi_zerotier_add_instance',
+          ),
+      zerotierRemoveInstance = _lib
+          .lookupFunction<
+            ZeroTierRemoveInstanceNative,
+            ZeroTierRemoveInstanceDart
+          >('mi_zerotier_remove_instance'),
+      zerotierSetPriorityInstance = _lib
+          .lookupFunction<
+            ZeroTierSetPriorityInstanceNative,
+            ZeroTierSetPriorityInstanceDart
+          >('mi_zerotier_set_priority'),
+      zerotierRefreshInstance = _lib
+          .lookupFunction<
+            ZeroTierRefreshInstanceNative,
+            ZeroTierRefreshInstanceDart
+          >('mi_zerotier_refresh_instance'),
+      zerotierDisconnectInstance = _lib
+          .lookupFunction<
+            ZeroTierDisconnectInstanceNative,
+            ZeroTierDisconnectInstanceDart
+          >('mi_zerotier_disconnect_instance'),
+      zerotierJoinNetworkInstance = _lib
+          .lookupFunction<
+            ZeroTierJoinNetworkInstanceNative,
+            ZeroTierJoinNetworkInstanceDart
+          >('mi_zerotier_join_network_instance'),
+      zerotierLeaveNetworkInstance = _lib
+          .lookupFunction<
+            ZeroTierLeaveNetworkInstanceNative,
+            ZeroTierLeaveNetworkInstanceDart
+          >('mi_zerotier_leave_network_instance'),
+      zerotierSetPreferMeshRelayInstance = _lib
+          .lookupFunction<
+            ZeroTierSetPreferMeshRelayInstanceNative,
+            ZeroTierSetPreferMeshRelayInstanceDart
+          >('mi_zerotier_set_prefer_mesh_relay_instance'),
+      zerotierSetMemberAuthorizedInstance = _lib
+          .lookupFunction<
+            ZeroTierSetMemberAuthorizedInstanceNative,
+            ZeroTierSetMemberAuthorizedInstanceDart
+          >('mi_zerotier_set_member_authorized_instance'),
       overlayStatus = _lib
           .lookupFunction<OverlayStatusNative, OverlayStatusDart>(
             'mi_overlay_status',
@@ -3555,7 +3606,8 @@ class _BackendBindings {
   final TailscaleBeginOAuthInstanceDart tailscaleBeginOAuthInstance;
   final TailscaleDisconnectInstanceDart tailscaleDisconnectInstance;
   final TailscaleRefreshInstanceDart tailscaleRefreshInstance;
-  final TailscaleSetPreferMeshRelayInstanceDart tailscaleSetPreferMeshRelayInstance;
+  final TailscaleSetPreferMeshRelayInstanceDart
+  tailscaleSetPreferMeshRelayInstance;
   final TailscaleSetExitNodeInstanceDart tailscaleSetExitNodeInstance;
   final TailscaleCompleteOAuthInstanceDart tailscaleCompleteOAuthInstance;
   final TailscaleReauthInstanceDart tailscaleReauthInstance;
@@ -3568,8 +3620,10 @@ class _BackendBindings {
   final ZeroTierDisconnectInstanceDart zerotierDisconnectInstance;
   final ZeroTierJoinNetworkInstanceDart zerotierJoinNetworkInstance;
   final ZeroTierLeaveNetworkInstanceDart zerotierLeaveNetworkInstance;
-  final ZeroTierSetPreferMeshRelayInstanceDart zerotierSetPreferMeshRelayInstance;
-  final ZeroTierSetMemberAuthorizedInstanceDart zerotierSetMemberAuthorizedInstance;
+  final ZeroTierSetPreferMeshRelayInstanceDart
+  zerotierSetPreferMeshRelayInstance;
+  final ZeroTierSetMemberAuthorizedInstanceDart
+  zerotierSetMemberAuthorizedInstance;
   final OverlayStatusDart overlayStatus;
   final LoSecRequestDart loSecRequest;
   final LoSecAmbientStatusDart loSecAmbientStatus;
@@ -3849,24 +3903,13 @@ typedef CompleteDeviceEnrollmentDart =
     Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_accept_device_enrollment(ctx, package_json) -> i32
-typedef AcceptDeviceEnrollmentNative = Int32 Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-);
-typedef AcceptDeviceEnrollmentDart = int Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-);
+typedef AcceptDeviceEnrollmentNative =
+    Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef AcceptDeviceEnrollmentDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_remove_device(ctx, device_id) -> i32
-typedef RemoveDeviceNative = Int32 Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-);
-typedef RemoveDeviceDart = int Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-);
+typedef RemoveDeviceNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef RemoveDeviceDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_trust_attest(ctx, endorser_id, target_id, trust_level: i32, method: u8) -> i32
 typedef TrustAttestNative =
@@ -4192,8 +4235,7 @@ typedef TailscaleBeginOAuthDart = int Function(Pointer<Void>, Pointer<Utf8>);
 // mi_tailscale_complete_oauth(ctx, token) -> i32
 typedef TailscaleCompleteOAuthNative =
     Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef TailscaleCompleteOAuthDart =
-    int Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleCompleteOAuthDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_tailscale_reauthenticate(ctx) -> i32
 typedef TailscaleReauthNative = Int32 Function(Pointer<Void>);
@@ -4223,8 +4265,7 @@ typedef TailscaleSetPreferMeshRelayDart = int Function(Pointer<Void>, int);
 // mi_tailscale_set_exit_node(ctx, peer_name) -> i32
 typedef TailscaleSetExitNodeNative =
     Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef TailscaleSetExitNodeDart =
-    int Function(Pointer<Void>, Pointer<Utf8>);
+typedef TailscaleSetExitNodeDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_zerotier_connect(ctx, api_key, controller_url, network_ids_json) -> i32
 typedef ZeroTierConnectNative =
@@ -4243,12 +4284,10 @@ typedef ZeroTierRefreshDart = int Function(Pointer<Void>);
 // mi_zerotier_join_network(ctx, network_id) -> i32
 typedef ZeroTierJoinNetworkNative =
     Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef ZeroTierJoinNetworkDart =
-    int Function(Pointer<Void>, Pointer<Utf8>);
+typedef ZeroTierJoinNetworkDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_zerotier_set_prefer_mesh_relay(ctx, enabled) -> i32
-typedef ZeroTierSetPreferMeshRelayNative =
-    Int32 Function(Pointer<Void>, Int32);
+typedef ZeroTierSetPreferMeshRelayNative = Int32 Function(Pointer<Void>, Int32);
 typedef ZeroTierSetPreferMeshRelayDart = int Function(Pointer<Void>, int);
 
 // mi_zerotier_set_member_authorized(ctx, network_id, node_id, authorized) -> i32
@@ -4344,26 +4383,27 @@ typedef ZeroTierListInstancesNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef ZeroTierListInstancesDart = Pointer<Utf8> Function(Pointer<Void>);
 
 // mi_zerotier_add_instance(ctx, label, api_key, controller_url, network_ids_json) -> *mut c_char
-typedef ZeroTierAddInstanceNative = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
-typedef ZeroTierAddInstanceDart = Pointer<Utf8> Function(
-  Pointer<Void>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-  Pointer<Utf8>,
-);
+typedef ZeroTierAddInstanceNative =
+    Pointer<Utf8> Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+    );
+typedef ZeroTierAddInstanceDart =
+    Pointer<Utf8> Function(
+      Pointer<Void>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+      Pointer<Utf8>,
+    );
 
 // mi_zerotier_remove_instance(ctx, instance_id) -> i32
 typedef ZeroTierRemoveInstanceNative =
     Int32 Function(Pointer<Void>, Pointer<Utf8>);
-typedef ZeroTierRemoveInstanceDart =
-    int Function(Pointer<Void>, Pointer<Utf8>);
+typedef ZeroTierRemoveInstanceDart = int Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_zerotier_set_priority(ctx, instance_id) -> i32
 typedef ZeroTierSetPriorityInstanceNative =

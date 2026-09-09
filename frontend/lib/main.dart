@@ -123,6 +123,19 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       'duration_ms=${timer.elapsedMilliseconds}',
     );
 
+    if (kDebugMode && bridge.isAvailable) {
+      final testPort = int.tryParse(
+        (Platform.environment['MESH_CLEARNET_PORT'] ?? '').trim(),
+      );
+      if (testPort != null && testPort >= 1024 && testPort <= 65535) {
+        final configured = bridge.setClearnetPort(testPort);
+        DebugLogger.log(
+          'bootstrap.local_test.clearnet_port_configured '
+          'ok=$configured port=$testPort',
+        );
+      }
+    }
+
     // Guard against the widget being disposed during the await above
     // (e.g. hot-restart during development).
     if (mounted) setState(() => _bridge = bridge);

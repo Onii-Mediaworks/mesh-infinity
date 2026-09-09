@@ -28,6 +28,9 @@
 // if the identity changes — accomplished via the ValueKey on MultiProvider.
 // =============================================================================
 
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -305,6 +308,43 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
           // Never show the "DEBUG" banner in the top-right corner; it obscures UI
           // elements during testing and is unhelpful to end users.
           debugShowCheckedModeBanner: false,
+          builder: (context, child) {
+            final nodeLabel = kDebugMode
+                ? Platform.environment['MESH_NODE_LABEL']?.trim()
+                : null;
+            if (nodeLabel == null || nodeLabel.isEmpty || child == null) {
+              return child ?? const SizedBox.shrink();
+            }
+            return Stack(
+              children: [
+                child,
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: IgnorePointer(
+                    child: Material(
+                      color: Colors.deepOrange,
+                      borderRadius: BorderRadius.circular(6),
+                      elevation: 4,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        child: Text(
+                          nodeLabel,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
           home: _buildHome(),
         ),
       ),
@@ -432,10 +472,7 @@ class _LockedStartupScreen extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: onRetry,
-                  child: const Text('Retry'),
-                ),
+                FilledButton(onPressed: onRetry, child: const Text('Retry')),
               ],
             ),
           ),
