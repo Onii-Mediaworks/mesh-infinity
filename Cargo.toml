@@ -256,6 +256,15 @@ x25519-dalek-v3 = { package = "x25519-dalek", version = "3.0.0", features = ["st
 # generator (needed when creating a fresh identity on first run).
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
 
+# subtle — constant-time comparison primitives.
+#
+# Used wherever an attacker-supplied value is compared against a secret or
+# identity-bearing value (e.g. the X3DH responder's identity-key check), so
+# the comparison's timing does not leak how many bytes matched.  Already a
+# transitive dependency of the dalek crates; listed directly so the app can
+# name `ConstantTimeEq` without relying on a re-export.
+subtle = "2.6"
+
 # chacha20poly1305 — authenticated symmetric encryption (AEAD cipher).
 #
 # After a shared secret is established via X25519, all subsequent messages are
@@ -695,7 +704,7 @@ wintun = "0.5"
 # usb_serial.rs probes COM ports via CreateFileW/CloseHandle and related
 # constants. Those symbols live in windows-sys, so the Windows build needs the
 # crate linked explicitly for target-specific compilation.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Memory"] }
 
 # iOS-excluded: wasmtime (§18.1)
 #

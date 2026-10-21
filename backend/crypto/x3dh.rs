@@ -43,6 +43,8 @@ use hmac::{Hmac, Mac};
 use kem::Encapsulate;
 use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768};
 use sha2::Sha256;
+// Constant-time comparison for the responder-side identity key check.
+use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
 // Securely erase key material to prevent forensic recovery.
 use zeroize::Zeroizing;
@@ -156,6 +158,13 @@ pub enum X3dhError {
     SecureMemory(#[from] SecureMemoryError),
     #[error("HMAC key error — key was rejected by the MAC implementation")]
     HmacKeyError,
+    /// The identity key recovered from the init header is not the identity
+    /// key we hold for the claimed sender.  Anyone can produce a header that
+    /// decrypts (the IK is encrypted under DH with Bob's *public* preauth
+    /// key), so this check is what binds the init to the contact (§7.0.2
+    /// "identity binding").
+    #[error("Init header identity key does not match the contact's identity key")]
+    IdentityMismatch,
 }
 
 // ---------------------------------------------------------------------------
@@ -442,12 +451,21 @@ pub fn x3dh_initiate(
 /// Process an X3DH init header as the responder (Bob).
 ///
 /// Bob uses his own keys to derive the same master secret Alice computed.
+///
+/// `expected_ik_a_pub` is the X25519 identity key Bob already holds for the
+/// contact the frame claims to come from.  The IK carried in the header is
+/// only encrypted under `DH(eph_A, preauth_B)`, which any sender can compute
+/// from Bob's public bundle, so decrypting it proves nothing about who sent
+/// it.  Comparing it (in constant time) against the contact record is what
+/// binds the init to that contact; a mismatch is `IdentityMismatch` and no
+/// master secret is derived.
 pub fn x3dh_respond(
     // Elliptic curve Diffie-Hellman key agreement.
     ik_b_secret: &X25519Secret,
     // Elliptic curve Diffie-Hellman key agreement.
     preauth_b_secret: &X25519Secret,
     header: &X3dhInitHeader,
+    expected_ik_a_pub: &[u8; 32],
 ) -> Result<X3dhSessionOutput, X3dhError> {
     // Validate encrypted IK size
     if header.encrypted_ik_pub.len() != ENCRYPTED_IK_SIZE {
@@ -461,6 +479,17 @@ pub fn x3dh_respond(
 
     // Decrypt Alice's IK
     let ik_a_pub_bytes = decrypt_ik_pub(&header.encrypted_ik_pub, preauth_b_secret, &ek_a_pub)?;
+
+    // Identity binding: the recovered IK must be the contact's known IK.
+    // Constant-time so the comparison leaks nothing about how many leading
+    // bytes an attacker-supplied key shares with the real one.
+    if !bool::from(
+        ik_a_pub_bytes
+            .as_slice()
+            .ct_eq(expected_ik_a_pub.as_slice()),
+    ) {
+        return Err(X3dhError::IdentityMismatch);
+    }
     // Invoke the associated function.
     let ik_a_pub = X25519Public::from(ik_a_pub_bytes);
 
@@ -830,17 +859,21 @@ fn compute_kem_binding(eph_dh_shared: &[u8], kem_ciphertext: &[u8]) -> Result<[u
 
 /// Verify KEM binding on the responder side.
 ///
-/// Recomputes `compute_kem_binding` and compares in constant time (via the
-/// direct array comparison that avoids short-circuit evaluation).  Returns
-/// `X3dhError::KemBindingMismatch` on any mismatch.
+/// Recomputes `compute_kem_binding` and compares with `subtle::ct_eq`.
+/// A plain `!=` on `[u8; 32]` compiles to `memcmp`, which stops at the first
+/// differing byte and gives an attacker-supplied tag a timing oracle; the
+/// tag arrives straight from the inbound envelope, so the compare must not
+/// depend on how many bytes matched.  Returns `KemBindingMismatch` on any
+/// mismatch.
 fn verify_kem_binding(
     eph_dh_shared: &[u8],
     kem_ciphertext: &[u8],
     expected_binding: &[u8; 32],
 ) -> Result<(), X3dhError> {
-    // Initialize the AEAD cipher with the derived key material.
+    // Recompute the HMAC over our own view of the shared values.
     let computed = compute_kem_binding(eph_dh_shared, kem_ciphertext)?;
-    if computed != *expected_binding {
+    // Constant-time equality: `Choice` → bool only after the full compare.
+    if !bool::from(computed.ct_eq(expected_binding)) {
         return Err(X3dhError::KemBindingMismatch);
     }
     Ok(())
@@ -882,8 +915,9 @@ mod tests {
         let alice_output = x3dh_initiate(&ik_a_secret, &ik_a_pub_bytes, &bob_bundle).unwrap();
         let header = alice_output.header.unwrap();
 
-        // Bob responds
-        let bob_output = x3dh_respond(&ik_b_secret, &preauth_b_secret, &header).unwrap();
+        // Bob responds, binding the header to Alice's known identity key.
+        let bob_output =
+            x3dh_respond(&ik_b_secret, &preauth_b_secret, &header, &ik_a_pub_bytes).unwrap();
 
         // Both should derive the same master secret
         assert_eq!(
@@ -891,6 +925,48 @@ mod tests {
             bob_output.master_secret.as_bytes(),
             "Master secrets must match"
         );
+    }
+
+    /// Regression test for the responder identity binding: a header that
+    /// decrypts correctly (anyone can build one from Bob's public bundle)
+    /// but carries an identity key other than the contact's must be rejected
+    /// with `IdentityMismatch` before any master secret is derived.
+    #[test]
+    fn test_x3dh_respond_rejects_wrong_identity_key() {
+        // Bob's keys.
+        let ik_b_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let preauth_b_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let bob_bundle = PreauthBundle {
+            identity_ed25519_pub: [0u8; 32],
+            identity_x25519_pub: X25519Public::from(&ik_b_secret),
+            preauth_x25519_pub: X25519Public::from(&preauth_b_secret),
+            preauth_kem_pub: None,
+            preauth_sig: None,
+            kem_sig: None,
+        };
+
+        // The real contact's identity key, as Bob has it on record.
+        let alice_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let alice_ik = *X25519Public::from(&alice_secret).as_bytes();
+
+        // A third party initiates with its *own* identity key.  The header
+        // is well formed and decrypts under Bob's preauth secret.
+        let other_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let other_ik = *X25519Public::from(&other_secret).as_bytes();
+        let output = x3dh_initiate(&other_secret, &other_ik, &bob_bundle).unwrap();
+        let header = output.header.unwrap();
+
+        // Responding on behalf of the contact "Alice" must fail closed.
+        let result = x3dh_respond(&ik_b_secret, &preauth_b_secret, &header, &alice_ik);
+        assert!(
+            matches!(result, Err(X3dhError::IdentityMismatch)),
+            "header with foreign identity key must be rejected, got: {:?}",
+            result.err()
+        );
+
+        // The same header is accepted when the expected key matches the
+        // key actually inside it, proving the check is the only difference.
+        assert!(x3dh_respond(&ik_b_secret, &preauth_b_secret, &header, &other_ik).is_ok());
     }
 
     #[test]

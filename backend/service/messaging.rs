@@ -95,6 +95,91 @@ fn build_group_ring_signature_message(
     message
 }
 
+/// Why a group control payload could not be opened with the ratchet.
+///
+/// Every variant is a silent rejection on the wire (we never answer a peer
+/// with an error); the distinction exists so callers can decide whether to
+/// request re-inclusion (§8.7.6) without parsing strings.
+#[derive(Debug)]
+enum GroupRatchetError {
+    /// No installed session and no usable candidate from the frame.
+    NoSession,
+    /// The ratchet refused the header (duplicate, gap too large, exhausted).
+    Ratchet,
+    /// The ciphertext did not authenticate under the derived message key.
+    Aead,
+}
+
+/// Parse the classical X3DH init header (`x3dh_eph_pub`, `x3dh_encrypted_ik`)
+/// from an inbound frame.
+///
+/// Both fields must be present, hex-encoded and exactly the protocol sizes
+/// (32 and `ENCRYPTED_IK_SIZE` bytes); anything else yields `None`.  Parsing
+/// says nothing about who sent the header — the responder binds it to the
+/// contact's identity key in `x3dh_respond`.
+fn parse_x3dh_init_header(
+    envelope: &serde_json::Value,
+) -> Option<crate::crypto::x3dh::X3dhInitHeader> {
+    use crate::crypto::x3dh::{X3dhInitHeader, ENCRYPTED_IK_SIZE};
+
+    // Alice's ephemeral X25519 public key (32 bytes).
+    let eph_pub: [u8; 32] = envelope
+        .get("x3dh_eph_pub")
+        .and_then(|v| v.as_str())
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|b| b.as_slice().try_into().ok())?;
+    // Alice's identity key, AEAD-encrypted (32-byte key + 16-byte tag).
+    let encrypted_ik_pub: [u8; ENCRYPTED_IK_SIZE] = envelope
+        .get("x3dh_encrypted_ik")
+        .and_then(|v| v.as_str())
+        .and_then(|h| hex::decode(h).ok())
+        .and_then(|b| b.as_slice().try_into().ok())?;
+    Some(X3dhInitHeader {
+        eph_pub,
+        encrypted_ik_pub,
+    })
+}
+
+/// Extract the message text from a decrypted direct-message payload.
+///
+/// New-format payloads are JSON `{"hdr": {...}, "text": "..."}`.  The inner
+/// header is AEAD-authenticated and must match the outer header the key was
+/// derived from; a mismatch means the encrypted outer header blob was
+/// substituted and the frame is rejected.  Legacy payloads are bare UTF-8
+/// text.  Returns `None` for a mismatch or a malformed payload.
+fn extract_direct_message_text(plaintext: &[u8], header: &RatchetHeader) -> Option<String> {
+    // Try the structured format first; fall back to bare text.
+    let Ok(inner) = serde_json::from_slice::<serde_json::Value>(plaintext) else {
+        return String::from_utf8(plaintext.to_vec()).ok();
+    };
+    if let Some(inner_hdr) = inner.get("hdr") {
+        // Each field of the authenticated inner header must equal the outer.
+        let inner_rp = inner_hdr
+            .get("ratchet_pub")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let inner_pcl = inner_hdr
+            .get("prev_chain_len")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let inner_mn = inner_hdr
+            .get("msg_num")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        if inner_rp != hex::encode(header.ratchet_pub)
+            || inner_pcl != header.prev_chain_len
+            || inner_mn != header.msg_num
+        {
+            return None;
+        }
+    }
+    // The text field is mandatory in the structured format.
+    inner
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|t| t.to_string())
+}
+
 fn room_preview_text(text: &str) -> String {
     if text.len() > 80 {
         format!("{}…", &text[..80])
@@ -626,42 +711,11 @@ impl MeshRuntime {
             }
         }
 
-        // SECURITY (CRIT-2): Ratchet header is now encrypted.
-        //
-        // New-format frames carry `enc_header` (encrypted header blob).
-        // Legacy frames still carry plaintext `ratchet_pub` / `prev_chain_len`
-        // / `msg_num` — accepted for backward compatibility but the header
-        // inside the ciphertext is authoritative after decryption.
-        let enc_header_hex = envelope.get("enc_header").and_then(|v| v.as_str());
-
-        // Legacy fallback: read plaintext header fields if enc_header absent.
-        let legacy_ratchet_pub_hex = envelope.get("ratchet_pub").and_then(|v| v.as_str());
-        let legacy_prev_chain_len = envelope
-            .get("prev_chain_len")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        let legacy_msg_num = envelope
-            .get("msg_num")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-
-        // Decode binary fields.
+        // Decode the ciphertext; a non-hex payload is a malformed frame.
         let ciphertext = match hex::decode(&ciphertext_hex) {
             Ok(b) => b,
             Err(_) => return false,
         };
-
-        // Build the RatchetHeader from either encrypted or legacy fields.
-        // The encrypted path is preferred; legacy is only used for backward
-        // compatibility with peers that have not yet upgraded.
-        let legacy_ratchet_pub_bytes: Option<[u8; 32]> = legacy_ratchet_pub_hex
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == 32)
-            .map(|b| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            });
 
         let sender_id_bytes: [u8; 32] = match hex::decode(&sender_hex) {
             Ok(b) if b.len() == 32 => {
@@ -685,99 +739,47 @@ impl MeshRuntime {
             None => return false,
         };
 
-        // Bootstrap a ratchet session if we don't have one for this sender yet.
-        if !self
+        // Resolve a session for this sender.  An existing one is used as-is.
+        // If none exists, build a *candidate* from the frame's X3DH material
+        // (or static DH for an explicitly legacy contact) but do not install
+        // it: nothing in the frame has been authenticated yet, and a session
+        // installed from unverified material would let any network peer
+        // wedge this contact's session.  SPEC §7.0.1 commits session creation
+        // together with message acceptance, never before, so the candidate
+        // is installed below only once the four-layer decrypt succeeds.
+        let has_session = self
             .ratchet_sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&sender_peer_id)
-        {
-            if let Some(session) =
-                self.bootstrap_session_from_frame(envelope, &contact, sender_peer_id)
-            {
-                self.ratchet_sessions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(sender_peer_id, session);
-            }
+            .contains_key(&sender_peer_id);
+        let candidate = if has_session {
+            None
         } else {
-            // Existing session — clear any pending X3DH/PQXDH headers for this peer
-            // (receipt of a reply means Bob has established his matching session).
-            self.x3dh_pending
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&sender_peer_id);
-            self.pqxdh_pending
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&sender_peer_id);
-        }
-
-        // SECURITY (CRIT-2): Decrypt the ratchet header from enc_header, or
-        // fall back to legacy plaintext fields for backward compatibility.
-        //
-        // The encrypted path prevents observers from correlating messages by
-        // tracking ratchet public key changes and message counters.
-        let header = if let Some(enc_hex) = enc_header_hex {
-            // New-format: decrypt the header using a key derived from the
-            // static DH shared secret between us and the sender.
-            let enc_bytes = match hex::decode(enc_hex) {
-                Ok(b) => b,
-                Err(_) => return false,
-            };
-            // Derive the header encryption key from our X25519 secret and
-            // the sender's X25519 public key (from the contact record).
-            let our_x25519_for_hdr = {
-                let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-                match guard.as_ref() {
-                    Some(id) => X25519Secret::from(id.x25519_secret.to_bytes()),
-                    None => return false,
-                }
-            };
-            let their_x25519_pub_for_hdr = x25519_dalek::PublicKey::from(contact.x25519_public);
-            let dh_shared = our_x25519_for_hdr.diffie_hellman(&their_x25519_pub_for_hdr);
-            let hdr_key =
-                match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
-                    Ok(k) => k,
-                    Err(_) => return false,
-                };
-            match DoubleRatchetSession::decrypt_header_with_key(&enc_bytes, &hdr_key) {
-                Ok(h) => h,
-                Err(_) => return false,
-            }
-        } else if let Some(ratchet_pub_bytes) = legacy_ratchet_pub_bytes {
-            // Legacy fallback: use plaintext header fields from the envelope.
-            RatchetHeader {
-                ratchet_pub: ratchet_pub_bytes,
-                prev_chain_len: legacy_prev_chain_len,
-                msg_num: legacy_msg_num,
-            }
-        } else {
-            // Neither encrypted nor legacy header present — malformed frame.
-            return false;
-        };
-
-        // Advance the ratchet and derive message keys.
-        let (cipher_key, session_nonce, ratchet_msg_key) = {
-            let mut sessions = self
-                .ratchet_sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let session = match sessions.get_mut(&sender_peer_id) {
-                Some(s) => s,
+            match self.bootstrap_session_from_frame(envelope, &contact, sender_peer_id) {
+                Some(session) => Some(session),
                 None => return false,
-            };
-            let msg_key = match session.recv_msg_key(&header) {
-                Ok(k) => k,
-                Err(_) => return false,
-            };
-            match DoubleRatchetSession::expand_msg_key(&msg_key) {
-                Ok(keys) => keys,
-                Err(_) => return false,
             }
         };
 
-        // Our X25519 secret and sender's Ed25519 verifying key for decryption.
+        // SECURITY (CRIT-2): the ratchet header arrives encrypted under a key
+        // derived from the static DH between us and the sender, so an
+        // observer cannot track ratchet key changes or counters.
+        //
+        // The encrypted header is *required*.  The former plaintext
+        // `ratchet_pub` / `prev_chain_len` / `msg_num` fallback was removed:
+        // those fields were attacker-controlled and let an unauthenticated
+        // peer choose the DH input for a contact's session.  No shipping
+        // sender emits plaintext headers (`send_text_message` always encrypts).
+        let enc_header_hex = match envelope.get("enc_header").and_then(|v| v.as_str()) {
+            Some(h) => h,
+            None => return false,
+        };
+        let enc_bytes = match hex::decode(enc_header_hex) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        // Our X25519 secret: used for the header key here and for Step 4
+        // of the four-layer decrypt below.
         let our_x25519_secret = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             match guard.as_ref() {
@@ -785,71 +787,113 @@ impl MeshRuntime {
                 None => return false,
             }
         };
+        // Header key = HKDF(DH(our static secret, sender's static public)).
+        let their_x25519_pub_for_hdr = x25519_dalek::PublicKey::from(contact.x25519_public);
+        let dh_shared = our_x25519_secret.diffie_hellman(&their_x25519_pub_for_hdr);
+        let hdr_key = match DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
+        let header = match DoubleRatchetSession::decrypt_header_with_key(&enc_bytes, &hdr_key) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+
+        // Sender's Ed25519 verifying key for the Step 3 signature check.
         let sender_verifying_key =
             match ed25519_dalek::VerifyingKey::from_bytes(&contact.ed25519_public) {
                 Ok(k) => k,
                 Err(_) => return false,
             };
 
-        // Decrypt via the four-layer scheme (§7.1).
-        let plaintext = match decrypt_message(
-            &ciphertext,
-            &our_x25519_secret,
-            &sender_verifying_key,
-            &cipher_key,
-            &session_nonce,
-            &ratchet_msg_key,
-            MessageContext::Direct,
-        ) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
+        // Derive the message key, authenticate the payload, and only then
+        // commit the ratchet step (and install the candidate session).  The
+        // whole sequence runs under the sessions lock so the commit replaces
+        // exactly the state the pending step was computed from — no send or
+        // other receive can interleave.  This is SPEC §7.0.3 "Invalid
+        // ciphertext cannot commit state" and §7.0.2 "persist session state
+        // and message deduplication atomically" at the in-memory level; the
+        // vault write happens once at the end of this function.
+        let text = {
+            let mut sessions = self
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // Prefer a session installed since our check above (a concurrent
+            // frame may have won the race); otherwise use the candidate.
+            let session = match sessions.get(&sender_peer_id) {
+                Some(existing) => existing,
+                None => match candidate.as_ref() {
+                    Some(fresh) => fresh,
+                    None => return false,
+                },
+            };
+            // Speculative receive step: `session` is not modified here.  A
+            // duplicate, an oversized gap or an exhausted counter is rejected
+            // before any AEAD work.
+            let pending = match session.prepare_recv(&header) {
+                Ok(p) => p,
+                Err(_) => return false,
+            };
+            let (cipher_key, session_nonce, ratchet_msg_key) =
+                match DoubleRatchetSession::expand_msg_key(pending.msg_key()) {
+                    Ok(keys) => keys,
+                    Err(_) => return false,
+                };
 
-        // SECURITY (CRIT-2): Extract message text from the inner payload.
-        //
-        // New-format ciphertexts contain JSON `{"hdr": {...}, "text": "..."}`.
-        // Legacy ciphertexts are bare UTF-8 text.  We detect the format by
-        // attempting JSON parse first; if it fails, treat as legacy plaintext.
-        let text = if let Ok(inner) = serde_json::from_slice::<serde_json::Value>(&plaintext) {
-            // New format: verify inner header matches the one used for key
-            // derivation, then extract the text field.
-            if let Some(inner_hdr) = inner.get("hdr") {
-                // Verify the inner header matches the envelope header to
-                // detect substitution attacks on the encrypted outer header.
-                let inner_rp = inner_hdr
-                    .get("ratchet_pub")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let inner_pcl = inner_hdr
-                    .get("prev_chain_len")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-                let inner_mn = inner_hdr
-                    .get("msg_num")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-                // Verify the outer (encrypted) header matches the inner
-                // (AEAD-authenticated) header — a mismatch indicates the
-                // encrypted header blob was swapped by an attacker.
-                if inner_rp != hex::encode(header.ratchet_pub)
-                    || inner_pcl != header.prev_chain_len
-                    || inner_mn != header.msg_num
-                {
-                    return false;
+            // Decrypt via the four-layer scheme (§7.1).  This is the only
+            // authentication of the payload: Step 3 verifies the contact's
+            // Ed25519 signature and Step 2 the AEAD tag under the ratchet key.
+            // On failure the pending state is dropped and nothing changes.
+            let plaintext = match decrypt_message(
+                &ciphertext,
+                &our_x25519_secret,
+                &sender_verifying_key,
+                &cipher_key,
+                &session_nonce,
+                &ratchet_msg_key,
+                MessageContext::Direct,
+            ) {
+                Ok(p) => p,
+                Err(_) => return false,
+            };
+
+            // Extract the text, checking the authenticated inner header
+            // against the outer one.  This runs before the commit so a
+            // mismatch also leaves the session untouched.
+            let text = match extract_direct_message_text(&plaintext, &header) {
+                Some(t) => t,
+                None => return false,
+            };
+
+            // Authenticated: commit the ratchet step.  A first message from
+            // this contact installs the candidate session at the same time.
+            match sessions.get_mut(&sender_peer_id) {
+                Some(existing) => existing.commit_recv(pending),
+                None => {
+                    if let Some(mut fresh) = candidate {
+                        fresh.commit_recv(pending);
+                        sessions.insert(sender_peer_id, fresh);
+                    }
                 }
             }
-            // Extract the message text from the inner payload.
-            match inner.get("text").and_then(|v| v.as_str()) {
-                Some(t) => t.to_string(),
-                None => return false,
-            }
-        } else {
-            // Legacy format: bare UTF-8 plaintext.
-            match String::from_utf8(plaintext) {
-                Ok(s) => s,
-                Err(_) => return false,
-            }
+            text
         };
+
+        // The sender demonstrably shares a session with us, so any X3DH /
+        // PQXDH init material we were still attaching to our outgoing
+        // messages for them is no longer needed.  This is cleared only after
+        // authentication: previously any unauthenticated frame naming the
+        // contact could strip the init header from our next message and
+        // stop the peer from ever bootstrapping its side.
+        self.x3dh_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&sender_peer_id);
+        self.pqxdh_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&sender_peer_id);
 
         // Auto-create a DM room if one doesn't exist for this conversation.
         let room_exists = self
@@ -1023,38 +1067,23 @@ impl MeshRuntime {
         true
     }
 
-    /// Bootstrap a Double Ratchet session from an inbound message frame.
+    /// Build (but do not install) a Double Ratchet session for an inbound
+    /// direct-message frame from a contact we have no session with.
     ///
-    /// Tries X3DH/PQXDH if the frame carries the init header fields;
-    /// falls back to static DH otherwise.  Returns `None` if bootstrapping
-    /// fails (caller should return `false` to discard the frame).
+    /// Tries X3DH/PQXDH if the frame carries the init header fields, binding
+    /// the header to the contact's known identity key; falls back to static
+    /// DH only for explicitly legacy contacts.  Returns `None` if
+    /// bootstrapping fails (caller should return `false` to discard the
+    /// frame).  The caller installs the returned candidate only after the
+    /// frame's payload has authenticated under it.
     fn bootstrap_session_from_frame(
         &self,
         envelope: &serde_json::Value,
         contact: &crate::pairing::contact::ContactRecord,
         _sender_peer_id: PeerId,
     ) -> Option<DoubleRatchetSession> {
-        let eph_pub_opt: Option<[u8; 32]> = envelope
-            .get("x3dh_eph_pub")
-            .and_then(|v| v.as_str())
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == 32)
-            .map(|b| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            });
-
-        let enc_ik_opt = envelope
-            .get("x3dh_encrypted_ik")
-            .and_then(|v| v.as_str())
-            .and_then(|h| hex::decode(h).ok())
-            .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
-            .map(|b| {
-                let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
-                a.copy_from_slice(&b);
-                a
-            });
+        // Classical X3DH init header, if the frame carries one.
+        let init_header = parse_x3dh_init_header(envelope);
 
         let pqxdh_kem_ct = envelope
             .get("pqxdh_kem_ct")
@@ -1073,21 +1102,28 @@ impl MeshRuntime {
                 a
             });
 
-        if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
+        if let Some(header) = init_header {
             // X3DH/PQXDH response path: we are Bob receiving Alice's init header.
-            use crate::crypto::x3dh::{pqxdh_decapsulate, x3dh_respond, X3dhInitHeader};
+            use crate::crypto::x3dh::{pqxdh_decapsulate, x3dh_respond};
             use hkdf::Hkdf;
             use zeroize::Zeroizing;
 
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             let id = guard.as_ref()?;
 
-            let header = X3dhInitHeader {
-                eph_pub,
-                encrypted_ik_pub: enc_ik,
-            };
-            let mut output =
-                x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header).ok()?;
+            // Alice's ephemeral key, reused by the PQXDH binding below.
+            let eph_pub = header.eph_pub;
+            // Identity binding (§7.0.2): the IK recovered from the header must
+            // be this contact's IK.  Any sender can produce a header that
+            // decrypts, so without this check a stranger's init would be
+            // accepted as Alice's.  `x3dh_respond` compares in constant time.
+            let mut output = x3dh_respond(
+                &id.x25519_secret,
+                &id.preauth_x25519_secret,
+                &header,
+                &contact.x25519_public,
+            )
+            .ok()?;
 
             // PQXDH: mix in post-quantum shared secret if both fields are present.
             if let (Some(ref kem_ct), Some(ref kem_binding)) = (&pqxdh_kem_ct, &pqxdh_kem_binding) {
@@ -1151,6 +1187,121 @@ impl MeshRuntime {
                     .map(|(s, _, _)| s)
             })
         }
+    }
+
+    /// Build (but do not install) a candidate ratchet session for a group
+    /// control frame (`group_rekey`, `group_invite`, `group_message`) from a
+    /// peer we have no session with yet.
+    ///
+    /// Returns `None` when a session already exists (the existing one must be
+    /// used), when the sender is not a contact (there is no identity key to
+    /// bind the init header to), or when the frame carries no valid X3DH init
+    /// header.  Group frames never fall back to static DH.  The caller passes
+    /// the candidate to `open_group_ratchet_payload`, which installs it only
+    /// once the payload authenticates.
+    fn group_frame_candidate_session(
+        &self,
+        envelope: &serde_json::Value,
+        sender_peer_id: PeerId,
+    ) -> Option<DoubleRatchetSession> {
+        // An existing session is authoritative; never replace it from a frame.
+        if self
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&sender_peer_id)
+        {
+            return None;
+        }
+        // Only contacts have a known identity key to bind the header to.
+        let contact = self
+            .contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&sender_peer_id)
+            .cloned()?;
+        let header = parse_x3dh_init_header(envelope)?;
+
+        // Bob-side X3DH: derive the master secret, bound to the contact's IK.
+        use crate::crypto::x3dh::x3dh_respond;
+        let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+        let id = guard.as_ref()?;
+        let output = x3dh_respond(
+            &id.x25519_secret,
+            &id.preauth_x25519_secret,
+            &header,
+            &contact.x25519_public,
+        )
+        .ok()?;
+
+        // Bob is always the receiver in X3DH — our preauth keypair is the
+        // initial ratchet keypair.
+        let master = output.master_secret.as_bytes();
+        let preauth_secret = X25519Secret::from(id.preauth_x25519_secret.to_bytes());
+        let preauth_pub = *id.preauth_x25519_pub.as_bytes();
+        Some(DoubleRatchetSession::init_receiver(
+            master,
+            preauth_secret,
+            &preauth_pub,
+        ))
+    }
+
+    /// Decrypt a group control payload with the sender's ratchet session,
+    /// committing the ratchet step only on success.
+    ///
+    /// Group control frames (`group_rekey`, `group_invite`, `group_message`)
+    /// encrypt their payload directly under the raw ratchet message key with
+    /// ChaCha20-Poly1305 and an all-zero nonce (the key is single-use).  The
+    /// receive step is prepared on a working copy, the AEAD tag is checked,
+    /// and only then is the step committed — installing `candidate` if this
+    /// was the peer's first frame.  A forged header or bad ciphertext leaves
+    /// the live session (and the session map) untouched.  Runs entirely
+    /// under the sessions lock so the commit cannot race another frame.
+    fn open_group_ratchet_payload(
+        &self,
+        sender_peer_id: PeerId,
+        candidate: Option<DoubleRatchetSession>,
+        header: &RatchetHeader,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, GroupRatchetError> {
+        use chacha20poly1305::{
+            aead::{Aead, Nonce},
+            ChaCha20Poly1305, Key, KeyInit,
+        };
+
+        let mut sessions = self
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Prefer an installed session (another frame may have raced us);
+        // otherwise use the unverified candidate.
+        let session = match sessions.get(&sender_peer_id) {
+            Some(existing) => existing,
+            None => candidate.as_ref().ok_or(GroupRatchetError::NoSession)?,
+        };
+        // Speculative receive step; `session` is untouched.
+        let pending = session
+            .prepare_recv(header)
+            .map_err(|_| GroupRatchetError::Ratchet)?;
+
+        // Authenticate and decrypt under the pending key.
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(pending.msg_key()));
+        let nonce = Nonce::<ChaCha20Poly1305>::default();
+        let plaintext = cipher
+            .decrypt(&nonce, ciphertext)
+            .map_err(|_| GroupRatchetError::Aead)?;
+
+        // Authenticated: commit, installing the candidate on a first frame.
+        match sessions.get_mut(&sender_peer_id) {
+            Some(existing) => existing.commit_recv(pending),
+            None => {
+                if let Some(mut fresh) = candidate {
+                    fresh.commit_recv(pending);
+                    sessions.insert(sender_peer_id, fresh);
+                }
+            }
+        }
+        Ok(plaintext)
     }
 
     // -----------------------------------------------------------------------
@@ -1618,104 +1769,25 @@ impl MeshRuntime {
             Err(_) => return false,
         };
 
-        // Bootstrap ratchet session from X3DH header if the session is missing.
-        {
-            let contact = self
-                .contacts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&sender_peer_id)
-                .cloned();
-            if let Some(ref contact) = contact {
-                if !self
-                    .ratchet_sessions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .contains_key(&sender_peer_id)
-                {
-                    let eph_pub_opt = envelope
-                        .get("x3dh_eph_pub")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| hex::decode(s).ok())
-                        .filter(|b| b.len() == 32)
-                        .map(|b| {
-                            let mut a = [0u8; 32];
-                            a.copy_from_slice(&b);
-                            a
-                        });
-                    let enc_ik_opt = envelope
-                        .get("x3dh_encrypted_ik")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| hex::decode(s).ok())
-                        .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
-                        .map(|b| {
-                            let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
-                            a.copy_from_slice(&b);
-                            a
-                        });
-                    if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
-                        use crate::crypto::x3dh::{x3dh_respond, X3dhInitHeader};
-                        let session_result: Option<DoubleRatchetSession> = {
-                            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-                            guard.as_ref().and_then(|id| {
-                                let header = X3dhInitHeader {
-                                    eph_pub,
-                                    encrypted_ik_pub: enc_ik,
-                                };
-                                x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header)
-                                    .ok()
-                                    .map(|out| {
-                                        let master = out.master_secret.as_bytes();
-                                        let preauth_secret = x25519_dalek::StaticSecret::from(
-                                            id.preauth_x25519_secret.to_bytes(),
-                                        );
-                                        let preauth_pub = *id.preauth_x25519_pub.as_bytes();
-                                        DoubleRatchetSession::init_receiver(
-                                            master,
-                                            preauth_secret,
-                                            &preauth_pub,
-                                        )
-                                    })
-                            })
-                        };
-                        if let Some(session) = session_result {
-                            self.ratchet_sessions
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(sender_peer_id, session);
-                        }
-                    }
-                    let _ = contact;
-                }
-            }
-        }
+        // Build a candidate session from the frame's X3DH header if we have
+        // none for this sender; it is installed only once the payload below
+        // authenticates, so an unverified frame can never plant a session.
+        let candidate = self.group_frame_candidate_session(envelope, sender_peer_id);
 
-        // Decrypt the rekey payload using the ratchet message key.
-        let plaintext = {
-            let mut sessions = self
-                .ratchet_sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let session = match sessions.get_mut(&sender_peer_id) {
-                Some(s) => s,
-                None => return false,
-            };
-            let msg_key = match session.recv_msg_key(&ratchet_header) {
-                Ok(k) => k,
-                Err(_) => return false,
-            };
-            // Decrypt using ChaCha20-Poly1305; nonce = all-zero 12 bytes.
-            use chacha20poly1305::{
-                aead::{Aead, Nonce},
-                ChaCha20Poly1305, Key, KeyInit,
-            };
-            let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
-            let nonce = Nonce::<ChaCha20Poly1305>::default();
-            match cipher.decrypt(&nonce, ct.as_ref()) {
-                Ok(pt) => pt,
-                Err(_) => return false,
-            }
+        // Decrypt the rekey payload; the ratchet step (and any candidate
+        // session) is committed only on AEAD success.
+        let plaintext = match self.open_group_ratchet_payload(
+            sender_peer_id,
+            candidate,
+            &ratchet_header,
+            &ct,
+        ) {
+            Ok(pt) => pt,
+            Err(_) => return false,
         };
+        // The receive chain advanced: persist it so a crash cannot replay
+        // this position against the vault copy.
+        self.save_ratchet_sessions();
 
         // Parse the inner rekey payload.
         let inner: serde_json::Value = match serde_json::from_slice(&plaintext) {
@@ -1798,93 +1870,12 @@ impl MeshRuntime {
         };
         let sender_peer_id = crate::identity::peer_id::PeerId(sender_bytes);
 
-        // Bootstrap a ratchet session from the X3DH header if one is embedded
-        // in the group_invite frame.  Group invites often come from a peer we
-        // have not yet exchanged direct messages with, so this X3DH bootstrap
-        // establishes the ratchet session needed to decrypt the invite payload.
-        // The pattern here (check x3dh_eph_pub + x3dh_encrypted_ik → x3dh_respond
-        // → init_receiver) is identical to the direct-message bootstrap in
-        // bootstrap_session_from_frame, but inlined because group frames carry
-        // the ratchet header in a different JSON location.
-        {
-            let contact = self
-                .contacts
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&sender_peer_id)
-                .cloned();
-            if let Some(ref _contact) = contact {
-                if !self
-                    .ratchet_sessions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .contains_key(&sender_peer_id)
-                {
-                    // Extract Alice's ephemeral X25519 public key (32 bytes).
-                    let eph_pub_opt = envelope
-                        .get("x3dh_eph_pub")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| hex::decode(s).ok())
-                        .filter(|b| b.len() == 32)
-                        .map(|b| {
-                            let mut a = [0u8; 32];
-                            a.copy_from_slice(&b);
-                            a
-                        });
-                    // Extract Alice's encrypted identity key (48 bytes: 32-byte
-                    // IK + 16-byte AES-GCM tag).
-                    let enc_ik_opt = envelope
-                        .get("x3dh_encrypted_ik")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| hex::decode(s).ok())
-                        .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
-                        .map(|b| {
-                            let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
-                            a.copy_from_slice(&b);
-                            a
-                        });
-                    if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
-                        use crate::crypto::x3dh::{x3dh_respond, X3dhInitHeader};
-                        // Perform the Bob-side X3DH computation: derive the shared
-                        // secret from our preauth keypair and Alice's ephemeral key.
-                        let session_result: Option<DoubleRatchetSession> = {
-                            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-                            guard.as_ref().and_then(|id| {
-                                let header = X3dhInitHeader {
-                                    eph_pub,
-                                    encrypted_ik_pub: enc_ik,
-                                };
-                                x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header)
-                                    .ok()
-                                    .map(|out| {
-                                        let master = out.master_secret.as_bytes();
-                                        // Bob is always the receiver in X3DH —
-                                        // use our preauth keypair as the initial
-                                        // ratchet key pair.
-                                        let preauth_secret = x25519_dalek::StaticSecret::from(
-                                            id.preauth_x25519_secret.to_bytes(),
-                                        );
-                                        let preauth_pub = *id.preauth_x25519_pub.as_bytes();
-                                        DoubleRatchetSession::init_receiver(
-                                            master,
-                                            preauth_secret,
-                                            &preauth_pub,
-                                        )
-                                    })
-                            })
-                        };
-                        if let Some(session) = session_result {
-                            self.ratchet_sessions
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(sender_peer_id, session);
-                        }
-                    }
-                }
-            }
-        }
+        // Group invites often come from a peer we have not yet exchanged
+        // direct messages with, so the frame may carry an X3DH init header.
+        // Build a candidate session from it when we have none; the candidate
+        // is installed only once the invite payload authenticates below.
+        let candidate = self.group_frame_candidate_session(envelope, sender_peer_id);
 
-        // Decrypt the invite payload using the ratchet session's message key.
         // The ratchet header is carried in a top-level "ratchet_header" JSON
         // field (not inline with the ciphertext as in direct messages).
         let header_val = match envelope.get("ratchet_header") {
@@ -1895,30 +1886,20 @@ impl MeshRuntime {
             Ok(h) => h,
             Err(_) => return false,
         };
-        let plaintext = {
-            let mut sessions = self
-                .ratchet_sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let session = match sessions.get_mut(&sender_peer_id) {
-                Some(s) => s,
-                None => return false,
-            };
-            let msg_key = match session.recv_msg_key(&ratchet_header) {
-                Ok(k) => k,
-                Err(_) => return false,
-            };
-            use chacha20poly1305::{
-                aead::{Aead, Nonce},
-                ChaCha20Poly1305, Key, KeyInit,
-            };
-            let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
-            let nonce = Nonce::<ChaCha20Poly1305>::default();
-            match cipher.decrypt(&nonce, ct.as_ref()) {
-                Ok(pt) => pt,
-                Err(_) => return false,
-            }
+        // Decrypt the invite payload; the ratchet step (and any candidate
+        // session) is committed only on AEAD success.
+        let plaintext = match self.open_group_ratchet_payload(
+            sender_peer_id,
+            candidate,
+            &ratchet_header,
+            &ct,
+        ) {
+            Ok(pt) => pt,
+            Err(_) => return false,
         };
+        // The receive chain advanced: persist it so a crash cannot replay
+        // this position against the vault copy.
+        self.save_ratchet_sessions();
 
         // Parse the outer wrapper then the inner invite JSON.
         let outer: serde_json::Value = match serde_json::from_slice(&plaintext) {
@@ -2144,70 +2125,12 @@ impl MeshRuntime {
         };
         let sender_peer_id = crate::identity::peer_id::PeerId(sender_bytes);
 
-        // Bootstrap ratchet from X3DH header if the session is missing.
-        {
-            if !self
-                .ratchet_sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains_key(&sender_peer_id)
-            {
-                let eph_pub_opt = envelope
-                    .get("x3dh_eph_pub")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| hex::decode(s).ok())
-                    .filter(|b| b.len() == 32)
-                    .map(|b| {
-                        let mut a = [0u8; 32];
-                        a.copy_from_slice(&b);
-                        a
-                    });
-                let enc_ik_opt = envelope
-                    .get("x3dh_encrypted_ik")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| hex::decode(s).ok())
-                    .filter(|b| b.len() == crate::crypto::x3dh::ENCRYPTED_IK_SIZE)
-                    .map(|b| {
-                        let mut a = [0u8; crate::crypto::x3dh::ENCRYPTED_IK_SIZE];
-                        a.copy_from_slice(&b);
-                        a
-                    });
-                if let (Some(eph_pub), Some(enc_ik)) = (eph_pub_opt, enc_ik_opt) {
-                    use crate::crypto::x3dh::{x3dh_respond, X3dhInitHeader};
-                    let session_result: Option<DoubleRatchetSession> = {
-                        let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-                        guard.as_ref().and_then(|id| {
-                            let header = X3dhInitHeader {
-                                eph_pub,
-                                encrypted_ik_pub: enc_ik,
-                            };
-                            x3dh_respond(&id.x25519_secret, &id.preauth_x25519_secret, &header)
-                                .ok()
-                                .map(|out| {
-                                    let master = out.master_secret.as_bytes();
-                                    let preauth_secret = x25519_dalek::StaticSecret::from(
-                                        id.preauth_x25519_secret.to_bytes(),
-                                    );
-                                    let preauth_pub = *id.preauth_x25519_pub.as_bytes();
-                                    DoubleRatchetSession::init_receiver(
-                                        master,
-                                        preauth_secret,
-                                        &preauth_pub,
-                                    )
-                                })
-                        })
-                    };
-                    if let Some(session) = session_result {
-                        self.ratchet_sessions
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(sender_peer_id, session);
-                    }
-                }
-            }
-        }
+        // Build a candidate session from the frame's X3DH header if we have
+        // none for this sender (and the sender is a contact); it is installed
+        // only once the payload below authenticates.
+        let candidate = self.group_frame_candidate_session(envelope, sender_peer_id);
 
-        // Decrypt using ratchet message key.
+        // Decrypt using the ratchet message key.
         let header_val = match envelope.get("ratchet_header") {
             Some(v) => v.clone(),
             None => return false,
@@ -2216,47 +2139,23 @@ impl MeshRuntime {
             Ok(h) => h,
             Err(_) => return false,
         };
-        let plaintext = {
-            let mut sessions = self
-                .ratchet_sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let session = match sessions.get_mut(&sender_peer_id) {
-                Some(s) => s,
-                None => {
-                    // No ratchet session — request re-inclusion from the sender (§8.7.6).
-                    drop(sessions);
-                    if let Some(ref gid) = outer_group_id_hex {
-                        self.send_group_reinclusion_request(&sender_hex, gid);
-                    }
-                    return false;
+        // The ratchet step (and any candidate session) is committed only on
+        // AEAD success.  Every failure mode — no session, ratchet out of
+        // sync, bad ciphertext — asks the sender for re-inclusion (§8.7.6);
+        // the live session is unchanged, so a stray or forged frame cannot
+        // break a working session.
+        let plaintext = match self.open_group_ratchet_payload(
+            sender_peer_id,
+            candidate,
+            &ratchet_header,
+            &ct,
+        ) {
+            Ok(pt) => pt,
+            Err(_) => {
+                if let Some(ref gid) = outer_group_id_hex {
+                    self.send_group_reinclusion_request(&sender_hex, gid);
                 }
-            };
-            let msg_key = match session.recv_msg_key(&ratchet_header) {
-                Ok(k) => k,
-                Err(_) => {
-                    // Ratchet out of sync — request re-inclusion from the sender.
-                    drop(sessions);
-                    if let Some(ref gid) = outer_group_id_hex {
-                        self.send_group_reinclusion_request(&sender_hex, gid);
-                    }
-                    return false;
-                }
-            };
-            use chacha20poly1305::{
-                aead::{Aead, Nonce},
-                ChaCha20Poly1305, Key, KeyInit,
-            };
-            let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
-            let nonce = Nonce::<ChaCha20Poly1305>::default();
-            match cipher.decrypt(&nonce, ct.as_ref()) {
-                Ok(pt) => pt,
-                Err(_) => {
-                    if let Some(ref gid) = outer_group_id_hex {
-                        self.send_group_reinclusion_request(&sender_hex, gid);
-                    }
-                    return false;
-                }
+                return false;
             }
         };
 
@@ -3927,5 +3826,475 @@ mod tests {
         assert!(stored_group
             .peer_sender_keys
             .contains_key(&sender_identity.peer_id().0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Direct-message session hardening tests
+    //
+    // These exercise the inbound direct-message path end to end with frames
+    // built exactly as `send_text_message` builds them, so the session-
+    // installation and commit-after-verify guarantees are tested at the
+    // service boundary, not just in the crypto modules.
+    // -----------------------------------------------------------------------
+
+    use crate::crypto::message_encrypt::encrypt_message;
+    use crate::crypto::x3dh::{x3dh_initiate, PreauthBundle, X3dhInitHeader};
+    use crate::identity::self_identity::SelfIdentity;
+    use x25519_dalek::PublicKey as X25519Public;
+
+    /// Room id shared by every direct-message test frame.
+    const TEST_ROOM_HEX: &str = "11111111111111111111111111111111";
+
+    /// A runtime ("Bob") with a fresh identity and all transports disabled.
+    fn test_runtime() -> (TempDir, MeshRuntime) {
+        let temp_dir = TempDir::new().unwrap();
+        let mut runtime = MeshRuntime::new(temp_dir.path().to_string_lossy().into_owned());
+        {
+            let mut flags = runtime
+                .transport_flags
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            flags.clearnet = false;
+            flags.mesh_discovery = false;
+        }
+        runtime.create_identity(Some("Bob".to_string())).unwrap();
+        (temp_dir, runtime)
+    }
+
+    /// Register `peer` as a paired contact of the runtime.
+    fn add_contact(runtime: &MeshRuntime, peer: &SelfIdentity) {
+        let mut contacts = runtime
+            .contacts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        contacts.upsert(ContactRecord::new(
+            peer.peer_id(),
+            peer.ed25519_pub,
+            peer.x25519_pub.to_bytes(),
+            PairingMethod::QrCode,
+            1,
+        ));
+    }
+
+    /// The runtime's X25519 identity public key (what a contact record holds).
+    fn runtime_x25519_pub(runtime: &MeshRuntime) -> X25519Public {
+        let guard = runtime
+            .identity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        guard.as_ref().unwrap().x25519_pub
+    }
+
+    /// The runtime's preauth bundle as an initiator would fetch it, with the
+    /// preauth key signed by the runtime's Ed25519 identity key.
+    fn runtime_bundle(runtime: &MeshRuntime) -> PreauthBundle {
+        let guard = runtime
+            .identity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let id = guard.as_ref().unwrap();
+        let preauth_sig = id
+            .ed25519_signing
+            .sign(&PreauthBundle::signed_message(&id.preauth_x25519_pub));
+        PreauthBundle {
+            identity_ed25519_pub: id.ed25519_pub,
+            identity_x25519_pub: id.x25519_pub,
+            preauth_x25519_pub: id.preauth_x25519_pub,
+            preauth_kem_pub: None,
+            preauth_sig: Some(preauth_sig.to_bytes().to_vec()),
+            kem_sig: None,
+        }
+    }
+
+    /// Initiator side: run X3DH against the runtime's bundle using
+    /// `ik_secret` for DH1 and `ik_pub_bytes` as the identity key carried in
+    /// the header, and start the sender-side ratchet.  Splitting the two
+    /// lets a test build a header that names one identity key while the DH
+    /// was done with another (what a forger must do).
+    fn initiate_session(
+        runtime: &MeshRuntime,
+        ik_secret: &X25519Secret,
+        ik_pub_bytes: &[u8; 32],
+    ) -> (DoubleRatchetSession, X3dhInitHeader) {
+        let bundle = runtime_bundle(runtime);
+        let output = x3dh_initiate(ik_secret, ik_pub_bytes, &bundle).unwrap();
+        let header = output.header.unwrap();
+        let session = DoubleRatchetSession::init_sender(
+            output.master_secret.as_bytes(),
+            bundle.preauth_x25519_pub.as_bytes(),
+        )
+        .unwrap();
+        (session, header)
+    }
+
+    /// Build a direct-message frame from `sender` to the runtime exactly as
+    /// `send_text_message` does: encrypted ratchet header, four-layer
+    /// ciphertext over `{"hdr", "text"}`, optional X3DH init fields.
+    fn direct_frame(
+        sender: &SelfIdentity,
+        recipient_x25519_pub: &X25519Public,
+        session: &mut DoubleRatchetSession,
+        init: Option<&X3dhInitHeader>,
+        msg_id: &str,
+        text: &str,
+    ) -> serde_json::Value {
+        let (ratchet_header, msg_key) = session.next_send_msg_key().unwrap();
+        let dh_shared = sender.x25519_secret.diffie_hellman(recipient_x25519_pub);
+        let hdr_key =
+            DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()).unwrap();
+        let enc_header =
+            DoubleRatchetSession::encrypt_header_with_key(&ratchet_header, &hdr_key).unwrap();
+        let (cipher_key, session_nonce, ratchet_msg_key) =
+            DoubleRatchetSession::expand_msg_key(&msg_key).unwrap();
+        let inner = serde_json::json!({
+            "hdr": {
+                "ratchet_pub":    hex::encode(ratchet_header.ratchet_pub),
+                "prev_chain_len": ratchet_header.prev_chain_len,
+                "msg_num":        ratchet_header.msg_num,
+            },
+            "text": text,
+        });
+        let ciphertext = encrypt_message(
+            &serde_json::to_vec(&inner).unwrap(),
+            &ratchet_msg_key,
+            &cipher_key,
+            &session_nonce,
+            &sender.ed25519_signing,
+            recipient_x25519_pub,
+            MessageContext::Direct,
+        )
+        .unwrap();
+        let mut frame = serde_json::json!({
+            "sender":     sender.peer_id().to_hex(),
+            "room":       TEST_ROOM_HEX,
+            "msg_id":     msg_id,
+            "ts":         100,
+            "enc_header": hex::encode(&enc_header),
+            "ciphertext": hex::encode(&ciphertext),
+        });
+        if let Some(h) = init {
+            let obj = frame.as_object_mut().unwrap();
+            obj.insert("x3dh_eph_pub".into(), hex::encode(h.eph_pub).into());
+            obj.insert(
+                "x3dh_encrypted_ik".into(),
+                hex::encode(h.encrypted_ik_pub).into(),
+            );
+        }
+        frame
+    }
+
+    /// Whether the runtime holds a ratchet session for `peer`.
+    fn has_session(runtime: &MeshRuntime, peer: &SelfIdentity) -> bool {
+        runtime
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&peer.peer_id())
+    }
+
+    /// Serialised snapshot of the runtime's session with `peer`, for
+    /// before/after comparison of every field including the root key.
+    fn session_fingerprint(runtime: &MeshRuntime, peer: &SelfIdentity) -> Vec<u8> {
+        let sessions = runtime
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        serde_json::to_vec(&sessions.get(&peer.peer_id()).unwrap().to_snapshot()).unwrap()
+    }
+
+    /// Number of stored messages in the test room.
+    fn stored_count(runtime: &MeshRuntime) -> usize {
+        runtime
+            .messages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(TEST_ROOM_HEX)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Regression test (finding: unauthenticated X3DH init installs a
+    /// session): a frame naming Alice as sender whose init header carries a
+    /// third party's identity key, with garbage ciphertext, must be dropped
+    /// without installing any session for Alice.  Alice's genuine first
+    /// message must then still bootstrap and decrypt.
+    #[test]
+    fn test_bogus_x3dh_init_with_wrong_identity_key_installs_no_session() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob_x25519 = runtime_x25519_pub(&runtime);
+
+        // A third party runs a well-formed X3DH against Bob's public bundle
+        // with its own identity key and names Alice as the sender.
+        let other = SelfIdentity::generate(None);
+        let (mut other_session, other_init) =
+            initiate_session(&runtime, &other.x25519_secret, other.x25519_pub.as_bytes());
+        let mut bogus = direct_frame(
+            &other,
+            &bob_x25519,
+            &mut other_session,
+            Some(&other_init),
+            "bogus-1",
+            "x",
+        );
+        bogus["sender"] = alice.peer_id().to_hex().into();
+
+        assert!(
+            !runtime.process_inbound_frame(&bogus),
+            "bogus init accepted"
+        );
+        assert!(
+            !has_session(&runtime, &alice),
+            "session installed for Alice"
+        );
+        assert_eq!(stored_count(&runtime), 0);
+
+        // Alice's genuine first message bootstraps and decrypts.
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let genuine = direct_frame(
+            &alice,
+            &bob_x25519,
+            &mut alice_session,
+            Some(&alice_init),
+            "alice-1",
+            "hello",
+        );
+        assert!(
+            runtime.process_inbound_frame(&genuine),
+            "genuine init rejected"
+        );
+        assert!(has_session(&runtime, &alice));
+        assert_eq!(stored_count(&runtime), 1);
+    }
+
+    /// Regression test (same finding, stronger forger): the init header
+    /// carries Alice's *real* identity key (it is public), so the identity
+    /// check passes, but the forger cannot complete DH1 and its ciphertext
+    /// cannot authenticate.  The candidate session must not be installed.
+    #[test]
+    fn test_x3dh_init_with_contact_identity_key_but_bad_payload_installs_no_session() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob_x25519 = runtime_x25519_pub(&runtime);
+
+        // Forger: own DH secret, Alice's public identity key in the header.
+        let forger = SelfIdentity::generate(None);
+        let (mut forger_session, forged_init) =
+            initiate_session(&runtime, &forger.x25519_secret, alice.x25519_pub.as_bytes());
+        let mut forged = direct_frame(
+            &forger,
+            &bob_x25519,
+            &mut forger_session,
+            Some(&forged_init),
+            "forged-1",
+            "x",
+        );
+        forged["sender"] = alice.peer_id().to_hex().into();
+
+        assert!(
+            !runtime.process_inbound_frame(&forged),
+            "forged init accepted"
+        );
+        assert!(
+            !has_session(&runtime, &alice),
+            "session installed for Alice"
+        );
+
+        // Alice's genuine first message still works afterwards.
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let genuine = direct_frame(
+            &alice,
+            &bob_x25519,
+            &mut alice_session,
+            Some(&alice_init),
+            "alice-1",
+            "hello",
+        );
+        assert!(runtime.process_inbound_frame(&genuine));
+        assert!(has_session(&runtime, &alice));
+    }
+
+    /// Regression test (finding: ratchet state committed before
+    /// authentication): replaying a delivered frame under a fresh `msg_id`
+    /// (so the dedup cache does not catch it) must be rejected and must leave
+    /// the session able to decrypt Alice's next genuine message.
+    #[test]
+    fn test_replayed_direct_message_keeps_session_working() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+
+        // Two genuine messages.
+        let m1 = direct_frame(
+            &alice,
+            &bob_x25519,
+            &mut alice_session,
+            Some(&alice_init),
+            "m1",
+            "one",
+        );
+        let m2 = direct_frame(
+            &alice,
+            &bob_x25519,
+            &mut alice_session,
+            Some(&alice_init),
+            "m2",
+            "two",
+        );
+        assert!(runtime.process_inbound_frame(&m1));
+        assert!(runtime.process_inbound_frame(&m2));
+        let before = session_fingerprint(&runtime, &alice);
+
+        // Replay m1 with a new message id: duplicate ratchet position.
+        let mut replay = m1.clone();
+        replay["msg_id"] = "m1-replay".into();
+        assert!(!runtime.process_inbound_frame(&replay), "replay accepted");
+        assert_eq!(
+            session_fingerprint(&runtime, &alice),
+            before,
+            "replay changed session"
+        );
+        assert_eq!(stored_count(&runtime), 2, "replay was stored");
+
+        // The next genuine message still decrypts.
+        let m3 = direct_frame(&alice, &bob_x25519, &mut alice_session, None, "m3", "three");
+        assert!(
+            runtime.process_inbound_frame(&m3),
+            "session broken after replay"
+        );
+        assert_eq!(stored_count(&runtime), 3);
+    }
+
+    /// Regression test (same finding): a captured frame from an *earlier
+    /// ratchet chain* replayed after a DH step carries a ratchet key the
+    /// session no longer tracks.  Before the fix Bob performed a DH step on
+    /// the stale key and committed it; the session must instead be unchanged
+    /// and keep working in both directions.
+    #[test]
+    fn test_stale_chain_replay_leaves_direct_session_unchanged() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+
+        // Chain 1: Alice's first message establishes Bob's session.
+        let m1 = direct_frame(
+            &alice,
+            &bob_x25519,
+            &mut alice_session,
+            Some(&alice_init),
+            "m1",
+            "one",
+        );
+        assert!(runtime.process_inbound_frame(&m1));
+
+        // Bob replies (taken straight from his session, since the test has
+        // no transport) and Alice receives it, performing her DH step.
+        let (bob_hdr, bob_ct) = {
+            let mut sessions = runtime
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            sessions
+                .get_mut(&alice.peer_id())
+                .unwrap()
+                .encrypt(b"reply")
+                .unwrap()
+        };
+        assert_eq!(alice_session.decrypt(&bob_hdr, &bob_ct).unwrap(), b"reply");
+
+        // Chain 2: Alice's next message carries a new ratchet key; Bob steps.
+        let m2 = direct_frame(&alice, &bob_x25519, &mut alice_session, None, "m2", "two");
+        assert!(runtime.process_inbound_frame(&m2));
+        let before = session_fingerprint(&runtime, &alice);
+
+        // Replay the chain-1 frame under a fresh id: stale ratchet key.
+        let mut stale = m1.clone();
+        stale["msg_id"] = "m1-stale".into();
+        assert!(
+            !runtime.process_inbound_frame(&stale),
+            "stale replay accepted"
+        );
+        assert_eq!(
+            session_fingerprint(&runtime, &alice),
+            before,
+            "stale replay changed session"
+        );
+
+        // Both directions still work.
+        let m3 = direct_frame(&alice, &bob_x25519, &mut alice_session, None, "m3", "three");
+        assert!(
+            runtime.process_inbound_frame(&m3),
+            "session broken after stale replay"
+        );
+        let (bob_hdr2, bob_ct2) = {
+            let mut sessions = runtime
+                .ratchet_sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            sessions
+                .get_mut(&alice.peer_id())
+                .unwrap()
+                .encrypt(b"reply 2")
+                .unwrap()
+        };
+        assert_eq!(
+            alice_session.decrypt(&bob_hdr2, &bob_ct2).unwrap(),
+            b"reply 2"
+        );
+    }
+
+    /// Regression test: the plaintext legacy header fallback is gone.  A
+    /// frame with plaintext `ratchet_pub`/`msg_num` fields and no
+    /// `enc_header` must be rejected without touching the session, even
+    /// when the sender is a known contact with an installed session.
+    #[test]
+    fn test_plaintext_legacy_header_is_rejected() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let m1 = direct_frame(
+            &alice,
+            &bob_x25519,
+            &mut alice_session,
+            Some(&alice_init),
+            "m1",
+            "one",
+        );
+        assert!(runtime.process_inbound_frame(&m1));
+        let before = session_fingerprint(&runtime, &alice);
+
+        // Attacker-chosen plaintext header naming an arbitrary ratchet key.
+        let legacy = serde_json::json!({
+            "sender":         alice.peer_id().to_hex(),
+            "room":           TEST_ROOM_HEX,
+            "msg_id":         "legacy-1",
+            "ts":             100,
+            "ratchet_pub":    hex::encode([0x42u8; 32]),
+            "prev_chain_len": 0,
+            "msg_num":        0,
+            "ciphertext":     hex::encode([0u8; 64]),
+        });
+        assert!(
+            !runtime.process_inbound_frame(&legacy),
+            "legacy header accepted"
+        );
+        assert_eq!(
+            session_fingerprint(&runtime, &alice),
+            before,
+            "legacy frame changed session"
+        );
     }
 }

@@ -330,7 +330,7 @@ impl Drop for DoubleRatchetSession {
         // Zeroize all cached skipped keys
         // Iterate over each element.
         // Iterate over each element.
-        for (_, key) in self.skipped_keys.iter_mut() {
+        for key in self.skipped_keys.values_mut() {
             // Securely erase key material to prevent forensic recovery.
             // Zeroize sensitive key material.
             // Zeroize sensitive key material.
@@ -473,127 +473,178 @@ impl DoubleRatchetSession {
     // -----------------------------------------------------------------------
 
     /// Decrypt a received message.
+    ///
+    /// This is the commit-after-verify entry point (SPEC §7.0.3 "Invalid
+    /// ciphertext cannot commit state"): the receive step is computed on a
+    /// working copy via `prepare_recv`, the AEAD tag is checked, and only a
+    /// successful decryption is committed back into `self`.  A forged header,
+    /// a replayed frame or a tampered ciphertext therefore leaves the root
+    /// key, both chains, the counters and the skipped-key cache untouched.
     pub fn decrypt(
         &mut self,
         header: &RatchetHeader,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, RatchetError> {
-        // Check if we have a cached skipped key for this message
+        // Derive the message key and the would-be next state without
+        // touching `self`.  Any ratchet error (too many skips, duplicate,
+        // counter exhaustion) surfaces here, before any AEAD work.
+        let pending = self.prepare_recv(header)?;
+        // Authenticate and decrypt with the pending key.  On failure the
+        // pending state is simply dropped (and zeroized) — nothing changes.
+        let plaintext = decrypt_with_key(pending.msg_key(), ciphertext)?;
+        // The ciphertext authenticated under the derived key, so the sender
+        // really did advance to this position: commit the new state.
+        self.commit_recv(pending);
+        Ok(plaintext)
+    }
+
+    /// Build a working copy of this session for a speculative receive step.
+    ///
+    /// This is deliberately not a public `Clone` impl: two live copies of a
+    /// session that both *send* would reuse message keys and nonces.  The
+    /// copy produced here only ever replaces `self` through `commit_recv`
+    /// or is dropped (and zeroized) when verification fails.
+    fn working_copy(&self) -> Self {
+        Self {
+            root_key: self.root_key,
+            // `StaticSecret` is cloneable; the copy is zeroized on drop.
+            my_ratchet_secret: self.my_ratchet_secret.clone(),
+            my_ratchet_pub: self.my_ratchet_pub,
+            their_ratchet_pub: self.their_ratchet_pub,
+            send_chain_key: self.send_chain_key,
+            send_msg_num: self.send_msg_num,
+            recv_chain_key: self.recv_chain_key,
+            recv_msg_num: self.recv_msg_num,
+            prev_send_chain_len: self.prev_send_chain_len,
+            skipped_keys: self.skipped_keys.clone(),
+        }
+    }
+
+    /// Advance the receiving ratchet **in place** to the position named by
+    /// `header` and return the raw message key for that position.
+    ///
+    /// This is the only function that mutates receive-side state, and it is
+    /// private: callers go through `prepare_recv`, which runs it on a working
+    /// copy so that nothing is committed before the ciphertext authenticates.
+    ///
+    /// Rejections (none of which touch state once lifted through the copy):
+    /// - `DuplicateMessage` — the header names a position on the current
+    ///   chain that has already been consumed and is not in the skipped-key
+    ///   cache (SPEC §7.0.1: a duplicate is never used to reset a ratchet).
+    /// - `TooManySkipped` — the gap would exceed `MAX_SKIP` cached keys.
+    /// - `MsgNumExhausted` — the counter would wrap and reuse a nonce.
+    fn advance_recv(&mut self, header: &RatchetHeader) -> Result<[u8; 32], RatchetError> {
+        // An out-of-order message whose key was cached earlier is served
+        // from the cache and the entry is consumed.  Because this runs on a
+        // working copy, the cache entry survives if the AEAD check fails.
         let skip_id = SkippedKeyId {
             ratchet_pub: header.ratchet_pub,
             msg_num: header.msg_num,
         };
-        if let Some(mut msg_key) = self.skipped_keys.remove(&skip_id) {
-            // Initialize the AEAD cipher with the derived key material.
-            let result = decrypt_with_key(&msg_key, ciphertext);
-            // Securely erase key material to prevent forensic recovery.
-            // Zeroize sensitive key material.
-            // Zeroize sensitive key material.
-            msg_key.zeroize();
-            // Return the result to the caller.
-            return result;
+        if let Some(msg_key) = self.skipped_keys.remove(&skip_id) {
+            return Ok(msg_key);
         }
 
-        // Check if we need a DH ratchet step (new ratchet pub from sender)
+        // A header carrying a ratchet key we have not seen triggers a DH
+        // ratchet step.  A stale or attacker-chosen key still derives *some*
+        // key here, but the resulting ciphertext check fails and the copy is
+        // discarded, so the real session never desynchronises.
         let need_dh_step = self.their_ratchet_pub.as_ref() != Some(&header.ratchet_pub);
         if need_dh_step {
-            // Skip any remaining messages in the current receiving chain
+            // Cache the keys for any messages still outstanding on the chain
+            // we are about to leave, bounded by the sender's claimed length.
             if let Some(ref recv_ck) = self.recv_chain_key {
                 self.skip_message_keys(*recv_ck, self.recv_msg_num, header.prev_chain_len)?;
             }
 
-            // Perform DH ratchet step (receiving side)
-            // Advance their ratchet pub state.
-            // Advance their ratchet pub state.
+            // Receive-side DH step: mix DH(our ratchet secret, their new pub)
+            // into the root key to derive the new receiving chain.
             self.their_ratchet_pub = Some(header.ratchet_pub);
-            // Invoke the associated function.
             let their_pub = X25519Public::from(header.ratchet_pub);
             let dh_out = self.my_ratchet_secret.diffie_hellman(&their_pub);
-            let (new_root, recv_chain_key) =
-                // Extract the raw byte representation for wire encoding.
-                dh_ratchet_step(&self.root_key, dh_out.as_bytes())?;
-            // Update the root key to reflect the new state.
-            // Advance root key state.
-            // Advance root key state.
+            let (new_root, recv_chain_key) = dh_ratchet_step(&self.root_key, dh_out.as_bytes())?;
             self.root_key = new_root;
-            // Update the recv chain key to reflect the new state.
-            // Advance recv chain key state.
-            // Advance recv chain key state.
             self.recv_chain_key = Some(recv_chain_key);
-            // Update the recv msg num to reflect the new state.
-            // Advance recv msg num state.
-            // Advance recv msg num state.
             self.recv_msg_num = 0;
 
-            // Now perform DH ratchet step (sending side) — generate new keypair
-            // Advance prev send chain len state.
-            // Advance prev send chain len state.
+            // Send-side DH step: generate a fresh ratchet keypair and derive
+            // the next sending chain so our reply carries new entropy.
             self.prev_send_chain_len = self.send_msg_num;
-            // Update the send msg num to reflect the new state.
-            // Advance send msg num state.
-            // Advance send msg num state.
             self.send_msg_num = 0;
-            // Update the my ratchet secret to reflect the new state.
-            // Advance my ratchet secret state.
-            // Advance my ratchet secret state.
             self.my_ratchet_secret = X25519Secret::random_from_rng(rand_core::OsRng);
             let new_pub = X25519Public::from(&self.my_ratchet_secret);
-            // Update the my ratchet pub to reflect the new state.
-            // Advance my ratchet pub state.
-            // Advance my ratchet pub state.
             self.my_ratchet_pub = *new_pub.as_bytes();
-
             let dh_out2 = self.my_ratchet_secret.diffie_hellman(&their_pub);
-            let (new_root2, send_chain_key) =
-                // Extract the raw byte representation for wire encoding.
-                dh_ratchet_step(&self.root_key, dh_out2.as_bytes())?;
-            // Update the root key to reflect the new state.
-            // Advance root key state.
-            // Advance root key state.
+            let (new_root2, send_chain_key) = dh_ratchet_step(&self.root_key, dh_out2.as_bytes())?;
             self.root_key = new_root2;
-            // Update the send chain key to reflect the new state.
-            // Advance send chain key state.
-            // Advance send chain key state.
             self.send_chain_key = Some(send_chain_key);
+        } else if header.msg_num < self.recv_msg_num {
+            // Same chain, but a position we have already consumed and that
+            // is not cached: this is a replay of a delivered message (or a
+            // forged counter).  Reject it outright instead of re-deriving a
+            // key from the current chain position and regressing the
+            // counter, which would desynchronise every later message.
+            return Err(RatchetError::DuplicateMessage);
         }
 
-        // Skip any messages in the current chain before this one.
-        // Return DecryptionFailed if the recv chain was not set — this should
-        // be unreachable after the DH step above, but must not panic from FFI.
-        let recv_ck = self
-            // Chain the operation on the intermediate result.
-            .recv_chain_key
-            .ok_or(RatchetError::DecryptionFailed)?;
-        self.skip_message_keys(recv_ck, self.recv_msg_num, header.msg_num)?;
-
-        // Advance receiving chain to this message.
-        // recv_chain_key is still Some: [u8; 32] is Copy so the ok_or() above
-        // read a copy without consuming the field.  A None here is logically
-        // impossible (skip_message_keys always sets the field), but we propagate
-        // an error rather than panic to uphold the no-panic-in-FFI contract.
-        let recv_ck = self
-            // Chain the operation on the intermediate result.
-            .recv_chain_key
-            // Chain the operation on the intermediate result.
-            .as_ref()
-            .ok_or(RatchetError::DecryptionFailed)?;
-        // Guard against receive counter overflow. header.msg_num at
-        // u32::MAX would wrap recv_msg_num to 0, causing nonce reuse on
-        // the receiving chain — session must be rekeyed before this point.
+        // Guard against receive counter overflow: a header at u32::MAX would
+        // wrap `recv_msg_num` to 0 and reuse a nonce on this chain.  The
+        // session must be rekeyed before that point.
         if header.msg_num == u32::MAX {
             return Err(RatchetError::MsgNumExhausted);
         }
 
+        // Cache the keys for any messages between our position and this one
+        // (out-of-order delivery), then advance to the named position.
+        // `recv_chain_key` is always Some after the DH step above; we still
+        // propagate an error rather than panic to honour the FFI contract.
+        let recv_ck = self.recv_chain_key.ok_or(RatchetError::DecryptionFailed)?;
+        self.skip_message_keys(recv_ck, self.recv_msg_num, header.msg_num)?;
+        let recv_ck = self
+            .recv_chain_key
+            .as_ref()
+            .ok_or(RatchetError::DecryptionFailed)?;
+
+        // Derive this message's key and step the chain past it.  Safe to add
+        // 1: the overflow guard above ensures header.msg_num < u32::MAX.
         let (msg_key, new_recv_ck) = kdf_chain_step(recv_ck);
-        // Update the recv chain key to reflect the new state.
-        // Advance recv chain key state.
-        // Advance recv chain key state.
         self.recv_chain_key = Some(new_recv_ck);
-        // Safe to add 1: overflow guard above ensures header.msg_num < u32::MAX.
-        // Advance recv msg num state.
         self.recv_msg_num = header.msg_num + 1;
 
-        decrypt_with_key(&msg_key, ciphertext)
+        Ok(msg_key)
+    }
+
+    /// Compute the receive step for `header` without committing it.
+    ///
+    /// Returns a `PendingRecv` holding the derived message key and the
+    /// session state as it *would* be after accepting this message.  The
+    /// caller must authenticate the ciphertext with the key and then call
+    /// `commit_recv` on success, or drop the pending state on failure.
+    /// `self` is untouched either way — this is what lets the service layer
+    /// honour SPEC §7.0.3 ("Invalid ciphertext cannot commit state") and
+    /// §7.0.2 (atomic persistence of session state with message acceptance).
+    pub fn prepare_recv(&self, header: &RatchetHeader) -> Result<PendingRecv, RatchetError> {
+        // All derivation happens on a copy; the copy is dropped (and its key
+        // material zeroized) if the ratchet step itself is rejected.
+        let mut next = self.working_copy();
+        let msg_key = next.advance_recv(header)?;
+        Ok(PendingRecv {
+            msg_key: Zeroizing::new(msg_key),
+            next,
+        })
+    }
+
+    /// Commit a receive step whose ciphertext has been authenticated.
+    ///
+    /// Replaces this session's state with the pending state computed by
+    /// `prepare_recv`.  The previous state is dropped, which zeroizes it.
+    /// Must only be called after the AEAD (or four-layer) check succeeded.
+    pub fn commit_recv(&mut self, pending: PendingRecv) {
+        // Destructure so the message key is zeroized here and the session
+        // state moves in without an intermediate copy.
+        let PendingRecv { msg_key, next } = pending;
+        drop(msg_key);
+        *self = next;
     }
 
     // -----------------------------------------------------------------------
@@ -814,119 +865,6 @@ impl DoubleRatchetSession {
         Ok(key)
     }
 
-    /// Process a received ratchet header and return the raw message key.
-    ///
-    /// Use this with the four-layer decryption scheme (§7.2): call
-    /// `expand_msg_key` on the returned key, then pass to `decrypt_message`.
-    /// Mirrors the DH-ratchet logic of `decrypt()` without performing AEAD.
-    pub fn recv_msg_key(&mut self, header: &RatchetHeader) -> Result<[u8; 32], RatchetError> {
-        // Check skipped key cache first.
-        let skip_id = SkippedKeyId {
-            ratchet_pub: header.ratchet_pub,
-            msg_num: header.msg_num,
-        };
-        if let Some(msg_key) = self.skipped_keys.remove(&skip_id) {
-            // Return success with the computed result.
-            return Ok(msg_key);
-        }
-
-        // DH ratchet step if the sender's ratchet key changed.
-        let need_dh_step = self.their_ratchet_pub.as_ref() != Some(&header.ratchet_pub);
-        if need_dh_step {
-            // Skip any remaining messages in the current receiving chain.
-            if let Some(ref recv_ck) = self.recv_chain_key {
-                self.skip_message_keys(*recv_ck, self.recv_msg_num, header.prev_chain_len)?;
-            }
-
-            // Receive-side DH step.
-            // Advance their ratchet pub state.
-            // Advance their ratchet pub state.
-            self.their_ratchet_pub = Some(header.ratchet_pub);
-            // Invoke the associated function.
-            let their_pub = X25519Public::from(header.ratchet_pub);
-            let dh_out = self.my_ratchet_secret.diffie_hellman(&their_pub);
-            let (new_root, recv_chain_key) =
-                // Extract the raw byte representation for wire encoding.
-                dh_ratchet_step(&self.root_key, dh_out.as_bytes())?;
-            // Update the root key to reflect the new state.
-            // Advance root key state.
-            // Advance root key state.
-            self.root_key = new_root;
-            // Update the recv chain key to reflect the new state.
-            // Advance recv chain key state.
-            // Advance recv chain key state.
-            self.recv_chain_key = Some(recv_chain_key);
-            // Update the recv msg num to reflect the new state.
-            // Advance recv msg num state.
-            // Advance recv msg num state.
-            self.recv_msg_num = 0;
-
-            // Send-side DH step: generate a fresh ratchet keypair.
-            // Advance prev send chain len state.
-            // Advance prev send chain len state.
-            self.prev_send_chain_len = self.send_msg_num;
-            // Update the send msg num to reflect the new state.
-            // Advance send msg num state.
-            // Advance send msg num state.
-            self.send_msg_num = 0;
-            // Update the my ratchet secret to reflect the new state.
-            // Advance my ratchet secret state.
-            // Advance my ratchet secret state.
-            self.my_ratchet_secret = X25519Secret::random_from_rng(rand_core::OsRng);
-            let new_pub = X25519Public::from(&self.my_ratchet_secret);
-            // Update the my ratchet pub to reflect the new state.
-            // Advance my ratchet pub state.
-            self.my_ratchet_pub = *new_pub.as_bytes();
-            let dh_out2 = self.my_ratchet_secret.diffie_hellman(&their_pub);
-            let (new_root2, send_chain_key) =
-                // Extract the raw byte representation for wire encoding.
-                dh_ratchet_step(&self.root_key, dh_out2.as_bytes())?;
-            // Update the root key to reflect the new state.
-            // Advance root key state.
-            self.root_key = new_root2;
-            // Update the send chain key to reflect the new state.
-            // Advance send chain key state.
-            self.send_chain_key = Some(send_chain_key);
-        }
-
-        // Skip messages before this one in the current receiving chain.
-        // Propagate DecryptionFailed rather than panicking if recv_chain_key is
-        // None — this is logically unreachable after the DH step above, but must
-        // be handled safely because recv_msg_key is called from FFI paths.
-        let recv_ck = self
-            // Chain the operation on the intermediate result.
-            .recv_chain_key
-            .ok_or(RatchetError::DecryptionFailed)?;
-        self.skip_message_keys(recv_ck, self.recv_msg_num, header.msg_num)?;
-
-        // Advance the receiving chain to this message.
-        // recv_chain_key is still Some: [u8; 32] is Copy so the ok_or() above
-        // read a copy without consuming the field.  skip_message_keys always
-        // sets recv_chain_key before returning, so None here is impossible in
-        // practice, but we propagate an error to uphold the no-panic contract.
-        let recv_ck = self
-            // Chain the operation on the intermediate result.
-            .recv_chain_key
-            // Chain the operation on the intermediate result.
-            .as_ref()
-            .ok_or(RatchetError::DecryptionFailed)?;
-        // Guard against receive counter overflow — same rationale as decrypt().
-        // header.msg_num at u32::MAX would wrap recv_msg_num to 0 on increment.
-        if header.msg_num == u32::MAX {
-            return Err(RatchetError::MsgNumExhausted);
-        }
-
-        let (msg_key, new_recv_ck) = kdf_chain_step(recv_ck);
-        // Update the recv chain key to reflect the new state.
-        // Advance recv chain key state.
-        self.recv_chain_key = Some(new_recv_ck);
-        // Safe to add 1: overflow guard above ensures header.msg_num < u32::MAX.
-        // Advance recv msg num state.
-        self.recv_msg_num = header.msg_num + 1;
-
-        Ok(msg_key)
-    }
-
     /// Derive cipher_key, nonce, and hmac_key from a raw message key.
     ///
     /// Used by the four-layer encryption scheme (§7.2):
@@ -1027,6 +965,36 @@ impl DoubleRatchetSession {
             prev_send_chain_len,
             skipped_keys,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pending receive step (commit-after-verify)
+// ---------------------------------------------------------------------------
+
+/// A receive step that has been computed but not yet committed.
+///
+/// Produced by `DoubleRatchetSession::prepare_recv`.  It carries the raw
+/// message key for the named header position and the full session state as
+/// it would be after accepting that message.  The caller authenticates the
+/// ciphertext with `msg_key()` and then either passes the value to
+/// `commit_recv` (success) or lets it drop (failure), in which case both the
+/// key and the speculative state are zeroized and the live session is
+/// unchanged.  This type has no `Drop` impl of its own so `commit_recv` can
+/// destructure it; `Zeroizing` and the session's own `Drop` handle wiping.
+pub struct PendingRecv {
+    /// Raw message key for the header position; wiped on drop.
+    msg_key: Zeroizing<[u8; 32]>,
+    /// Session state after this message, including any DH ratchet step,
+    /// newly cached skipped keys, or a consumed skipped-key entry.
+    next: DoubleRatchetSession,
+}
+
+// PendingRecv implementation — read-only access for the verifying caller.
+impl PendingRecv {
+    /// The raw message key to expand (`expand_msg_key`) and verify with.
+    pub fn msg_key(&self) -> &[u8; 32] {
+        &self.msg_key
     }
 }
 
@@ -1341,12 +1309,160 @@ mod tests {
         let first = bob.decrypt(&header, &ciphertext);
         assert!(first.is_ok(), "first decrypt must succeed");
 
-        // Second decrypt with the identical (header, ciphertext) must fail.
+        // Second decrypt with the identical (header, ciphertext) must fail
+        // as a duplicate: the position is consumed and not cached.
         let second = bob.decrypt(&header, &ciphertext);
         assert!(
-            second.is_err(),
-            "replay of in-order message must be rejected"
+            matches!(second, Err(RatchetError::DuplicateMessage)),
+            "replay of in-order message must be rejected, got: {second:?}"
         );
+    }
+
+    /// Regression test for the commit-after-verify fix: a replay of an
+    /// already-delivered in-order message (a store-and-forward duplicate
+    /// after dedup-cache eviction) must leave the session able to decrypt
+    /// the next genuine message.  Previously the duplicate regressed
+    /// `recv_msg_num` and advanced the chain, breaking later messages.
+    #[test]
+    fn test_replay_after_success_keeps_session_working() {
+        let (mut alice, mut bob) = setup_session_pair();
+
+        // Deliver two genuine messages in order.
+        let (h1, ct1) = alice.encrypt(b"first").unwrap();
+        let (h2, ct2) = alice.encrypt(b"second").unwrap();
+        assert_eq!(bob.decrypt(&h1, &ct1).unwrap(), b"first");
+        assert_eq!(bob.decrypt(&h2, &ct2).unwrap(), b"second");
+
+        // Snapshot the receive-side state before the replay.
+        let root_before = bob.root_key;
+        let recv_ck_before = bob.recv_chain_key;
+        let recv_num_before = bob.recv_msg_num;
+        let skipped_before = bob.skipped_key_count();
+
+        // Replay message 1 (an older position on the same chain).
+        let replay = bob.decrypt(&h1, &ct1);
+        assert!(
+            matches!(replay, Err(RatchetError::DuplicateMessage)),
+            "replayed message must be rejected as duplicate, got: {replay:?}"
+        );
+
+        // Nothing may have changed on the live session.
+        assert_eq!(bob.root_key, root_before, "root key changed on replay");
+        assert_eq!(
+            bob.recv_chain_key, recv_ck_before,
+            "chain key changed on replay"
+        );
+        assert_eq!(
+            bob.recv_msg_num, recv_num_before,
+            "recv counter changed on replay"
+        );
+        assert_eq!(
+            bob.skipped_key_count(),
+            skipped_before,
+            "cache changed on replay"
+        );
+
+        // The next genuine message on the same chain still decrypts, and a
+        // DH step in the other direction still works afterwards.
+        let (h3, ct3) = alice.encrypt(b"third").unwrap();
+        assert_eq!(bob.decrypt(&h3, &ct3).unwrap(), b"third");
+        let (h4, ct4) = bob.encrypt(b"reply").unwrap();
+        assert_eq!(alice.decrypt(&h4, &ct4).unwrap(), b"reply");
+    }
+
+    /// Regression test for the commit-after-verify fix: a header carrying a
+    /// ratchet public key the session has never seen, paired with a
+    /// ciphertext that fails AEAD, must not change the root key, the ratchet
+    /// keypair, either chain, the counters or the skipped-key cache.  Before
+    /// the fix both halves of the DH step were committed before the
+    /// ciphertext was checked, permanently desynchronising the session.
+    #[test]
+    fn test_forged_ratchet_pub_bad_ciphertext_leaves_state_unchanged() {
+        let (mut alice, mut bob) = setup_session_pair();
+
+        // Establish a receive chain with one genuine message.
+        let (h1, ct1) = alice.encrypt(b"genuine").unwrap();
+        assert_eq!(bob.decrypt(&h1, &ct1).unwrap(), b"genuine");
+
+        // Snapshot every piece of session state.
+        let root_before = bob.root_key;
+        let my_pub_before = bob.my_ratchet_pub;
+        let their_pub_before = bob.their_ratchet_pub;
+        let send_ck_before = bob.send_chain_key;
+        let send_num_before = bob.send_msg_num;
+        let recv_ck_before = bob.recv_chain_key;
+        let recv_num_before = bob.recv_msg_num;
+        let prev_len_before = bob.prev_send_chain_len;
+        let skipped_before = bob.skipped_key_count();
+
+        // Header with a fresh ratchet key the session has never seen and a
+        // ciphertext that cannot authenticate under any derived key.
+        let unknown_secret = X25519Secret::random_from_rng(rand_core::OsRng);
+        let forged = RatchetHeader {
+            ratchet_pub: *X25519Public::from(&unknown_secret).as_bytes(),
+            prev_chain_len: 1,
+            msg_num: 0,
+        };
+        let result = bob.decrypt(&forged, &[0u8; 32]);
+        assert!(
+            matches!(result, Err(RatchetError::DecryptionFailed)),
+            "forged header with bad ciphertext must fail AEAD, got: {result:?}"
+        );
+
+        // Every field must be exactly as it was before the forged frame.
+        assert_eq!(bob.root_key, root_before, "root key changed");
+        assert_eq!(bob.my_ratchet_pub, my_pub_before, "ratchet keypair changed");
+        assert_eq!(
+            bob.their_ratchet_pub, their_pub_before,
+            "their ratchet pub changed"
+        );
+        assert_eq!(bob.send_chain_key, send_ck_before, "send chain changed");
+        assert_eq!(bob.send_msg_num, send_num_before, "send counter changed");
+        assert_eq!(bob.recv_chain_key, recv_ck_before, "recv chain changed");
+        assert_eq!(bob.recv_msg_num, recv_num_before, "recv counter changed");
+        assert_eq!(
+            bob.prev_send_chain_len, prev_len_before,
+            "prev chain len changed"
+        );
+        assert_eq!(
+            bob.skipped_key_count(),
+            skipped_before,
+            "skipped cache changed"
+        );
+
+        // The genuine conversation continues in both directions.
+        let (h2, ct2) = alice.encrypt(b"still works").unwrap();
+        assert_eq!(bob.decrypt(&h2, &ct2).unwrap(), b"still works");
+        let (h3, ct3) = bob.encrypt(b"reply").unwrap();
+        assert_eq!(alice.decrypt(&h3, &ct3).unwrap(), b"reply");
+    }
+
+    /// Regression test: an out-of-order message whose key is in the skipped
+    /// cache, but whose ciphertext fails AEAD, must leave the cached key in
+    /// place so the genuine copy can still be decrypted later.
+    #[test]
+    fn test_bad_ciphertext_does_not_consume_skipped_key() {
+        let (mut alice, mut bob) = setup_session_pair();
+
+        // Alice sends two; Bob receives the second first, caching key #0.
+        let (h1, ct1) = alice.encrypt(b"skipped").unwrap();
+        let (h2, ct2) = alice.encrypt(b"delivered first").unwrap();
+        assert_eq!(bob.decrypt(&h2, &ct2).unwrap(), b"delivered first");
+        assert_eq!(bob.skipped_key_count(), 1);
+
+        // A corrupted copy of message #0 arrives: AEAD fails, cache intact.
+        let mut corrupted = ct1.clone();
+        corrupted[0] ^= 0xFF;
+        assert!(bob.decrypt(&h1, &corrupted).is_err());
+        assert_eq!(
+            bob.skipped_key_count(),
+            1,
+            "bad ciphertext consumed the cached key"
+        );
+
+        // The genuine copy still decrypts and consumes the key.
+        assert_eq!(bob.decrypt(&h1, &ct1).unwrap(), b"skipped");
+        assert_eq!(bob.skipped_key_count(), 0);
     }
 
     #[test]

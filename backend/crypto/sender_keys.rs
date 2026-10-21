@@ -79,6 +79,33 @@ use zeroize::{Zeroize, Zeroizing};
 // Defined by the spec; must not change without a version bump.
 const SK_MK_INFO: &[u8] = b"MeshInfinity_SK_MK_v1";
 
+/// Domain separator for the per-message Ed25519 signature.
+///
+/// The signature covers `SK_SIG_DOMAIN || iteration (LE u32) || ciphertext`
+/// so that the chain position a receiver advances to is authenticated, not
+/// just the ciphertext bytes.  Without `iteration` under the signature a
+/// relay could re-label a genuine ciphertext with a different counter and
+/// steer the receiver's chain position.
+// SK_SIG_DOMAIN — protocol constant.
+// Defined by the spec; must not change without a version bump.
+const SK_SIG_DOMAIN: &[u8] = b"MeshInfinity_SK_sig_v1";
+
+/// Build the exact byte string that `SenderKey::encrypt` signs and
+/// `SenderKeyReceiver::decrypt` verifies: domain || iteration || ciphertext.
+///
+/// Kept as one shared helper so the two sides can never drift apart.
+fn signed_message(iteration: u32, ciphertext: &[u8]) -> Vec<u8> {
+    // Pre-size: domain + 4-byte counter + ciphertext.
+    let mut msg = Vec::with_capacity(SK_SIG_DOMAIN.len() + 4 + ciphertext.len());
+    // Domain first so the signature cannot be confused with other contexts.
+    msg.extend_from_slice(SK_SIG_DOMAIN);
+    // Little-endian counter, matching the rest of the project's wire ints.
+    msg.extend_from_slice(&iteration.to_le_bytes());
+    // The ciphertext itself (with its AEAD tag).
+    msg.extend_from_slice(ciphertext);
+    msg
+}
+
 /// Maximum number of skipped message keys to cache per sender.
 /// Prevents memory exhaustion if a member sends messages we receive out of order.
 /// 500 is generous — a member would need to send 500 messages before we process any.
@@ -122,6 +149,13 @@ pub enum SenderKeyError {
     /// of out-of-order message keys for this sender.
     #[error("Too many skipped messages (max {MAX_SKIP_PER_SENDER})")]
     TooManySkipped,
+
+    /// The message names an iteration that has already been consumed and
+    /// is not in the skipped-key cache: a replay or a forged counter.  It is
+    /// rejected without touching the chain, so the receiver's position is
+    /// never regressed by a duplicate.
+    #[error("Duplicate message (iteration already consumed)")]
+    DuplicateMessage,
 
     /// Ed25519 key parsing error.
     #[error("Key error: {0}")]
@@ -279,10 +313,13 @@ impl SenderKey {
             // Map the error to the local error type.
             .map_err(|_| SenderKeyError::EncryptFailed)?;
 
-        // Step 5: Sign the ciphertext so recipients can verify it came from us.
-        // The signature covers the ciphertext, NOT the plaintext — this way
-        // even someone who can't decrypt can verify the sender's identity.
-        let signature = self.signing_key.sign(&ciphertext);
+        // Step 5: Sign (iteration, ciphertext) so recipients can verify both
+        // who sent it and which chain position it belongs to.  The signature
+        // covers the ciphertext, NOT the plaintext — this way even someone
+        // who can't decrypt can verify the sender's identity.
+        let signature = self
+            .signing_key
+            .sign(&signed_message(iteration, &ciphertext));
 
         Ok(SenderKeyMessage {
             iteration,
@@ -411,78 +448,84 @@ impl SenderKeyReceiver {
     /// Decrypt a message from this sender.
     ///
     /// Handles out-of-order delivery by caching skipped message keys.
+    ///
+    /// Commit-after-verify: every chain advance and cache change is first
+    /// computed into locals and only written back to `self` once the AEAD
+    /// tag has verified.  A forged counter, a replay or a tampered ciphertext
+    /// therefore leaves `chain_key`, `next_iteration` and the cache exactly
+    /// as they were, which matters once receiver state is persisted.
     pub fn decrypt(&mut self, msg: &SenderKeyMessage) -> Result<Vec<u8>, SenderKeyError> {
-        // Step 1: Verify the Ed25519 signature.
-        // This confirms the message came from the expected sender and wasn't
-        // tampered with in transit. We verify BEFORE attempting decryption to
-        // avoid wasting CPU on forged messages.
+        // Step 1: Verify the Ed25519 signature over (iteration, ciphertext).
+        // This confirms the message came from the expected sender, that the
+        // ciphertext is intact, and that the claimed chain position is the
+        // one the sender actually used.  We verify BEFORE any key derivation
+        // so a forged counter cannot even cost us the skipped-key work.
         let sig = Signature::from_slice(&msg.signature)
             // Transform the result, mapping errors to the local error type.
-            // Map the error to the local error type.
-            // Map the error to the local error type.
             .map_err(|e| SenderKeyError::KeyError(e.to_string()))?;
         self.verifying_key
-            // Verify the signature against the claimed public key.
-            // Verify the cryptographic signature.
-            // Verify the cryptographic signature.
-            .verify(&msg.ciphertext, &sig)
+            // Verify the cryptographic signature over the bound payload.
+            .verify(&signed_message(msg.iteration, &msg.ciphertext), &sig)
             // Transform the result, mapping errors to the local error type.
-            // Map the error to the local error type.
-            // Map the error to the local error type.
             .map_err(|_| SenderKeyError::SignatureFailed)?;
 
-        // Step 2: Check if we already cached this message's key (out-of-order).
-        if let Some(mut cached_key) = self.skipped_keys.remove(&msg.iteration) {
-            // Initialize the AEAD cipher with the derived key material.
-            let result = decrypt_with_msg_key(&cached_key, &msg.ciphertext);
-            // Securely erase key material to prevent forensic recovery.
-            // Zeroize sensitive key material.
-            // Zeroize sensitive key material.
-            cached_key.zeroize(); // Forward secrecy: delete after use
-                                  // Return the result to the caller.
-            return result;
+        // Step 2: A cached key for an out-of-order message is only *consumed*
+        // once the ciphertext authenticates under it.  A corrupted copy must
+        // not evict the key the genuine copy will need.
+        if let Some(cached_key) = self.skipped_keys.get(&msg.iteration) {
+            // Decrypt with a borrowed copy; the map entry is still present.
+            let plaintext = decrypt_with_msg_key(cached_key, &msg.ciphertext)?;
+            // Success: remove the entry and wipe it (forward secrecy).
+            if let Some(mut consumed) = self.skipped_keys.remove(&msg.iteration) {
+                consumed.zeroize();
+            }
+            return Ok(plaintext);
         }
 
-        // Step 3: If this message is ahead of our position, we need to
-        // advance our chain and cache the intermediate keys.
-        if msg.iteration > self.next_iteration {
-            // Track the count for threshold and bounds checking.
-            let skip_count = msg.iteration - self.next_iteration;
-            // Use 64-bit arithmetic to prevent silent truncation: on a 64-bit
-            // host, skipped_keys.len() is usize (64-bit) but MAX_SKIP_PER_SENDER
-            // is u32, so the as-cast could silently truncate a large map.
-            let existing = self.skipped_keys.len() as u64;
-            // Bounds check to enforce protocol constraints.
-            if existing.saturating_add(skip_count as u64) > MAX_SKIP_PER_SENDER as u64 {
-                return Err(SenderKeyError::TooManySkipped);
-            }
-
-            // Cache keys for all skipped iterations
-            // Iterate over each element.
-            // Iterate over each element.
-            for i in self.next_iteration..msg.iteration {
-                let (msg_key, new_ck) = kdf_chain_step(&self.chain_key);
-                self.skipped_keys.insert(i, msg_key);
-                // Update the chain key to reflect the new state.
-                // Advance chain key state.
-                // Advance chain key state.
-                self.chain_key = new_ck;
-            }
+        // Step 3: A position behind our cursor that is not cached has already
+        // been delivered.  Reject it rather than re-deriving a key from the
+        // current chain position and regressing `next_iteration`.
+        if msg.iteration < self.next_iteration {
+            return Err(SenderKeyError::DuplicateMessage);
         }
 
-        // Step 4: Derive the message key for this specific iteration.
-        let (msg_key, new_ck) = kdf_chain_step(&self.chain_key);
-        // Update the chain key to reflect the new state.
-        // Advance chain key state.
-        // Advance chain key state.
-        self.chain_key = new_ck;
-        // Update the next iteration to reflect the new state.
-        // Advance next iteration state.
-        // Advance next iteration state.
+        // Step 4: Bound the number of keys this message would make us cache.
+        // Use 64-bit arithmetic to prevent silent truncation: on a 64-bit
+        // host, skipped_keys.len() is usize (64-bit) but MAX_SKIP_PER_SENDER
+        // is u32, so the as-cast could silently truncate a large map.
+        let skip_count = msg.iteration - self.next_iteration;
+        let existing = self.skipped_keys.len() as u64;
+        if existing.saturating_add(skip_count as u64) > MAX_SKIP_PER_SENDER as u64 {
+            return Err(SenderKeyError::TooManySkipped);
+        }
+
+        // Step 5: Walk the chain from our cursor to this message on a working
+        // copy, collecting the keys for the iterations we skip over.  Nothing
+        // in `self` changes yet.  `Zeroizing` wipes the locals on every exit.
+        let mut chain = Zeroizing::new(self.chain_key);
+        let mut skipped: Vec<(u32, Zeroizing<[u8; 32]>)> = Vec::with_capacity(skip_count as usize);
+        for i in self.next_iteration..msg.iteration {
+            let (skipped_key, new_ck) = kdf_chain_step(&chain);
+            skipped.push((i, Zeroizing::new(skipped_key)));
+            *chain = new_ck;
+        }
+        // The key for this message, and the chain position after it.
+        let (msg_key, chain_after) = kdf_chain_step(&chain);
+        let msg_key = Zeroizing::new(msg_key);
+
+        // Step 6: Authenticate and decrypt.  On failure we return here and
+        // every local above is zeroized by its guard; `self` is untouched.
+        let plaintext = decrypt_with_msg_key(&msg_key, &msg.ciphertext)?;
+
+        // Step 7: The ciphertext authenticated under the derived key, so the
+        // sender really is at this position: commit the cache and cursor.
+        for (i, key) in skipped {
+            self.skipped_keys.insert(i, *key);
+        }
+        self.chain_key = chain_after;
         self.next_iteration = msg.iteration + 1;
 
-        // Step 5: Decrypt the ciphertext using the derived key.
-        decrypt_with_msg_key(&msg_key, &msg.ciphertext)
+        Ok(plaintext)
     }
 }
 
@@ -498,7 +541,7 @@ impl Drop for SenderKeyReceiver {
         // Iterate over each element in the collection.
         // Iterate over each element.
         // Iterate over each element.
-        for (_, key) in self.skipped_keys.iter_mut() {
+        for key in self.skipped_keys.values_mut() {
             // Securely erase key material to prevent forensic recovery.
             // Zeroize sensitive key material.
             // Zeroize sensitive key material.
@@ -706,6 +749,167 @@ mod tests {
             let decrypted = receiver.decrypt(&msg).unwrap();
             assert_eq!(decrypted, plaintext.as_bytes());
         }
+    }
+
+    /// Build a `SigningKey` matching `sender`, so tests can produce messages
+    /// that carry a *valid* signature over attacker-chosen fields.
+    fn sender_signing_key(sender: &SenderKey) -> SigningKey {
+        let raw = sender.signing_key_bytes();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&raw[..32]);
+        SigningKey::from_bytes(&seed)
+    }
+
+    /// Regression test: a replay of an already-consumed in-order message is
+    /// rejected as a duplicate and leaves the chain cursor and key exactly
+    /// where they were, so the next genuine message still decrypts.
+    #[test]
+    fn test_replay_after_success_rejected_and_chain_intact() {
+        let (mut sender, mut receiver) = setup();
+
+        let m1 = sender.encrypt(b"one").unwrap();
+        let m2 = sender.encrypt(b"two").unwrap();
+        assert_eq!(receiver.decrypt(&m1).unwrap(), b"one");
+        assert_eq!(receiver.decrypt(&m2).unwrap(), b"two");
+
+        // Snapshot the receiver state.
+        let chain_before = *receiver.chain_key_bytes();
+        let next_before = receiver.next_iter();
+
+        // Replay message 1: valid signature, consumed position, not cached.
+        let replay = receiver.decrypt(&m1);
+        assert!(
+            matches!(replay, Err(SenderKeyError::DuplicateMessage)),
+            "replay must be rejected as duplicate, got: {replay:?}"
+        );
+        assert_eq!(
+            *receiver.chain_key_bytes(),
+            chain_before,
+            "chain key changed on replay"
+        );
+        assert_eq!(
+            receiver.next_iter(),
+            next_before,
+            "cursor changed on replay"
+        );
+
+        // The next genuine message still decrypts.
+        let m3 = sender.encrypt(b"three").unwrap();
+        assert_eq!(receiver.decrypt(&m3).unwrap(), b"three");
+    }
+
+    /// Regression test: `iteration` is under the signature, so re-labelling a
+    /// genuine ciphertext with a different counter fails signature
+    /// verification and does not move the receiver's cursor.
+    #[test]
+    fn test_relabelled_iteration_fails_signature_without_state_change() {
+        let (mut sender, mut receiver) = setup();
+
+        let genuine = sender.encrypt(b"hello").unwrap();
+        let next_before = receiver.next_iter();
+
+        // Same ciphertext and signature, different claimed position.
+        let relabelled = SenderKeyMessage {
+            iteration: genuine.iteration + 5,
+            ciphertext: genuine.ciphertext.clone(),
+            signature: genuine.signature.clone(),
+        };
+        let result = receiver.decrypt(&relabelled);
+        assert!(
+            matches!(result, Err(SenderKeyError::SignatureFailed)),
+            "relabelled iteration must fail signature check, got: {result:?}"
+        );
+        assert_eq!(
+            receiver.next_iter(),
+            next_before,
+            "cursor moved on forged counter"
+        );
+        assert_eq!(
+            receiver.skipped_keys.len(),
+            0,
+            "keys cached for forged counter"
+        );
+
+        // The genuine message still decrypts at its real position.
+        assert_eq!(receiver.decrypt(&genuine).unwrap(), b"hello");
+    }
+
+    /// Regression test: a message with a valid signature (sender key holder)
+    /// but a ciphertext that fails AEAD, at a position ahead of the cursor,
+    /// must not advance the chain or cache any skipped keys.  Previously the
+    /// receiver walked and committed the chain before the AEAD check.
+    #[test]
+    fn test_bad_ciphertext_ahead_of_cursor_leaves_state_unchanged() {
+        let (sender, mut receiver) = setup();
+        let signing_key = sender_signing_key(&sender);
+
+        let chain_before = *receiver.chain_key_bytes();
+        let next_before = receiver.next_iter();
+
+        // Signed by the real sender key, but the ciphertext is garbage and
+        // the position would require caching three skipped keys.
+        let garbage = vec![0u8; 32];
+        let forged = SenderKeyMessage {
+            iteration: 3,
+            signature: signing_key
+                .sign(&signed_message(3, &garbage))
+                .to_bytes()
+                .to_vec(),
+            ciphertext: garbage,
+        };
+        let result = receiver.decrypt(&forged);
+        assert!(
+            matches!(result, Err(SenderKeyError::DecryptFailed)),
+            "garbage ciphertext must fail AEAD, got: {result:?}"
+        );
+
+        // No state may have moved.
+        assert_eq!(
+            *receiver.chain_key_bytes(),
+            chain_before,
+            "chain key advanced"
+        );
+        assert_eq!(receiver.next_iter(), next_before, "cursor advanced");
+        assert_eq!(receiver.skipped_keys.len(), 0, "skipped keys were cached");
+    }
+
+    /// Regression test: a corrupted copy of an out-of-order message must not
+    /// consume the cached key the genuine copy needs.
+    #[test]
+    fn test_bad_ciphertext_does_not_consume_cached_key() {
+        let (mut sender, mut receiver) = setup();
+
+        let m1 = sender.encrypt(b"first").unwrap();
+        let m2 = sender.encrypt(b"second").unwrap();
+        // Receive #1 first: key #0 is cached.
+        assert_eq!(receiver.decrypt(&m2).unwrap(), b"second");
+        assert_eq!(receiver.skipped_keys.len(), 1);
+
+        // A corrupted copy of #0 with a signature by the real sender key.
+        let signing_key = sender_signing_key(&sender);
+        let mut corrupted_ct = m1.ciphertext.clone();
+        corrupted_ct[0] ^= 0xFF;
+        let corrupted = SenderKeyMessage {
+            iteration: m1.iteration,
+            signature: signing_key
+                .sign(&signed_message(m1.iteration, &corrupted_ct))
+                .to_bytes()
+                .to_vec(),
+            ciphertext: corrupted_ct,
+        };
+        assert!(matches!(
+            receiver.decrypt(&corrupted),
+            Err(SenderKeyError::DecryptFailed)
+        ));
+        assert_eq!(
+            receiver.skipped_keys.len(),
+            1,
+            "cached key consumed by bad ciphertext"
+        );
+
+        // The genuine copy still decrypts and consumes the key.
+        assert_eq!(receiver.decrypt(&m1).unwrap(), b"first");
+        assert_eq!(receiver.skipped_keys.len(), 0);
     }
 
     /// Adversarial test: a sender who skips MAX_SKIP_PER_SENDER+1 messages
