@@ -56,6 +56,7 @@
 //! The adversary sees the phone unlock. The data is already gone.
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,55 @@ pub struct EraseResult {
 // ---------------------------------------------------------------------------
 // Standard Emergency Erase (§3.9.1)
 // ---------------------------------------------------------------------------
+
+/// Overwrite a file's current bytes in place and force them to storage.
+///
+/// SPEC §3.9.1 requires the overwrite of `identity.key` (and the zero pass
+/// over every vault) to *complete* before deletion. `fs::write` cannot give
+/// that guarantee: it truncates first, which releases the original blocks so
+/// the new bytes may land elsewhere, and it never syncs, so an immediate
+/// `remove_file` lets the kernel drop the dirty pages without writing them.
+///
+/// This opens the file without truncation, writes exactly `len` bytes from
+/// `fill` over the existing extent, and `sync_all`s before returning, so the
+/// overwrite has reached the device by the time the caller unlinks the file.
+/// Copy-on-write and flash wear-levelling can still keep old blocks; the
+/// keystore-backed destruction path is the defence for that (§3.6.2), this
+/// is the filesystem defence in depth.
+fn overwrite_in_place(path: &Path, fill: &[u8]) -> std::io::Result<()> {
+    // write(true) without create/truncate keeps the inode and its blocks.
+    let mut file = fs::OpenOptions::new().write(true).open(path)?;
+    // Cover the whole current extent, not just fill.len(), so a long vault
+    // is zeroed end to end.
+    let len = file.metadata()?.len() as usize;
+    let mut remaining = len;
+    while remaining > 0 {
+        let chunk = remaining.min(fill.len());
+        file.write_all(&fill[..chunk])?;
+        remaining -= chunk;
+    }
+    // Push the page cache to the device before the caller deletes the file.
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Best-effort durability for a directory entry change (the unlink after an
+/// overwrite). Directory fsync is a POSIX concept; Windows has no equivalent
+/// handle operation, so this is a no-op there.
+fn sync_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        if let Ok(d) = fs::File::open(dir) {
+            // Failure here only weakens durability of the unlink, which is
+            // not security-critical (the overwrite already synced).
+            let _ = d.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+}
 
 /// Perform a standard emergency erase — destroys ALL three layers.
 ///
@@ -180,8 +230,9 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
         // we cannot propagate. A failed overwrite is still preferable to
         // aborting the erase — we continue and delete the file anyway.
         let random_data: [u8; 32] = rand::random();
-        // Handle the error case — propagate or log as appropriate.
-        if let Err(e) = fs::write(&identity_key_path, random_data) {
+        // In-place overwrite + fsync: the only form of "overwrite" that is
+        // actually on disk before the unlink below (§3.9.1 step 2).
+        if let Err(e) = overwrite_in_place(&identity_key_path, &random_data) {
             eprintln!(
                 "[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}"
             );
@@ -223,11 +274,11 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
             // Log on failure: this function returns EraseResult (not Result), so
             // we cannot propagate. We continue with deletion even if the overwrite
             // fails — deleting unzeroed data is better than leaving it on disk.
-            if let Ok(metadata) = fs::metadata(&path) {
-                // Prepare the data buffer for the next processing stage.
-                let zeros = vec![0u8; metadata.len() as usize];
-                // Handle the error case — propagate or log as appropriate.
-                if let Err(e) = fs::write(&path, &zeros) {
+            {
+                // A fixed zero block is streamed over the file's own length;
+                // overwrite_in_place syncs before returning.
+                let zeros = [0u8; 4096];
+                if let Err(e) = overwrite_in_place(&path, &zeros) {
                     eprintln!("[killswitch] WARNING: failed to zero-overwrite {filename} before deletion: {e}");
                 }
             }
@@ -254,6 +305,9 @@ pub fn standard_erase(data_dir: &Path) -> EraseResult {
             }
         }
     }
+
+    // Make the unlinks durable too, where the platform supports it.
+    sync_dir(data_dir);
 
     EraseResult {
         broadcast_sent,
@@ -313,8 +367,9 @@ pub fn duress_erase(data_dir: &Path) -> EraseResult {
     if identity_key_path.exists() {
         // Prepare the data buffer for the next processing stage.
         let random_data: [u8; 32] = rand::random();
-        // Handle the error case — propagate or log as appropriate.
-        if let Err(e) = fs::write(&identity_key_path, random_data) {
+        // In-place overwrite + fsync: the only form of "overwrite" that is
+        // actually on disk before the unlink below (§3.9.1 step 2).
+        if let Err(e) = overwrite_in_place(&identity_key_path, &random_data) {
             eprintln!(
                 "[killswitch] WARNING: failed to overwrite identity.key before deletion: {e}"
             );
@@ -351,11 +406,11 @@ pub fn duress_erase(data_dir: &Path) -> EraseResult {
         if path.exists() {
             // Log on failure: same rationale as above — cannot propagate,
             // deleting unzeroed data is better than leaving it on disk.
-            if let Ok(metadata) = fs::metadata(&path) {
-                // Prepare the data buffer for the next processing stage.
-                let zeros = vec![0u8; metadata.len() as usize];
-                // Handle the error case — propagate or log as appropriate.
-                if let Err(e) = fs::write(&path, &zeros) {
+            {
+                // A fixed zero block is streamed over the file's own length;
+                // overwrite_in_place syncs before returning.
+                let zeros = [0u8; 4096];
+                if let Err(e) = overwrite_in_place(&path, &zeros) {
                     eprintln!("[killswitch] WARNING: failed to zero-overwrite {filename} before deletion: {e}");
                 }
             }
@@ -380,6 +435,9 @@ pub fn duress_erase(data_dir: &Path) -> EraseResult {
             }
         }
     }
+
+    // Make the unlinks durable too, where the platform supports it.
+    sync_dir(data_dir);
 
     EraseResult {
         broadcast_sent,
@@ -446,7 +504,10 @@ pub struct DuressWindDown {
 impl DuressWindDown {
     /// Current wind-down state.
     pub fn state(&self) -> WindDownState {
-        *self.state.lock().unwrap()
+        // The guarded value is a plain Copy enum, so a poisoned lock (the
+        // timer thread panicked mid-store) still holds a valid state; recover
+        // it rather than propagating a panic into the FFI caller.
+        *self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether the wind-down has completed and key material may be zeroed.
@@ -539,7 +600,8 @@ pub fn begin_duress_wind_down(data_dir: &Path) -> (EraseResult, DuressWindDown) 
         // Active phase: old identity accepts traffic.
         std::thread::sleep(active_duration);
         {
-            let mut s = state_clone.lock().unwrap();
+            // Poison recovery: see `state()`.
+            let mut s = state_clone.lock().unwrap_or_else(|e| e.into_inner());
             if *s == WindDownState::Active {
                 *s = WindDownState::Draining;
             }
@@ -549,7 +611,8 @@ pub fn begin_duress_wind_down(data_dir: &Path) -> (EraseResult, DuressWindDown) 
         let drain_duration = dur.saturating_sub(active_duration);
         std::thread::sleep(drain_duration);
         {
-            let mut s = state_clone.lock().unwrap();
+            // Poison recovery: see `state()`.
+            let mut s = state_clone.lock().unwrap_or_else(|e| e.into_inner());
             *s = WindDownState::Complete;
         }
     });
@@ -631,6 +694,33 @@ mod tests {
         // Should not crash on empty directory
         let result = standard_erase(dir.path());
         assert_eq!(result.files_deleted, 0);
+    }
+
+    /// The overwrite must not truncate (that would free the original blocks
+    /// before the new bytes land) and must change every byte of the file.
+    #[test]
+    fn test_overwrite_in_place_keeps_length_and_replaces_bytes() {
+        let dir = setup_data_dir();
+        let path = dir.path().join("messages.vault");
+        // 10 KiB of a recognisable pattern, longer than one zero chunk.
+        let original = vec![0xABu8; 10 * 1024];
+        fs::write(&path, &original).unwrap();
+
+        overwrite_in_place(&path, &[0u8; 4096]).unwrap();
+
+        let after = fs::read(&path).unwrap();
+        assert_eq!(after.len(), original.len(), "overwrite must not truncate");
+        assert!(after.iter().all(|&b| b == 0), "every byte must be zeroed");
+    }
+
+    /// A missing file is an error, not a silent create: the caller only
+    /// overwrites files it has already checked exist.
+    #[test]
+    fn test_overwrite_in_place_missing_file_is_error() {
+        let dir = setup_data_dir();
+        let missing = dir.path().join("nope.vault");
+        assert!(overwrite_in_place(&missing, &[0u8; 16]).is_err());
+        assert!(!missing.exists());
     }
 
     #[test]

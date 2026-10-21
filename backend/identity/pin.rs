@@ -48,6 +48,13 @@ const ARGON2_T_COST: u32 = 3;
 // Defined by the spec; must not change without a version bump.
 const ARGON2_P_COST: u32 = 4;
 
+/// ChaCha20-Poly1305 nonce length written by `wrap_key_with_pin`.
+const NONCE_LEN: usize = 12;
+/// Argon2id salt length written by `wrap_key_with_pin`.
+const SALT_LEN: usize = 32;
+/// Wrapped identity key: 32 key bytes + 16-byte Poly1305 tag.
+const WRAPPED_KEY_LEN: usize = 48;
+
 /// PIN attempt backoff schedule (§3.10)
 // BACKOFF_SECS — protocol constant.
 // Defined by the spec; must not change without a version bump.
@@ -90,6 +97,11 @@ pub enum PinError {
     TooShort,
     #[error("PIN too long (maximum 16 digits)")]
     TooLong,
+    /// `pin.dat` did not have the field lengths this module writes. A
+    /// truncated or tampered file is reported, never panicked on, because
+    /// every unlock path reaches this code across the FFI boundary.
+    #[error("PIN record is malformed (unexpected field length)")]
+    Malformed,
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +251,17 @@ pub fn unwrap_key_with_pin(
     wrapped: &PinWrappedKey,
     pin: &[u8],
 ) -> Result<Zeroizing<[u8; 32]>, PinError> {
+    // Validate every length the record is supposed to have before touching
+    // the crypto. `Nonce::from_slice` panics on anything but 12 bytes, and a
+    // corrupted pin.dat (crash mid-write, disk error, tampering) must turn
+    // into a typed error, not a panic unwinding through `extern "C"`.
+    if wrapped.nonce.len() != NONCE_LEN
+        || wrapped.salt.len() != SALT_LEN
+        || wrapped.ciphertext.len() != WRAPPED_KEY_LEN
+    {
+        return Err(PinError::Malformed);
+    }
+
     // Always run Argon2id regardless of PIN validity (timing normalization)
     let wrapping_key = derive_key_from_pin(pin, &wrapped.salt)?;
 
@@ -339,6 +362,44 @@ mod tests {
         let unwrapped = unwrap_key_with_pin(&wrapped, pin).unwrap();
 
         assert_eq!(*unwrapped, identity_key);
+    }
+
+    /// A truncated nonce must be a typed error, not a panic: this is the
+    /// FFI-reachable unlock path and pin.dat is untrusted storage.
+    #[test]
+    fn test_malformed_nonce_length_rejected() {
+        let key = Zeroizing::new([0x11u8; 32]);
+        let mut wrapped = wrap_key_with_pin(&key, b"1234").expect("wrap");
+        wrapped.nonce.truncate(8);
+        assert!(matches!(
+            unwrap_key_with_pin(&wrapped, b"1234"),
+            Err(PinError::Malformed)
+        ));
+    }
+
+    /// Same for the salt and the ciphertext: every field length is checked
+    /// before the record reaches Argon2 or the AEAD.
+    #[test]
+    fn test_malformed_salt_and_ciphertext_rejected() {
+        let key = Zeroizing::new([0x22u8; 32]);
+        let good = wrap_key_with_pin(&key, b"1234").expect("wrap");
+
+        let mut short_salt = good.clone();
+        short_salt.salt.pop();
+        assert!(matches!(
+            unwrap_key_with_pin(&short_salt, b"1234"),
+            Err(PinError::Malformed)
+        ));
+
+        let mut long_ct = good.clone();
+        long_ct.ciphertext.push(0);
+        assert!(matches!(
+            unwrap_key_with_pin(&long_ct, b"1234"),
+            Err(PinError::Malformed)
+        ));
+
+        // The untouched record still unwraps, so the checks are exact.
+        assert!(unwrap_key_with_pin(&good, b"1234").is_ok());
     }
 
     #[test]

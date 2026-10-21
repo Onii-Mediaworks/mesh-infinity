@@ -55,6 +55,7 @@
 //! by timestamp. Timestamps are for display only.
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // ---------------------------------------------------------------------------
 // Constants — rekeying thresholds (§7.4)
@@ -140,14 +141,13 @@ pub const SESSION_KEY_DOMAIN: &[u8] = b"meshinfinity-session-v1";
 /// Tracks the current session key, nonce counter, and rekeying
 /// state. Each active connection (DM, group, file transfer, call)
 /// has its own SessionState.
-#[derive(Clone, Debug)]
-// SessionState — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
-// SessionState — protocol data structure (see field-level docs).
-// Invariants are enforced at construction time.
+// Deliberately no Clone or Debug: a clone would duplicate key material
+// outside this struct's zeroize-on-drop guard, and Debug would print it
+// (SPEC §15 forbids both on key-holding types).
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SessionState {
     /// The current session key (32 bytes, ChaCha20-Poly1305).
-    /// Zeroized on Drop in a real implementation.
+    /// Zeroized when the struct drops and on every rekey.
     pub session_key: [u8; 32],
 
     /// Monotonically incrementing nonce counter.
@@ -258,18 +258,14 @@ impl SessionState {
 
     /// Complete a rekey by installing a new session key.
     ///
-    /// Zeroizes the old key (caller must ensure this happens
-    /// in the real implementation) and resets counters.
+    /// The old key is zeroized (a volatile write the compiler cannot elide)
+    /// before the new one is installed, and the counters reset.
     pub fn complete_rekey(&mut self, new_key: [u8; 32], _now: u64) {
-        // In a real implementation, the old key would be zeroized
-        // via the SecureBytes wrapper. For now, overwrite with zeros.
-        // Advance session key state.
-        // Advance session key state.
-        self.session_key = [0u8; 32];
+        // Wipe the retiring key first so it never coexists with the new one
+        // in memory longer than necessary.
+        self.session_key.zeroize();
 
         // Install the new key and reset state.
-        // Advance session key state.
-        // Advance session key state.
         self.session_key = new_key;
         // Update the nonce counter to reflect the new state.
         // Advance nonce counter state.

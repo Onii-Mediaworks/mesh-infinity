@@ -1154,7 +1154,13 @@ impl MeshRuntime {
                 // background thread to taper old-identity Layer 1 traffic.
                 let (_erase_result, wind_down) =
                     crate::identity::killswitch::begin_duress_wind_down(&data_dir);
-                *self.duress_wind_down.lock().unwrap() = Some(wind_down);
+                // This runs on the duress path; a poisoned lock must not turn
+                // the erase into a panic across the FFI boundary. The slot only
+                // holds an Option, so the poisoned value is safe to overwrite.
+                *self
+                    .duress_wind_down
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(wind_down);
                 self.reset_identity_runtime_state();
                 let fresh_identity = SelfIdentity::generate(None);
                 fresh_identity
@@ -2246,10 +2252,10 @@ impl MeshRuntime {
         let pid_bytes: [u8; 32] = hex::decode(requesting_peer_id_hex)
             .ok()
             .filter(|b| b.len() == 32)
-            .and_then(|b| {
+            .map(|b| {
                 let mut a = [0u8; 32];
                 a.copy_from_slice(&b);
-                Some(a)
+                a
             })
             .ok_or_else(|| "Invalid requesting peer ID".to_string())?;
         let pid = PeerId(pid_bytes);
@@ -2310,6 +2316,33 @@ impl MeshRuntime {
         std::path::Path::new(&self.data_dir)
             .join("identity.dat")
             .exists()
+    }
+}
+
+fn current_platform_id() -> &'static str {
+    if cfg!(target_os = "android") {
+        "android"
+    } else if cfg!(target_os = "ios") {
+        "ios"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "unknown"
+    }
+}
+
+fn current_device_name() -> &'static str {
+    match current_platform_id() {
+        "android" => "Android device",
+        "ios" => "iPhone",
+        "macos" => "Mac",
+        "windows" => "Windows PC",
+        "linux" => "Linux device",
+        _ => "This device",
     }
 }
 
@@ -2412,32 +2445,5 @@ mod tests {
             identity.is_none(),
             "identity must be None after concurrent clear_identity_keys"
         );
-    }
-}
-
-fn current_platform_id() -> &'static str {
-    if cfg!(target_os = "android") {
-        "android"
-    } else if cfg!(target_os = "ios") {
-        "ios"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else {
-        "unknown"
-    }
-}
-
-fn current_device_name() -> &'static str {
-    match current_platform_id() {
-        "android" => "Android device",
-        "ios" => "iPhone",
-        "macos" => "Mac",
-        "windows" => "Windows PC",
-        "linux" => "Linux device",
-        _ => "This device",
     }
 }
