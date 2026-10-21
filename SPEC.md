@@ -20,6 +20,7 @@
 - [2. Design Principles](#2-design-principles)
   - [2.0 Threat Model Baseline](#20-threat-model-baseline)
   - [2.1 Principles](#21-principles)
+    - [2.1.1 Field Visibility Classes](#211-field-visibility-classes)
   - [2.2 Known Limitations and Accepted Tradeoffs](#22-known-limitations-and-accepted-tradeoffs)
 - [3. Identity and Cryptography](#3-identity-and-cryptography)
   - [3.0 Overview](#30-overview)
@@ -63,6 +64,7 @@
   - [5.14 Layer 2 / Raw Link Transport](#514-layer-2-raw-link-transport)
   - [5.15 CAN Bus Transport (Plugin Category)](#515-can-bus-transport-plugin-category)
   - [5.16 Telephone Network Transport](#516-telephone-network-transport)
+  - [5.17 Reserved](#517-reserved)
   - [5.18 Yggdrasil](#518-yggdrasil)
   - [5.19 cjdns](#519-cjdns)
   - [5.20 Blockchain-Dependent Networks (Experimental)](#520-blockchain-dependent-networks-experimental)
@@ -192,6 +194,7 @@
   - [15.4 Traffic Shaping](#154-traffic-shaping)
   - [15.5 Potential Extremes Security Menu](#155-potential-extremes-security-menu)
   - [15.6 Network Security](#156-network-security)
+  - [15.7 Metadata Threat Matrix](#157-metadata-threat-matrix)
 - [16. Performance](#16-performance)
   - [16.0 Overview](#160-overview)
   - [16.1 Tunnel Count Model](#161-tunnel-count-model)
@@ -262,6 +265,7 @@
   - [21.4 Developer Mode and Debug Menu](#214-developer-mode-and-debug-menu)
   - [21.5 Built-in Network Simulator](#215-built-in-network-simulator)
   - [21.6 CI/CD Pipeline Requirements](#216-cicd-pipeline-requirements)
+- [22. UI/UX Specification](#22-uiux-specification)
   - [22.0 Overview](#220-overview)
 - [Part A — UI](#part-a-ui)
   - [22.1 Global Design System](#221-global-design-system)
@@ -379,6 +383,8 @@ When Mesh Infinity is running, your device is an active node in the mesh — reg
 
 This is not optional and it is not a bug. It is the mechanism by which the network provides privacy. The more nodes participate, the larger the anonymity set, and the harder it is for any observer to distinguish real traffic from noise. Your participation protects others; their participation protects you.
 
+Participation is the default, not an absolute. It runs within the active ThreatContext, within what the platform allows (mobile background limits, battery, metered data), and within the safety policy of §2.1 principle 8 — a node that cannot safely relay still sends cover traffic and contributes in the ways it can. When the node contributes less than the default, the app tells you so plainly, and your node's standing in the network is reduced accordingly. A node that contributes less is never forbidden to run.
+
 #### 1.2.5 Feature Tiers
 
 Mesh Infinity starts as a chat app. Additional capabilities can be enabled as needed:
@@ -387,11 +393,11 @@ Mesh Infinity starts as a chat app. Additional capabilities can be enabled as ne
 - **File Sharing** (opt-in): Send files to contacts and publish files to the distributed storage network.
 - **Network Controls** (opt-in): Exit nodes, VPN mode, and advanced transport configuration.
 
-Enabling or disabling a tier changes what appears in the app's navigation. It does not change what the node does on the network — the node always participates fully at every tier.
+Enabling or disabling a tier changes what appears in the app's navigation. It does not change what the node does on the network — the node participates at every tier, to the extent the active ThreatContext, platform capability, and safety policy allow (§1.2.4, §2.1 principle 7).
 
 #### 1.2.6 Architecture in Brief
 
-The Rust backend is the trusted security boundary. The Flutter UI is a thin rendering layer that issues intent-based commands and renders backend state. Keys, cryptography, transport, and storage never leave Rust. A compromised or buggy UI cannot compromise security — all security decisions are made and enforced by the backend.
+The Rust backend is the trusted security boundary. The Flutter UI is a thin rendering layer that issues intent-based commands and renders backend state. Keys, cryptography, transport, and storage never leave Rust. A compromised UI cannot bypass backend security policy, read raw key material, or perform unauthorized operations — all security decisions are made and enforced by the backend. It can still misrepresent state to the user, trick the user into requesting harmful but valid actions, and capture the display-safe data it is given to render; that residual exposure is recorded in §2.2 limitation 10.
 
 The Rust backend remains the trusted authority, but risky subsystems may be isolated behind narrow internal interfaces where the platform supports it. On restrictive platforms, those same subsystems may run co-located without changing the security model.
 
@@ -452,7 +458,7 @@ The following principles govern every design and implementation decision. When t
 
 6a. **Trust is scoped survival infrastructure.** A friend is not a stranger, and the system must not flatten trusted relationships into anonymous public routing. Trusted peers may be preferred for delivery, relay, store-and-forward, emergency warning, key-change corroboration, profile exchange, and recovery because that is the core web-of-trust model. The constraint is scope: a capability granted in one relationship or context must not imply access to unrelated identities, masks, groups, locations, histories, or future capabilities.
 
-7. **The node always participates fully, regardless of UI tier or authentication state.** Once Layer 1 (mesh identity) is active — which happens at device unlock, before any app interaction — the node is a full mesh participant: routing, relaying, cover traffic, and tunnel coordination. Feature tiers (§1.2.5) control what the UI exposes. Authentication state (whether the user has entered their PIN) controls whether Layers 2/3 are active. Neither changes what Layer 1 does. Any implementation that allows a node to opt out of mesh participation while Layer 1 is initialized violates this principle.
+7. **The node participates by default, regardless of UI tier or authentication state.** Once Layer 1 (mesh identity) is active — which happens at device unlock, before any app interaction — the node is a mesh participant: routing, relaying, cover traffic, and tunnel coordination. Feature tiers (§1.2.5) control what the UI exposes. Authentication state (whether the user has entered their PIN) controls whether Layers 2/3 are active. Neither changes what Layer 1 does. The default is full participation; the anonymity-set rationale of §1.2.4 is why. The exception clause is that participation runs within the active ThreatContext, the platform's capability (mobile OS background limits, battery, metered data), and the safety policy of principle 8: a node may contribute less than the default for those reasons, the reduction is disclosed to the user, and the node loses standing under principle 8 rather than being forbidden to run. The participation levels of §5.25.4 and the platform sections define what reduced contribution looks like per tier. Any implementation that lets a node silently opt out of mesh participation while Layer 1 is initialized — without disclosure and without the standing consequences — violates this principle.
 
 8. **Participation in anonymizing infrastructure is reciprocal. Parasitism is penalised.** Consuming anonymity without contributing degrades the network for everyone. When a node uses an anonymizing network (Tor, I2P, the native mixnet tier, Katzenpost), relay participation on that network is enabled by default and expected. The only routine configuration is bandwidth — how much you contribute, not whether you do. Opting out is permitted but carries real consequences enforced by the network, not by policy:
 
@@ -482,6 +488,26 @@ The following principles govern every design and implementation decision. When t
 12. **Operator responsibility under US law.** Mesh Infinity is software and protocol infrastructure, not a promise of legal immunity. Operators who host, mirror, index, cache, publish, expose, or otherwise make content available are responsible for understanding and complying with the laws that apply to them, including United States law where applicable. In the US, intermediary protections and obligations are context-dependent; for example, 47 U.S.C. § 230 distinguishes providers/users of interactive computer services from the speakers of third-party information in many civil contexts, while 17 U.S.C. § 512 defines conditional copyright safe harbors for qualifying service providers. These statutes do not eliminate all liability, do not cover every claim, and do not make every hosting decision safe.
 
    Mesh Infinity therefore treats hosting and publication as explicit operator choices. A node operator, Garden host, Commons board operator, Wiki maintainer, service-index operator, exit-node operator, mirror operator, or helper-server operator chooses what they store, serve, list, route, expose, or refuse. The project provides tools for local governance and refusal; it does not assume responsibility for content or services that independent operators choose to run.
+
+#### 2.1.1 Field Visibility Classes
+
+Every field of every record that crosses a trust boundary — gossip, reachability and tunnel announcements, profile tiers, service advertisements, directory caches, diagnostics — carries exactly one visibility class in its specification. The class states the widest audience the field may ever reach. The classes are:
+
+| Class | Widest permitted audience | Typical examples |
+|-------|---------------------------|------------------|
+| `LOCAL_ONLY` | This node only. Never serialized onto any wire, never signed into a gossiped structure, never included in diagnostics unless redacted. | `received_at` (§4.2), trust levels, vault bookkeeping, private settings |
+| `EPHEMERAL_ONLY` | The peers of an active relationship or session that need the value now. Never gossiped, never cached by intermediaries, never persisted by sender or recipient beyond the live operation. | presence and last-seen (§10.1.8), typing indicators, coverage requests in flight |
+| `TRUSTED_OPT_IN` | Peers with an established relationship (paired, trusted, or group) over that relationship's channel, and only after the user has enabled the disclosure for that relationship or group. | global private profile (§9.3), group-scoped service publications (§12.4), group-scoped announcements (§6.2) |
+| `PUBLIC_OPT_IN` | Anyone, but only after an explicit user action enabling the specific disclosure. Absent by default. | public profile summary (§9.1), public service publications (§12.4) |
+| `PUBLIC_BY_DESIGN` | Anyone. The protocol cannot function without the field being public. | `peer_id`, public keys, `sequence`, `prev_hash`, signatures, public transport hints (§4.2) |
+
+Rules:
+
+1. A field's class is fixed by this specification. It MAY only be widened at runtime by an explicit user action for that specific field and audience; no default, migration, peer request, or UI convenience may widen it.
+2. A signed or gossiped structure MAY contain only fields whose class permits that structure's audience. A structure gossiped publicly contains only `PUBLIC_BY_DESIGN` and (when enabled) `PUBLIC_OPT_IN` fields; a structure sent over a relationship channel may additionally contain `TRUSTED_OPT_IN` and `EPHEMERAL_ONLY` fields; `LOCAL_ONLY` fields never appear in any transmitted structure.
+3. Copying a value into another record (a cache, a vault, a diagnostic report, a derived summary) never widens its class. A directory cache of a public entry remains public; a local annotation added to it remains `LOCAL_ONLY`.
+4. Where two sections disagree about a field's audience, the narrower class governs until the specification is corrected.
+5. Conformance: the repository MUST carry a machine-checkable registry of every field in every gossiped, announced, or published structure and its class; an unclassified field in such a structure fails CI (§21.6.1).
 
 ### 2.2 Known Limitations and Accepted Tradeoffs
 
@@ -523,6 +549,10 @@ The mutual trust model protects against technical attacks. It cannot prevent use
 
 If both parties forget the verification passphrase established at pairing, in-band approval with maximum friction (72-hour mandatory waiting period, explicit risk acknowledgment, PIN re-authentication) is the only recovery path. No cryptographic recovery exists for a forgotten passphrase.
 
+**10. UI deception.**
+
+The Rust backend enforces every security policy and holds every key (§17.0), so a compromised or buggy UI cannot bypass policy, read raw key material, or perform operations the backend would refuse. It can still show the user a false picture — a wrong safety number, a wrong trust badge, a hidden warning — trick the user into requesting an action that is harmful but valid for the backend to perform, and capture whatever display-safe data it is given to render. Backend-side confirmation of irreversible actions (§22.43) and the PIN path that bypasses the UI (§3.10) narrow this exposure; they do not remove it. A UI the user cannot trust is a compromised device, and is treated under limitation 3.
+
 ---
 
 ## 3. Identity and Cryptography
@@ -536,7 +566,7 @@ The key architectural concept is the **three-layer identity model** (§3.1): a m
 From there the section covers:
 - §3.2 — how trusted-channel keys are derived between peers
 - §3.3 — the address and keypair model for multiple public identities
-- §3.4 — forward reference to cryptographic primitive negotiation (§5.0)
+- §3.4 — forward reference to the fixed connection-level cryptographic suite (§5.1) and the PQXDH session profile (§3.4.1)
 - §3.5 — deniability mechanisms and zero-knowledge proofs
 - §3.6 — how key material is stored, protected, and PIN-gated
 - §3.7 — backup types, cloud storage model, restore process, and safety numbers
@@ -656,6 +686,18 @@ Domain separation prevents cross-protocol attacks. Peer IDs are used in routing 
 
 The mesh identity does not have a peer ID in this sense — it is identified only by its WireGuard public key.
 
+#### 3.1.6 Key Role Separation
+
+Every key in Mesh Infinity has exactly one role, and the role fixes what the key may sign, authenticate, or derive. The invariant:
+
+- **Stable identity keys** — mask Ed25519 keys and their PQXDH protocol-identity bindings (§3.4.1) — sign only identity bindings, key rotations and revocations (§3.8, §4.6), map entries (§4.5), service records (§12.4), release and update metadata (§17.10), prekey bundles (§7.0.1), and tunnel-key bindings (§5.2). They MUST NOT sign ordinary conversation payloads, message requests, presence, or any per-message structure. A stable-key signature over conversation content would be portable, non-deniable proof of authorship, which §3.5 forbids.
+- **Relationship keys** — the relationship-specific mask keys of §7.2 Step 3 and the `channel_key` of §3.2 — authenticate a relationship or session context to the other party of that relationship only. They show that the holder of the relationship key produced a message within that relationship; they are not evidence of human authorship to any third party and are never disclosed outside the relationship.
+- **Ratchet and session keys** (§7.0.3, §7.4) are the primary conversation authentication. Inner authentication (§7.2 Step 1) is symmetric wherever a session exists, so both parties can produce it and neither can prove to anyone else that the other did.
+- **Tunnel keys** (§5.2) authenticate per-hop plumbing only and derive nothing above the tunnel.
+- **Ephemeral keys** (§3.3, §7.2 Step 4) exist for one session or one message and are destroyed afterwards.
+
+A key valid for one role MUST NOT be used for another unless a section of this specification explicitly says so. Implementations MUST enforce the invariant in the key-handle layer — a handle carries its role and refuses out-of-role operations — not by convention. Any new signed or authenticated structure added to this specification MUST name the role of the key that produces it.
+
 ### 3.2 Trusted Channel Key Derivation
 
 Trusted-channel symmetric keys are derived from the X25519 DH exchange between two peers:
@@ -667,11 +709,11 @@ channel_key   = HKDF-SHA256(shared_secret, salt="meshinfinity-channel-v1", info=
 
 `peer_id_a` and `peer_id_b` are sorted lexicographically so both sides derive the same key regardless of which initiated.
 
-The derived `channel_key` is used as the **WireGuard Pre-Shared Key (PSK)** for connections with peers at trust Level 6+ (the Trusted tier — defined in §8.1). Connections to lower-trust peers use WireGuard without a PSK. Both sides independently derive the same `channel_key` — no open key exchange is needed. An adversary holding only a peer's public key cannot complete the trusted WireGuard handshake without the PSK.
+The derived `channel_key` is a long-lived relationship authentication secret for peers at trust Level 6+ (the Trusted tier — defined in §8.1). It is **not** used directly as the WireGuard Pre-Shared Key: a static-static derivation has no forward secrecy and no post-quantum margin. Instead, the PSK for a Level 6+ tunnel is derived per tunnel epoch from a fresh hybrid exchange that takes `channel_key` as an additional authentication input (§5.2, Trusted-tunnel PSK). Connections to lower-trust peers use WireGuard without a PSK. Both sides independently derive the same `channel_key` — no open key exchange is needed for it — and because it enters the PSK derivation, an adversary holding only a peer's public key cannot complete the trusted WireGuard handshake.
 
-When a peer is promoted to Level 6+, the `channel_key` is derived and stored, then set as the WireGuard PSK. When trust drops below Level 6, the PSK is removed and the `channel_key` is discarded.
+When a peer is promoted to Level 6+, the `channel_key` is derived and stored, and the first tunnel PSK agreement runs (§5.2). When trust drops below Level 6, every PSK derived from the `channel_key` is removed from the tunnel configuration and the `channel_key` is discarded.
 
-**Trusted-channel PSK and WireGuard tunnels.** Any keypair — mesh identity, self, or any mask — can establish WireGuard tunnels. The trusted-channel PSK derived above is an additional encryption layer applied within a WireGuard tunnel between two trusted-tier peers. It is not a separate tunnel type. An observer sees a WireGuard connection; the PSK is invisible beneath the WireGuard layer.
+**Trusted-channel PSK and WireGuard tunnels.** Any keypair — mesh identity, self, or any mask — can establish WireGuard tunnels. The tunnel PSK derived from `channel_key` (§5.2) is an additional authentication and encryption input applied within a WireGuard tunnel between two trusted-tier peers. It is not a separate tunnel type. An observer sees a WireGuard connection; the PSK is invisible beneath the WireGuard layer.
 
 ### 3.3 Multiple Public Addresses and Keys
 
@@ -696,7 +738,7 @@ The WireGuard address (Layer 1) is propagated separately through tunnel coordina
 
 ### 3.4 Encryption Negotiations
 
-Cryptographic primitive negotiation is a connection-level concern, not an identity concern. The specification for which primitives are used, how hardware acceleration is handled, and how downgrade attacks are prevented is in §5.0 (Cryptographic Primitive Negotiation).
+Cryptographic suite selection is a connection-level concern, not an identity concern. Mesh Infinity uses one fixed suite per protocol version rather than per-connection negotiation; the suite, the software floor, the hash scope, and the incompatible-peer rule for unsupported suites are specified in §5.1 (Connection-Level Cryptographic Primitives). The hybrid post-quantum session profile layered on top of it is specified in §3.4.1.
 
 #### 3.4.1 Post-Quantum Migration — PQXDH
 
@@ -714,6 +756,48 @@ The protocol identity uses the XEdDSA key/signature model defined by PQXDH. Each
 
 **Guarantee limits:** PQXDH supports passive quantum confidentiality and forms of classical deniability; it does not provide post-quantum identity authentication merely because ML-KEM is present. Continuous hybrid FS/PCS is required by §7.0.3. Signed Mesh identity bindings and the four-layer signature envelope have their own evidentiary properties; Mesh MUST NOT claim full-protocol deniability solely from PQXDH or the ratchet. Compromised endpoints and retained plaintext remain outside key-erasure guarantees.
 
+#### 3.4.2 Cryptographic Profile Registry
+
+Session profiles are named, closed sets of primitives. A profile is selected by name, bound into the authenticated session establishment (§3.4.1 downgrade policy), and never assembled piecewise from negotiated components. The registry is:
+
+| Profile | KEM | Curve | Hash | AEAD | Symmetric class | Status in v1.6 |
+|---|---|---|---|---|---|---|
+| `MI-PQXDH-1` | FIPS 203 ML-KEM-768 | curve25519 | SHA-512 | ChaCha20-Poly1305 | 128-bit (PQ) / 256-bit (classical) | **Default.** Required for every direct session (§3.4.1). |
+| `MI-PQXDH-2` | FIPS 203 ML-KEM-1024 | curve25519 | SHA-512 | ChaCha20-Poly1305 | 256-bit (PQ and classical) | **Defined, not shipped.** High-assurance profile; implementation gated by §21.6.4 and §21.6.3 before any release enables it. |
+
+`MI-PQXDH-2` differs from `MI-PQXDH-1` only in the KEM parameter set: application info `MeshInfinity_PQXDH_2`, KDF parameter names `MeshInfinity_PQXDH_2`, `CURVE25519`, `SHA-512`, `ML-KEM-1024`, and EncodeKEM type byte 0x03 followed by the 1568-byte ML-KEM-1024 public key. Everything else in §3.4.1 (identity binding, prekey rules, implicit rejection, downgrade policy) applies unchanged. Its larger artefacts (1568-byte public key, 1568-byte ciphertext) change fragmentation (§15.4.2), BLE (§5.6) and RF (§5.7) payload budgets, which is why it is a separate profile and not a parameter.
+
+**Selection rules.**
+- A profile is chosen **per relationship by explicit user choice** in the contact's connection settings; the default for every new relationship is `MI-PQXDH-1`. There is no automatic or silent negotiation to a different profile: a peer that advertises only `MI-PQXDH-2` while the user has not chosen it is shown as an incompatible peer (§3.4.1 downgrade policy), not upgraded silently, and a peer that lacks `MI-PQXDH-2` while the user has chosen it is likewise shown as incompatible, never downgraded.
+- A device advertises the set of profiles it supports in its signed prekey bundle (§7.0.1); the chosen profile name is part of the bundle's authenticated metadata, so stripping or substituting it fails authentication.
+- Changing the profile for an existing relationship replaces the session with a fresh authenticated establishment under the new profile (same rule as the v1.5 → v1.6 replacement in §3.4.1). Saved state from one profile MUST NOT be imported into another.
+- A profile name is immutable once published. A changed primitive is a new profile with a new name, even when the change is a library or parameter revision.
+- Adding a profile to this registry is a normative spec change subject to the §21.6.4 review gate; a release MUST NOT enable a profile whose row says "not shipped".
+
+#### 3.4.3 Post-Quantum Signature Migration
+
+`MI-PQXDH-1` gives passive quantum confidentiality; it does not give post-quantum *authentication* (§3.4.1 guarantee limits). Every signature in v1.6 is Ed25519 (identity bindings §3.1, map entries §4.5, prekey bundles §7.0.1, update signing §17.10, MLS credentials §8.7). This section states which of them stay classical, which migrate, and the constraint that governs the choice.
+
+**Deniability constraint.** PQ signatures (ML-DSA, SLH-DSA) are non-repudiable in exactly the way Ed25519 is, and their keys are long-lived, so a PQ signature over conversation content would be portable proof of authorship. They are therefore permitted **only for the roles that the Key Role Separation invariant assigns to stable identity keys** (identity bindings, key rotations, map entries, service advertisements, releases and prekeys) and **never** for ordinary conversation payloads, relationship authentication or anything the §3.5 deniability properties cover. Ratchet and session keys remain the primary conversation authenticator in every profile.
+
+| Signature role | v1.6 | Migration target | Notes |
+|---|---|---|---|
+| Conversation payloads (§7.2 Step 3), relationship keys | Ed25519 relationship mask key / ratchet MACs | **Stays classical.** No PQ signature, ever. | Deniability (§3.5) requires it; PQ *confidentiality* comes from the KEM, not from signing. |
+| Identity ↔ protocol-identity binding (§3.4.1) | Ed25519 | Hybrid Ed25519 + ML-DSA-65 | Both signatures required; the binding is valid only when both verify. Candidate for `MI-PQXDH-2` relationships first. |
+| Key rotation and key-change announcements (§3.8, §4.6) | Ed25519 | Hybrid Ed25519 + ML-DSA-65 | A rotation signed only classically must not be accepted for a relationship that chose `MI-PQXDH-2`. |
+| Network map entries (§4.5) | Ed25519 | Hybrid Ed25519 + ML-DSA-65, after a size budget review (§4.2) | Map size is the constraint; migration is gated on §16.6 measurements. |
+| Prekey bundles (§7.0.1) | Ed25519 (PQXDH-required signature) | Hybrid Ed25519 + ML-DSA-65 | PQXDH's own prekey-signature requirement is satisfied by the Ed25519 component; the ML-DSA component is additional, never a replacement. |
+| Bootstrap trust anchors (§17.15) | Ed25519 | Hybrid Ed25519 + ML-DSA-65 **and** SLH-DSA-SHA2-128s | Long-lived root: a lattice break must not be a single point of failure, so a hash-based signature is carried as well. |
+| Release and update signing (§17.10) | Ed25519 | Hybrid Ed25519 + ML-DSA-65 **and** SLH-DSA-SHA2-128s | Same reasoning as bootstrap anchors; verifiers require all present signatures to verify. |
+| MLS credentials and group signing (§8.7) | Ed25519 within `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` | Follows the hybrid MLS suite named in §8.7.1 | Group signing migrates with the MLS suite, not independently. |
+
+**Rules for the migration.**
+- "Hybrid" means both signatures are present and both MUST verify; a verifier never accepts a PQ-only or classical-only signature where the role says hybrid. This keeps a flaw in either scheme from being sufficient to forge.
+- ML-DSA and SLH-DSA MUST be the FIPS 204 / FIPS 205 constructions from a reviewed library (same library-not-local-arithmetic rule as ML-KEM in §3.4.1). Parameter sets are named in full in every serialized signature so a verifier never guesses.
+- A PQ signing key is a distinct key with a distinct role; it is never derived from, and never shares storage class with, the Ed25519 key it accompanies (§3.6.2, §15.1).
+- Each row's migration is enabled only through the §21.6.4 review gate with interoperability vectors, and only for v1.6 successors. No row migrates silently with a dependency update.
+- Artefact size: ML-DSA-65 signatures are 3309 bytes and SLH-DSA-SHA2-128s signatures 7856 bytes. Roles that ride constrained transports (map entries over BLE/RF) MUST re-measure against §5.6/§5.7 budgets before enabling, which is why the map-entry row is explicitly gated.
+
 ### 3.5 Deniability and Zero-Knowledge Proofs
 
 **Design goal:** No interaction between two parties should produce persistent evidence that a third party can use to prove what was said, who proved what, or that a specific interaction occurred at all.
@@ -722,6 +806,8 @@ This section covers two related but distinct mechanisms:
 
 - **Deniability mechanisms** (§3.5.1–3.5.3): cryptographic and architectural properties that prevent evidence from accumulating — symmetric MAC-based message authentication, ring signatures for group membership, and connection deniability through routing.
 - **Zero-knowledge proofs** (§3.5.4): interactive proofs used during pairing that prove key possession without transmitting the key and without producing a replayable transcript.
+
+Both rest on the Key Role Separation invariant (§3.1.6): no stable identity key ever signs conversation content, so no message carries portable proof of authorship.
 
 Both share the same underlying property: **transcript non-persistence**. No ZKP transcript, MAC state, or proof exchange may be written to disk, logged, or retained in memory beyond the duration of the relevant session. After verification completes, all transcript material is zeroed and discarded. This is an implementation requirement, not a suggestion.
 
@@ -957,17 +1043,26 @@ Both backup types use the same encryption envelope:
 
 ```
 EncryptedBackup {
-    version:          u32,
+    version:          u32,      // 2 = current (authenticated header); 1 = legacy, read-only
     backup_type:      u8,       // 0 = standard, 1 = extended
-    argon2id_salt:    [u8; 32],
+    argon2id_salt:    Vec<u8>,  // 32 bytes as written; 1..=64 bytes accepted on import
     argon2id_params:  { m_cost, t_cost, p_cost },
                                 // minimum: m_cost=65536 (64 MB), t_cost=3, p_cost=4
+                                // maximum: m_cost=1048576 (1 GiB), t_cost=64, p_cost=16
     nonce:            [u8; 12],
     ciphertext:       Vec<u8>,  // ChaCha20-Poly1305 of BackupPayload
 }
 ```
 
-Argon2id parameters below the minimum are rejected on import with an explicit error. These defaults are reviewed against OWASP recommendations at each major version bump.
+**Parameter window.** Argon2id parameters below the minimum are rejected on import with an explicit error (`WeakParams`). Parameters above the ceiling (`m_cost > 1 048 576 KiB`, `t_cost > 64`, `p_cost > 16`) are rejected with `ParamsTooLarge`; a salt that is empty or longer than 64 bytes, a nonce that is not 12 bytes, a `backup_type` other than 0 or 1, or a `version` outside `1..=2` is rejected with `InvalidFormat` / `UnknownVersion`. The header is plaintext and attacker-controlled on import (cloud copy, shared disk, a corrupted file), so a restore MUST perform every one of these structural checks *before* running the KDF; an out-of-window envelope must fail in microseconds, never after a multi-gigabyte allocation or hours of CPU. These defaults and ceilings are reviewed against OWASP recommendations at each major version bump.
+
+**Authenticated header (envelope version 2).** The header fields are bound to the ciphertext as AEAD associated data, laid out fixed-width big-endian with no delimiters:
+
+```
+AAD = version(u32 BE) || backup_type(u8) || m_cost(u32 BE) || t_cost(u32 BE) || p_cost(u32 BE) || argon2id_salt
+```
+
+A tampered `backup_type`, KDF parameter or salt therefore fails Poly1305 authentication and the restore reports `Decrypt`, the same error as a wrong passphrase. Envelope version 1 carried no associated data; version 1 envelopes remain readable for migration only (verified on the ciphertext alone), are never written by current builds, and are flagged for re-encryption through the parameter-upgrade prompt below so that the next backup the user writes is a version 2 envelope.
 
 **Parameter upgrade on import:** When importing a backup created with older (weaker) Argon2id parameters, the app prompts: *"This backup uses older encryption. Re-encrypt with current (stronger) parameters? This requires re-entering your passphrase."* If the user accepts, the backup payload is decrypted with the old parameters, re-encrypted with current parameters, and the re-encrypted backup replaces the original. The `backup_type` byte and `version` field in `EncryptedBackup` allow the implementation to detect parameter vintage.
 
@@ -1188,15 +1283,25 @@ Destroys all three layers completely.
 
 **Destruction sequence:**
 1. Self-Disavowed broadcast attempted (requires signing key still in memory)
-2. `identity.key` overwritten with 32 bytes of fresh random data — permanently orphans the `identity.dat` ciphertext
-3. `identity.key` deleted
-4. `identity.dat` deleted
-5. Network map deleted
-6. Profile data deleted
-7. Cached messages deleted
-8. Mesh identity keypair deleted
+2. Accessible key material destroyed (see **Key domains destroyed at step 2** below): the keystore-held wrapping key is deleted through the platform keystore API, and `identity.key` is overwritten with 32 bytes of fresh random data and then deleted
+3. `identity.dat` deleted
+4. Network map deleted
+5. Profile data deleted
+6. Cached messages deleted
+7. Mesh identity keypair deleted
 
-Steps 1–2 are security-critical. The overwrite must complete before any deletion. After step 2, the ciphertext is irrecoverable even if the adversary holds a copy. This is irreversible without a prior backup.
+Steps 1–2 are security-critical. Step 2 must complete before any deletion in steps 3–7. This is irreversible without a prior backup.
+
+**What the guarantee rests on.** The security claim of the killswitch is that the key material needed to read the stored ciphertext no longer exists anywhere accessible — not that the overwrite in step 2 reached any particular block of storage. On flash storage (wear-levelling, including every phone and SSD), on journaling or copy-on-write filesystems (APFS, Btrfs, ZFS, NTFS with USN), under filesystem snapshots, and in OS or cloud backups, an in-place overwrite is best effort only: the previous contents of `identity.key` may survive in remapped, journaled, or snapshotted blocks that the application cannot reach. The real guarantee therefore exists only where the vault wrapping key lives in a hardware or OS keystore (§3.6) whose deletion is performed by the keystore itself; destroying that key orphans every vault regardless of what the storage medium retains. Where no such keystore is available, the file overwrite is the best available measure and the UI MUST say so when Emergency Erase is configured (§22.43). This is the boundary stated in §2.2 limitation 3: an adversary who imaged the storage before the killswitch fired holds whatever the keystore does not protect.
+
+**Key domains destroyed at step 2.** All of the following MUST be destroyed; an implementation that leaves any one behind has not performed step 2:
+- self and mask identity keys (Layers 2 and 3) and their PQXDH protocol-identity bindings (§3.4.1)
+- the identity master key and every vault wrapping key derived from it (§17.9), whether held in the platform keystore or in `identity.key`
+- ratchet state and session keys in `signal_sessions.vault`, and the prekey pool in `prekeys.vault` (§7.0.1)
+- trusted-channel secrets: every `channel_key` (§3.2), every tunnel PSK and tunnel KEM prekey derived for trusted peers (§5.2), and group channel keys (§8.7)
+- backup unlock material held on the device — passphrase-derived keys, recovery codes, and any cached backup decryption key (§3.7)
+- service and management credentials: hosted-service keys (§12), management-interface tokens (§17.12), push relay tokens (§14.8), and Tor service keys derived from the Tor root (§5.3)
+- the in-memory copies of all of the above, zeroised through `SecureBytes` (§15.1)
 
 #### 3.9.2 Duress PIN — Mesh Identity Preservation
 
@@ -1208,7 +1313,7 @@ The duress PIN flow is designed to be indistinguishable from a normal unlock whi
 2. One-second pause (identical to normal unlock — timing indistinguishable)
 3. Foreground: reset profile loads immediately — app appears normal
 4. Background, in order:
-   a. Old self (Layer 2) and all masks (Layer 3) wiped using standard destruction sequence (steps 2–7 above) — Self-Disavowed broadcast attempted first
+   a. Old self (Layer 2) and all masks (Layer 3) wiped using standard destruction sequence (steps 2–6 above) — Self-Disavowed broadcast attempted first
    b. **New mesh identity (Layer 1) generated** and stored — this becomes the infrastructure identity going forward
    c. **Old mesh identity retained**: its WireGuard keypair and accumulated reputation remain untouched. It continues operating until the new mesh identity is ready, then the new identity takes over for future connections. The old identity's reputation record persists in the local store under its WireGuard public key.
    d. New self initialized under the reset profile configuration
@@ -1242,7 +1347,7 @@ RemoteKillswitchRequest {
 }
 ```
 
-Requires InnerCircle (Level 8) trust level. The killswitch fires on first verified delivery. Subsequent deliveries of the same or additional remote killswitch requests to an already-wiped device are silently ignored — the device has no identity to wipe and no signing key to verify against; the request is dropped without error or response. Known limitation: a sophisticated adversary using a Faraday cage prevents delivery entirely.
+Requires InnerCircle (Level 8) trust level. The killswitch fires on first verified delivery. Subsequent deliveries of the same or additional remote killswitch requests to an already-wiped device are silently ignored — the device has no identity to wipe and no signing key to verify against; the request is dropped without error or response. Known limitation: a remote killswitch cannot reach a device held in a Faraday cage or otherwise kept offline — a sophisticated adversary who isolates the device before it next connects prevents delivery entirely (§2.2 limitation 3). The remote killswitch is a mitigation for a lost or stolen device that is still online, not a defence against a prepared seizure.
 
 #### 3.9.4 Interaction with State Machine
 
@@ -1364,12 +1469,11 @@ Map entries 1000+:     3 independent sources required, majority agreement on dis
 The network map is a **public-only** structure. It contains:
 - Peer IDs
 - Public addresses and their corresponding public keys
-- Last-seen timestamp (for staleness detection)
 - Reachability hints: which transports this peer has been seen on
 - Optional: public profile summary (display name, avatar hash) if the peer has `identity_is_public = true`
-- Optional: public service advertisements
+- Optional: public service advertisements, only for services the host has explicitly marked for public announcement (§12.4)
 
-Trusted-channel addresses, private profile data, and group membership are **never included** in the network map.
+Trusted-channel addresses, private profile data, group membership, and presence or last-seen information are **never included** in the network map. Staleness is judged from the local time an entry was received (§4.2), not from any time the peer reports.
 
 **Bootstrap node integrity:** A new node that connects to a bootstrap node with a poisoned map receives incorrect peer data before it has any trusted peers to cross-check against. To mitigate this:
 
@@ -1387,13 +1491,26 @@ NetworkMapEntry {
     public_keys: Vec<PublicKeyRecord>,
     sequence: u64,              // monotonically increasing; merge precedence (§4.5)
     prev_hash: [u8; 32],       // SHA-256 of prior entry; self-ratchet chain (§4.5)
-    last_seen: u64,             // Unix timestamp; operational hint for staleness pruning
     transport_hints: Vec<TransportHint>,
     public_profile: Option<PublicProfileSummary>,
-    services: Vec<ServicePublication>,  // public service advertisements (§12.4)
+    services: Vec<ServicePublication>,  // only publications with scope Public, and only for
+                                        // services the host has explicitly enabled for public
+                                        // announcement (§12.4); default: empty
     sig: [u8; 64],              // Ed25519 over all fields above; self-signed by peer_id
 }
 
+// Local bookkeeping attached to a stored entry. Never serialized onto the wire,
+// never part of the signed preimage, never served by directory nodes (§4.3).
+StoredMapEntry {
+    entry:       NetworkMapEntry,
+    received_at: u64,           // local clock at the time this entry was accepted;
+                                // drives staleness pruning and LRU eviction
+}
+```
+
+Visibility classes (§2.1.1): `peer_id`, `public_keys`, `sequence`, `prev_hash`, `transport_hints`, `sig` are `PUBLIC_BY_DESIGN`; `public_profile` and `services` are `PUBLIC_OPT_IN` (absent unless the user enabled them); `received_at` is `LOCAL_ONLY`.
+
+```
 PublicKeyRecord {
     ed25519_public: [u8; 32],
     x25519_public: [u8; 32],
@@ -1406,7 +1523,9 @@ TransportHint {
 }
 ```
 
-Map entries are versioned by self-ratcheted sequence numbers (§4.5). When merging two maps, the entry with the higher `sequence` wins for each `peer_id`; signature and hash-chain continuity are verified before acceptance. The `last_seen` timestamp is an operational hint used for staleness pruning (default threshold: 30 days) — it does not determine merge precedence.
+Map entries are versioned by self-ratcheted sequence numbers (§4.5). When merging two maps, the entry with the higher `sequence` wins for each `peer_id`; signature and hash-chain continuity are verified before acceptance. A map entry carries no peer-reported time. Staleness pruning (default threshold: 30 days) and LRU eviction use the local `received_at` value recorded when the entry was accepted; it does not determine merge precedence and an entry cannot extend its own lifetime by claiming a time. `received_at` is persisted with the entry and is not reset on load. Staleness pruning is suspended until the node has completed at least one successful map exchange since start, so a node that was offline for longer than the threshold retains its entries until it has had the opportunity to re-observe them.
+
+Presence and last-seen information are not map data. They are exchanged only over trust-relationship channels, only when enabled, and only under the ThreatContext rules of §10.1.8. Services that are not publicly routable are announced only inside trust-scoped publications (`Peers`, `Group`; §12.4) and never appear in the public map entry.
 
 **Gossip validation — entire NetworkMapEntry surface:**
 
@@ -1466,10 +1585,13 @@ DirectoryEntry {
     sequence:         u64,           // from the self-signed entry
     signature:        [u8; 64],      // verbatim from the owner's self-signed entry
     transport_hints:  Vec<TransportHint>,  // current addresses — see privacy note below
-    last_seen:        u64,           // seconds since epoch, updated when entry was received
     public_profile:   Option<PublicProfileSummary>,
+    received_at:      u64,           // local clock when the entry was received; local-only,
+                                     // never served to querying nodes (§4.2)
 }
 ```
+
+Visibility classes (§2.1.1): every served field carries the class it has in the owner's `NetworkMapEntry` (§4.2); caching never widens a class. `received_at` is `LOCAL_ONLY` to the directory node.
 
 **Privacy constraint on transport hints:** Transport hints include IP addresses, which are frequently changing and personally identifying. Directory nodes:
 - Store only the **current** signed entry per peer_id — no address history
@@ -1668,7 +1790,7 @@ NetworkMapEntry {
 Rules for accepting an update:
 1. The signature must verify against the Ed25519 public key in the entry itself
 2. The `sequence` number must be strictly greater than the locally stored sequence for that `peer_id`. For a previously unknown `peer_id` (no local entry exists), any sequence number ≥ 0 is accepted — the entry is treated as new.
-3. The `last_seen` timestamp must not be more than **1 hour in the future** relative to the receiving node's local clock. Entries with future-dated timestamps beyond this window are rejected outright — without this check, an attacker can craft an entry with a timestamp 60 days in the future that survives all pruning passes and permanently displaces the legitimate entry.
+3. No peer-supplied field is used as a time. Replay and fork protection rest on `sequence` (rule 2) and `prev_hash` (rule 5); staleness rests on the local `received_at` recorded at acceptance (§4.2). An entry therefore cannot extend its own lifetime, survive pruning, or displace a legitimate entry by claiming any time.
 4. If the entry's public key set **differs** from the locally stored one (a key change), the update is not automatically accepted — see §4.6
 5. The `prev_hash` must match the SHA-256 of the locally stored previous entry for that `peer_id` (if one exists). A mismatch indicates a fork.
 
@@ -2136,35 +2258,34 @@ Note: LAN discovery mechanisms (mDNS, SSDP, subnet broadcast) are in §4.9 — t
 
 ### 5.1 Connection-Level Cryptographic Primitives
 
-This section specifies which cryptographic primitives are negotiated at connection establishment time. This is not a transport — it is a cross-cutting requirement that applies to every transport in §5.2 onward.
+This section specifies the cryptographic suite used at connection establishment. This is not a transport — it is a cross-cutting requirement that applies to every transport in §5.2 onward.
 
-**Symmetric encryption:**
-- `CHACHA20_POLY1305` — preferred for software-only environments; constant-time on all platforms without hardware support
-- `AES_256_GCM` — preferred when AES hardware acceleration is available (ARM AES, Intel AES-NI); faster on supported hardware
+**Fixed, versioned suites — no per-connection negotiation.** Mesh Infinity does not negotiate primitives per connection. Each protocol version defines exactly one suite, identified by a suite id that is carried in, and bound to, the authenticated handshake. A peer either speaks the suite of the protocol version it declares or the connection is rejected. There is no capability advertisement, no preference list, and no intersection fallback.
 
-**Key agreement:** X25519 (always; not negotiated)
+**Suite `MI-LINK-1` (protocol v1.6):**
+- AEAD: ChaCha20-Poly1305
+- Key agreement: X25519; hybrid X25519 + ML-KEM-768 where §3.4.1 (PQXDH) or §5.2 (trusted-tunnel PSK) applies
+- Signing: Ed25519
+- Hash and KDF: SHA-256 and SHA-512; HKDF-SHA256 and HKDF-SHA512
+- Extendable output where a construction requires it: SHAKE256
 
-**Signing:** Ed25519 (always; not negotiated)
+**Suite changes arrive only with a protocol version.** A newer suite is introduced by a new protocol version number, never by an in-band option. A peer that declares a version whose suite the local node does not implement is shown as an incompatible peer — the same visible state as the downgrade policy in §3.4.1 — and the node does not fall back to an older suite. The suite id and declared version are part of the authenticated handshake transcript, so an on-path attacker cannot substitute either without breaking authentication.
 
-**Hash:** SHA-256 (baseline), BLAKE3 (preferred where available — faster in software)
+**Software floor guarantee:** The suite is fully implemented in software on all supported platforms. Hardware acceleration is an optimization, never a requirement, and is never advertised: which implementation a node uses is not observable to any peer, so device class cannot be inferred from the handshake. If no implementation is available, the connection is rejected. There is no fallback to plaintext under any circumstances.
 
-**Software floor guarantee:** ChaCha20-Poly1305 + X25519 + Ed25519 + SHA-256 are the guaranteed software floor — fully implemented in software on all supported platforms. Hardware acceleration is an optimization, never a requirement. If no cryptographic implementation is available, the connection is rejected. There is no fallback to plaintext under any circumstances.
+**AES-GCM:** AES-GCM is not part of the link suite and is never offered on a mesh connection. It is used only where an adopted standard fixes it — the MLS suite in §8.7 — and that use is governed by that section.
 
-**DOS via capability advertisement:** Nodes must advertise only primitives they can execute at hardware-accelerated performance. A node without AES hardware acceleration must not advertise AES-256-GCM. Advertising beyond hardware capability exposes the node to denial-of-service via forced expensive software execution.
-
-The negotiation handshake is itself signed by both parties' Ed25519 keys, preventing a downgrade-by-interception attack. If either party's preferred primitive set is not supported by the other, they fall back to the common intersection. If no intersection exists, the connection is rejected.
-
-All connections default to ChaCha20-Poly1305 to ensure a safe baseline without hardware probing.
+**Hash scope:** SHA-256, SHA-512, and SHAKE256 are the only hashes used for anything a peer can see or verify: handshake transcripts, `prev_hash` chains (§4.5), signature preimages, content commitments, identity bindings, backup and archival records. BLAKE3 MAY be used only for local, non-wire-visible purposes — cache keys, local content addressing, deduplication indexes — where its output is never transmitted, signed, or compared by another party. A BLAKE3 digest MUST NOT appear in any transmitted or persisted protocol record.
 
 ### 5.2 WireGuard — Primary Per-Hop Link Encryption
 
 **WireGuard is the primary protocol for all active direct connections between mesh peers.** Every direct link in the mesh is a WireGuard tunnel. This is not a transport in the anonymization sense — it is the encrypted link layer that runs *beneath* anonymizing transports.
 
 The WireGuard layer provides:
-- **Peer authentication** — WireGuard handshake authenticates both sides using their public keys. For mask-level connections (Layers 2/3), the keys are the same public keys known from the network map. For Layer 1 mesh identity connections, the keys are from tunnel coordination gossip (§6.10) — these are never in the identity network map.
-- **Forward secrecy** — WireGuard's handshake rotates ephemeral Diffie-Hellman keys. Compromise of the static keys does not expose past session content.
+- **Peer authentication** — WireGuard handshake authenticates both sides using their tunnel static keys. For mask-level connections (Layers 2/3), the tunnel key is a role-scoped, rotating keypair bound to the mask's map identity key by a signed binding (see **Tunnel key lifecycle** below) — not the stable map identity key itself, except transiently at first-contact bootstrap. For Layer 1 mesh identity connections, the keys are from tunnel coordination gossip (§6.10) — these are never in the identity network map.
+- **Classical forward secrecy** — WireGuard's handshake rotates ephemeral Diffie-Hellman keys. Compromise of the static keys does not expose past session content to a classical adversary. This is not post-quantum forward secrecy; see **Layer limits** below.
 - **Efficient encrypted tunneling** — after the handshake, WireGuard provides a low-overhead encrypted UDP channel suitable for high-throughput data
-- **Pre-Shared Key for trusted peers** — connections to peers at trust level >= `Trusted` (Level 6+, defined in §8.1) use the `channel_key` derived in §3.2 as a WireGuard PSK, providing an additional layer of authentication that prevents an adversary with only the public key from completing the trusted handshake
+- **Pre-Shared Key for trusted peers** — connections to peers at trust level >= `Trusted` (Level 6+, defined in §8.1) use a per-epoch PSK derived from a fresh hybrid exchange that takes the `channel_key` of §3.2 as an authentication input (see **Trusted-tunnel PSK** below). The PSK prevents an adversary with only the public key from completing the trusted handshake, and — unlike a static PSK — gives the tunnel post-quantum margin and forward secrecy
 
 The full stack for a message from A to B via Tor:
 
@@ -2180,6 +2301,29 @@ B: Tor circuit
 ```
 
 WireGuard is always present. The anonymizing transport (Tor, I2P) wraps the WireGuard tunnel. Direct transports (Bluetooth, clearnet) carry the WireGuard tunnel directly.
+
+**Fixed link cipher:** WireGuard's Noise handshake fixes ChaCha20-Poly1305, Curve25519, and its internal BLAKE2s/HKDF construction. The link layer therefore cannot and does not negotiate an AES option; this is consistent with the fixed suite in §5.1, which governs every mesh connection. The BLAKE2s inside WireGuard is internal to that handshake and is not a Mesh Infinity protocol hash (§5.1 hash scope).
+
+**Layer limits (normative):** WireGuard here is authenticated per-hop plumbing and nothing more. It is **not post-quantum**: its handshake is classical Curve25519, and a recorded tunnel can be opened by a future quantum adversary that obtains either static key. It is **not identity-hiding against later compromise of a responder static key**: the initiator's static key is encrypted under a DH with the responder's static key, so recorded handshakes can be linked to initiators once that key is compromised. It is **not obfuscated**: WireGuard packets are recognisable on the wire; camouflage is a separate layer (§5.26). It is **not a source of deniability**: a completed handshake is evidence that the holder of a tunnel key was online and spoke to the peer. The application layer (§7) is authoritative for identity, post-quantum confidentiality, and deniability. Compromise of any tunnel key — static, ephemeral, or PSK — MUST NOT compromise identity keys, message history, ratchet state, or trust state: no such material is derived from, wrapped by, or transmitted under the protection of tunnel keys alone.
+
+**Tunnel key lifecycle:** A keypair used as a WireGuard static key is role-scoped to tunnel use and is used for nothing else (§3.1.6). For mask-level connections, the tunnel static key is a separate keypair bound to the mask's stable map identity key by a signed tunnel-key binding exchanged in the connection setup; the stable map identity key is used directly as a tunnel static key only where the binding cannot yet have been exchanged (first-contact bootstrap against a pinned key, §4.1), and such a tunnel MUST be re-keyed to a role-scoped key once the binding is available. Tunnel keys rotate on a schedule — default every 7 days, and immediately on trust-level change, ThreatContext escalation, or suspected compromise. A rotation publishes a new binding; the previous key stays valid for one overlap interval (default 24 hours) so live tunnels can migrate, and is then deleted. Rotation cadence is jittered so it does not become a fingerprint.
+
+**Trusted-tunnel PSK (Level 6+):** The PSK is not the static `channel_key`. It is derived per tunnel epoch from a fresh hybrid exchange using the `MI-PQXDH-1` primitives (§3.4.1): an ephemeral X25519 agreement plus an ML-KEM-768 encapsulation against the peer's signed tunnel KEM prekey, which is published only over the trusted channel and never in the public map. The static `channel_key` (§3.2) enters the derivation only as an additional authentication input:
+
+```
+ecdh_ss    = X25519(my_ephemeral_secret, their_ephemeral_public)
+kem_ss     = ML-KEM-768.Decaps / Encaps against their signed tunnel KEM prekey
+tunnel_psk = HKDF-SHA512(
+    ikm  = ecdh_ss || kem_ss || channel_key,
+    salt = "meshinfinity-tunnel-psk-v1",
+    info = peer_id_a || peer_id_b || tunnel_epoch,
+    len  = 32
+)
+```
+
+The PSK agreement messages are signed by the relationship mask keys of both peers and run over an existing tunnel (a no-PSK tunnel on first promotion, or the previous epoch's tunnel on rotation); the tunnel is then re-handshaken with the new PSK. Ephemeral secrets are erased after derivation, so the PSK has forward secrecy and post-quantum margin that the static derivation lacked. If the agreement cannot complete, the connection remains a no-PSK tunnel and trusted-tier features are not enabled over it; `channel_key` alone MUST NOT be used as a PSK. Exact encodings and vectors are pinned through the §21.6.4 profile manifest.
+
+**Endpoint pinning in high-assurance modes:** In `ThreatContext::Elevated` and above, in LoSec sessions (§6.9), and on Direct connections (§13.17), the peer endpoint is pinned for the tunnel's lifetime. A validly keyed packet arriving from a different endpoint does not move the peer (WireGuard roaming is disabled); a full re-handshake from the new endpoint — presenting the PSK where one applies — is required, and the path change is recorded as a security event (§22.43). In `ThreatContext::Normal`, roaming stays enabled, but a path change triggers a re-handshake within the next keepalive interval so an on-path attacker cannot redirect a tunnel indefinitely without holding its keys.
 
 **WireGuard as stable session layer:** The architectural relationship is:
 ```
@@ -3156,6 +3300,10 @@ Is this [identity display name]'s new device?
 - Times out after 60 seconds with automatic "No" if no response
 
 **Subchannel confidentiality:** The notification text, the identity name displayed, and the user's response are never transmitted over the cellular call audio. The subchannel carries only cryptographic material. The identity confirmation is derived locally from the exchanged key material.
+
+### 5.17 Reserved
+
+This section number is intentionally unassigned so that existing cross-references to §5.18 and later remain stable. A future transport specified between the telephone network transport (§5.16) and Yggdrasil (§5.18) takes this number.
 
 ### 5.18 Yggdrasil
 
@@ -4422,6 +4570,8 @@ AnnouncementScope {
 
 **Owner-only origination rule:** Only the address owner may originate a `ReachabilityAnnouncement`. Intermediate nodes forward and re-sign but never originate.
 
+Visibility classes (§2.1.1): the audience of every field in a `ReachabilityAnnouncement` is fixed by `scope` — `PUBLIC_BY_DESIGN` when `scope = Public`, `TRUSTED_OPT_IN` when `scope = Group` (the group's trusted channel only), `LOCAL_ONLY` when `scope = Private`. `next_hop_trust` is `LOCAL_ONLY` in every scope: it is the receiving node's own assessment and is never forwarded.
+
 Announcements are signed by the originating node and re-signed at each forwarding hop (outer signature only). Nodes that receive an announcement:
 1. Check `announcement_id` for deduplication — if already seen, discard
 2. Add 1 to `hop_count` and update `latency_ms` based on observed link latency
@@ -4841,6 +4991,10 @@ The checkbox must be actively clicked; the confirm button is disabled until it i
 
 For 1-2 hop LoSec (not direct), a **persistent amber indicator** is displayed during the connection: "Low-security mode active -- your network location may be visible to relay nodes."
 
+**Persistent reduced-anonymity marker.** The live indicators above disappear when the session ends, but the reduced protection does not: a message that travelled in LoSec or Direct mode had weak or no sender anonymity, traffic-analysis resistance and relationship hiding (§6.9.1) and that fact must stay readable later. Every stored message therefore carries a local-only `transport_mode` field in the vault message record (§17.9), recorded at send or receive time from the mode the session was in at that moment: `Standard`, `LoSec`, `DirectNetwork` or `DirectProximity`. The field is **never transmitted**: it is not part of `ChatMessage` (§10.1.3) and leaves the device only inside an encrypted backup (§3.7) together with the message it annotates. It is subject to exactly the message's own retention and deletion rules — when the message is deleted or expires, so is the marker. The transcript renders it per §22.5.2 as "Sent in reduced-anonymity mode (LoSec)" / "Sent over a direct connection", and a conversation whose messages carry mixed modes shows the marker per message, not per conversation. The marker reflects the mode at the moment of transfer; a transport migration mid-conversation (§6.9.5) changes the mode for subsequent messages only.
+
+**Naming.** `LoSec` remains the technical term for this mode in the backend, the FFI and this specification. User-facing text never shows `LoSec` alone: wherever the mode is named to the user it is written as "LoSec (reduced anonymity)" on first mention on a screen and the live indicator and marker copy above spell out what is reduced, so the name cannot read as "less encrypted" — confidentiality, authentication and forward secrecy are unchanged (§6.9.1) and the copy must not imply otherwise.
+
 **Transport migration between paths:** If a conversation starts on Bluetooth (Path A, auto-direct) and the peer moves out of range, the transport solver seamlessly migrates to a network transport (§5.2 migration protocol). The security mode upgrades automatically to Standard mesh routing — the conversation does not stay in direct mode over a network transport. The user sees the Bluetooth icon disappear and the normal mesh indicator appear. If the peer returns to proximity range, the solver can migrate back to proximity direct. This is transparent and requires no user action.
 
 **Proximity silence metadata:** When two peers communicate over proximity direct, no mesh traffic is generated for that conversation. A network-level observer who knows both peers' mesh identities may infer co-location from the simultaneous absence of mesh traffic. For high-threat scenarios where co-location must be hidden even from network observers, enable `ProximityDirectPolicy::MeshAlways` — this routes all traffic through the mesh even over Bluetooth, generating normal mesh traffic patterns and preventing silence-based co-location inference.
@@ -4902,6 +5056,8 @@ The tunnel coordination protocol solves three problems:
 #### 6.10.2 Message Types
 
 All messages are signed by the sender's mesh identity WireGuard public key. They carry no identity information beyond that key.
+
+Visibility classes (§2.1.1): every field of `TunnelAdvertisement`, `CoverageRequest`, and `TunnelAck` is `PUBLIC_BY_DESIGN` — the protocol runs below any identity context and is gossiped to all connected tunnel peers. No field of any other class may be added to these messages. Received values are retained only for the advertisement interval and are not persisted.
 
 **`TunnelAdvertisement`** — periodic broadcast announcing availability:
 ```
@@ -5148,8 +5304,11 @@ Step 1 -- Inner authentication:
   For trusted-channel messages:
     mac = HMAC-SHA256(labelled_application_mac_subkey, plaintext)  <-- deniable; both parties can produce
     authenticated = plaintext || mac
-  For untrusted messages:
-    sig = Ed25519_Sign(sender_privkey, plaintext)
+  For untrusted messages (no session yet — message requests, §22.32):
+    // Signed by the relationship-specific mask key for THIS recipient, the same
+    // key and the same derivation as Step 3 (HKDF from the base mask key, per
+    // (mask, peer) pair). Never the stable mask identity key (§3.1.6).
+    sig = Ed25519_Sign(relationship_mask_privkey, plaintext)
     authenticated = plaintext || sig
 
 Step 2 -- Hybrid session encryption (all direct messages, including requests):
@@ -5206,6 +5365,7 @@ Step 4 -- Recipient encryption:
 | Property | Mechanism |
 |----------|-----------|
 | Sender authenticity (to recipient) | Inner HMAC with ratchet key (Step 1) — deniable; both parties can produce |
+| What each recipient-visible authenticator proves (§3.1.6) | Step 1 HMAC: the message is intact and came from a holder of this session's ratchet state — nothing more, and nothing to a third party. Step 1 untrusted-message signature: the holder of the relationship-specific mask key for this recipient sent this request; deliberately non-deniable toward the recipient only, so a message request can be shown to a moderator or reviewer, but not portable proof of authorship by the stable mask identity. Step 3 signature: the holder of the relationship-specific mask key produced this bundle for this recipient — relationship authentication, not evidence of human authorship. No stable identity key signs any of these. |
 | Authenticated key agreement | PQXDH with authenticated device/identity binding; identity authentication remains classical |
 | Sender correlation resistance | Headers enclosed by Step 4; traffic analysis and later static-key compromise remain metadata risks |
 | Per-message forward secrecy | Double Ratchet KDF chain: each message advances the chain; old keys deleted |
@@ -6009,6 +6169,8 @@ This section specifies the profile hierarchy — how identity is presented in di
 - **§9.9 Profile Update Propagation** — per-tier update delivery and padding policy
 
 Each node has a **profile hierarchy** rather than a simple public/private split. The three primary tiers are: global public (gossipped, searchable), public paired (delivered at pairing, not gossiped), and global private (trusted-peers-only). Profiles are per-context, cryptographically unlinkable by default, and trust travels across linked profiles — with the explicit exception of anonymous profiles.
+
+Visibility classes (§2.1.1) per tier: every field of the global public profile (§9.1) and of the searchability records (§9.1.1) is `PUBLIC_OPT_IN`; every field of the public paired profile (§9.2), the global private profile (§9.3), and per-context or per-group profiles (§9.4) is `TRUSTED_OPT_IN` and travels only over the relationship or group channel that the profile belongs to; an anonymous profile (§9.5) exposes only `PUBLIC_OPT_IN` fields of that anonymous identity and no field of any other tier; cross-profile linkage records (§9.6) are `TRUSTED_OPT_IN`. A field MUST NOT be copied from a narrower tier to a wider one by anything other than the user's explicit edit of the wider profile.
 
 ### 9.1 Global Public Profile (Opt-In)
 
@@ -7052,6 +7214,8 @@ Bot messages are visually distinguished in the UI with a bot badge. Bots cannot 
 Each Garden channel remains an MLS group, with a separate leaf per member device. Use MLS PrivateMessage for application data and verified Proposal/Commit/Welcome processing for membership. The cluster delivers protocol messages but never invents membership secrets.
 
 **Suite policy:** Mesh initially selects MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 (0x0001) from RFC 9420. Ed25519 is a Mesh policy choice; RFC 9420 also defines ECDSA suites and does not categorically prohibit them. [RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html). This initial suite is classical, and MUST NOT be advertised as PQ group confidentiality or PQ PCS. The stricter §2.0 deployment profile MUST disable safety-critical group content where quantum-resistant group protection is required until an independently reviewed hybrid MLS profile is available. Hybrid direct messaging remains available.
+
+**v1.6 limitation and successor:** The 128-bit classical suite above is a tracked v1.6 limitation (§2.2), not an implicit choice. Its named successor is a hybrid MLS suite combining `DHKEMX25519` with ML-KEM-768 (or ML-KEM-1024 for `MI-PQXDH-2` relationships, §3.4.2) for the HPKE KEM and hybrid Ed25519 + ML-DSA-65 credentials (§3.4.3), adopted when an IETF-registered or independently reviewed definition exists and passes §21.6.4. Until then, group confidentiality is classical and every disclosure that mentions post-quantum protection (§22.23, §22.43) MUST scope it to direct messages.
 
 Bind MLS protocol version, suite, extensions and credential capabilities into authenticated group creation and membership policy. Unknown security-critical extensions and unsupported suites fail closed. Migration creates an explicitly authorized successor group with fresh keys and bound old/new group identities, never reinterpretation of old ciphertext. A future PQ/hybrid MLS draft is not a production standard by assertion; pin its exact revision, reviewed implementation and interoperability evidence before activation. Suite agility must not become downgrade permission.
 
@@ -9360,6 +9524,8 @@ AnnouncementScope {
 }
 ```
 
+Visibility classes (§2.1.1): the audience of every field in a `ServicePublication` is fixed by its `scope` — `LOCAL_ONLY` for `Private`, `TRUSTED_OPT_IN` for `Peers` and `Group`, `PUBLIC_OPT_IN` for `Public` and `Index`. `service_id`, `owner_peer_id`, `version`, and `sig` of the enclosing `ServiceRecord` take the widest class among its publications. A `Public` publication is created only by an explicit per-service user action; no service is publicly announced by default.
+
 **Example — service with public and private faces:**
 
 ```
@@ -10572,6 +10738,108 @@ Anonymous profiles are a double-edged addition to the security menu. They enable
 - Plausible deniability at message level (HMAC), group membership level (ring signatures), and connection level (wrapper nodes, ephemeral addresses).
 - Emergency data destruction via killswitch (§3.9) with cryptographic overwrite of key material.
 
+### 15.7 Metadata Threat Matrix
+
+Primitive strength is not the largest residual risk in Mesh Infinity; metadata and cross-feature fingerprinting are. This section states, per operating mode, **who learns what**, which section implements the mitigation, and what residual leakage is *accepted* so that reviewers assess the accepted set rather than rediscover it. The matrix is normative in two ways: a row's "mitigation" column is a requirement on the cited section, and a mode or transport that ships without a row here fails the release gate (§21.6.3 item 15).
+
+**Observer classes** used throughout: *local network* (same LAN, BLE/RF range, the user's ISP or a carrier's middlebox); *relay* (any mesh hop that is not the endpoint, including S&F nodes, mesh relays §6.11 and wrapper nodes §4.4); *exit* (an exit node §13 or a federation bridge host); *directory node* (§4.3 server-mode node or any node holding the network map §4.2); *trusted peer* (the counterpart, or a Level 6+ contact used as a wrapper or S&F node); *federated platform* (a Matrix/ActivityPub/XMPP server or a WebRTC browser peer §19).
+
+**Column meanings:** *visible identifiers* = identifiers the observer can read in the clear; *timing* = whether the observer can time individual messages or sessions; *volume* = whether message or session sizes are visible beyond the §15.4 bucket; *relationship* = whether the observer learns that two specific identities communicate; *location* = whether the observer learns a network or physical location. "No" means the mitigation hides it from that observer; "Bucketed" means visible only at §15.4 / §16.5 granularity; "Yes" means visible and accepted.
+
+#### 15.7.1 Standard mesh (default)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Local network | WireGuard peer public key of the first hop; carrier fingerprint | Bucketed | Bucketed | No | Yes (own IP / radio presence) | §5.2 per-hop WireGuard, §5.26 carrier camouflage, §6.5 persistent tunnels + cover traffic, §15.4 padding, §16.2 adaptive cover | An ISP learns the user runs a mesh node and its ambient traffic profile (§2.2). |
+| Relay | Previous hop, next hop, onion layer size | Bucketed | Bucketed | No (sealed sender, §7.2) | Previous-hop address only | §7.2 four-layer onion, §6.1 hop-by-hop, §6.4 two-plane model, §4.4 wrapper nodes | A relay that is also the last hop learns the recipient's address; colluding first and last hops can correlate by timing within the §15.4 jitter window (§2.2). |
+| Directory node | Public addresses, non-associable addresses, public profile fields the user opted in to (§9.1) | No | No | No | Reachability announcements only (§6.2) | §4.2 map entry privacy classes (§2.1.1), §4.5 signed self-ratcheted entries, §9.1 `address_is_associable=false` | The map is public by design; existence and liveness of a public address is visible to everyone. |
+| Trusted peer | Mesh identity, mask in use, profile shared at that trust level (§9) | Yes | Yes | Yes (they are the relationship) | No (mesh address only unless Direct) | §3.5 deniability, §9.4 per-context profiles, §9.6 linkage rules | A counterpart can keep plaintext; deniability covers the transcript, not the fact of contact. |
+| Exit / Federated platform | Not involved | — | — | — | — | — | — |
+
+#### 15.7.2 LoSec mode (§6.9)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Local network | As Standard | Bucketed | Bucketed | No | Yes | §6.9.2 hardening (all five), §15.4 padding remains active | Ambient-traffic threshold (§6.7) must hold or the mode is unavailable. |
+| Relay (1-2 hops) | Both endpoints' addresses | Bucketed | Bucketed | **Yes** | Previous hop | §6.9.1 table ("Weak"), §6.9.2 relay selection from trusted set where possible, §22.41 persistent warning, §22.5.2 per-message marker | Relationship hiding is deliberately traded for bandwidth; the user consented per session and the message record keeps the marker. |
+| Directory node | As Standard | No | No | No | No | §4.2 | — |
+| Trusted peer | As Standard | Yes | Yes | Yes | No | §3.5 | — |
+
+#### 15.7.3 Direct mode — network (§6.9.3, §6.9.5)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Local network / ISP | Both endpoints' IP addresses, WireGuard keys, carrier fingerprint | Yes | Bucketed | **Yes** | **Yes (both IPs)** | §6.9.3 obfuscation, §5.26 compliant primary carrier, §15.4 padding, §22.41 full-modal consent | Sender anonymity and relationship hiding are "None" (§6.9.1); accepted only after explicit per-session confirmation. |
+| Relay / Directory node | Not on path | — | — | — | — | — | Reachability announcement still reveals the address exists. |
+| Trusted peer | As Standard plus the user's IP | Yes | Yes | Yes | **Yes** | §6.9.5 availability rules (trust floor) | The peer learns the user's network location; this is the mode's definition. |
+
+#### 15.7.4 Direct mode — proximity (§5.6 Bluetooth, §5.8 WiFi Direct, §5.9 NFC, §5.12 Ultrasonic)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Local radio observer | Rotating BLE ephemeral address, advertisement payload | Yes | Bucketed | No (ephemeral IDs) | **Yes (radio presence within range)** | §5.6 ephemeral addressing and rotation, §6.9.4 hop counts, §15.4 padding | Physical presence of *a* mesh device is visible to anyone in range; identity is not. |
+| Trusted peer | Mesh identity; physical co-location | Yes | Yes | Yes | **Yes (physical)** | §6.9.1 ("N/A, physically co-located") | Co-location is the premise; nothing to hide from the counterpart. |
+| Relay / Directory / Exit / Federated | Not involved | — | — | — | — | — | — |
+
+#### 15.7.5 VPN mode (§13.1, §13.4, §13.15 App Connector)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Local network / ISP | Mesh tunnel traffic only; no destination IPs | Bucketed | Bucketed | No | Yes (own IP) | §13.3 virtual interface, §13.11 kill switch, §13.12 DNS forced through the tunnel, §15.4 | ISP learns a mesh tunnel exists and its volume profile. |
+| Relay | As Standard | Bucketed | Bucketed | No | Previous hop | §13.10 flows ride the §7.2 onion | — |
+| Trusted peer / service host | The user's mesh address and the service accessed | Yes | Yes | Yes | No | §12.6 access model, §9.1 non-associable service addresses | The service host learns which mesh identity used it; use a non-associable address or anonymous profile (§9.5) to break the link. |
+| Exit / Directory / Federated | Not involved in mesh-only VPN | — | — | — | — | — | — |
+
+#### 15.7.6 Exit node (§13.2, §13.6, §13.7, §13.11)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Local network / ISP | Mesh tunnel only | Bucketed | Bucketed | No | Yes (own IP) | §13.11 kill switch, §15.4 | — |
+| Relay | As Standard | Bucketed | Bucketed | No | Previous hop | §7.2, §4.4 | — |
+| **Exit node** | Last mesh hop address; **every clearnet destination IP and SNI**; DNS queries (DoH upstream) | **Yes** | **Yes** | Destination-side only | Last hop only | §13.11 (exit sees last hop, not identity), §4.4 wrapper nodes to hide identity, §13.7 Tor/I2P via exit, §13.6 selection by trust | The exit is a privileged position: it can correlate destinations and timing, and its own ISP sees the traffic. Accepted; mitigated by choosing trusted exits or layering Tor/I2P. |
+| Clearnet destination | Exit node's IP | Yes | Yes | No | Exit's location, not the user's | §13.11 ("this is the privacy benefit") | Destination may fingerprint the user at the application layer (cookies, TLS session resumption); out of scope for the mesh. |
+| Directory node | Exit advertisement (§13.2) | No | No | No | No | §12.4 | Running an exit is public. |
+
+#### 15.7.7 Public profile (§9.1)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Everyone (map readers) | `public_display_name`, `public_bio`, `avatar_hash`, `public_username`, public service list, associable addresses | Map-update cadence only | No | Public services only | No (addresses, not IPs) | §9.1 opt-in default `false`, §9.1.1 searchability controls, §9.1.2 erasure, `address_is_associable`, §4.5 signed entries | A public profile is public; update timing reveals when the user is active (§9.9). Users in hostile environments are told to keep it off (§22.27). |
+| Directory node | Same as above plus resolver records (§9.1.1) | Lookup timing | No | Lookups by others reveal interest in this identity | No | §9.1.1 hashed resolver records | A directory node learns who is being looked up. |
+| Trusted peer | Full paired profile (§9.2) | — | — | — | — | §9.6 cross-profile linkage rules | — |
+
+#### 15.7.8 Hosted service (§12)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| Directory node / index | `ServiceRecord` (type, address, metadata) when advertised publicly | Advertisement cadence | No | No | No | §12.4 exposure levels, §12.5 index scoping, §12.5.2 GC, §9.1 non-associable hosting address | A publicly advertised service is discoverable by anyone; the host chooses the exposure level. |
+| Relay | As Standard | Bucketed | Bucketed | No | Previous hop | §12.2 / §12.3 traffic rides the §7.2 onion | Long-lived service sessions have a recognisable volume profile within the bucket (§2.2). |
+| Service client (trusted peer) | Host's service address; `X-Mesh-*` headers (§20.5.1) if an API gateway | Yes | Yes | Yes | No | §12.6 access model, §12.7 enforcement, §20 trust floors | The host learns which identity connected; the client learns the service exists at that address. |
+| Local network | Mesh tunnel only | Bucketed | Bucketed | No | Yes (own IP) | §15.4 | — |
+
+#### 15.7.9 Federation (§19)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| **Federated platform** (Matrix/ActivityPub/XMPP server, WebRTC peer) | Federation mask (§19.3), bridged message content for that room, room membership of federated users | **Yes** | **Yes** | **Yes** (within the bridged room) | Bridge host's address, not the user's | §19.3 mask isolation from mesh identity, §19.4.1 Level 5 ceiling, §19.4.2 bridge disable / blocklist / canary | Content and relationship metadata inside a federated room are visible to that platform by definition; the mesh identity behind the mask is not, unless the user links them (§19.3). |
+| Bridge host (exit class) | Both sides of every bridged message | Yes | Yes | Yes | Platform-side IP | §19.2 bridge is operated by the Garden, §19.4.2 admin controls | The bridge host is a trusted intermediary for that room; accepted and surfaced in Garden settings. |
+| Relay / Directory node | As Standard for the mesh leg | Bucketed | Bucketed | No | Previous hop | §7.2 | — |
+
+#### 15.7.10 Store-and-forward (§6.8)
+
+| Observer | Visible identifiers | Timing | Volume | Relationship | Location | Mitigation | Accepted residual risk |
+|---|---|---|---|---|---|---|---|
+| **S&F node** (relay / trusted peer) | Destination address, payload size, deposit time, expiry, priority, `application_id` | **Yes (deposit and pickup)** | Bucketed (≤ 1 MB, §15.4 padded) | Destination-side only (sealed sender hides the depositor) | Pickup-side previous hop | §6.8 sealed sender, §6.8 "use only trusted nodes", §6.8 quotas, §4.4 wrapper nodes for pickup, §15.4 | The S&F node learns that *someone* queued a message for this destination and when it was collected; documented in §6.8 as unavoidable. |
+| Relay (deposit / pickup path) | As Standard | Bucketed | Bucketed | No | Previous hop | §7.2 | — |
+| Directory node | S&F availability flag in the map entry (§6.8 server mode) | No | No | No | No | §4.2 | Offering S&F is public. |
+| Local network | Mesh tunnel only | Bucketed | Bucketed | No | Yes (own IP) | §15.4 | — |
+
+#### 15.7.11 Matrix maintenance
+
+- A new operating mode, transport (§5), relay role or exposure level MUST add or amend a table here in the same change, citing the section that implements each mitigation. §21.6.3 item 15 enforces this at release time.
+- A cell may only move from "No" or "Bucketed" to "Yes" through a CMR that also updates §2.2 (Known Limitations) and the relevant §22 disclosure (§22.23, §22.24, §22.41).
+- Where two tables disagree with the section they cite, the cited section is authoritative and the table is the defect; file it under the §21.6.4 review record.
+
 ---
 
 ## 16. Performance
@@ -11020,7 +11288,7 @@ This is the ideal state — the user's own activity actively strengthens the mes
 - Flutter may never initiate a security-critical operation directly -- it requests; Rust decides and executes.
 - If Flutter and Rust disagree on state, Rust wins -- always.
 - On full-client builds, Flutter receives only pre-validated, display-safe data across the FFI boundary. On clientless builds there is no Flutter layer; the WebUI (§17.12) is driven directly from Rust with the same data constraints.
-- No security property depends on Flutter behaving correctly -- a compromised or buggy UI cannot compromise security.
+- No security property depends on Flutter behaving correctly -- a compromised UI cannot bypass backend security policy, read raw key material, or perform unauthorized operations. It can still misrepresent state, trick the user into requesting harmful but valid actions, and capture display-safe data (§2.2 limitation 10); the backend's confirmation flows (§22.43) and PIN path (§3.10) exist to narrow that residual exposure, not to eliminate it.
 - This principle is the source of: FFI key material prohibition (§15.1), PIN input bypassing Flutter (§3.10), all validation in Rust before FFI.
 
 #### 17.0.1 Version Compatibility Strategy
@@ -11862,6 +12130,8 @@ Compromise of one collection file does not expose others (different derived keys
 | `prekeys.vault` | Pre-key pool (SPK + OPK pool) | On key rotation |
 | `file_transfers.vault` | Active and completed transfer metadata | On transfer events |
 
+Visibility classes (§2.1.1): a vault stores fields of any class, and storage never widens a field's class — a cached `PUBLIC_BY_DESIGN` map entry stays public, a `TRUSTED_OPT_IN` profile stays relationship-scoped. Every field that originates locally — trust levels, `received_at`, unread counts, settings, ratchet state, prekey pools, endorsement decisions, transfer metadata — is `LOCAL_ONLY` and is never serialized into a transmitted or diagnostic structure except under the explicit redaction rules of §21.3.
+
 **Write semantics:** Writes are atomic (write to `.vault.tmp`, then `rename` to `.vault`). On crash, either the old or new version is intact — never a partial write. On startup, any `.vault.tmp` files are deleted (incomplete writes from a previous crash).
 
 **Vault corruption recovery:** If a `.vault` file fails decryption (wrong key, truncated file, disk corruption), the app handles per-collection:
@@ -11882,7 +12152,7 @@ Compromise of one collection file does not expose others (different derived keys
 | `file_transfers.vault` | 30 days completed, active until done | 1 day | 365 days | |
 | `trust_endorsements.vault` | Until revoked | — | — | Revocations kept permanently |
 
-**Network map pruning:** The map is capped at 100,000 entries (§4.2). On load, entries not seen in 30 days and at trust level `Unknown` are pruned first. Trusted peer entries are never auto-pruned by staleness. If the map reaches 100K entries and ALL are trusted (no untrusted entries to evict), new entries are accepted by evicting the **oldest trusted entry by `last_seen` timestamp** — the least recently active trusted peer is evicted first. This is an extreme edge case (100K trusted peers is implausible in practice) but the behavior must be defined to prevent silent entry rejection.
+**Network map pruning:** The map is capped at 100,000 entries (§4.2). On load, entries not seen in 30 days and at trust level `Unknown` are pruned first. Trusted peer entries are never auto-pruned by staleness. If the map reaches 100K entries and ALL are trusted (no untrusted entries to evict), new entries are accepted by evicting the **oldest trusted entry by local `received_at`** (§4.2) — the least recently observed trusted peer is evicted first. This is an extreme edge case (100K trusted peers is implausible in practice) but the behavior must be defined to prevent silent entry rejection.
 
 **Storage footprint:** On a typical mobile device with 90-day message retention and 1000 active conversations, total vault storage is approximately 50--200 MB. Server-mode nodes with longer retention and higher peer counts should configure available disk proportionally and monitor via the node management interface (§17.12).
 
@@ -12348,29 +12618,28 @@ On full-client builds, the user configures modules from Settings → Features (�
 
 #### 17.13.5 Module State in §17.3 Module Structure
 
-The following annotation maps the module groups to the existing §17.3 Rust module structure. Each entry notes which Cargo feature flag gates compilation (if any — all features are compiled in by default; flags are for embedded/constrained builds only):
+The following table maps the module groups to module paths in the `backend/` crate (§17.3). Paths are relative to the repository root. Each entry notes which Cargo feature flag gates compilation (if any — all features are compiled in by default; flags are for embedded/constrained builds only). A module group whose flag lives in `backend/services/module_system.rs` but whose runtime has its own path lists that path; a group listed against `module_system.rs` alone is gated there and implemented where the cited section specifies:
 
 | Rust module path | Module group | Notes |
 |-----------------|-------------|-------|
-| `backend/service/chat.rs` | Invariant core | Always compiled, always started in Client/Dual |
-| `backend/service/garden.rs` | Social — gardens | Started only if `social.gardens = true` |
-| `backend/service/files.rs` | Social — file_sharing | Started only if `social.file_sharing = true` |
-| `core/store_forward.rs` | Social — store_forward | S&F participation only if enabled; receiving S&F always works |
-| `backend/service/notifications.rs` | Social — notifications | No push registration if disabled |
-| `infinet/` | Network — infinet | Entire Infinet module; not started if disabled |
-| `transport/vpn.rs` | Network — vpn_mode | TUN/TAP not created if disabled |
-| `transport/exit_node.rs` | Network — exit_nodes | No exit node advertisement if disabled |
-| `transport/app_connector.rs` | Network — app_connector | Per-app routing not started if disabled |
-| `transport/funnel.rs` | Network — funnel | Not started if disabled |
-| `protocols/mnrdp/server.rs` | Protocols — mnrdp_server | Server not started; client always available |
-| `protocols/mnsp/server.rs` | Protocols — mnsp_server | Server not started; client always available |
-| `protocols/mnfp/server.rs` | Protocols — mnfp_server | Server not started; client always available |
-| `protocols/api_gateway.rs` | Protocols — api_gateway | Local proxy not started if disabled |
-| `protocols/screen_share.rs` | Protocols — screen_share | Requires mnrdp_server |
-| `protocols/clipboard.rs` | Protocols — clipboard_sync | Publish/subscribe not started if disabled |
-| `protocols/print.rs` | Protocols — print_service | IPP adapter not started if disabled |
-| `agentic/mislp.rs` | Agentic — mislp | Token processing, purpose gossip, relay bridge not started |
-| `plugins/runtime.rs` | Plugins | Plugin sandbox not started if disabled |
+| `backend/services/module_system.rs` | Module configuration | Holds every module group flag of §17.13.2 and the persisted defaults of §17.13.4 |
+| `backend/messaging/` (`message.rs`, `room.rs`, `delivery.rs`), `backend/service/messaging.rs` | Invariant core | Always compiled, always started in Client/Dual |
+| `backend/groups/garden.rs`, `backend/service/garden_ops.rs` | Social — gardens | Started only if `social.gardens = true` |
+| `backend/files/` (`transfer.rs`, `storage.rs`, `hosted.rs`, `backend_adapter.rs`), `backend/service/file_ops.rs` | Social — file_sharing | Started only if `social.file_sharing = true` |
+| `backend/routing/store_forward.rs` | Social — store_forward | S&F participation only if enabled; receiving S&F always works |
+| `backend/notifications/mod.rs` | Social — notifications | No push registration if disabled |
+| `backend/vpn/infinet.rs` | Network — infinet | Entire Infinet module; not started if disabled |
+| `backend/vpn/routing_mode.rs` | Network — vpn_mode | TUN/TAP not created if disabled |
+| `backend/vpn/exit_node.rs` | Network — exit_nodes | No exit node advertisement if disabled |
+| `backend/vpn/app_connector.rs` | Network — app_connector | Per-app routing not started if disabled |
+| `backend/vpn/funnel.rs` | Network — funnel | Not started if disabled |
+| `backend/services/mesh_protocols.rs` | Protocols — mnrdp_server, mnsp_server, mnfp_server | Server side of each protocol not started when its flag is off; client side always available |
+| `backend/services/mesh_protocols.rs`, `backend/services/ports.rs` (`ApiGateway` port block, §20.9) | Protocols — api_gateway | Local proxy (§20.5) not started if disabled |
+| `backend/services/mesh_protocols.rs` | Protocols — screen_share | Requires mnrdp_server |
+| `backend/services/mesh_protocols.rs` | Protocols — clipboard_sync | Publish/subscribe not started if disabled |
+| `backend/services/mesh_protocols.rs` | Protocols — print_service | IPP adapter not started if disabled |
+| `backend/services/module_system.rs` (`mislp` flag); runtime per §18.6 | Agentic — mislp | Token processing, purpose gossip, relay bridge not started if disabled |
+| `backend/services/plugin.rs` | Plugins | Plugin sandbox not started if disabled |
 
 ---
 
@@ -14872,7 +15141,7 @@ Additional blocks reserved in the §12.1.1 native service space for §20 protoco
 
 ### 21.0 Overview
 
-This section specifies the testing strategy, diagnostic tooling, developer mode, and CI/CD requirements for Mesh Infinity. A cryptographic messaging system has a uniquely high bar: bugs in the crypto or routing layers can silently compromise user privacy without any visible malfunction. Testing must be exhaustive, systematic, and adversarial.
+This section specifies the testing strategy, diagnostic tooling, the debug-build menu, and CI/CD requirements for Mesh Infinity. A cryptographic messaging system has a uniquely high bar: bugs in the crypto or routing layers can silently compromise user privacy without any visible malfunction. Testing must be exhaustive, systematic, and adversarial.
 
 **Four-tier testing model:**
 
@@ -15022,6 +15291,26 @@ The following invariants MUST be enforced where applicable by tests, fuzz harnes
 - private keys, seeds, plaintext, and internal crypto state never appear in FFI JSON, diagnostics, logs, or public events
 - decrypt never succeeds unless authentication succeeds
 - diagnostic reports never contain message content, private keys, contact names, phone numbers, emails, IPs, or hostnames
+- no value of a `SecretBytes`, `SecureBytes` (§15.1), private-key, seed, ratchet-state or MLS-state type implements `Debug`, `Display` or `Serialize` in non-test builds; a CI check fails the build if a derive or impl of any of these appears on such a type outside `#[cfg(test)]`
+- log and trace sinks reject structured metadata that is not on the §21.3.2 allowlist: a metadata key or value type outside the allowlist is dropped at the sink and counted, never written
+
+**Never-log table.** The following data MUST NOT appear in any log line, diagnostic report (§21.3), debug view (§21.4, §22.56), FFI trace (§22.56.5) or crash report. The only exception is the built-in simulator (§21.5) running on synthetic identities, where the simulator build flag is set and no real vault is open. The table is normative for every sink, present and future; the invariants above are its enforcement.
+
+| Class | Examples | Why it is excluded |
+|-------|----------|--------------------|
+| Key material | private keys, seeds, pre-keys, PSKs, derived symmetric keys, backup passphrases | recovery of any of these is total compromise |
+| Session state | Double/Triple Ratchet chains, skipped-key caches, MLS tree and epoch secrets, PQXDH transcripts | reconstructs past or future message keys |
+| Message content | plaintext bodies, ciphertext bodies, attachments, voice notes, previews, drafts | content; ciphertext also enables offline attack and correlation |
+| Verification material | safety numbers, pairing codes and transcripts, QR payloads, NFC payloads | lets an observer forge or replay a verification |
+| Local authentication | PINs, duress PINs, PIN hashes, attempt counters, lockout timers | counters tell a holder of the device how close a wipe is |
+| Trust graph | contact list, trust levels per peer, endorsements, disavowals, vouch chains | relationship graph of the user |
+| Mask linkage | which masks belong to one Self, anonymous-mask ↔ mask mappings, federation mask bindings (§19.3) | unlinkability is the mask model's only guarantee |
+| Routing history | chosen paths, hop lists, tunnel endpoints, relay choices, cover-traffic schedule | de-anonymises past traffic |
+| Contact identity | contact display names, nicknames, avatars, profile fields, phone numbers, emails | personal data of third parties |
+| Transport addresses | raw IPs, hostnames, MACs, BLE addresses, onion/I2P addresses, port numbers of peers, GPS or cell fixes | locates the user and their peers |
+| Peer metadata | last-seen times per peer, per-peer byte counts, online/offline transitions per peer | timing and volume side channels keyed to a person |
+
+Aggregates that cannot be keyed back to a peer (total tunnel count, total bytes, counts of events by type) are permitted and are what §21.3.1 and §22.56.2 show.
 
 #### 21.2.3 Corpus Management
 
@@ -15142,10 +15431,13 @@ diagnostic_report_<timestamp>.zip
 
 #### 21.3.2 Sanitization Rules
 
-Before writing any field to the report:
-- Strip all fields whose names appear in the privacy redaction list: `text`, `content`, `body`, `display_name`, `name`, `email`, `phone`, `address`, `ip`, `host`
-- Replace redacted values with `"[REDACTED]"`
-- Truncate all string values to 256 characters maximum
+The report generator works from an **allowlist**, not a denylist. A field-name denylist cannot be kept complete (a new field called `peer_name` or `contact` would pass), so the rule is inverted:
+
+- Only fields enumerated in the report schema (`backend/testing/diagnostics.rs`) enter a report. Each allowed field has a declared type: integer counter, duration, enumerated event type, module identifier, app/OS/Rust version string, or mesh peer ID of this device. Nothing else is serialised.
+- Free-form strings are never serialised. Error entries carry the error's enumerated variant name and numeric code, not its `Display` text; event entries carry the event type and timestamp, not the event payload.
+- A value whose type is not on the allowlist is dropped at the sink and counted in `dropped_fields`, which the report includes so a reviewer can see that the filter ran. There is no `"[REDACTED]"` placeholder, because nothing redacted is ever read into the report in the first place.
+- Version strings are the only strings in the report; they are matched against `^[A-Za-z0-9 ._+-]{1,64}$` before inclusion.
+- The §21.2.2 never-log table applies in full; a test corpus that attempts to pass each class of excluded data through the generator is part of the §21.1 unit tier and MUST produce a report that contains none of it.
 
 #### 21.3.3 Report Generation FFI
 
@@ -15160,15 +15452,15 @@ mi_generate_diagnostic_report(ctx, output_path) -> i32
 
 ### 21.4 Developer Mode and Debug Menu
 
-#### 21.4.1 Enabling Developer Mode
+#### 21.4.1 Build Flavour, Not Runtime Mode
 
-Developer mode is enabled by tapping the app version number in Settings → About seven times in rapid succession (within 3 seconds). This matches the pattern used by Android Developer Options and avoids accidental activation. A toast confirms activation: "Developer mode enabled."
+The debug menu exists only in **debug builds** (`kDebugMode == true` in Flutter; the equivalent debug-assertion configuration in Rust). Release builds contain no debug menu: no code path leads to it, no gesture, tap sequence, setting, or hidden flag enables it, and the screen and its FFI bindings are tree-shaken from release artifacts (§22.56). There is no runtime "developer mode" that can be switched on inside a release build — a release build that exposes peer IDs, public keys, routing tables, or simulation controls to anyone holding the unlocked device is a shipped attack surface, and the seven-tap pattern used by other platforms is not adopted.
 
-Developer mode is a session-only flag — it resets on app restart and is never persisted to disk.
+Developers who need the menu on a device run a debug build. Debug builds are never distributed through the update channel (§17.10) or any store listing; a build whose release metadata does not match a release flavour fails the §21.6.3 release gate.
 
 #### 21.4.2 Debug Menu Location
 
-When developer mode is active, a "Debug" entry appears at the bottom of the Settings section navigation. The debug menu is never visible in release builds unless developer mode was explicitly activated.
+In a debug build, a "Developer Options" tile appears at the bottom of the Settings section (§22.56), guarded by `if (kDebugMode)` in the settings list builder so the tile and the screen it opens are absent from release builds.
 
 #### 21.4.3 Debug Menu Contents
 
@@ -15249,6 +15541,7 @@ Available from tests and from the debug menu (§21.4.3 Simulation section):
 | Clippy (zero warnings) | `cargo clippy -- -D warnings` | Yes |
 | Format | `cargo fmt --check` | Yes |
 | Fuzz registry consistency | `python3 tests/scripts/check_fuzz_registry.py` or equivalent | Yes |
+| Field visibility class registry (§2.1.1): every field of every gossiped, announced, or published structure is classified; an unclassified field or a field whose class is wider than its structure's audience fails | repo-native registry check | Yes |
 | Fuzz smoke (30–60s per active target) | `cargo fuzz run <target> -- -max_total_time=30..60` | Yes |
 | Corpus replay | committed active corpus inputs and fixed-artifact reproducers replayed | Yes |
 | Flutter analyze | `flutter analyze` | Yes |
@@ -15290,6 +15583,7 @@ A version is releasable only when:
 12. Reproducibility evidence, build provenance, artifact signatures and signed update metadata must match the tagged source and actual artifacts. Build runners handling untrusted changes receive no release/root keys; sign in a separate controlled stage.
 13. Emergency dependency releases have an owner, a patched-version assessment, targeted regression/fuzz evidence, expedited build/signing and security-floor publication. Urgency does not bypass signature, containment or protocol-invariant checks.
 14. §21.6.4 gates must be satisfied for each enabled security-critical feature. Missing automation/evidence is not compliance.
+15. Every operating mode, transport (§5), relay role and exposure level that the release can enable has a row in the §15.7 metadata threat matrix citing the section that implements its mitigation. A mode or transport without a matrix row is a release-gate failure.
 
 
 #### 21.6.4 Protocol Profiles and Security Review Gates
@@ -15308,6 +15602,8 @@ The following are explicit unresolved implementation gates, to be reconciled wit
 Run maintained formal models in CI for session initialization/ratchet state transitions and group membership/removal/fork invariants, with model revisions and assumptions linked to implementation tests. A symbolic proof does not establish RNG quality, constant-time arithmetic, OS containment or traffic anonymity; those require their own evidence. Independent human cryptographic review and implementation security review remain required for custom compositions. Work may proceed in isolated tests while gates are open; affected features MUST NOT be released as safety-critical compliant functionality.
 
 ---
+
+## 22. UI/UX Specification
 
 ### 22.0 Overview
 
@@ -15334,8 +15630,14 @@ Material 3 provides them; use named constants for custom semantic colors.
 
 ```dart
 // Brand
-const Color kBrand         = Color(0xFF2C6EE2);  // primary
+const Color kBrand         = Color(0xFF2C6EE2);  // primary (seed colour; fills and ColorScheme seed only)
 const Color kBrandDark     = Color(0xFF1A4FB5);  // primary pressed state
+
+// Brand as foreground — per theme (CMR-019). kBrand itself measures 4.46:1 on
+// kBgLight, a hair under the §22.34 text bar, so brand-coloured icons and text
+// never use kBrand directly; they use brand_fg or ColorScheme.primary.
+const Color kBrandFgLight  = Color(0xFF2B6CDD);  // 4.6:1 on kBgLight / kSurfaceLight
+const Color kBrandFgDark   = Color(0xFF4E85E7);  // 5.2:1 on kBgDark / kSurfaceDark
 
 // Backgrounds
 const Color kBgDark        = Color(0xFF0F1117);  // dark scaffold
@@ -15374,11 +15676,15 @@ const Color kFocusRingLight = Color(0xFF1A4FB5);
 const Color kFocusRingDark  = Color(0xFF7FA8F0);
 ```
 
-**Contrast rule.** Every security, trust, disabled and focus-ring token above MUST meet §22.34
-against both grounds of its theme: ≥4.5:1 for the security and trust tokens (they
-are used as badge and caption text) and ≥3:1 for the disabled and focus-ring tokens. A unit test
+**Contrast rule.** Every security, trust, disabled, focus-ring and brand-foreground token above MUST meet §22.34
+against both grounds of its theme: ≥4.5:1 for the security, trust and brand-foreground tokens (they
+are used as badge, icon and caption text) and ≥3:1 for the disabled and focus-ring tokens. A unit test
 (`frontend/test/theme_contrast_test.dart`) computes the WCAG 2.1 ratio for every
-token and fails the build if a value drifts below the bar.
+token, including `brand_fg`, and fails the build if a value drifts below the bar.
+
+**Brand as foreground.** `kBrand` is the Material `ColorScheme` seed and may fill buttons, pills and avatars (where the foreground on it is white). Wherever brand blue is itself the foreground — icons, link text, captions, selected-state glyphs — the call site reads `MeshColors.of(context).brand_fg` or `ColorScheme.primary`, never `kBrand` or `MeshTheme.brand` directly. The hue is unchanged; only lightness differs per theme.
+
+**Decorative indicators.** The Tier 2 ambient badge dot (`MeshTheme.ambientBadge`, `#4A5280`, §22.3) measures ~2.3:1 on `kBgDark` and is exempt from the 3:1 UI-element rule *only because* it is never the sole carrier of information: it is always drawn beside the section label and, when a count exists, the Tier 1 count pill (§22.34 "never colour alone"). A new indicator may claim this exemption only if the same pairing holds; an indicator that stands alone must meet 3:1.
 
 **Resolution.** Screens never choose a variant themselves. The theme publishes the
 active set through a `ThemeExtension` (`MeshColors`), and widgets read
@@ -15999,7 +16305,7 @@ Badges use two independent visual tiers. Neither tier suppresses the other. Both
 **Visual spec:**
 - Tier 1 count pill: `MeshTheme.brand` background, white text, `BorderRadius.circular(10)`, min-width 20px, capped at `99+`
 - Tier 1 health dot: 9×9px circle, color = `MeshTheme.secGreen/secAmber/secRed`
-- Tier 2 ambient dot: 6×6px filled square (`borderRadius: 1`), color = `MeshTheme.ambientBadge` (`#4A5280`)
+- Tier 2 ambient dot: 6×6px filled square (`borderRadius: 1`), color = `MeshTheme.ambientBadge` (`#4A5280`). Decorative: exempt from the §22.34 3:1 rule only because it is always paired with the section label and any count pill (§22.1.1 "Decorative indicators"); it never carries information alone.
 
 **`BadgeState`** (`shell/badge_state.dart`): `ChangeNotifier` with global ambient toggle and per-section ambient enable/disable. Exposes `ambientVisibleFor(AppSection)` which returns `ambientGlobalEnabled && sectionAmbientToggle(section)`.
 
@@ -16366,7 +16672,7 @@ class ProfileCard extends StatelessWidget {
 
 #### 22.4.10 MaskSwitcherSheet
 
-Sheet presented when the user taps the active mask avatar in the AppBar of Chat or Garden sections. Allows switching between masks without navigating to Settings.
+Sheet presented when the user taps the active mask avatar in the AppBar of Chat or Garden sections. Allows switching between masks without navigating to Settings. The first time this sheet opens for an identity whose `mask_intro_seen` flag is unset, the "What's a mask?" first-use card (§22.11) is drawn at the top of the sheet, above the "Active identity" row.
 
 **File**: `features/identity/widgets/mask_switcher_sheet.dart`
 
@@ -17088,13 +17394,17 @@ Padding(
                 // delivered: double check Icon(Icons.done_all, size: 12)
                 // read: double check in kBrand color
               ],
-              if (connectionMode == ConnectionMode.loSec)
-                Container(
-                  margin: EdgeInsets.only(left: 4),
-                  width: 6, height: 6,
-                  decoration: BoxDecoration(
-                    color: kSecAmber, shape: BoxShape.circle),
-                ),
+              // Persistent reduced-anonymity marker (§6.9): read from the
+              // message's own stored transport_mode, never from the live
+              // connection mode, so history stays truthful after the session.
+              if (message.transport_mode != TransportMode.standard) ...[
+                SizedBox(width: 4),
+                Icon(_modeIcon(message.transport_mode), size: 10,
+                  color: message.transport_mode == TransportMode.loSec
+                    ? MeshColors.of(context).sec_amber
+                    : MeshColors.of(context).sec_red,
+                  semanticLabel: _modeLabel(message.transport_mode)),
+              ],
             ],
           ),
         ],
@@ -17104,6 +17414,8 @@ Padding(
   ),
 )
 ```
+
+**Reduced-anonymity marker.** `_modeIcon` is `Icons.speed` for `loSec` and `Icons.cable` for either Direct value; `_modeLabel` is "Sent in reduced-anonymity mode (LoSec)" / "Sent over a direct connection" and is the icon's semantic label. Tapping the timestamp row of a marked message expands a one-line caption with the same text (icon + text, never colour alone, §22.34). The marker is per message, persists with the message, and is unaffected by the current connection mode; a transcript that mixes modes shows it only on the messages that carry it.
 
 **ComposerBar:**
 ```
@@ -17891,19 +18203,30 @@ ListTile(
 
 **_NetworkTypeBadge:**
 ```
+// Neutral outlined chip. The network type is a structural fact, not a
+// security state, so it never borrows the §22.1.1 security tokens: green
+// means verified, amber means reduced privacy, purple means a compromised
+// peer (§22.8.1, §22.8.2), and a private garden must not wear the same colour
+// as a compromised contact. Meaning is carried by icon + label.
 Container(
   padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
   decoration: BoxDecoration(
-    color: _typeColor(type).withValues(alpha: 0.12),
     borderRadius: BorderRadius.circular(4),
-    border: Border.all(color: _typeColor(type).withValues(alpha: 0.3)),
+    border: Border.all(color: colorScheme.outlineVariant),
   ),
-  child: Text(_typeLabel(type),
-    style: TextStyle(fontSize: 10, color: _typeColor(type), fontWeight: FontWeight.w600)),
+  child: Row(mainAxisSize: MainAxisSize.min, children: [
+    Icon(_typeIcon(type), size: 12, color: colorScheme.onSurfaceVariant),
+    SizedBox(width: 4),
+    Text(_typeLabel(type),
+      style: TextStyle(fontSize: 10, color: colorScheme.onSurfaceVariant,
+        fontWeight: FontWeight.w600)),
+  ]),
 )
 
-// Colors: Public=kBrand, Open=kSecGreen, Closed=kSecAmber, Private=kSecPurple
+// Icons:  Public=Icons.public, Open=Icons.door_front_door_outlined,
+//         Closed=Icons.lock_outline, Private=Icons.visibility_off_outlined
 // Labels: 'Public', 'Open', 'Closed', 'Private'
+// No per-type colour: `_typeColor` does not exist.
 ```
 
 #### 22.6.2 FeedScreen (sub-page: Feed)
@@ -17918,7 +18241,7 @@ Backend call: `bridge.fetchGardenPosts('')` — empty string means all joined ga
 
 **File**: `features/garden/explore_screen.dart`
 
-Discovery screen for public/open gardens on the mesh. Calls `bridge.discoverGardens()`. Each `_GardenTile` shows name, network type badge (Public=brand, Open=green, Closed=amber, Private=purple), member count, and description with a `Join` button wired to `bridge.joinGarden(id)`.
+Discovery screen for public/open gardens on the mesh. Calls `bridge.discoverGardens()`. Each `_GardenTile` shows name, the neutral network-type chip (`_NetworkTypeBadge`, §22.6.1 — icon plus label, no security colour), member count, and description with a `Join` button wired to `bridge.joinGarden(id)`.
 
 Join button states:
 - `Join` — user is not a member; tapping calls `bridge.joinGarden(id)`
@@ -19003,12 +19326,11 @@ Dialog(
   child: Column(mainAxisSize: MainAxisSize.min, children: [
     Icon(Icons.shield_outlined, size: 40, color: kTrust6),
     SizedBox(height: 12),
-    Text('Trust [Name]?', style: textTheme.titleMedium),
+    // Title, body and buttons are the §22.31 promote text, verbatim.
+    // This dialog carries no copy of its own.
+    Text(TrustCopy.promote_title(name), style: textTheme.titleMedium),
     SizedBox(height: 8),
-    Text(
-      'This opens a private channel between you. '
-      'Your private profile will be shared with them permanently — '
-      'it cannot be recalled once sent.',
+    Text(TrustCopy.promote_body(name),
       style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant),
       textAlign: TextAlign.center,
     ),
@@ -19017,11 +19339,13 @@ Dialog(
       Expanded(child: OutlinedButton(onPressed: cancel, child: Text('Cancel'))),
       SizedBox(width: 12),
       Expanded(child: FilledButton(onPressed: confirm,
-        child: Text('Trust'))),
+        child: Text(TrustCopy.promote_action(name)))),   // "Trust [name]"
     ]),
   ]),
 )
 ```
+
+`TrustCopy` (`features/contacts/trust_copy.dart`) holds the §22.31 strings once; the trust selector card and this dialog both read from it so the two surfaces cannot drift.
 
 *Demoting from Level 6+ to 5 or below:*
 ```
@@ -19029,23 +19353,21 @@ Dialog(
   child: Column(mainAxisSize: MainAxisSize.min, children: [
     Icon(Icons.shield_outlined, size: 40, color: kSecAmber),
     SizedBox(height: 12),
-    Text('Remove trusted status?', style: textTheme.titleMedium),
+    // §22.31 demote text, verbatim, via TrustCopy.
+    Text(TrustCopy.demote_title(name), style: textTheme.titleMedium),
     SizedBox(height: 8),
-    Text(
-      'This closes the private channel. They keep any profile data '
-      'already shared — that cannot be undone. '
-      'Future private updates will stop.',
+    Text(TrustCopy.demote_body(name),
       style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant),
       textAlign: TextAlign.center,
     ),
     SizedBox(height: 20),
     Row(children: [
-      Expanded(child: OutlinedButton(onPressed: cancel, child: Text('Keep trusted'))),
+      Expanded(child: OutlinedButton(onPressed: cancel, child: Text('Cancel'))),
       SizedBox(width: 12),
       Expanded(child: FilledButton(
         onPressed: confirm,
-        style: FilledButton.styleFrom(backgroundColor: kSecAmber),
-        child: Text('Remove'))),
+        style: FilledButton.styleFrom(backgroundColor: MeshColors.of(context).sec_amber),
+        child: Text('Remove trust'))),
     ]),
   ]),
 )
@@ -20956,7 +21278,7 @@ showModalBottomSheet(
 
 **File**: `features/settings/screens/identity_masks_screen.dart`
 
-**AppBar**: `'Identity & Masks'`.
+**AppBar**: `'Identity & Masks'`. Action: `IconButton(Icons.help_outline)` → reopens the "What's a mask?" first-use card (§22.11) as a bottom sheet.
 
 ```
 ListView(
@@ -22932,7 +23254,13 @@ unlock / step 1: "Enter your PIN"         / ""
 unlock / success: → pop and continue to app
 ```
 
-**Wrong PIN:** Shake animation on the dots row (150ms left-right oscillation, 3 cycles), `kSecRed` fill colour for 400ms, then reset. After 5 failed attempts, a 30-second lockout timer is displayed.
+**Wrong PIN:** The dots clear and a status line appears directly under the dots row: `Icons.error_outline` (16px) plus the text **"Wrong PIN"**, both in the §22.1.1 red security token. The line stays until the next key press — it is not timed out — so a failure never looks like nothing happened, and it is text plus icon, never colour alone (§22.34, WCAG 1.4.1). The 150 ms shake (3 cycles) and the 400 ms red fill of the dots are optional decoration layered on top; under reduced motion (§22.1.7) they are omitted and the status line is the whole signal. The status line is announced to the screen reader as a live region.
+
+**Lockout:** After 5 failed attempts the keypad is disabled for 30 seconds and the status line becomes **"Too many attempts. Try again in 0:30"**, counting down each second as text (the countdown is also the screen-reader announcement, once at start and once at 0:05). The keypad re-enables when the countdown reaches zero; a further failure restarts a 30-second lockout.
+
+**Tries left (only when wrong-PIN wipe is armed, §22.10.11):** When the user has enabled "Wipe after N attempts", the status line for the **last two** attempts before erasure reads **"Wrong PIN. 2 tries left before this device erases"** and then **"Wrong PIN. Last try before this device erases"**. Nothing about the remaining count is shown before those two, and nothing is ever shown when wipe is not armed, so a person holding the phone learns the counter only at the point where the owner needs it to avoid losing everything. The counter is held by the backend (§3.10) and never logged or exported (§21.2.2 never-log table).
+
+**Duress PIN** behaviour is unchanged: a duress unlock succeeds normally and shows no status line.
 
 **Duress PIN (if configured, §3.10):** The duress PIN is entered identically to the normal PIN. The system backend detects it via the `bridge.unlockIdentity()` return value — the UI never knows it was a duress unlock. This is by design: the UI must look completely normal.
 
@@ -23056,7 +23384,7 @@ ListView(
       padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
       child: Text(
         'Automatically erase after too many wrong PIN attempts. '
-        'Disabled by default.',
+        'Disabled by default. The PIN screen warns you on the last two tries.',
         style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant)),
     ),
     SwitchListTile(
@@ -23478,6 +23806,18 @@ ListView(padding: EdgeInsets.all(16), children: [
 **`_MasksSection`:** Row with "Masks" title and "New mask" button, followed by either:
 - a list of contextual masks currently stored in backend state, or
 - an empty-state `Card` explaining what contextual masks are and offering creation.
+
+**First-use explanation of "mask".** "Mask" is the user-facing term everywhere after onboarding (§22.10.2, this section, `MaskSwitcherSheet` §22.5.1), but onboarding never uses it (§22.42.3), so the first screen that shows the word must also define it. The first time either the You section or `MaskSwitcherSheet` opens, a dismissible `Card` (`features/you/mask_intro_card.dart`) is drawn above `_MasksSection` (or at the top of the sheet):
+
+```
+Card: Icon(Icons.theater_comedy_outlined, kBrand)
+  Title: "What's a mask?"
+  Body:  "A mask is a separate face you show different groups of people.
+          Your first one is the identity you just created."
+  Actions: [Got it]
+```
+
+"Got it" sets `mask_intro_seen` in the backend settings store (`bridge.setMaskIntroSeen()`), so the card is shown once per identity across both surfaces and across devices that restore the same vault. The same text is re-readable at any time from Help → "What's a mask?" and from the `?` icon in the `IdentityMasksScreen` app bar (§22.10.2). The card uses §22.22 plain language and introduces no second term for the concept — "mask" is the one name, "face" appears only inside this definition.
 
 Loading state (identity == null): `Center(child: CircularProgressIndicator())`.
 
@@ -24118,14 +24458,15 @@ When a user elevates a contact to Level 6 (Trusted), a brief explanation card ap
 Card — shown inline in the trust selector, replaces the description line:
   Icon: lock_outlined (kBrand)
   Title: "Share your identity with [name]?"
-  Body: "Trusting [name] shares your private profile — your real name and
-         any contact info you've added — with them. They can also share
-         encrypted messages with your trusted channel.
-         This is reversible, but they keep any profile info already shared."
+  Body: "Trusting [name] opens a private channel between you. Your private
+         profile — your real name and any contact info you've added — is
+         sent only once [name] trusts you back (§8.4). After that it can't
+         be recalled: you can remove trust later, but they keep what was
+         already shared."
   Actions: [Cancel] [Trust [name]]
 ```
 
-The confirmation uses `[name]` (resolved display name), not "this contact." The wording is warm and concrete, not legalistic.
+This is the **only** promote text in the specification; every surface that crosses the 5→6 boundary (the trust selector here, the `ContactDetailScreen` dialog in §22.8.2, any future surface) renders exactly this title, body and button pair. The body states the real behaviour from §8.4 — the profile goes out on *reciprocation*, not on this tap, and once sent cannot be withdrawn — so the person is told what crosses over, and when, before they press. The confirmation uses `[name]` (resolved display name), not "this contact." The wording is warm and concrete, not legalistic.
 
 **When the other party hasn't reciprocated:**
 
@@ -24150,7 +24491,17 @@ Container(
 
 **Trust downgrade UX:**
 
-Reducing trust (e.g. from Level 6 back to Level 5) shows a one-sentence confirmation: *"Removing trust from [name] will disconnect the private channel. They'll no longer receive your private profile updates."* Two buttons: Cancel / Remove trust. No dramatic warning beyond this — the plain explanation is sufficient.
+Reducing trust (e.g. from Level 6 back to Level 5) shows one confirmation:
+
+```
+  Title: "Remove trust from [name]?"
+  Body:  "This closes the private channel. [name] keeps any profile info
+          already shared — that can't be undone — but won't receive future
+          private updates."
+  Actions: [Cancel] [Remove trust]
+```
+
+This is the **only** demote text in the specification and is rendered verbatim wherever a 6→5 (or lower) change is confirmed, including the `ContactDetailScreen` dialog (§22.8.2). The destructive button uses the §22.1.1 amber security token, and `[Cancel]` is the default-focused action. No dramatic warning beyond this — the plain explanation is sufficient.
 
 ### 22.32 Message Request UX
 
@@ -24328,7 +24679,7 @@ The confirm/cancel pair follows the platform or user convention (A/B on Xbox-lay
 | Long-press sheet | Context menu intent |
 | Double-tap react | Context menu → React (reaction row is focusable) |
 | Pinch-to-zoom image | Activate on the image opens the viewer; viewer has focusable zoom controls |
-| Two-finger swipe for detail pane (desktop) | Ctrl+] / R1 toggles the detail pane |
+| Two-finger swipe for detail pane (desktop) | Ctrl+] (keyboard) / Start+R1 (pad; R1 alone switches section) toggles the detail pane |
 | Swipe-right mark-as-read (Garden channel) | Context menu → Mark as read, or secondary action |
 
 Drag-to-reorder and other pointer-only manipulations must offer "Move up / Move down" in the context menu.
@@ -24357,7 +24708,20 @@ See §22.4.1 for the full SecurityStatusBar widget specification. This section i
 
 **File**: `onboarding/onboarding_screen.dart` — complete replacement.
 
-**Flow**: Welcome → (Create | Import) → First Mask → PIN Setup → Explainer → Done
+**Flow.** The step list below *is* the pipeline: the implementation's step enum, the order of screens and the progress model all follow this one list, and no other list of onboarding steps exists in this specification.
+
+1. **Welcome** (§22.42.1) — Create or Import.
+2. **Import backup** (§22.42.2) — branch, only when the user chose Import; a successful import skips to step 7.
+3. **Your identity** (§22.42.3).
+4. **Public presence** (§22.42.3b).
+5. **How Mesh Infinity works** (§22.42.4) — the §22.23 ambient-state disclosures; this is the mandatory step and replaces the former three-row Explainer.
+6. **Privacy style** (§22.42.4a) — the §22.27 item 3 preset choice.
+7. **PIN** (§22.42.5).
+8. **Done** (§22.42.7) — "what next": primary button **Add a contact** → `PairContactScreen` (§22.8.3); secondary **Go to Chat**.
+
+Onboarding shows no "N of M" counter: the Import branch makes the total move, and a counter that changes its denominator mid-flow is worse than none. Progress is conveyed by the back stack and each screen's title only.
+
+The backend persists an `onboarding_complete` flag in the vault (§17.9), set only when the Done step is reached. Any launch that finds an identity but no flag resumes at step 3 (Your identity) with the stored identity pre-filled, so a first run that was interrupted — or a vault restored by any path other than step 2 — cannot bypass the mandatory disclosures of step 5. A launch with no identity starts at step 1.
 
 On first pairing completion (post-onboarding), the safety number screen is presented as a push on the navigation stack before returning to chat.
 
@@ -24533,13 +24897,21 @@ Column(mainAxisSize: MainAxisSize.min) {
     child: Text('Next'),
   )
 
+  // A disabled forward action says why (§22.42 design rule). Shown only while
+  // Next is disabled; replaced by nothing once a name exists.
+  if (_nameController.text.trim().isEmpty)
+    Padding(
+      padding: EdgeInsets.only(top: 8),
+      child: Text('Add a name to continue',
+        style: textTheme.bodySmall.copyWith(color: colorScheme.onSurfaceVariant)))
+
   SizedBox(height: 16)
 }
 ```
 
-**Validation**: Next button disabled when name field is empty. Enables on any non-whitespace input. No error banner — button state communicates requirement.
+**Validation**: Next button disabled when name field is empty and enables on any non-whitespace input. While it is disabled a helper line under the button reads "Add a name to continue", so the disabled state is never the only signal. The name field uses `textInputAction: TextInputAction.done`; the keyboard Done key invokes the same handler as Next (`_goToPublicProfile`) and is ignored while the name is empty. No error banner.
 
-**Note (§3.1.3):** This step creates the primary private mask — the user's core identity. From a crypto standpoint this is a mask keypair derived from the self root. From the user's standpoint this IS them. Do not use the word "mask" on this screen.
+**Note (§3.1.3):** This step creates the primary private mask — the user's core identity. From a crypto standpoint this is a mask keypair derived from the self root. From the user's standpoint this IS them. The word "mask" is not used on this screen or anywhere in onboarding; it is introduced *after* onboarding, the first time the You section or the mask switcher opens, with the first-use explanation in §22.11.
 
 #### 22.42.3b Screen: Public Profile (`_Step.publicProfile`)
 
@@ -24571,24 +24943,22 @@ Column(mainAxisSize: MainAxisSize.min) {
 
   SizedBox(height: 24)
 
+  // One way forward per step: a single filled button whose label tells the
+  // truth about what pressing it does. Empty field → "Skip" (no public
+  // profile is created); any text → "Next" (the public name is saved).
   FilledButton(
     onPressed: _goToExplainer,
     style: FilledButton.styleFrom(minimumSize: Size(double.infinity, 52)),
-    child: Text('Next'),
-  )
-
-  SizedBox(height: 8)
-
-  TextButton(
-    onPressed: _goToExplainer,
-    child: Text('Skip'),
+    child: Text(_publicNameController.text.trim().isEmpty ? 'Skip' : 'Next'),
   )
 
   SizedBox(height: 16)
 }
 ```
 
-**Note:** If `_publicNameController` is empty when Next/Skip is pressed, `identity_is_public` remains `false` (§9.1 default). No public profile is created.
+**Forward action:** There is exactly one forward button on this step. Its label is "Skip" while the public-name field is empty and "Next" once the field has text; both states call `_goToExplainer`. No separate text "Skip" button is drawn. The field's keyboard Done key invokes the same handler.
+
+**Note:** If `_publicNameController` is empty when the button is pressed, `identity_is_public` remains `false` (§9.1 default). No public profile is created.
 
 #### 22.42.4 Screen: Explainer (`_Step.explainer`)
 
@@ -24666,7 +25036,11 @@ Row(
 )
 ```
 
-`_finish` navigates to `_Step.pinSetup`.
+`_finish` navigates to `_Step.privacyStyle` (§22.42.4a). The screen's title is "How Mesh Infinity works"; its three rows are the §22.23 ambient-state disclosures and this step is the one part of onboarding that cannot be deferred (§22.27).
+
+#### 22.42.4a Screen: Privacy Style (`_Step.privacyStyle`)
+
+The §22.27 item 3 preset choice, placed after the disclosures so the user has just read what the presets change. Title: "Choose your default privacy style". Three `RadioListTile` rows with the exact titles and one-line descriptions from §22.27 item 3 (**Everyday** / **More private** / **Lockdown**), **Everyday** pre-selected, and a helper line "You can change this any time in Settings → Privacy & Safety." The wording restrictions of §22.27 item 3 apply verbatim: no threat-model quiz, no examples that ask the user to self-identify as endangered. One filled button, **Next**, always enabled (a preset is always selected), which writes the chosen `ThreatContext` through `bridge.setThreatContext(...)` and navigates to `_Step.pinSetup`.
 
 #### 22.42.5 Screen: PIN Setup (`_Step.pinSetup`)
 
@@ -24732,9 +25106,16 @@ Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     keyboardType: TextInputType.numberWithOptions(signed: false, decimal: false),
     obscureText: true,
     maxLength: 16,
+    // Done on the confirm field is the keyboard's "Set PIN"; it does nothing
+    // while the form is invalid, exactly like the disabled button.
+    textInputAction: TextInputAction.done,
+    onSubmitted: (_) { if (_pinValid) _confirmPin(); },
     decoration: InputDecoration(
       labelText: 'Confirm PIN',
       counterText: '',
+      // The disabled Set PIN button says why: the length rule is always
+      // visible as helper text (same wording as PinScreen, §22.10.10).
+      helperText: '4 to 16 digits',
       errorText: _pinMismatch ? 'PINs do not match' : null,
     ),
   ),
@@ -24814,7 +25195,7 @@ Container(
 )
 ```
 
-After PIN is set (or skipped), `_finishOnboarding()` transitions to `AppShell`. The onboarding flow is complete.
+After PIN is set (or skipped), the flow navigates to `_Step.done` (§22.42.7). `_finishOnboarding()` is called only from that step.
 
 #### 22.42.6 Safety Number Screen (post-pairing)
 
@@ -24904,6 +25285,10 @@ Scaffold(
 `_safetyNumberRows` splits the 60-digit safety number into 12 groups of 5, then arranges them as 4 rows × 3 groups.
 
 Verification status is stored in the contact's trust record. A verified contact shows a `verified` chip in `ContactDetailScreen` (§22.8.2).
+
+#### 22.42.7 Screen: Done (`_Step.done`)
+
+The last onboarding step and the only place `_finishOnboarding()` runs. Title: "You're set up". One line of body text: "Mesh Infinity is ready. Nothing works until you have someone to talk to." Two actions: primary filled **Add a contact**, which calls `_finishOnboarding()` and then pushes `PairContactScreen` (§22.8.3) on top of `AppShell`; secondary text button **Go to Chat**, which calls `_finishOnboarding()` and lands on the Chat section (§22.5.1) with its empty state (§22.49). `_finishOnboarding()` first calls `bridge.setOnboardingComplete()` (persisting the §22.42 `onboarding_complete` flag) and transitions to `AppShell` only after that call returns success; on failure it shows `ErrorBanner` ("Couldn't finish setup. Try again.", §22.51) and stays on this step, so the flag and the shell transition cannot diverge.
 
 ---
 
@@ -25806,6 +26191,8 @@ Error strings come from `bridge.getLastError()`. Fallback strings:
 | Task create fails | "Couldn't create task. Check your Infinet connection." | Yes |
 | Voice note recording fails | "Couldn't start recording. Check microphone permissions." | No |
 | Call connect fails | "Call failed. The contact may be offline." | No |
+| Service config save fails (§22.54.4) | "Couldn't save service settings. Try again." | Yes |
+| Onboarding completion fails (§22.42.7) | "Couldn't finish setup. Try again." | Yes |
 
 ---
 
@@ -26816,6 +27203,91 @@ Card(
 
 **Nav bar integration:** The Services section appears in the nav bar when `tier.tierUnlocked(MeshTier.services)`. `AppSection.services` is added to `_visibleSections` between Files and Contacts.
 
+#### 22.54.4 Protocol Server Configuration Screens (shared rules)
+
+The `Configure` button on a `_ServiceTile` pushes one of the five screens below. Each edits the server-side settings that §20 already defines (§20.2 Access Model, §20.3.1 user mapping, §20.4.1 share configuration, §20.5.1 gateway configuration, §20.8.1 IPP adapter); the screens add no settings of their own. Clipboard Sync and Screen Share have no configuration screen (§22.54.3).
+
+**File:** `features/services/config/<server>_config_screen.dart`, one file per screen, sharing `features/services/config/trust_floor_selector.dart`.
+
+**Common layout.** `Scaffold` with `AppBar(title: <service name>, leading: back)` and a `ListView(padding: EdgeInsets.all(16))` of `Card` groups. Every screen has a single filled `Save` button pinned at the bottom (`SafeArea`), disabled with a helper line (`"Fix the highlighted fields to save"`) while any field is invalid. Settings are read with `bridge.fetch<Server>Config()` on load (skeleton per §22.50 while pending) and written with `bridge.set<Server>Config(config)`; the backend validates again, persists to the vault (§17.9) and applies the change to the running server immediately, so a save never requires a restart. A save that the backend rejects shows `ErrorBanner` ("Couldn't save service settings. Try again.", retry = Yes, §22.51) and keeps the user's edits. Unsaved edits prompt `"Discard changes?"` (Keep editing / Discard) on back.
+
+**Trust floor selector.** `TrustFloorSelector(minimum: <protocol floor>, value: config.min_trust_level)` is a `DropdownMenu` listing trust levels from the protocol's hard floor up to Level 8, each row showing the level number, its §8.1 name and its colour dot (`MeshColors.trust_color`). Levels below the floor are not offered, so the UI cannot ask for what §20 forbids ("Server operator can raise the floor; cannot lower it", §20.2.1). The helper line under the selector reads `"Only contacts at this level or higher can connect. <Protocol> never allows below Level <floor>."`
+
+**Plain language.** Titles and helper lines follow §22.22: no protocol acronym appears alone; the first mention on each screen is `"Remote Desktop (MNRDP)"` and so on. Technical identifiers (paths, URLs, peer IDs) are shown monospace and never paraphrased.
+
+**Validation.** Each field validates on change; an invalid field shows `colorScheme.error` outline plus an inline reason (§22.51 inline rule, never a dialog). Backend-side limits are the same as the UI limits so a value the UI accepts is never rejected server-side for format reasons.
+
+#### 22.54.5 MnrdpServerConfigScreen
+
+Edits `MnrdpServerConfig` (§17.13) plus the §20.2.1 Access Model floors.
+
+| Group | Field | Control | Default | Validation / rule |
+|-------|-------|---------|---------|-------------------|
+| Who can connect | View-only floor | `TrustFloorSelector(minimum: 5)` | Level 5 | §20.2.1: view-only is never below Level 5 |
+| Who can connect | Input and app streaming floor | `TrustFloorSelector(minimum: 6)` | Level 6 | §20.2.1: `input_enabled`, `AppStream` and `AppGallery` are never below Level 6; must be ≥ the view-only floor (inline reason: `"Must be at least the view-only level"`) |
+| What is offered | Full desktop / App streaming / App gallery | three `SwitchListTile` | all on | at least one must stay on (`"Keep at least one mode on, or turn Remote Desktop off"`) |
+| Adapters | VNC / NX / Apple Remote Desktop | `SwitchListTile` per adapter | off | only drawn on platforms where the adapter exists (§20.2.3–20.2.5); helper: `"Lets existing <adapter> clients reach this computer through the mesh."` |
+| Limits | Max simultaneous sessions | `Slider` 1–8 | 2 | integer |
+
+#### 22.54.6 MnspServerConfigScreen
+
+Edits `MnspServerConfig` (§17.13) and the `mnsp_user_map` list (§20.3.1).
+
+| Group | Field | Control | Default | Validation / rule |
+|-------|-------|---------|---------|-------------------|
+| Who can connect | Trust floor | `TrustFloorSelector(minimum: 6)` | Level 6 | §20.3.1: shell access is never below Level 6 |
+| Who can connect | Allowed people | list of `ListTile` rows, `+ Add person` opens the contact picker filtered to contacts at or above the floor | empty | §20.3.1: `can_remote_shell` is an explicit per-peer grant; an empty list means nobody can connect, and the screen says so: `"No one can open a shell yet. Add a person to grant access."` |
+| Per person (sheet) | Local user account | `TextField` monospace | the app's own OS user | must name an existing local account (`"No local account called <name>"`) |
+| Per person (sheet) | Allowed shells | multi-select of shells found on this OS | the user's login shell | at least one |
+| Per person (sheet) | Allowed commands | `"Any command"` / `"Only these commands"` with a line-per-command editor | Any command | each line non-empty |
+| Per person (sheet) | Starting folder | `TextField` monospace | the local account's home | must exist and be a directory |
+| Adapters | SSH adapter | `SwitchListTile`; when on, `sshd port` `TextField` | off; 22 | port 1–65535; helper: `"Forwards mesh connections to the SSH server already running on this computer."` |
+
+Removing a person from the list revokes `can_remote_shell` immediately on save and ends any open session for that peer (§20.3.1); the row's swipe-to-delete asks `"Remove shell access for <name>?"` (Keep / Remove).
+
+#### 22.54.7 MnfpSharesConfigScreen
+
+Edits the `mnfp_share` list (§20.4.1) and `MnfpServerConfig` adapters (§17.13).
+
+| Group | Field | Control | Default | Validation / rule |
+|-------|-------|---------|---------|-------------------|
+| Shares | list of shares | `Card` per share: name, root path (monospace, middle-ellipsised), access, floor; `+ Add share` opens the share sheet | empty; `"Nothing is shared yet. Add a folder to share it with contacts."` | — |
+| Share sheet | Name | `TextField` | folder name | 1–64 chars, unique among shares (`"You already have a share called <name>"`) |
+| Share sheet | Folder | platform folder picker; path shown monospace | — | must exist, be a directory and be readable by the app; §20.4.1 roots never include the app's own vault or data directory (`"Mesh Infinity can't share its own data folder"`) |
+| Share sheet | Access | segmented `Read only` / `Read and write` / `Write only` | Read only | §20.4.1 `MnfpAccess`; `access` is the maximum granted |
+| Share sheet | Read floor | `TrustFloorSelector(minimum: 6)` | Level 6 | §20.4.1 |
+| Share sheet | Write floor | `TrustFloorSelector(minimum: 6)`, shown only when access allows writing | Level 7 | must be ≥ the read floor |
+| Share sheet | Exceptions | per-contact override rows (contact, access) | none | §20.4.1 `peer_overrides`; an override may lower or raise the per-share access for that peer only, never below the protocol floor |
+| Share sheet | Hidden | `SwitchListTile` `"Don't list this share"` | off | §20.4.1 `hidden`: not advertised in the `ServiceRecord`; reachable by name only |
+| Adapters | SMB / NFS / SFTP via SSH | `SwitchListTile` per adapter | off | SFTP via SSH is only enabled when the §22.54.6 SSH adapter is on (helper: `"Turn on the SSH adapter in Remote Shell first"`) |
+
+Deleting a share asks `"Stop sharing <name>? Contacts lose access immediately; nothing on your disk is deleted."` (Keep sharing / Stop sharing).
+
+#### 22.54.8 ApiGatewayConfigScreen
+
+Edits the `http_gateway` configuration (§20.5.1). gRPC and WebSocket (§20.5.2, §20.5.3) share this configuration, which the screen states in its intro line.
+
+| Group | Field | Control | Default | Validation / rule |
+|-------|-------|---------|---------|-------------------|
+| Upstream | Local service address | `TextField` monospace | `http://127.0.0.1:8080` | `http://` or `https://` URL whose host is a loopback address or a name on this machine; a non-local host is refused (`"The gateway only forwards to services on this device"`) so the gateway cannot be turned into an open proxy |
+| Who can connect | Trust floor | `TrustFloorSelector(minimum: 5)` | Level 5 | §20.5.1 |
+| Authentication | Mode | radio: `Trust gate only` / `Bearer token per peer` / `Client certificate` | Trust gate only | §20.5.1 `MeshApiAuthMode`; each option has a one-line helper describing what the upstream service receives |
+| Limits | Requests per minute per contact | `Switch` `"Limit requests"` + `TextField` | off (unlimited) | 1–100 000 integer |
+| Limits | Allowed methods | chip set `GET POST PUT PATCH DELETE HEAD OPTIONS` | all | at least one |
+| Limits | Path prefix | `TextField` monospace | empty (all paths) | must start with `/`, no `..` segment |
+
+#### 22.54.9 PrintServiceConfigScreen
+
+Edits the `ipp_adapter` configuration (§20.8.1), one entry per shared printer.
+
+| Group | Field | Control | Default | Validation / rule |
+|-------|-------|---------|---------|-------------------|
+| Printers | list of shared printers | `Card` per printer: name, queue URL, floor; `+ Share a printer` opens the printer sheet | empty; `"No printers shared yet."` | — |
+| Printer sheet | Printer | picker listing local IPP queues the OS reports; `Other…` reveals a URL field | — | URL must be `ipp://`, `ipps://` or `http(s)://` to a loopback host or a printer on the local network; the loopback rule follows §22.54.8 |
+| Printer sheet | Name shown to contacts | `TextField` | the queue's own name | 1–64 chars |
+| Printer sheet | Who can print | `TrustFloorSelector(minimum: 5)` | Level 5 | §20.8.1 |
+| Printer sheet | Capabilities | read-only chips (`duplex`, `color`, paper sizes) discovered from the queue, refresh button | discovered | §20.8.1 advertisement metadata |
+
 ---
 
 ### 22.55 Settings Screen Updates
@@ -26902,9 +27374,14 @@ class LogEntry {
   final DateTime timestamp;
   final LogLevel level;    // trace, debug, info, warn, error
   final String module;     // e.g. "crypto.x3dh", "routing.solver", "ffi"
-  final String message;
-  final Map<String, dynamic>? metadata;  // optional structured data
+  final String event;      // enumerated event name from the backend log schema, never free text
+  final Map<String, LogValue>? metadata;  // allowlisted typed fields only (§21.3.2)
 }
+
+// The only value types a log sink accepts. Strings are deliberately absent:
+// a free-form string is the channel through which secrets reach a log.
+sealed class LogValue { }       // LogInt(int) | LogDuration(Duration) | LogBytes(int)
+                                // | LogEnum(String name) | LogBool(bool) | LogModule(String id)
 
 enum LogLevel { trace, debug, info, warn, error }
 ```
@@ -26943,7 +27420,7 @@ ListView.builder(
       dense: true,
       leading: Icon(_levelIcon(log.level), size: 16,
         color: _levelColor(log.level)),
-      title: Text('${log.module}: ${log.message}',
+      title: Text('${log.module}: ${log.event}',
         style: TextStyle(fontFamily: 'monospace', fontSize: 12)),
       subtitle: Text(
         '${log.timestamp.toIso8601String()} ${log.metadata ?? ""}',
@@ -26962,6 +27439,8 @@ Log levels:
 
 Backend logging: Rust backend writes logs to a ring buffer accessible via FFI (`mi_get_logs(min_level, since_timestamp) -> JSON`). The Flutter log viewer polls this on a 1-second timer when the log screen is visible.
 
+**What a log line may contain.** A log line is `timestamp + level + module + event name + allowlisted metadata` and nothing else. The event name is drawn from a closed enumeration in the backend; `metadata` holds only the `LogValue` types above (counts, durations, byte sizes, enumerated names, booleans, module identifiers). Free-form strings, peer identifiers, addresses and every class in the §21.2.2 never-log table are rejected at the sink, in every build, at every level including `trace`. The `trace` level therefore reports *that* a ratchet step or packet event happened and how long it took, never the key, chain index, peer or payload involved. "Copy all visible logs" copies exactly what is shown, so the same rule bounds what can leave the device.
+
 #### 22.56.2 State Inspector
 
 Displays raw internal state for debugging. Read-only. Each section is an expandable card.
@@ -26972,7 +27451,9 @@ _InspectorSection('Identity', [
   _KV('Self Identity', selfId?.peerId.hex ?? 'locked'),
   _KV('Active Masks', '${masks.length}'),
   _KV('Identity Unlocked', '${ctx.identityUnlocked}'),
-  _KV('PIN Attempts', '${pin.attempts}'),
+  // No PIN attempt counter or lockout timer here: local-authentication
+  // state is on the §21.2.2 never-log table (a holder of the device must
+  // not learn how close a wrong-PIN wipe is from a debug view).
 ]),
 _InspectorSection('Routing', [
   _KV('Public Routes', '${routingTable.public.length}'),
@@ -27119,6 +27600,8 @@ debugState.recordFfiCall(functionName, elapsed, resultSize);
 ```
 
 The trace view shows: function name, call count, avg/p50/p99 latency, total bytes returned.
+
+The tracer records **call names, timing and sizes only**. Arguments, returned JSON, buffers and error strings are never captured, stored or displayed, in any build: `recordFfiCall` takes the function name, the elapsed duration and the byte length of the result, and has no parameter through which a payload could be passed. This keeps the tracer outside the §21.2.2 never-log table even when tracing a key-handling or message-handling call.
 
 #### 22.56.6 Build Info
 
