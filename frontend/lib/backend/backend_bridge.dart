@@ -42,6 +42,7 @@ import 'models/file_transfer_models.dart';
 import 'models/message_models.dart';
 import 'models/peer_models.dart';
 import 'models/room_models.dart';
+import 'models/service_config_models.dart';
 import 'models/settings_models.dart';
 
 // =============================================================================
@@ -481,6 +482,32 @@ class BackendBridge {
     return result == 0;
   }
 
+  /// Block or unblock a contact (§22.8.2 "Block contact").
+  ///
+  /// While blocked, the backend drops every inbound message and message
+  /// request from [peerId] at its inbound gate; the contact record itself is
+  /// kept so the block is reversible.  Returns true when the backend applied
+  /// the change (false for an unknown peer or an unavailable backend).
+  bool setPeerBlocked(String peerId, {required bool blocked}) {
+    if (!isAvailable) return false;
+    final ptr = peerId.toNativeUtf8();
+    // Two symbols rather than a flag argument keep the C ABI self-describing.
+    final result = blocked
+        ? _bindings!.blockPeer(_context, ptr)
+        : _bindings!.unblockPeer(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Whether [peerId] is currently blocked; unknown peers are not blocked.
+  bool isPeerBlocked(String peerId) {
+    if (!isAvailable) return false;
+    final ptr = peerId.toNativeUtf8();
+    final result = _bindings!.isPeerBlocked(_context, ptr);
+    calloc.free(ptr);
+    return result == 1;
+  }
+
   /// Ask the Rust trust engine whether a given peer is trusted, optionally
   /// providing known markers (e.g. shared contacts) that help the engine
   /// calculate transitive trust.  Returns a decoded Map on success, null if
@@ -710,6 +737,27 @@ class BackendBridge {
     final result = _bindings!.setSecurityConfig(_context, ptr);
     calloc.free(ptr);
     return result == 0;
+  }
+
+  /// Whether the §22.42 onboarding flow reached its Done step.
+  ///
+  /// The flag lives in the encrypted settings vault, so it reads false until
+  /// the identity is unlocked; app.dart checks it only after the unlock gate.
+  /// An identity without this flag means setup was interrupted, and the app
+  /// resumes onboarding at the identity step instead of opening the shell.
+  bool isOnboardingComplete() {
+    if (!isAvailable) return false;
+    return _bindings!.isOnboardingComplete(_context) == 1;
+  }
+
+  /// Persist the `onboarding_complete` flag (§22.42.7).
+  ///
+  /// Returns false when the backend could not persist it (no unlocked
+  /// identity); the Done step must then stay put rather than open the shell,
+  /// otherwise the next launch would run onboarding again.
+  bool setOnboardingComplete() {
+    if (!isAvailable) return false;
+    return _bindings!.setOnboardingComplete(_context) == 0;
   }
 
   /// Persist the current identity with a PIN-wrapped master key.
@@ -2572,6 +2620,124 @@ class BackendBridge {
   }
 
   // ---------------------------------------------------------------------------
+  // Protocol server configuration (§22.54.4–§22.54.9)
+  //
+  // One fetch/set pair per server.  A fetch returns null when the backend is
+  // unavailable or its JSON is not an object; a set returns false when the
+  // backend rejects the payload, in which case [getLastError] names the
+  // field and the plain-language reason.
+  // ---------------------------------------------------------------------------
+
+  /// Decode a JSON object returned by a config getter, or null.
+  Map<String, dynamic>? _readObject(Pointer<Utf8> ptr) {
+    final json = _readString(ptr);
+    if (json == null) return null;
+    final decoded = jsonDecode(json);
+    if (decoded is! Map) return null;
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  /// Send a JSON object to a config setter; true when the backend accepted it.
+  bool _writeObject(
+    int Function(Pointer<Void>, Pointer<Utf8>) setter,
+    Map<String, dynamic> config,
+  ) {
+    if (!isAvailable) return false;
+    final ptr = jsonEncode(config).toNativeUtf8();
+    final result = setter(_context, ptr);
+    calloc.free(ptr);
+    return result == 0;
+  }
+
+  /// Remote Desktop server settings (§22.54.5).
+  MnrdpConfig? fetchMnrdpConfig() {
+    if (!isAvailable) return null;
+    final map = _readObject(_bindings!.mnrdpConfig(_context));
+    return map == null ? null : MnrdpConfig.fromJson(map);
+  }
+
+  /// Save Remote Desktop server settings; false if the backend refused.
+  bool setMnrdpConfig(MnrdpConfig config) =>
+      _writeObject(_bindings!.mnrdpConfigSet, config.toJson());
+
+  /// Remote Shell server settings (§22.54.6).
+  MnspConfig? fetchMnspConfig() {
+    if (!isAvailable) return null;
+    final map = _readObject(_bindings!.mnspConfig(_context));
+    return map == null ? null : MnspConfig.fromJson(map);
+  }
+
+  /// Save Remote Shell server settings; false if the backend refused.
+  bool setMnspConfig(MnspConfig config) =>
+      _writeObject(_bindings!.mnspConfigSet, config.toJson());
+
+  /// File Access server settings (§22.54.7).
+  MnfpConfig? fetchMnfpConfig() {
+    if (!isAvailable) return null;
+    final map = _readObject(_bindings!.mnfpConfig(_context));
+    return map == null ? null : MnfpConfig.fromJson(map);
+  }
+
+  /// Save File Access server settings; false if the backend refused.
+  bool setMnfpConfig(MnfpConfig config) =>
+      _writeObject(_bindings!.mnfpConfigSet, config.toJson());
+
+  /// API Gateway settings (§22.54.8).
+  ApiGatewayConfig? fetchApiGatewayConfig() {
+    if (!isAvailable) return null;
+    final map = _readObject(_bindings!.apiGatewayConfig(_context));
+    return map == null ? null : ApiGatewayConfig.fromJson(map);
+  }
+
+  /// Save API Gateway settings; false if the backend refused.
+  bool setApiGatewayConfig(ApiGatewayConfig config) =>
+      _writeObject(_bindings!.apiGatewayConfigSet, config.toJson());
+
+  /// Print Services settings (§22.54.9).
+  PrintConfig? fetchPrintConfig() {
+    if (!isAvailable) return null;
+    final map = _readObject(_bindings!.printConfig(_context));
+    return map == null ? null : PrintConfig.fromJson(map);
+  }
+
+  /// Save Print Services settings; false if the backend refused.
+  bool setPrintConfig(PrintConfig config) =>
+      _writeObject(_bindings!.printConfigSet, config.toJson());
+
+  /// Platform facts for the configuration screens: adapter availability,
+  /// the app's OS user and the shells found on this machine.
+  ServiceHostFacts fetchServiceHostFacts() {
+    if (!isAvailable) return const ServiceHostFacts();
+    final map = _readObject(_bindings!.serviceHostFacts(_context));
+    return map == null
+        ? const ServiceHostFacts()
+        : ServiceHostFacts.fromJson(map);
+  }
+
+  /// IPP queues the local spooler reports.  Blocks for up to a few seconds.
+  List<PrintQueue> fetchPrintQueues() {
+    if (!isAvailable) return const [];
+    final json = _readString(_bindings!.printQueues(_context));
+    if (json == null) return const [];
+    final decoded = jsonDecode(json);
+    if (decoded is! List) return const [];
+    return decoded
+        .whereType<Map>()
+        .map((m) => PrintQueue.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  /// Probe one queue URL for its name and capabilities, or null on failure
+  /// (see [getLastError]).
+  PrintQueue? probePrintQueue(String url) {
+    if (!isAvailable) return null;
+    final ptr = url.toNativeUtf8();
+    final map = _readObject(_bindings!.printQueueProbe(_context, ptr));
+    calloc.free(ptr);
+    return map == null ? null : PrintQueue.fromJson(map);
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
@@ -2912,6 +3078,15 @@ class _BackendBindings {
           .lookupFunction<TrustVerifyJsonNative, TrustVerifyJsonDart>(
             'mi_trust_verify_json',
           ),
+      blockPeer = _lib.lookupFunction<PeerIdCallNative, PeerIdCallDart>(
+        'mi_block_peer',
+      ),
+      unblockPeer = _lib.lookupFunction<PeerIdCallNative, PeerIdCallDart>(
+        'mi_unblock_peer',
+      ),
+      isPeerBlocked = _lib.lookupFunction<PeerIdCallNative, PeerIdCallDart>(
+        'mi_is_peer_blocked',
+      ),
       hasIdentity = _lib.lookupFunction<HasIdentityNative, HasIdentityDart>(
         'mi_has_identity',
       ),
@@ -3009,6 +3184,14 @@ class _BackendBindings {
       setSecurityConfig = _lib
           .lookupFunction<SetSecurityConfigNative, SetSecurityConfigDart>(
             'mi_set_security_config',
+          ),
+      isOnboardingComplete = _lib
+          .lookupFunction<ContextCallNative, ContextCallDart>(
+            'mi_is_onboarding_complete',
+          ),
+      setOnboardingComplete = _lib
+          .lookupFunction<ContextCallNative, ContextCallDart>(
+            'mi_set_onboarding_complete',
           ),
       setPin = _lib.lookupFunction<SetPinNative, SetPinDart>('mi_set_pin'),
       changePin = _lib.lookupFunction<ChangePinNative, ChangePinDart>(
@@ -3454,6 +3637,47 @@ class _BackendBindings {
       hostingSet = _lib.lookupFunction<HostingSetNative, HostingSetDart>(
         'mi_hosting_set',
       ),
+      mnrdpConfig = _lib.lookupFunction<ConfigGetNative, ConfigGetDart>(
+        'mi_mnrdp_config',
+      ),
+      mnrdpConfigSet = _lib.lookupFunction<ConfigSetNative, ConfigSetDart>(
+        'mi_mnrdp_config_set',
+      ),
+      mnspConfig = _lib.lookupFunction<ConfigGetNative, ConfigGetDart>(
+        'mi_mnsp_config',
+      ),
+      mnspConfigSet = _lib.lookupFunction<ConfigSetNative, ConfigSetDart>(
+        'mi_mnsp_config_set',
+      ),
+      mnfpConfig = _lib.lookupFunction<ConfigGetNative, ConfigGetDart>(
+        'mi_mnfp_config',
+      ),
+      mnfpConfigSet = _lib.lookupFunction<ConfigSetNative, ConfigSetDart>(
+        'mi_mnfp_config_set',
+      ),
+      apiGatewayConfig = _lib.lookupFunction<ConfigGetNative, ConfigGetDart>(
+        'mi_api_gateway_config',
+      ),
+      apiGatewayConfigSet = _lib
+          .lookupFunction<ConfigSetNative, ConfigSetDart>(
+            'mi_api_gateway_config_set',
+          ),
+      printConfig = _lib.lookupFunction<ConfigGetNative, ConfigGetDart>(
+        'mi_print_config',
+      ),
+      printConfigSet = _lib.lookupFunction<ConfigSetNative, ConfigSetDart>(
+        'mi_print_config_set',
+      ),
+      serviceHostFacts = _lib.lookupFunction<ConfigGetNative, ConfigGetDart>(
+        'mi_service_host_facts',
+      ),
+      printQueues = _lib.lookupFunction<ConfigGetNative, ConfigGetDart>(
+        'mi_print_queues',
+      ),
+      printQueueProbe = _lib
+          .lookupFunction<PrintQueueProbeNative, PrintQueueProbeDart>(
+            'mi_print_queue_probe',
+          ),
       messageRequestsJson = _lib
           .lookupFunction<MessageRequestsJsonNative, MessageRequestsJsonDart>(
             'mi_message_requests_json',
@@ -3519,6 +3743,9 @@ class _BackendBindings {
   final RemoveDeviceDart removeDevice;
   final TrustAttestDart trustAttest;
   final TrustVerifyJsonDart trustVerifyJson;
+  final PeerIdCallDart blockPeer;
+  final PeerIdCallDart unblockPeer;
+  final PeerIdCallDart isPeerBlocked;
   final HasIdentityDart hasIdentity;
   final LastErrorMessageDart lastErrorMessage;
   final StringFreeDart stringFree;
@@ -3545,6 +3772,8 @@ class _BackendBindings {
   final LockIdentityDart lockIdentity;
   final GetSecurityConfigDart getSecurityConfig;
   final SetSecurityConfigDart setSecurityConfig;
+  final ContextCallDart isOnboardingComplete;
+  final ContextCallDart setOnboardingComplete;
   final SetPinDart setPin;
   final ChangePinDart changePin;
   final RemovePinDart removePin;
@@ -3664,6 +3893,20 @@ class _BackendBindings {
   final MeshServicesDiscoverDart meshServicesDiscover;
   final HostingConfigDart hostingConfig;
   final HostingSetDart hostingSet;
+  // Protocol server configuration (§22.54.4–§22.54.9)
+  final ConfigGetDart mnrdpConfig;
+  final ConfigSetDart mnrdpConfigSet;
+  final ConfigGetDart mnspConfig;
+  final ConfigSetDart mnspConfigSet;
+  final ConfigGetDart mnfpConfig;
+  final ConfigSetDart mnfpConfigSet;
+  final ConfigGetDart apiGatewayConfig;
+  final ConfigSetDart apiGatewayConfigSet;
+  final ConfigGetDart printConfig;
+  final ConfigSetDart printConfigSet;
+  final ConfigGetDart serviceHostFacts;
+  final ConfigGetDart printQueues;
+  final PrintQueueProbeDart printQueueProbe;
   // Message requests (§10.1.1)
   final MessageRequestsJsonDart messageRequestsJson;
   final AcceptMessageRequestDart acceptMessageRequestFn;
@@ -3923,6 +4166,11 @@ typedef TrustVerifyJsonNative =
 typedef TrustVerifyJsonDart =
     Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>);
 
+// mi_block_peer / mi_unblock_peer / mi_is_peer_blocked (ctx, peer_id) -> i32
+// One shape for the three §22.8.2 block-list calls: each takes a peer ID.
+typedef PeerIdCallNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef PeerIdCallDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
 // mi_has_identity(ctx) -> u8  (1=yes, 0=no)
 typedef HasIdentityNative = Uint8 Function(Pointer<Void>);
 typedef HasIdentityDart = int Function(Pointer<Void>);
@@ -4048,6 +4296,12 @@ typedef GetSecurityConfigDart = Pointer<Utf8> Function(Pointer<Void>);
 // mi_set_security_config(ctx, config_json) -> i32
 typedef SetSecurityConfigNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
 typedef SetSecurityConfigDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_is_onboarding_complete(ctx) -> i32 (1 = done, 0 = not yet)
+// mi_set_onboarding_complete(ctx) -> i32 (0 = persisted, -1 = failed)
+// One shape for context-only i32 calls (§22.42 onboarding flag).
+typedef ContextCallNative = Int32 Function(Pointer<Void>);
+typedef ContextCallDart = int Function(Pointer<Void>);
 
 // mi_set_pin(ctx, pin) -> i32
 typedef SetPinNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
@@ -4657,6 +4911,21 @@ typedef HostingConfigDart = Pointer<Utf8> Function(Pointer<Void>);
 // mi_hosting_set(ctx, service_id, enabled) -> i32  (0 = success)
 typedef HostingSetNative = Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32);
 typedef HostingSetDart = int Function(Pointer<Void>, Pointer<Utf8>, int);
+
+// mi_<server>_config(ctx) -> JSON string  (§22.54 config getters, host
+// facts and the print queue list all share this shape)
+typedef ConfigGetNative = Pointer<Utf8> Function(Pointer<Void>);
+typedef ConfigGetDart = Pointer<Utf8> Function(Pointer<Void>);
+
+// mi_<server>_config_set(ctx, json) -> i32  (0 = saved, -1 = refused)
+typedef ConfigSetNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);
+typedef ConfigSetDart = int Function(Pointer<Void>, Pointer<Utf8>);
+
+// mi_print_queue_probe(ctx, url) -> JSON string or null
+typedef PrintQueueProbeNative =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+typedef PrintQueueProbeDart =
+    Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
 
 // mi_message_requests_json(ctx) -> *const c_char  (JSON array of pending requests)
 typedef MessageRequestsJsonNative = Pointer<Utf8> Function(Pointer<Void>);

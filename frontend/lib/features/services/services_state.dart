@@ -28,6 +28,7 @@ import 'package:flutter/foundation.dart';
 import '../../backend/backend_bridge.dart';
 import '../../backend/event_bus.dart';
 import '../../backend/event_models.dart';
+import '../../backend/models/service_config_models.dart';
 import '../../backend/models/settings_models.dart';
 
 /// Manages the list of mesh services (pinned / subscribed) for the Services
@@ -125,4 +126,63 @@ class ServicesState extends ChangeNotifier {
     if (ok) _load();
     return ok;
   }
+
+  // ---------------------------------------------------------------------------
+  // Protocol server configuration (§22.54.4–§22.54.9)
+  //
+  // The configuration screens go through these wrappers rather than the
+  // bridge directly so widget tests can subclass ServicesState and stand in
+  // a fake store (the bridge itself cannot be subclassed).  Each fetch
+  // returns null when the backend is unavailable; each save returns false
+  // when the backend refused and [last_error] then holds the reason.
+  // ---------------------------------------------------------------------------
+
+  /// Reason the last save was refused, from `mi_last_error_message`.
+  String? last_error() => _bridge.getLastError();
+
+  /// Remote Desktop settings, or null when the backend is unavailable.
+  Future<MnrdpConfig?> fetch_mnrdp_config() async => _bridge.fetchMnrdpConfig();
+
+  /// Save Remote Desktop settings; false when refused.
+  Future<bool> save_mnrdp_config(MnrdpConfig config) async =>
+      _bridge.setMnrdpConfig(config);
+
+  /// Remote Shell settings, or null when the backend is unavailable.
+  Future<MnspConfig?> fetch_mnsp_config() async => _bridge.fetchMnspConfig();
+
+  /// Save Remote Shell settings; false when refused.
+  Future<bool> save_mnsp_config(MnspConfig config) async =>
+      _bridge.setMnspConfig(config);
+
+  /// File Access settings, or null when the backend is unavailable.
+  Future<MnfpConfig?> fetch_mnfp_config() async => _bridge.fetchMnfpConfig();
+
+  /// Save File Access settings; false when refused.
+  Future<bool> save_mnfp_config(MnfpConfig config) async =>
+      _bridge.setMnfpConfig(config);
+
+  /// API Gateway settings, or null when the backend is unavailable.
+  Future<ApiGatewayConfig?> fetch_api_gateway_config() async =>
+      _bridge.fetchApiGatewayConfig();
+
+  /// Save API Gateway settings; false when refused.
+  Future<bool> save_api_gateway_config(ApiGatewayConfig config) async =>
+      _bridge.setApiGatewayConfig(config);
+
+  /// Print Services settings, or null when the backend is unavailable.
+  Future<PrintConfig?> fetch_print_config() async => _bridge.fetchPrintConfig();
+
+  /// Save Print Services settings; false when refused.
+  Future<bool> save_print_config(PrintConfig config) async =>
+      _bridge.setPrintConfig(config);
+
+  /// Adapter availability, OS user and shells for this machine.
+  Future<ServiceHostFacts> host_facts() async => _bridge.fetchServiceHostFacts();
+
+  /// Queues the local spooler reports.
+  Future<List<PrintQueue>> print_queues() async => _bridge.fetchPrintQueues();
+
+  /// Name and capabilities of one queue URL, or null on failure.
+  Future<PrintQueue?> probe_print_queue(String url) async =>
+      _bridge.probePrintQueue(url);
 }

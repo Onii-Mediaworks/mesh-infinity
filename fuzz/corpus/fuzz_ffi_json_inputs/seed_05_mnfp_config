@@ -1,0 +1,1 @@
+ù{"shares":[{"name":"docs","root_path":"/srv/share","access":"ReadWrite","min_trust_level":6,"write_trust_level":7,"peer_overrides":[{"peer_id":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","access":"ReadOnly"}],"hidden":false}]}

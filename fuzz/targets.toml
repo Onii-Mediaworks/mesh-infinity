@@ -166,3 +166,10 @@ status = "active"
 owner_module = "backend/mesh/admin_command.rs"
 threat = "forged or malformed AdminCommand killswitch payloads panicking the handler or verifying without the InnerCircle contact's signature"
 required_by_spec = true
+
+[[target]]
+name = "fuzz_ipp_response"
+status = "active"
+owner_module = "backend/services/ipp.rs"
+threat = "malformed IPP or HTTP bytes from a printer or spooler causing panic or unbounded allocation during queue discovery"
+required_by_spec = true

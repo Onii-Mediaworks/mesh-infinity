@@ -662,11 +662,15 @@ pub struct MnfpError {
 // ---------------------------------------------------------------------------
 
 /// API Gateway authentication mode.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// `PartialEq`/`Eq` let the §22.54.8 configuration compare and round-trip
+/// the mode; `Default` is the §20.5.1 default of a trust gate only.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 // MeshApiAuthMode — variant enumeration.
 // Match exhaustively to handle every protocol state.
 pub enum MeshApiAuthMode {
-    // No value available.
+    // Trust gate only: no HTTP authentication is added (§20.5.1).
+    #[default]
     None,
     BearerPeerToken,
     ClientCert,

@@ -1,0 +1,1 @@
+ù{"trust_floor":6,"user_map":[{"peer_id":"abababababababababababababababababababababababababababababababab","local_user":"alice","allowed_shells":["/bin/bash"],"allowed_commands":["ls"],"working_dir":"/home/alice"}],"ssh_adapter":true,"sshd_port":22}

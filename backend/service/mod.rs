@@ -49,6 +49,7 @@ pub mod pairing_ops;
 pub mod poll;
 /// Core runtime struct and construction helpers.
 pub mod runtime;
+pub mod server_config_ops;
 /// Transport management: clearnet, Tor, WireGuard, SDR, overlay.
 pub mod transport_ops;
 /// Vault persistence: load and save for all data collections.

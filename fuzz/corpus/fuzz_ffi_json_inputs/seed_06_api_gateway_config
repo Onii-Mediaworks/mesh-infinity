@@ -1,0 +1,1 @@
+¤{"upstream_url":"http://127.0.0.1:8080","min_trust_level":5,"auth_mode":"BearerPeerToken","rate_limit":600,"allowed_methods":["GET","POST"],"path_prefix":"/api/v1"}

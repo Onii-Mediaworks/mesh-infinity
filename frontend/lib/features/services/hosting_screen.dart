@@ -15,6 +15,14 @@
 // which starts or stops the service listener and updates the local service
 // advertisement broadcast so peers' discovery lists update automatically.
 //
+// CONFIGURE BUTTONS (§22.54.4):
+// ----------------------------
+// Five services carry server-side settings defined in §20 (trust floors,
+// adapters, shell grants, share roots, the upstream URL, printer queues).
+// While such a service is enabled its tile shows a tune icon that pushes
+// the matching §22.54.5–§22.54.9 screen.  Clipboard Sync and Screen Share
+// have no settings and therefore no button.
+//
 // OPTIMISTIC UPDATE:
 // ------------------
 // On a successful toggle, we update _config locally before waiting for a
@@ -31,6 +39,11 @@ import 'package:provider/provider.dart';
 import '../../backend/backend_bridge.dart';
 import '../../core/widgets/section_header.dart';
 import '../../app/app_theme.dart';
+import 'config/api_gateway_config_screen.dart';
+import 'config/mnfp_shares_config_screen.dart';
+import 'config/mnrdp_server_config_screen.dart';
+import 'config/mnsp_server_config_screen.dart';
+import 'config/print_service_config_screen.dart';
 
 /// Lets the user enable or disable each hosted service on this device.
 ///
@@ -99,6 +112,13 @@ class _HostingScreenState extends State<HostingScreen> {
 
   bool get _anyEnabled => _config.values.any((value) => value == true);
 
+  /// Push one of the §22.54.5–§22.54.9 configuration screens.
+  void _configure(Widget screen) {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => screen));
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator());
@@ -124,6 +144,7 @@ class _HostingScreenState extends State<HostingScreen> {
             serviceId: 'remoteDesktop',
             enabled: _isEnabled('remoteDesktop'),
             onToggle: (v) => _toggle('remoteDesktop', v),
+            onConfigure: () => _configure(const MnrdpServerConfigScreen()),
           ),
           _ServiceTile(
             icon: Icons.terminal_outlined,
@@ -132,6 +153,7 @@ class _HostingScreenState extends State<HostingScreen> {
             serviceId: 'remoteShell',
             enabled: _isEnabled('remoteShell'),
             onToggle: (v) => _toggle('remoteShell', v),
+            onConfigure: () => _configure(const MnspServerConfigScreen()),
           ),
           const SizedBox(height: 8),
 
@@ -144,6 +166,7 @@ class _HostingScreenState extends State<HostingScreen> {
             serviceId: 'fileAccess',
             enabled: _isEnabled('fileAccess'),
             onToggle: (v) => _toggle('fileAccess', v),
+            onConfigure: () => _configure(const MnfpSharesConfigScreen()),
           ),
           _ServiceTile(
             icon: Icons.api_outlined,
@@ -153,6 +176,7 @@ class _HostingScreenState extends State<HostingScreen> {
             serviceId: 'apiGateway',
             enabled: _isEnabled('apiGateway'),
             onToggle: (v) => _toggle('apiGateway', v),
+            onConfigure: () => _configure(const ApiGatewayConfigScreen()),
           ),
           const SizedBox(height: 8),
 
@@ -181,6 +205,7 @@ class _HostingScreenState extends State<HostingScreen> {
             serviceId: 'printService',
             enabled: _isEnabled('printService'),
             onToggle: (v) => _toggle('printService', v),
+            onConfigure: () => _configure(const PrintServiceConfigScreen()),
           ),
           const SizedBox(height: 24),
         ],
@@ -224,9 +249,9 @@ class _HostingScreenState extends State<HostingScreen> {
                   text: 'Disabling a service stops advertising it to peers.',
                 ),
                 const _ExplainerBullet(
-                  icon: Icons.sync_alt_outlined,
+                  icon: Icons.tune_outlined,
                   text:
-                      'Some protocols will need dedicated configuration screens later.',
+                      'Turn a service on to reveal its settings: who can connect, what is shared, and which adapters run.',
                 ),
               ],
             ),
@@ -250,6 +275,7 @@ class _ServiceTile extends StatelessWidget {
     required this.serviceId,
     required this.enabled,
     required this.onToggle,
+    this.onConfigure,
   });
 
   final IconData icon;
@@ -264,6 +290,11 @@ class _ServiceTile extends StatelessWidget {
 
   /// Called when the user flips the switch; receives the new desired state.
   final ValueChanged<bool> onToggle;
+
+  /// Opens the service's configuration screen (§22.54.4).  Null for the
+  /// services that have no settings; the button is only drawn while the
+  /// service is enabled, matching the §22.54.3 tile definition.
+  final VoidCallback? onConfigure;
 
   @override
   Widget build(BuildContext context) {
@@ -301,7 +332,20 @@ class _ServiceTile extends StatelessWidget {
         // isThreeLine: true ensures the card has enough height for the
         // subtitle to wrap comfortably on narrow screens.
         isThreeLine: true,
-        trailing: Switch(value: enabled, onChanged: onToggle),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onConfigure != null && enabled)
+              IconButton(
+                icon: const Icon(Icons.tune_outlined, size: 18),
+                onPressed: onConfigure,
+                tooltip: 'Configure $title',
+                // 48dp target (§22.34) even though the glyph is small.
+                constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+              ),
+            Switch(value: enabled, onChanged: onToggle),
+          ],
+        ),
       ),
     );
   }

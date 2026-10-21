@@ -3558,6 +3558,7 @@ dependencies = [
  "sha3 0.10.9",
  "socket2",
  "sphinx-packet",
+ "subtle",
  "thiserror 2.0.20",
  "time",
  "tokio",
