@@ -10,15 +10,24 @@
 //! # Storage model (§3.6.2)
 //!
 //! ```text
-//! identity.key  — [1-byte mode][16-byte salt?][24-byte nonce?][ciphertext?]
+//! identity.key  — [1-byte mode][mode-specific body]
 //!                  mode 0x00 = plain 32-byte master key
-//!                  mode 0x01 = Argon2id(PIN)-wrapped 32-byte master key
+//!                  mode 0x01 = legacy Argon2id(PIN) wrap (read-only, migrated on unlock)
+//!                  mode 0x02 = Argon2id(PIN) wrap with stored parameters
 //!                  Plain layout:   [0x00][32 bytes]
-//!                  Wrapped layout: [0x01][16-byte Argon2 salt][24-byte nonce][48-byte ciphertext]
+//!                  Legacy layout:  [0x01][16-byte salt][24-byte nonce][48-byte ciphertext]
+//!                                  (argon2 crate defaults; below the §3.7.4 floor)
+//!                  Wrapped layout: [0x02][m_cost u32 BE][t_cost u32 BE][p_cost u32 BE]
+//!                                  [32-byte salt][24-byte nonce][48-byte ciphertext]
+//!                                  header (mode..salt) bound as AEAD associated data
 //!
 //! identity.dat  — [1-byte version=0x01][24-byte XNonce]
 //!                 [XChaCha20-Poly1305 ciphertext of identity payload]
 //! ```
+//!
+//! The 0x02 salt and parameters are shared with the duress blob (`pin.dat`,
+//! see `identity::pin`), so the unlock path derives one Argon2id key per
+//! attempt and tries it against both records (§3.10 timing normalization).
 //!
 //! Identity payload format (inside identity.dat):
 //! ```text
@@ -27,9 +36,8 @@
 
 use std::path::Path;
 
-use argon2::Argon2;
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
     // AEAD cipher for authenticated encryption.
     XChaCha20Poly1305,
     XNonce,
@@ -46,6 +54,9 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 
 use super::peer_id::PeerId;
+// The single Argon2id derivation and the §3.7.4 parameter window live in
+// the PIN module; identity.key is wrapped through them, never separately.
+use super::pin::{self, KdfParams, PinError, SALT_LEN};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -67,6 +78,10 @@ pub enum IdentityError {
     WrongPin,
     #[error("Identity file not found at {0}")]
     NotFound(String),
+    /// Argon2id derivation failed or the stored parameters are outside the
+    /// §3.7.4 window (`WeakParams` / `ParamsTooLarge`).
+    #[error("PIN key derivation: {0}")]
+    Pin(#[from] PinError),
 }
 
 // ---------------------------------------------------------------------------
@@ -260,281 +275,76 @@ impl SelfIdentity {
     // Disk persistence (§3.6.2)
     // -----------------------------------------------------------------------
 
-    /// Persist this identity to disk.
+    /// Encode `identity.dat`: `[0x01][24-byte XNonce][XChaCha20-Poly1305(payload)]`.
     ///
-    /// Writes two files:
-    /// - `<data_dir>/identity.key` — the master key (optionally PIN-wrapped)
-    /// - `<data_dir>/identity.dat` — the encrypted identity payload
-    pub fn save_to_disk(&self, data_dir: &Path, pin: Option<&str>) -> Result<(), IdentityError> {
-        // ---- Write identity.key ----
-        let key_path = data_dir.join("identity.key");
-        let key_data = match pin {
-            // No value available.
-            // No value available.
-            None => {
-                // Plain: [0x00][32 master key bytes]
-                let mut buf = Vec::with_capacity(33);
-                // Add the element to the collection.
-                // Append to the collection.
-                // Append to the collection.
-                buf.push(0x00u8);
-                // Append the data segment to the accumulating buffer.
-                // Append bytes to the accumulator.
-                // Append bytes to the accumulator.
-                buf.extend_from_slice(&*self.master_key);
-                buf
-            }
-            // Wrap the found value for the caller.
-            // Wrap the found value.
-            // Wrap the found value.
-            Some(pin_str) => {
-                // Argon2id-wrapped: [0x01][16-byte salt][24-byte nonce][48-byte ciphertext]
-                let mut salt_bytes = [0u8; 16];
-                // OS-provided cryptographic random number generator.
-                OsRng.fill_bytes(&mut salt_bytes);
-                // Invoke the associated function.
-                let argon2 = Argon2::default();
-                let mut wrapping_key = Zeroizing::new([0u8; 32]);
-                // Argon2id password hashing for key derivation.
-                argon2
-                    .hash_password_into(
-                        // Extract the raw byte representation for wire encoding.
-                        pin_str.as_bytes(),
-                        &salt_bytes,
-                        &mut *wrapping_key,
-                        // Transform the result, mapping errors to the local error type.
-                        // Map the error to the local error type.
-                        // Map the error to the local error type.
-                    )
-                    .map_err(|_| IdentityError::Crypto)?;
-
-                // Fresh nonce — must never be reused with the same key.
-                let mut nonce_bytes = [0u8; 24];
-                // OS-provided cryptographic random number generator.
-                OsRng.fill_bytes(&mut nonce_bytes);
-                // Fresh nonce — must never be reused with the same key.
-                let nonce = XNonce::from_slice(&nonce_bytes);
-                // Initialize the AEAD cipher with the derived key material.
-                let cipher = XChaCha20Poly1305::new_from_slice(&*wrapping_key)
-                    // Transform the result, mapping errors to the local error type.
-                    // Map the error to the local error type.
-                    // Map the error to the local error type.
-                    .map_err(|_| IdentityError::Crypto)?;
-                // Initialize the AEAD cipher with the derived key material.
-                let ciphertext = cipher
-                    // Encrypt the plaintext under the current session key.
-                    // AEAD-encrypt the plaintext.
-                    // AEAD-encrypt the plaintext.
-                    .encrypt(nonce, self.master_key.as_ref())
-                    // Transform the result, mapping errors to the local error type.
-                    // Map the error to the local error type.
-                    // Map the error to the local error type.
-                    .map_err(|_| IdentityError::Crypto)?;
-
-                // Initialize the AEAD cipher with the derived key material.
-                let mut buf = Vec::with_capacity(1 + 16 + 24 + ciphertext.len());
-                // Add the element to the collection.
-                // Append to the collection.
-                // Append to the collection.
-                buf.push(0x01u8);
-                // Append the data segment to the accumulating buffer.
-                // Append bytes to the accumulator.
-                // Append bytes to the accumulator.
-                buf.extend_from_slice(&salt_bytes);
-                // Append the data segment to the accumulating buffer.
-                // Append bytes to the accumulator.
-                // Append bytes to the accumulator.
-                buf.extend_from_slice(&nonce_bytes);
-                // Append the data segment to the accumulating buffer.
-                // Append bytes to the accumulator.
-                // Append bytes to the accumulator.
-                buf.extend_from_slice(&ciphertext);
-                buf
-            }
-        };
-        write_atomic(&key_path, &key_data)?;
-
-        // ---- Write identity.dat ----
-        // Encrypt payload with a key derived from master_key via HKDF
-        let dat_path = data_dir.join("identity.dat");
-        // Serialize to the wire format for transmission or storage.
+    /// The payload key is derived from the master key via HKDF, so the file
+    /// is unreadable once `identity.key` is overwritten (§3.9.1 step 2).
+    /// Split out from `save_to_disk` so the duress path can build the new
+    /// identity's bytes in the foreground and hand them to the background
+    /// writer without carrying the `SelfIdentity` across threads.
+    pub fn encode_dat_file(&self) -> Result<Vec<u8>, IdentityError> {
+        // Serialize the secret payload for encryption.
         let payload = self.serialize_payload();
 
         let dat_key = derive_identity_dat_key(&self.master_key);
         // Fresh nonce — must never be reused with the same key.
-        let mut nonce_bytes = [0u8; 24];
+        let mut nonce_bytes = [0u8; DAT_NONCE_LEN];
         // OS-provided cryptographic random number generator.
         OsRng.fill_bytes(&mut nonce_bytes);
-        // Fresh nonce — must never be reused with the same key.
         let nonce = XNonce::from_slice(&nonce_bytes);
         // Initialize the AEAD cipher with the derived key material.
         let cipher = XChaCha20Poly1305::new_from_slice(&*dat_key)
-            // Transform the result, mapping errors to the local error type.
-            // Map the error to the local error type.
             // Map the error to the local error type.
             .map_err(|_| IdentityError::Crypto)?;
-        // Initialize the AEAD cipher with the derived key material.
         let ciphertext = cipher
-            // Encrypt the plaintext under the current session key.
-            // AEAD-encrypt the plaintext.
             // AEAD-encrypt the plaintext.
             .encrypt(nonce, payload.as_ref())
-            // Transform the result, mapping errors to the local error type.
-            // Map the error to the local error type.
             // Map the error to the local error type.
             .map_err(|_| IdentityError::Crypto)?;
 
         // [version=0x01][24-byte nonce][ciphertext]
-        let mut dat_data = Vec::with_capacity(1 + 24 + ciphertext.len());
+        let mut dat_data = Vec::with_capacity(1 + DAT_NONCE_LEN + ciphertext.len());
         // Append to the collection.
-        // Append to the collection.
-        dat_data.push(0x01u8);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
+        dat_data.push(DAT_VERSION);
         // Append bytes to the accumulator.
         dat_data.extend_from_slice(&nonce_bytes);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
         // Append bytes to the accumulator.
         dat_data.extend_from_slice(&ciphertext);
-        write_atomic(&dat_path, &dat_data)?;
-
-        Ok(())
+        Ok(dat_data)
     }
 
-    /// Load an identity from disk, decrypting with the optional PIN.
-    pub fn load_from_disk(data_dir: &Path, pin: Option<&str>) -> Result<Self, IdentityError> {
-        // ---- Read identity.key → master key ----
-        let key_path = data_dir.join("identity.key");
-        let key_data = std::fs::read(&key_path).map_err(|e| {
-            // Handle the error case — propagate or log as appropriate.
-            if e.kind() == std::io::ErrorKind::NotFound {
-                // Invoke the associated function.
-                IdentityError::NotFound(key_path.display().to_string())
-            } else {
-                // Invoke the associated function.
-                IdentityError::Io(e)
-            }
-        })?;
-
-        let master_key = match key_data.first().copied() {
-            // Wrap the found value for the caller.
-            // Wrap the found value.
-            // Wrap the found value.
-            Some(0x00) => {
-                // Plain master key
-                if key_data.len() < 33 {
-                    return Err(IdentityError::Format);
-                }
-                // Invoke the associated function.
-                let mut k = Zeroizing::new([0u8; 32]);
-                // Copy the raw bytes into the fixed-size target array.
-                // Copy into the fixed-size buffer.
-                // Copy into the fixed-size buffer.
-                k.copy_from_slice(&key_data[1..33]);
-                k
-            }
-            // Wrap the found value for the caller.
-            // Wrap the found value.
-            // Wrap the found value.
-            Some(0x01) => {
-                // PIN-wrapped master key
-                let pin_str = pin.ok_or(IdentityError::WrongPin)?;
-                // Validate the input length to prevent out-of-bounds access.
-                if key_data.len() < 1 + 16 + 24 + 32 + 16 {
-                    // minimum: 1 + 16 (salt) + 24 (nonce) + 48 (32-byte ciphertext + 16-byte tag)
-                    return Err(IdentityError::Format);
-                }
-                let salt_bytes = &key_data[1..17];
-                let nonce_bytes = &key_data[17..41];
-                // Initialize the AEAD cipher with the derived key material.
-                let ciphertext = &key_data[41..];
-
-                // Invoke the associated function.
-                let argon2 = Argon2::default();
-                let mut wrapping_key = Zeroizing::new([0u8; 32]);
-                // Argon2id password hashing for key derivation.
-                argon2
-                    .hash_password_into(
-                        // Extract the raw byte representation for wire encoding.
-                        pin_str.as_bytes(),
-                        salt_bytes,
-                        &mut *wrapping_key,
-                        // Transform the result, mapping errors to the local error type.
-                        // Map the error to the local error type.
-                        // Map the error to the local error type.
-                    )
-                    .map_err(|_| IdentityError::WrongPin)?;
-
-                // Fresh nonce — must never be reused with the same key.
-                let nonce = XNonce::from_slice(nonce_bytes);
-                // Initialize the AEAD cipher with the derived key material.
-                let cipher = XChaCha20Poly1305::new_from_slice(&*wrapping_key)
-                    // Transform the result, mapping errors to the local error type.
-                    // Map the error to the local error type.
-                    // Map the error to the local error type.
-                    .map_err(|_| IdentityError::Crypto)?;
-                // Initialize the AEAD cipher with the derived key material.
-                let plaintext = cipher
-                    // Decrypt and authenticate the ciphertext.
-                    // AEAD-decrypt and authenticate the ciphertext.
-                    // AEAD-decrypt and authenticate the ciphertext.
-                    .decrypt(nonce, ciphertext)
-                    // Transform the result, mapping errors to the local error type.
-                    // Map the error to the local error type.
-                    // Map the error to the local error type.
-                    .map_err(|_| IdentityError::WrongPin)?;
-
-                // Validate the input length to prevent out-of-bounds access.
-                if plaintext.len() != 32 {
-                    return Err(IdentityError::Format);
-                }
-                // Invoke the associated function.
-                let mut k = Zeroizing::new([0u8; 32]);
-                // Copy the raw bytes into the fixed-size target array.
-                // Copy into the fixed-size buffer.
-                // Copy into the fixed-size buffer.
-                k.copy_from_slice(&plaintext);
-                k
-            }
-            _ => return Err(IdentityError::Format),
-        };
-
-        // ---- Read identity.dat → identity payload ----
-        let dat_path = data_dir.join("identity.dat");
-        // Resolve the filesystem path for the target resource.
-        let dat_data = std::fs::read(&dat_path).map_err(IdentityError::Io)?;
-
+    /// Decode `identity.dat` with an already-recovered master key.
+    ///
+    /// Inverse of `encode_dat_file`. The master key is moved into the
+    /// returned identity and the ML-KEM keypair is re-derived from it.
+    pub fn from_dat_file(
+        dat_data: &[u8],
+        master_key: Zeroizing<[u8; 32]>,
+    ) -> Result<Self, IdentityError> {
         // Validate the input length to prevent out-of-bounds access.
-        if dat_data.len() < 1 + 24 {
+        if dat_data.len() < 1 + DAT_NONCE_LEN {
             return Err(IdentityError::Format);
         }
-        if dat_data[0] != 0x01 {
+        // Only one payload version has ever been written.
+        if dat_data[0] != DAT_VERSION {
             return Err(IdentityError::Format);
         }
 
-        // Fresh nonce — must never be reused with the same key.
-        let nonce = XNonce::from_slice(&dat_data[1..25]);
-        // Initialize the AEAD cipher with the derived key material.
-        let ciphertext = &dat_data[25..];
+        let nonce = XNonce::from_slice(&dat_data[1..1 + DAT_NONCE_LEN]);
+        let ciphertext = &dat_data[1 + DAT_NONCE_LEN..];
         let dat_key = derive_identity_dat_key(&master_key);
         // Initialize the AEAD cipher with the derived key material.
         let cipher = XChaCha20Poly1305::new_from_slice(&*dat_key)
-            // Transform the result, mapping errors to the local error type.
-            // Map the error to the local error type.
             // Map the error to the local error type.
             .map_err(|_| IdentityError::Crypto)?;
-        // Prepare the data buffer for the next processing stage.
         let payload = Zeroizing::new(
-            // Decrypt and authenticate the ciphertext.
-            // Map the error to the local error type.
-            // Map the error to the local error type.
             cipher
+                // AEAD-decrypt and authenticate the ciphertext.
                 .decrypt(nonce, ciphertext)
+                // Map the error to the local error type.
                 .map_err(|_| IdentityError::Crypto)?,
         );
 
-        // Prepare the data buffer for the next processing stage.
         let mut identity = Self::from_payload(&payload).ok_or(IdentityError::Format)?;
         identity.master_key = master_key;
         // Derive ML-KEM keypair from the now-loaded master key (§3.4.1).
@@ -543,8 +353,408 @@ impl SelfIdentity {
         identity.kem_encapsulation_key = ek;
         Ok(identity)
     }
+
+    /// Read and decode `<data_dir>/identity.dat` with a recovered master key.
+    pub fn load_dat_file(
+        data_dir: &Path,
+        master_key: Zeroizing<[u8; 32]>,
+    ) -> Result<Self, IdentityError> {
+        // Resolve the filesystem path for the target resource.
+        let dat_data = std::fs::read(data_dir.join("identity.dat")).map_err(IdentityError::Io)?;
+        Self::from_dat_file(&dat_data, master_key)
+    }
+
+    /// Persist this identity to disk.
+    ///
+    /// Writes two files:
+    /// - `<data_dir>/identity.key` — the master key (optionally PIN-wrapped)
+    /// - `<data_dir>/identity.dat` — the encrypted identity payload
+    ///
+    /// With a PIN the master key is wrapped under a fresh random salt and
+    /// the spec parameters (one Argon2id derivation). Callers that must keep
+    /// an existing salt — so a duress blob wrapped under it stays valid —
+    /// derive the key themselves and use `save_wrapped`.
+    pub fn save_to_disk(&self, data_dir: &Path, pin: Option<&str>) -> Result<(), IdentityError> {
+        let key_data = match pin {
+            // No PIN: the master key is stored in the clear (§3.6.2 "If PIN
+            // is not configured").
+            None => encode_plain_key_file(&self.master_key),
+            Some(pin_str) => {
+                // Fresh salt for a fresh wrap.
+                let mut salt = [0u8; SALT_LEN];
+                // OS-provided cryptographic random number generator.
+                OsRng.fill_bytes(&mut salt);
+                // The one shared derivation (§3.7.4 parameters).
+                let wrapping_key =
+                    pin::derive_key_from_pin(pin_str.as_bytes(), &salt, KdfParams::SPEC)?;
+                encode_wrapped_key_file(&self.master_key, &wrapping_key, &salt, KdfParams::SPEC)?
+            }
+        };
+        write_identity_files(data_dir, &key_data, &self.encode_dat_file()?)
+    }
+
+    /// Persist this identity under an already-derived wrapping key.
+    ///
+    /// `salt` and `params` are written into the 0x02 header so the file
+    /// stays self-describing. Used for PIN changes and the 0x01 → 0x02
+    /// migration, where the salt must match the duress blob.
+    pub fn save_wrapped(
+        &self,
+        data_dir: &Path,
+        wrapping_key: &[u8; 32],
+        salt: &[u8; SALT_LEN],
+        params: KdfParams,
+    ) -> Result<(), IdentityError> {
+        let key_data = encode_wrapped_key_file(&self.master_key, wrapping_key, salt, params)?;
+        write_identity_files(data_dir, &key_data, &self.encode_dat_file()?)
+    }
+
+    /// Load an identity from disk, decrypting with the optional PIN.
+    ///
+    /// Performs one Argon2id derivation when the key file is wrapped. The
+    /// service-layer unlock path does not call this — it reads the record,
+    /// derives once, and tries the primary and duress blobs itself — but
+    /// PIN verification in settings flows and tests use it directly.
+    pub fn load_from_disk(data_dir: &Path, pin: Option<&str>) -> Result<Self, IdentityError> {
+        let master_key = match read_master_key_record(data_dir)? {
+            // Plain master key: the PIN argument is irrelevant.
+            MasterKeyRecord::Plain(key) => key,
+            MasterKeyRecord::Wrapped(wrapped) => {
+                // A wrapped key without a PIN cannot be opened.
+                let pin_str = pin.ok_or(IdentityError::WrongPin)?;
+                let wrapping_key = wrapped.derive_wrapping_key(pin_str.as_bytes())?;
+                wrapped.open(&wrapping_key)?
+            }
+        };
+        Self::load_dat_file(data_dir, master_key)
+    }
 }
 
+// ---------------------------------------------------------------------------
+// identity.key record
+// ---------------------------------------------------------------------------
+
+/// Mode byte of a plain (unwrapped) `identity.key`.
+const KEY_MODE_PLAIN: u8 = 0x00;
+/// Mode byte of the legacy wrapped layout: 16-byte salt, no stored
+/// parameters, no associated data. Read-only; re-wrapped as 0x02 on the
+/// next successful unlock.
+const KEY_MODE_WRAPPED_LEGACY: u8 = 0x01;
+/// Mode byte of the current wrapped layout with stored parameters and an
+/// authenticated header.
+const KEY_MODE_WRAPPED: u8 = 0x02;
+/// Salt length the legacy 0x01 layout used.
+const LEGACY_SALT_LEN: usize = 16;
+/// XChaCha20-Poly1305 nonce length used by both `identity.key` wraps and
+/// `identity.dat`.
+const DAT_NONCE_LEN: usize = 24;
+/// Format byte of `identity.dat`.
+const DAT_VERSION: u8 = 0x01;
+/// Wrapped master key: 32 key bytes + 16-byte Poly1305 tag.
+const WRAPPED_MASTER_LEN: usize = 48;
+/// Exact length of a 0x02 `identity.key`:
+/// mode(1) + m/t/p(12) + salt(32) + nonce(24) + ciphertext(48).
+const WRAPPED_KEY_FILE_LEN: usize = 1 + 12 + SALT_LEN + DAT_NONCE_LEN + WRAPPED_MASTER_LEN;
+/// Exact length of a legacy 0x01 `identity.key`:
+/// mode(1) + salt(16) + nonce(24) + ciphertext(48).
+const LEGACY_KEY_FILE_LEN: usize = 1 + LEGACY_SALT_LEN + DAT_NONCE_LEN + WRAPPED_MASTER_LEN;
+
+/// A parsed `identity.key`.
+pub enum MasterKeyRecord {
+    /// Mode 0x00: the master key in the clear (no PIN configured).
+    Plain(Zeroizing<[u8; 32]>),
+    /// Mode 0x01 or 0x02: the master key wrapped under Argon2id(PIN).
+    Wrapped(WrappedMasterKey),
+}
+
+impl MasterKeyRecord {
+    /// Whether a PIN is required to recover the master key.
+    pub fn is_wrapped(&self) -> bool {
+        matches!(self, MasterKeyRecord::Wrapped(_))
+    }
+}
+
+/// The wrapped form of `identity.key`, with everything the unlock path
+/// needs to derive once and open.
+pub struct WrappedMasterKey {
+    /// Argon2id parameters: stored in the header for 0x02, the fixed
+    /// `KdfParams::LEGACY_0X01` for 0x01.
+    pub params: KdfParams,
+    /// Argon2id salt: 32 bytes for 0x02, 16 for legacy.
+    pub salt: Vec<u8>,
+    /// True for the legacy 0x01 layout, which must be re-wrapped after a
+    /// successful unlock.
+    pub legacy: bool,
+    /// Header bytes bound as AEAD associated data (empty for legacy).
+    aad: Vec<u8>,
+    /// XChaCha20-Poly1305 nonce.
+    nonce: [u8; DAT_NONCE_LEN],
+    /// Encrypted master key plus tag.
+    ciphertext: Vec<u8>,
+}
+
+impl WrappedMasterKey {
+    /// Run the single Argon2id derivation for this record.
+    ///
+    /// Current-format records go through the window-checked derivation;
+    /// the legacy layout uses its fixed below-floor parameters, which is
+    /// the only place they are ever honoured.
+    pub fn derive_wrapping_key(&self, pin: &[u8]) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
+        let key = if self.legacy {
+            pin::derive_key_unchecked(pin, &self.salt, self.params)?
+        } else {
+            pin::derive_key_from_pin(pin, &self.salt, self.params)?
+        };
+        Ok(key)
+    }
+
+    /// Open the record under an already-derived wrapping key.
+    ///
+    /// Microseconds of AEAD work; a wrong key (or a tampered header, which
+    /// changes the associated data) fails as `WrongPin`.
+    pub fn open(&self, wrapping_key: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
+        let nonce = XNonce::from_slice(&self.nonce);
+        // Initialize the AEAD cipher with the derived key material.
+        let cipher = XChaCha20Poly1305::new_from_slice(wrapping_key)
+            // Map the error to the local error type.
+            .map_err(|_| IdentityError::Crypto)?;
+        let plaintext = Zeroizing::new(
+            cipher
+                // AEAD-decrypt with the header bound as associated data.
+                .decrypt(
+                    nonce,
+                    Payload {
+                        msg: &self.ciphertext,
+                        aad: &self.aad,
+                    },
+                )
+                // Map the error to the local error type.
+                .map_err(|_| IdentityError::WrongPin)?,
+        );
+
+        // Validate the input length to prevent out-of-bounds access.
+        if plaintext.len() != 32 {
+            return Err(IdentityError::Format);
+        }
+        let mut k = Zeroizing::new([0u8; 32]);
+        // Copy into the fixed-size buffer.
+        k.copy_from_slice(&plaintext);
+        Ok(k)
+    }
+
+    /// The 32-byte salt a duress blob must share with this record, or
+    /// `None` for the legacy layout whose 16-byte salt cannot be shared.
+    pub fn shared_salt(&self) -> Option<[u8; SALT_LEN]> {
+        let mut out = [0u8; SALT_LEN];
+        // Only a full-length salt can be shared with `pin::wrap_key_under`.
+        if self.salt.len() != SALT_LEN {
+            return None;
+        }
+        // Copy into the fixed-size buffer.
+        out.copy_from_slice(&self.salt);
+        Some(out)
+    }
+}
+
+/// Encode a plain `identity.key`: `[0x00][32 master key bytes]`.
+pub fn encode_plain_key_file(master_key: &[u8; 32]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1 + 32);
+    // Append to the collection.
+    buf.push(KEY_MODE_PLAIN);
+    // Append bytes to the accumulator.
+    buf.extend_from_slice(master_key);
+    buf
+}
+
+/// Encode a wrapped `identity.key` (mode 0x02):
+/// `[0x02][m_cost BE][t_cost BE][p_cost BE][32-byte salt][24-byte nonce][48-byte ciphertext]`.
+///
+/// The first 45 bytes (mode, parameters, salt) are bound to the ciphertext
+/// as associated data, so a tampered parameter or salt fails authentication
+/// exactly like a wrong PIN (mirrors the §3.7.4 backup envelope). No
+/// derivation happens here; the caller supplies the wrapping key.
+pub fn encode_wrapped_key_file(
+    master_key: &[u8; 32],
+    wrapping_key: &[u8; 32],
+    salt: &[u8; SALT_LEN],
+    params: KdfParams,
+) -> Result<Vec<u8>, IdentityError> {
+    // A writer must never emit parameters it would refuse to read.
+    params.validate()?;
+
+    // Header = associated data.
+    let mut buf = Vec::with_capacity(WRAPPED_KEY_FILE_LEN);
+    // Append to the collection.
+    buf.push(KEY_MODE_WRAPPED);
+    // Append bytes to the accumulator.
+    buf.extend_from_slice(&params.m_cost.to_be_bytes());
+    // Append bytes to the accumulator.
+    buf.extend_from_slice(&params.t_cost.to_be_bytes());
+    // Append bytes to the accumulator.
+    buf.extend_from_slice(&params.p_cost.to_be_bytes());
+    // Append bytes to the accumulator.
+    buf.extend_from_slice(salt);
+
+    // Fresh nonce — must never be reused with the same key.
+    let mut nonce_bytes = [0u8; DAT_NONCE_LEN];
+    // OS-provided cryptographic random number generator.
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = XNonce::from_slice(&nonce_bytes);
+    // Initialize the AEAD cipher with the derived key material.
+    let cipher = XChaCha20Poly1305::new_from_slice(wrapping_key)
+        // Map the error to the local error type.
+        .map_err(|_| IdentityError::Crypto)?;
+    let ciphertext = cipher
+        // AEAD-encrypt with the header bound as associated data.
+        .encrypt(
+            nonce,
+            Payload {
+                msg: master_key.as_ref(),
+                aad: &buf,
+            },
+        )
+        // Map the error to the local error type.
+        .map_err(|_| IdentityError::Crypto)?;
+
+    // Append bytes to the accumulator.
+    buf.extend_from_slice(&nonce_bytes);
+    // Append bytes to the accumulator.
+    buf.extend_from_slice(&ciphertext);
+    Ok(buf)
+}
+
+/// Parse `identity.key` bytes into a record.
+///
+/// Storage is untrusted: every length is checked exactly and 0x02
+/// parameters are validated against the §3.7.4 window before the record
+/// can reach a derivation, so a weak or oversized header is refused in
+/// microseconds with a typed error.
+pub fn parse_master_key_record(key_data: &[u8]) -> Result<MasterKeyRecord, IdentityError> {
+    match key_data.first().copied() {
+        Some(KEY_MODE_PLAIN) => {
+            // Plain master key: exactly 33 bytes.
+            if key_data.len() != 1 + 32 {
+                return Err(IdentityError::Format);
+            }
+            let mut k = Zeroizing::new([0u8; 32]);
+            // Copy into the fixed-size buffer.
+            k.copy_from_slice(&key_data[1..33]);
+            Ok(MasterKeyRecord::Plain(k))
+        }
+        Some(KEY_MODE_WRAPPED_LEGACY) => {
+            // Legacy layout: [0x01][16 salt][24 nonce][48 ct], no params.
+            if key_data.len() != LEGACY_KEY_FILE_LEN {
+                return Err(IdentityError::Format);
+            }
+            let salt_end = 1 + LEGACY_SALT_LEN;
+            let nonce_end = salt_end + DAT_NONCE_LEN;
+            let mut nonce = [0u8; DAT_NONCE_LEN];
+            // Copy into the fixed-size buffer.
+            nonce.copy_from_slice(&key_data[salt_end..nonce_end]);
+            Ok(MasterKeyRecord::Wrapped(WrappedMasterKey {
+                params: KdfParams::LEGACY_0X01,
+                salt: key_data[1..salt_end].to_vec(),
+                legacy: true,
+                aad: Vec::new(),
+                nonce,
+                ciphertext: key_data[nonce_end..].to_vec(),
+            }))
+        }
+        Some(KEY_MODE_WRAPPED) => {
+            // Current layout: [0x02][m][t][p][32 salt][24 nonce][48 ct].
+            if key_data.len() != WRAPPED_KEY_FILE_LEN {
+                return Err(IdentityError::Format);
+            }
+            // Fixed-width big-endian parameters follow the mode byte.
+            let params = KdfParams {
+                m_cost: u32::from_be_bytes(
+                    key_data[1..5].try_into().map_err(|_| IdentityError::Format)?,
+                ),
+                t_cost: u32::from_be_bytes(
+                    key_data[5..9].try_into().map_err(|_| IdentityError::Format)?,
+                ),
+                p_cost: u32::from_be_bytes(
+                    key_data[9..13].try_into().map_err(|_| IdentityError::Format)?,
+                ),
+            };
+            // Window check before anything can run the KDF on them.
+            params.validate()?;
+            let salt_end = 13 + SALT_LEN;
+            let nonce_end = salt_end + DAT_NONCE_LEN;
+            let mut nonce = [0u8; DAT_NONCE_LEN];
+            // Copy into the fixed-size buffer.
+            nonce.copy_from_slice(&key_data[salt_end..nonce_end]);
+            Ok(MasterKeyRecord::Wrapped(WrappedMasterKey {
+                params,
+                salt: key_data[13..salt_end].to_vec(),
+                legacy: false,
+                // The header is the associated data, byte for byte.
+                aad: key_data[..salt_end].to_vec(),
+                nonce,
+                ciphertext: key_data[nonce_end..].to_vec(),
+            }))
+        }
+        // Unknown mode byte or empty file.
+        _ => Err(IdentityError::Format),
+    }
+}
+
+/// Read and parse `<data_dir>/identity.key`.
+pub fn read_master_key_record(data_dir: &Path) -> Result<MasterKeyRecord, IdentityError> {
+    let key_path = data_dir.join("identity.key");
+    let key_data = std::fs::read(&key_path).map_err(|e| {
+        // A missing file is a distinct, expected state (first run).
+        if e.kind() == std::io::ErrorKind::NotFound {
+            IdentityError::NotFound(key_path.display().to_string())
+        } else {
+            IdentityError::Io(e)
+        }
+    })?;
+    parse_master_key_record(&key_data)
+}
+
+/// Write `identity.key` then `identity.dat` atomically (tmp + rename each).
+///
+/// The key file goes first so a crash between the two writes leaves a
+/// readable key with a stale payload rather than a payload with no key.
+pub fn write_identity_files(
+    data_dir: &Path,
+    key_data: &[u8],
+    dat_data: &[u8],
+) -> Result<(), IdentityError> {
+    write_atomic(&data_dir.join("identity.key"), key_data)?;
+    write_atomic(&data_dir.join("identity.dat"), dat_data)?;
+    Ok(())
+}
+
+/// Encode the legacy 0x01 layout, for migration tests only.
+///
+/// No production path writes this format; the test helper exists so the
+/// 0x01 → 0x02 migration can be exercised against bytes identical to what
+/// earlier builds produced (argon2 crate defaults, 16-byte salt, no AAD).
+#[cfg(test)]
+pub(crate) fn encode_legacy_wrapped_key_file(
+    master_key: &[u8; 32],
+    pin: &[u8],
+) -> Result<Vec<u8>, IdentityError> {
+    let mut salt = [0u8; LEGACY_SALT_LEN];
+    OsRng.fill_bytes(&mut salt);
+    let wrapping_key = pin::derive_key_unchecked(pin, &salt, KdfParams::LEGACY_0X01)?;
+    let mut nonce_bytes = [0u8; DAT_NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&*wrapping_key).map_err(|_| IdentityError::Crypto)?;
+    let ciphertext = cipher
+        .encrypt(XNonce::from_slice(&nonce_bytes), master_key.as_ref())
+        .map_err(|_| IdentityError::Crypto)?;
+    let mut buf = vec![KEY_MODE_WRAPPED_LEGACY];
+    buf.extend_from_slice(&salt);
+    buf.extend_from_slice(&nonce_bytes);
+    buf.extend_from_slice(&ciphertext);
+    Ok(buf)
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -647,7 +857,12 @@ pub fn derive_preauth_keypair(ik_secret: &X25519Secret) -> (X25519Secret, X25519
     (preauth_secret, preauth_pub)
 }
 
-fn write_atomic(path: &Path, data: &[u8]) -> Result<(), IdentityError> {
+/// Write `data` to `path` via a sibling `.tmp` file and rename.
+///
+/// Shared with the service layer for the counter and duress files, which
+/// must never be observable half-written: a torn counter reads as
+/// tampering and a torn duress blob as "no duress PIN".
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<(), IdentityError> {
     // Resolve the filesystem path for the target resource.
     let tmp = path.with_extension("tmp");
     // Persist the data to the filesystem.
@@ -861,5 +1076,147 @@ mod tests {
             loaded1.kem_decapsulation_key, loaded2.kem_decapsulation_key,
             "KEM decapsulation key must be deterministically derived from master key"
         );
+    }
+
+    // ── identity.key record format (§3.6.2, §3.7.4) ─────────────────────────
+
+    /// Every PIN-wrapped identity.key written by the current build is a
+    /// 0x02 record whose stored Argon2id parameters are the spec triple.
+    #[test]
+    fn test_wrapped_identity_params_meet_floor() {
+        let dir = TempDir::new().unwrap();
+        let id = SelfIdentity::generate(None);
+        id.save_to_disk(dir.path(), Some("1234")).expect("save");
+
+        let bytes = std::fs::read(dir.path().join("identity.key")).expect("read key");
+        assert_eq!(bytes[0], KEY_MODE_WRAPPED, "current wrap must be mode 0x02");
+        assert_eq!(bytes.len(), WRAPPED_KEY_FILE_LEN);
+        match parse_master_key_record(&bytes).expect("parse") {
+            MasterKeyRecord::Wrapped(w) => {
+                assert!(!w.legacy);
+                assert_eq!(w.params, KdfParams::SPEC);
+                assert!(w.params.validate().is_ok());
+                assert_eq!(w.salt.len(), SALT_LEN);
+            }
+            MasterKeyRecord::Plain(_) => panic!("PIN-wrapped file parsed as plain"),
+        }
+    }
+
+    /// A 0x02 header claiming parameters below the floor is refused before
+    /// any derivation, so a downgraded file cannot be brute-forced cheaply
+    /// and cannot be loaded at all.
+    #[test]
+    fn test_wrapped_identity_weak_params_rejected() {
+        let dir = TempDir::new().unwrap();
+        let id = SelfIdentity::generate(None);
+        id.save_to_disk(dir.path(), Some("1234")).expect("save");
+
+        let mut bytes = std::fs::read(dir.path().join("identity.key")).expect("read key");
+        // m_cost occupies bytes 1..5; write 1024 KiB.
+        bytes[1..5].copy_from_slice(&1024u32.to_be_bytes());
+        assert!(matches!(
+            parse_master_key_record(&bytes),
+            Err(IdentityError::Pin(PinError::WeakParams))
+        ));
+        // Above the ceiling is refused the same way, before any allocation.
+        bytes[1..5].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(matches!(
+            parse_master_key_record(&bytes),
+            Err(IdentityError::Pin(PinError::ParamsTooLarge))
+        ));
+    }
+
+    /// An in-window edit to the header (salt or parameters) still fails,
+    /// because the header is bound as AEAD associated data.
+    #[test]
+    fn test_wrapped_identity_header_is_authenticated() {
+        let dir = TempDir::new().unwrap();
+        let id = SelfIdentity::generate(None);
+        id.save_to_disk(dir.path(), Some("1234")).expect("save");
+
+        let mut bytes = std::fs::read(dir.path().join("identity.key")).expect("read key");
+        // Flip one salt byte (bytes 13..45): still a valid-looking record.
+        bytes[20] ^= 0x01;
+        std::fs::write(dir.path().join("identity.key"), &bytes).expect("rewrite");
+        assert!(matches!(
+            SelfIdentity::load_from_disk(dir.path(), Some("1234")),
+            Err(IdentityError::WrongPin)
+        ));
+    }
+
+    /// Truncated, extended and unknown-mode key files are typed errors.
+    #[test]
+    fn test_master_key_record_length_and_mode_checks() {
+        let dir = TempDir::new().unwrap();
+        let id = SelfIdentity::generate(None);
+        id.save_to_disk(dir.path(), Some("1234")).expect("save");
+        let bytes = std::fs::read(dir.path().join("identity.key")).expect("read key");
+
+        assert!(matches!(
+            parse_master_key_record(&bytes[..bytes.len() - 1]),
+            Err(IdentityError::Format)
+        ));
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(matches!(parse_master_key_record(&longer), Err(IdentityError::Format)));
+        assert!(matches!(parse_master_key_record(&[]), Err(IdentityError::Format)));
+        assert!(matches!(parse_master_key_record(&[0x7F]), Err(IdentityError::Format)));
+        // Plain mode with the wrong length is also refused.
+        assert!(matches!(parse_master_key_record(&[0x00; 20]), Err(IdentityError::Format)));
+    }
+
+    /// The legacy 0x01 layout stays readable with the correct PIN, and
+    /// `save_wrapped` under a chosen salt produces a 0x02 record that loads
+    /// again — the two halves of the migration the service layer performs.
+    #[test]
+    fn test_legacy_0x01_reads_and_rewraps_to_0x02() {
+        let dir = TempDir::new().unwrap();
+        let id = SelfIdentity::generate(Some("Legacy".into()));
+        let original_pub = id.ed25519_pub;
+
+        // Write the identity the way an earlier build did.
+        let legacy = encode_legacy_wrapped_key_file(&id.master_key, b"4321").expect("legacy");
+        write_identity_files(dir.path(), &legacy, &id.encode_dat_file().expect("dat"))
+            .expect("write");
+
+        // Readable, and recognised as legacy.
+        match read_master_key_record(dir.path()).expect("record") {
+            MasterKeyRecord::Wrapped(w) => {
+                assert!(w.legacy);
+                assert_eq!(w.params, KdfParams::LEGACY_0X01);
+                assert!(w.shared_salt().is_none(), "16-byte salt cannot be shared");
+            }
+            MasterKeyRecord::Plain(_) => panic!("legacy wrap parsed as plain"),
+        }
+        assert!(SelfIdentity::load_from_disk(dir.path(), Some("0000")).is_err());
+        let loaded = SelfIdentity::load_from_disk(dir.path(), Some("4321")).expect("legacy load");
+        assert_eq!(loaded.ed25519_pub, original_pub);
+
+        // Re-wrap under the spec parameters and a fresh 32-byte salt.
+        let salt = [0x33u8; SALT_LEN];
+        let key = pin::derive_key_from_pin(b"4321", &salt, KdfParams::SPEC).expect("derive");
+        loaded
+            .save_wrapped(dir.path(), &key, &salt, KdfParams::SPEC)
+            .expect("rewrap");
+
+        let bytes = std::fs::read(dir.path().join("identity.key")).expect("read key");
+        assert_eq!(bytes[0], KEY_MODE_WRAPPED);
+        let reloaded = SelfIdentity::load_from_disk(dir.path(), Some("4321")).expect("0x02 load");
+        assert_eq!(reloaded.ed25519_pub, original_pub);
+        assert_eq!(*reloaded.master_key, *id.master_key);
+    }
+
+    /// `encode_wrapped_key_file` refuses to write parameters it would not
+    /// read back, so a bug upstream cannot produce an unloadable file.
+    #[test]
+    fn test_encode_wrapped_refuses_out_of_window_params() {
+        let weak = KdfParams {
+            m_cost: 1024,
+            ..KdfParams::SPEC
+        };
+        assert!(matches!(
+            encode_wrapped_key_file(&[1u8; 32], &[2u8; 32], &[3u8; SALT_LEN], weak),
+            Err(IdentityError::Pin(PinError::WeakParams))
+        ));
     }
 }

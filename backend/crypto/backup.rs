@@ -88,11 +88,15 @@ const OLDEST_BACKUP_VERSION: u32 = 1;
 /// u32::MAX, so without these a tampered or corrupted file could demand a
 /// 4 TiB allocation (process abort) or hours of CPU. 1 GiB / 64 passes /
 /// 16 lanes is far above anything `create_backup` writes.
-const MAX_M_COST: u32 = 1 << 20; // 1 GiB in KiB
+///
+/// Crate-visible because the PIN wrap (`identity::pin`) enforces the same
+/// §3.7.4 window on `identity.key` and `pin.dat`; one definition keeps the
+/// two parsers from drifting apart.
+pub(crate) const MAX_M_COST: u32 = 1 << 20; // 1 GiB in KiB
 /// Upper bound on Argon2id passes accepted from an envelope.
-const MAX_T_COST: u32 = 64;
+pub(crate) const MAX_T_COST: u32 = 64;
 /// Upper bound on Argon2id parallelism accepted from an envelope.
-const MAX_P_COST: u32 = 16;
+pub(crate) const MAX_P_COST: u32 = 16;
 /// Salt length `create_backup` writes; longer values are rejected on import
 /// so a bogus multi-megabyte salt is never fed to the KDF.
 const MAX_SALT_LEN: usize = 64;

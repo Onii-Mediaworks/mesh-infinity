@@ -737,3 +737,22 @@ wasmtime-wasi = { version = "48" }
 # creates a uniquely-named temporary directory and automatically deletes it
 # when the test finishes, even if the test panics.
 tempfile = "3.24"
+
+# =============================================================================
+# [profile.dev.package.*] — keep the memory-hard KDF at full speed in debug
+# =============================================================================
+#
+# Argon2id at the spec parameters (64 MiB, t=3, p=4 — SPEC §3.7.4) runs
+# roughly ten times slower unoptimised.  That pushes every PIN unlock in
+# `cargo test` well past the one-second response deadline (§3.10), so the
+# timing-normalization tests would measure debug-build overhead instead of
+# the padding they exist to verify, and every PIN round-trip in the suite
+# costs seconds.  Optimising only the KDF crates leaves the parameters and
+# every other debug-build property untouched.  The `test` profile inherits
+# from `dev`, so this applies to `cargo test` as well.
+[profile.dev.package.argon2]
+opt-level = 3
+
+# blake2 — the hash Argon2id is built on; it dominates the derivation time.
+[profile.dev.package.blake2]
+opt-level = 3

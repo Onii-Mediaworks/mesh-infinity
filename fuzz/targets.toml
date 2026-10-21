@@ -122,3 +122,19 @@ status = "active"
 owner_module = "backend/crypto/backup.rs"
 threat = "tampered backup envelope header driving oversized Argon2id parameters (allocation abort / CPU exhaustion) or panicking the parser before restore"
 required_by_spec = true
+
+[[target]]
+name = "fuzz_identity_key_record"
+status = "blocked-design-pending"
+owner_module = "backend/identity/self_identity.rs"
+threat = "malformed identity.key bytes (mode 0x00/0x01/0x02) causing panic, a below-floor or oversized Argon2id header reaching the KDF, or header tampering accepted as a valid wrap"
+required_by_spec = true
+unblock_condition = "harness calling parse_master_key_record() plus WrappedMasterKey::open() under a fixed key, with a seed corpus of a valid 0x00, 0x01 and 0x02 record"
+
+[[target]]
+name = "fuzz_pin_attempt_counter"
+status = "blocked-design-pending"
+owner_module = "backend/identity/pin.rs"
+threat = "malformed or forged sealed PIN attempt counter bytes causing panic, authenticating under the wrong key, or decoding to a state that resets backoff"
+required_by_spec = true
+unblock_condition = "harness calling open_attempt_state() under a fixed key and asserting any Ok result round-trips through seal_attempt_state(), with a seed corpus of one sealed record"

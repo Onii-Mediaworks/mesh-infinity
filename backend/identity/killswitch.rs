@@ -581,7 +581,20 @@ pub fn begin_duress_wind_down(data_dir: &Path) -> (EraseResult, DuressWindDown) 
     // Step 1: Perform the immediate Layer 2/3 erase.
     let erase_result = duress_erase(data_dir);
 
-    // Step 2: Pick a randomised total duration in [60, 120] seconds.
+    // Steps 2-3: start the transition timer.
+    (erase_result, start_duress_wind_down())
+}
+
+/// Start the 60–120 second wind-down timer without performing an erase.
+///
+/// The unlock path (§3.9.2 steps 3–4) must hand the UI its decision before
+/// the erase runs, so it starts this timer in the foreground — the old
+/// identity's taper begins the moment the new identity takes over — and
+/// runs `duress_erase` on a background thread. `begin_duress_wind_down`
+/// remains the one-call form for callers that can afford a synchronous
+/// erase.
+pub fn start_duress_wind_down() -> DuressWindDown {
+    // Pick a randomised total duration in [60, 120] seconds.
     // We use OsRng to pick a random value in [0, 60] and add 60.
     let extra_secs = {
         use rand_core::RngCore;
@@ -591,7 +604,7 @@ pub fn begin_duress_wind_down(data_dir: &Path) -> (EraseResult, DuressWindDown) 
 
     let state = Arc::new(Mutex::new(WindDownState::Active));
 
-    // Step 3: Spawn background thread to advance state.
+    // Spawn background thread to advance state.
     let state_clone = Arc::clone(&state);
     let dur = total_duration;
     std::thread::spawn(move || {
@@ -617,14 +630,11 @@ pub fn begin_duress_wind_down(data_dir: &Path) -> (EraseResult, DuressWindDown) 
         }
     });
 
-    (
-        erase_result,
-        DuressWindDown {
-            state,
-            total_duration,
-            started_at: Instant::now(),
-        },
-    )
+    DuressWindDown {
+        state,
+        total_duration,
+        started_at: Instant::now(),
+    }
 }
 
 // ---------------------------------------------------------------------------

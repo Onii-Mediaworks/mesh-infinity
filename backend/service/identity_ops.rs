@@ -17,7 +17,14 @@
 //! re-initialised from the identity master key on every unlock.
 
 use crate::crypto::backup::EncryptedBackup;
-use crate::identity::self_identity::{derive_kem_keypair, IdentityError, SelfIdentity};
+use crate::identity::pin::{
+    self, KdfParams, PinAttemptState, PinError, PinWrappedKey, SALT_LEN,
+    UNLOCK_RESPONSE_DEADLINE,
+};
+use crate::identity::self_identity::{
+    derive_kem_keypair, encode_wrapped_key_file, read_master_key_record, write_atomic,
+    write_identity_files, IdentityError, MasterKeyRecord, SelfIdentity, WrappedMasterKey,
+};
 use crate::service::runtime::{
     build_settings_json, try_random_fill, Layer1StartupConfig, MeshRuntime, RegisteredDevice,
     SettingsVault,
@@ -101,15 +108,32 @@ impl MeshRuntime {
         std::path::Path::new(&self.data_dir).join("mesh_identity.key")
     }
 
-    fn pin_key_path(&self) -> std::path::PathBuf {
-        std::path::Path::new(&self.data_dir).join("identity.key")
-    }
-
     fn duress_pin_path(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.data_dir).join("pin.dat")
     }
 
+    /// Sealed attempt counter (§3.10): `[0x01][nonce][AEAD(JSON state)]`.
     fn pin_attempt_state_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("pin_attempts.sealed")
+    }
+
+    /// Key the attempt counter is sealed under.
+    ///
+    /// No Rust-side keystore abstraction exists yet, so the key lives next
+    /// to `identity.key` with the same filesystem protection (§3.6.3
+    /// fallback row). That makes an edited or deleted counter detectable;
+    /// it does not stop an adversary who can rewrite every file at once
+    /// from replacing key and counter together. The keystore-backed
+    /// variant SPEC §3.10 asks for closes that gap once a platform keystore
+    /// binding exists.
+    fn pin_counter_key_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("pin_counter.key")
+    }
+
+    /// Plaintext counter written by builds before the sealed format.
+    /// Read once for migration of a legacy (mode 0x01) install, then
+    /// removed; never written.
+    fn legacy_pin_attempt_json_path(&self) -> std::path::PathBuf {
         std::path::Path::new(&self.data_dir).join("pin_attempts.json")
     }
 
@@ -129,11 +153,34 @@ impl MeshRuntime {
         self.duress_pin_path().is_file()
     }
 
+    /// Whether `identity.key` is PIN-wrapped (mode 0x01 or 0x02).
+    ///
+    /// A missing or unparsable key file counts as "no PIN": there is nothing
+    /// a PIN could unlock, and the unlock path reports the real error.
     fn has_pin_configured(&self) -> bool {
-        std::fs::read(self.pin_key_path())
-            .ok()
-            .and_then(|bytes| bytes.first().copied())
-            == Some(0x01)
+        read_master_key_record(std::path::Path::new(&self.data_dir))
+            .map(|record| record.is_wrapped())
+            .unwrap_or(false)
+    }
+
+    /// Fill `dest` from the OS RNG, as a typed error instead of a bool so
+    /// the PIN paths can propagate an unavailable RNG with `?`.
+    fn fill_random(dest: &mut [u8]) -> Result<(), String> {
+        if try_random_fill(dest) {
+            Ok(())
+        } else {
+            Err("OS random number generator is unavailable".to_string())
+        }
+    }
+
+    /// Wall-clock seconds since the Unix epoch, or an error when the clock
+    /// is unreadable. The PIN paths never substitute zero for a clock error
+    /// (§3.10): a zero timestamp would clear every backoff.
+    fn wall_clock_secs() -> Result<u64, String> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .map_err(|_| "System clock is unavailable; PIN entry refused".to_string())
     }
 
     fn current_time_ms() -> u64 {
@@ -237,6 +284,10 @@ impl MeshRuntime {
             active_tier: *self.active_tier.lock().unwrap_or_else(|e| e.into_inner()),
             bandwidth_profile: *self
                 .bandwidth_profile
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+            onboarding_complete: *self
+                .onboarding_complete
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
         }
@@ -737,6 +788,15 @@ impl MeshRuntime {
         self.clear_identity_keys();
     }
 
+    // -----------------------------------------------------------------------
+    // PIN attempt counter (§3.10)
+    // -----------------------------------------------------------------------
+
+    /// Wipe threshold from the in-memory security settings.
+    ///
+    /// Only meaningful after unlock (the settings vault is encrypted under
+    /// the master key); the unlock screen uses the copy stored inside the
+    /// sealed counter instead.
     fn current_pin_wipe_threshold(&self) -> Option<u32> {
         let enabled = *self
             .wrong_pin_wipe_enabled
@@ -753,49 +813,171 @@ impl MeshRuntime {
         )
     }
 
-    fn load_pin_attempt_state(&self) -> crate::identity::pin::PinAttemptState {
-        let mut state = std::fs::read(self.pin_attempt_state_path())
-            .ok()
-            .and_then(|bytes| {
-                serde_json::from_slice::<crate::identity::pin::PinAttemptState>(&bytes).ok()
-            })
-            .unwrap_or_default();
-        state.wipe_threshold = self.current_pin_wipe_threshold();
-        state
-    }
-
-    fn save_pin_attempt_state(
-        &self,
-        state: &crate::identity::pin::PinAttemptState,
-    ) -> Result<(), String> {
-        let encoded = serde_json::to_vec(state)
-            .map_err(|e| format!("Failed to encode PIN attempt state: {e}"))?;
-        std::fs::write(self.pin_attempt_state_path(), encoded)
-            .map_err(|e| format!("Failed to persist PIN attempt state: {e}"))
-    }
-
-    fn clear_pin_attempt_state(&self) -> Result<(), String> {
-        match std::fs::remove_file(self.pin_attempt_state_path()) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!("Failed to clear PIN attempt state: {err}")),
+    /// Read the counter-sealing key.
+    ///
+    /// `Ok(None)` means the file is absent or not exactly 32 bytes — both
+    /// are "no usable key" and the caller decides whether that is tampering.
+    /// Other I/O failures are reported, not conflated with tampering.
+    fn load_counter_key(&self) -> Result<Option<zeroize::Zeroizing<[u8; 32]>>, String> {
+        match std::fs::read(self.pin_counter_key_path()) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut key = zeroize::Zeroizing::new([0u8; 32]);
+                // Copy into the fixed-size buffer.
+                key.copy_from_slice(&bytes);
+                Ok(Some(key))
+            }
+            // Wrong length: unusable, treated like a missing key.
+            Ok(_) => Ok(None),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(format!("Failed to read PIN counter key: {err}")),
         }
     }
 
-    fn record_failed_pin_attempt(&mut self) -> Result<bool, String> {
-        let mut state = self.load_pin_attempt_state();
+    /// Generate and persist a fresh counter-sealing key.
+    fn create_counter_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, String> {
+        let mut key = zeroize::Zeroizing::new([0u8; 32]);
+        // OS-provided cryptographic random number generator.
+        Self::fill_random(&mut *key)?;
+        write_atomic(&self.pin_counter_key_path(), &*key)
+            .map_err(|e| format!("Failed to persist PIN counter key: {e}"))?;
+        Ok(key)
+    }
+
+    /// Load the sealed attempt counter.
+    ///
+    /// Returns `Ok(Some(state))` when key and counter are present and the
+    /// counter authenticates, `Ok(None)` when either is missing, edited or
+    /// otherwise unusable — tampering under §3.10 once a PIN is configured —
+    /// and `Err` only for I/O failures that are neither.
+    ///
+    /// `legacy_record` is true when `identity.key` is still the mode 0x01
+    /// layout. Such a file was written before the sealed counter existed,
+    /// so a missing counter there is a one-time migration, not tampering:
+    /// the plaintext `pin_attempts.json` (if any) is carried over, sealed,
+    /// and the plaintext file removed. A mode 0x02 file is only ever written
+    /// together with a sealed counter, so the bootstrap never applies to it.
+    fn load_pin_attempt_state(&self, legacy_record: bool) -> Result<Option<PinAttemptState>, String> {
+        let key = self.load_counter_key()?;
+        let sealed = match std::fs::read(self.pin_attempt_state_path()) {
+            Ok(bytes) => Some(bytes),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(format!("Failed to read PIN attempt counter: {err}")),
+        };
+        match (key, sealed) {
+            // Normal case: open and authenticate.
+            (Some(key), Some(sealed)) => Ok(pin::open_attempt_state(&sealed, &key).ok()),
+            // Legacy install with no sealed counter at all: bootstrap once.
+            (None, None) if legacy_record => {
+                let mut state = std::fs::read(self.legacy_pin_attempt_json_path())
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<PinAttemptState>(&bytes).ok())
+                    .unwrap_or_default();
+                // The runtime threshold is unknown at the unlock screen;
+                // the first post-unlock sync fills it in.
+                state.wipe_threshold = state.wipe_threshold.or(self.current_pin_wipe_threshold());
+                self.save_pin_attempt_state(&state)?;
+                // The plaintext copy must not linger as a reset vector.
+                let _ = std::fs::remove_file(self.legacy_pin_attempt_json_path());
+                Ok(Some(state))
+            }
+            // Anything else — one file without the other, or both gone on
+            // a current-format install — is tampering.
+            _ => Ok(None),
+        }
+    }
+
+    /// Seal and persist the attempt counter, creating the sealing key on
+    /// first use. The write is atomic (tmp + rename) so a crash mid-write
+    /// cannot leave a half-written counter that reads as tampering.
+    fn save_pin_attempt_state(&self, state: &PinAttemptState) -> Result<(), String> {
+        let key = match self.load_counter_key()? {
+            Some(key) => key,
+            None => self.create_counter_key()?,
+        };
+        let sealed = pin::seal_attempt_state(state, &key)
+            .map_err(|e| format!("Failed to seal PIN attempt counter: {e}"))?;
+        write_atomic(&self.pin_attempt_state_path(), &sealed)
+            .map_err(|e| format!("Failed to persist PIN attempt counter: {e}"))
+    }
+
+    /// Remove every counter file. Used when no PIN is configured (nothing
+    /// to count) and after a wipe. A missing file is not an error.
+    fn clear_pin_attempt_files(&self) -> Result<(), String> {
+        for path in [
+            self.pin_attempt_state_path(),
+            self.pin_counter_key_path(),
+            self.legacy_pin_attempt_json_path(),
+        ] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(format!("Failed to clear PIN attempt state: {err}")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-seal the counter with the wipe threshold currently in settings.
+    ///
+    /// Called after unlock and whenever the setting changes, so the copy the
+    /// unlock screen reads tracks the user's choice. A counter that is
+    /// missing or fails authentication while a PIN is configured is
+    /// tampering (§3.10) and wipes, even from a settings screen.
+    fn sync_pin_counter_threshold(&self) -> Result<(), String> {
+        let record = match read_master_key_record(std::path::Path::new(&self.data_dir)) {
+            Ok(MasterKeyRecord::Wrapped(w)) => w,
+            // No PIN configured: there is no counter to keep in sync.
+            _ => return Ok(()),
+        };
+        match self.load_pin_attempt_state(record.legacy)? {
+            Some(mut state) => {
+                state.wipe_threshold = self.current_pin_wipe_threshold();
+                self.save_pin_attempt_state(&state)
+            }
+            None => Err(self.wipe_for_counter_tamper()),
+        }
+    }
+
+    /// §3.10: "Tampering with or deleting the counter file when PIN is
+    /// enabled triggers immediate Self-Disavowed broadcast followed by
+    /// identity wipe." `standard_erase` writes the Self-Disavowed marker
+    /// first, then destroys every layer (§3.9.1). Returns the message the
+    /// caller reports.
+    fn wipe_for_counter_tamper(&self) -> String {
+        self.diagnostic_log("identity", "pin_counter_tamper_wipe");
+        self.wipe_local_identity_files();
+        "PIN attempt counter was tampered with. Local data was erased.".to_string()
+    }
+
+    /// The `&self` half of a local wipe: on-disk erase, counter files, and
+    /// in-memory key material. Callers holding `&mut self` follow up with
+    /// `reset_identity_runtime_state`.
+    fn wipe_local_identity_files(&self) {
+        crate::identity::killswitch::standard_erase(std::path::Path::new(&self.data_dir));
+        // The counter files are not in the killswitch list; remove them so
+        // a later identity starts clean.
+        let _ = self.clear_pin_attempt_files();
+        self.clear_mesh_identity_runtime_state();
+    }
+
+    /// Count one failed attempt at wall-clock `now` and persist it.
+    ///
+    /// Returns `Ok(true)` when the stored wipe threshold was reached and the
+    /// identity has been erased (§3.10 "Wipe threshold"). The timestamp is
+    /// the caller's verified clock reading; this function never writes a
+    /// substitute value.
+    fn record_failed_pin_attempt(
+        &mut self,
+        mut state: PinAttemptState,
+        now: u64,
+    ) -> Result<bool, String> {
         state.failed_attempts = state.failed_attempts.saturating_add(1);
-        state.last_failed_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        state.wipe_threshold = self.current_pin_wipe_threshold();
+        state.last_failed_at = now;
         if let Some(threshold) = state.wipe_threshold {
             if state.failed_attempts >= threshold {
-                crate::identity::killswitch::standard_erase(std::path::Path::new(&self.data_dir));
-                self.clear_mesh_identity_runtime_state();
+                self.diagnostic_log("identity", "pin_wipe_threshold_reached");
+                self.wipe_local_identity_files();
                 self.reset_identity_runtime_state();
-                let _ = self.clear_pin_attempt_state();
                 return Ok(true);
             }
         }
@@ -803,24 +985,202 @@ impl MeshRuntime {
         Ok(false)
     }
 
+    // -----------------------------------------------------------------------
+    // Duress PIN (§3.9.2)
+    // -----------------------------------------------------------------------
+
+    /// Read and decode `pin.dat`, or `None` when absent or unreadable.
+    ///
+    /// A corrupt duress blob must not block a normal unlock, so decode
+    /// failures degrade to "no duress PIN" (logged) rather than erroring.
+    fn read_duress_blob(&self) -> Option<PinWrappedKey> {
+        let bytes = match std::fs::read(self.duress_pin_path()) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    self.diagnostic_log("identity", "duress_blob_unreadable");
+                }
+                return None;
+            }
+        };
+        match serde_json::from_slice::<PinWrappedKey>(&bytes) {
+            Ok(blob) => Some(blob),
+            Err(_) => {
+                self.diagnostic_log("identity", "duress_blob_undecodable");
+                None
+            }
+        }
+    }
+
+    /// Try the key derived for this attempt against the duress blob.
+    ///
+    /// Returns the wrapping key, salt and parameters to wrap the replacement
+    /// identity under when the duress PIN matched. The blob normally shares
+    /// the primary record's salt and parameters, so this is a microsecond
+    /// AEAD open with no second derivation. The only exception is a legacy
+    /// mode 0x01 record, whose 16-byte salt a blob cannot share: there the
+    /// blob is checked under its own salt (one extra derivation, once, until
+    /// the successful unlock that migrates the record).
+    fn match_duress_blob(
+        &self,
+        wrapped: &WrappedMasterKey,
+        wrapping_key: &zeroize::Zeroizing<[u8; 32]>,
+        pin: &[u8],
+    ) -> Option<(zeroize::Zeroizing<[u8; 32]>, [u8; SALT_LEN], KdfParams)> {
+        let blob = self.read_duress_blob()?;
+        let mut blob_salt = [0u8; SALT_LEN];
+        // A blob with any other salt length is malformed; `open_wrapped_key`
+        // would reject it, so there is nothing to match.
+        if blob.salt.len() != SALT_LEN {
+            return None;
+        }
+        // Copy into the fixed-size buffer.
+        blob_salt.copy_from_slice(&blob.salt);
+
+        if blob.salt == wrapped.salt && blob.params() == wrapped.params {
+            // Shared salt: the single derivation covers this blob.
+            return pin::open_wrapped_key(&blob, wrapping_key)
+                .ok()
+                .map(|_| (wrapping_key.clone(), blob_salt, wrapped.params));
+        }
+        if wrapped.legacy {
+            // Legacy fallback: derive under the blob's own parameters.
+            let key = pin::derive_key_from_pin(pin, &blob.salt, blob.params()).ok()?;
+            return pin::open_wrapped_key(&blob, &key)
+                .ok()
+                .map(|_| (key, blob_salt, blob.params()));
+        }
+        // A current-format record with a blob under a different salt is a
+        // stale blob; it can never match and is reported as unconfigured.
+        None
+    }
+
+    /// Salt and parameters of a usable duress blob, if one exists.
+    ///
+    /// The 0x01 → 0x02 migration re-wraps `identity.key` under these so the
+    /// duress PIN keeps working without the user re-entering it.
+    fn duress_blob_salt_params(&self) -> Option<([u8; SALT_LEN], KdfParams)> {
+        let blob = self.read_duress_blob()?;
+        if blob.salt.len() != SALT_LEN || blob.params().validate().is_err() {
+            return None;
+        }
+        let mut salt = [0u8; SALT_LEN];
+        // Copy into the fixed-size buffer.
+        salt.copy_from_slice(&blob.salt);
+        Some((salt, blob.params()))
+    }
+
+    /// Duress unlock (§3.9.2): decide in the foreground, destroy in the
+    /// background.
+    ///
+    /// Foreground (inside the one-second budget): generate the replacement
+    /// self, encode its `identity.key` (wrapped under the duress PIN with
+    /// the key already derived for this attempt — no second Argon2 pass)
+    /// and `identity.dat`, seal a fresh attempt counter, start the 60–120 s
+    /// wind-down timer, and clear the old in-memory state. The caller then
+    /// activates the returned identity and the UI sees a normal unlock.
+    ///
+    /// Background thread, in order (§3.9.2 step 4): Self-Disavowed marker
+    /// and Layer 2/3 erase (`duress_erase`, which also removes `pin.dat`),
+    /// then the new counter files, then the new identity files. If the
+    /// process dies before the thread finishes, the device simply has no
+    /// Layer 2 identity on next start — consistent with "I reinstalled".
+    /// If the thread cannot even be spawned, the same work runs inline:
+    /// the erase is never skipped.
+    fn begin_duress_rotation(
+        &mut self,
+        wrapping_key: zeroize::Zeroizing<[u8; 32]>,
+        salt: [u8; SALT_LEN],
+        params: KdfParams,
+    ) -> Result<SelfIdentity, String> {
+        self.diagnostic_log("identity", "duress_unlock");
+        let data_dir = std::path::PathBuf::from(&self.data_dir);
+
+        // Replacement self under the reset (empty) profile.
+        let fresh = SelfIdentity::generate(None);
+        let key_bytes = encode_wrapped_key_file(&fresh.master_key, &wrapping_key, &salt, params)
+            .map_err(|e| format!("Failed to wrap duress identity: {e}"))?;
+        let dat_bytes = fresh
+            .encode_dat_file()
+            .map_err(|e| format!("Failed to encode duress identity: {e}"))?;
+        // The derived key has done its work; drop it before anything else.
+        drop(wrapping_key);
+
+        // Fresh counter under a fresh key: the duress PIN is now the
+        // legitimate unlock PIN (§3.9.2 step 5) with a clean history.
+        let mut counter_key = zeroize::Zeroizing::new([0u8; 32]);
+        Self::fill_random(&mut *counter_key)?;
+        let sealed_counter = pin::seal_attempt_state(&PinAttemptState::default(), &counter_key)
+            .map_err(|e| format!("Failed to seal duress attempt counter: {e}"))?;
+
+        // Start the transition timer now: the old identity's taper begins
+        // the moment the new one takes over (§3.9.2 transition masking).
+        // A poisoned lock must not turn the erase into a panic across FFI.
+        *self
+            .duress_wind_down
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            Some(crate::identity::killswitch::start_duress_wind_down());
+
+        // Old in-memory self and masks go before the UI sees the new one.
+        self.reset_identity_runtime_state();
+
+        // Everything that touches disk runs off the response path.
+        let work = move || {
+            finish_duress_rotation(&data_dir, &key_bytes, &dat_bytes, &counter_key, &sealed_counter)
+        };
+        if let Err(err) = std::thread::Builder::new()
+            .name("duress-rotation".to_string())
+            .spawn(work.clone())
+        {
+            // No thread available: never skip the erase, run it here.
+            eprintln!("[identity] WARNING: duress rotation thread unavailable ({err}); running inline");
+            work();
+        }
+        Ok(fresh)
+    }
+
+    /// Wrap the current master key under a duress PIN and persist `pin.dat`.
+    ///
+    /// The blob shares the primary record's salt and parameters so the
+    /// unlock path can try one derived key against both (§3.10 timing
+    /// normalization); that also means it must be set while a current-format
+    /// unlock PIN exists, and must differ from it.
     fn persist_duress_pin(&self, pin: &str) -> Result<(), String> {
         if !self.identity_unlocked {
             return Err("Identity must be unlocked before setting a duress PIN".to_string());
         }
-        crate::identity::pin::validate_pin(pin.as_bytes()).map_err(|e| e.to_string())?;
+        pin::validate_pin(pin.as_bytes()).map_err(|e| e.to_string())?;
         let data_dir = std::path::Path::new(&self.data_dir);
-        if SelfIdentity::load_from_disk(data_dir, Some(pin)).is_ok() {
+        let wrapped = match read_master_key_record(data_dir) {
+            Ok(MasterKeyRecord::Wrapped(w)) => w,
+            Ok(MasterKeyRecord::Plain(_)) => {
+                return Err("Set an unlock PIN before setting a duress PIN".to_string());
+            }
+            Err(e) => return Err(format!("Failed to read identity key: {e}")),
+        };
+        // A legacy record cannot share its salt; unlock migrates it, so this
+        // only happens if the record was swapped while unlocked.
+        let Some(salt) = wrapped.shared_salt() else {
+            return Err("Unlock PIN format is outdated; unlock again before setting a duress PIN".to_string());
+        };
+        // One derivation under the shared salt.
+        let wrapping_key = pin::derive_key_from_pin(pin.as_bytes(), &salt, wrapped.params)
+            .map_err(|e| format!("Failed to set duress PIN: {e}"))?;
+        // Same PIN as the unlock PIN would make the primary blob win every
+        // time and the duress blob unreachable.
+        if wrapped.open(&wrapping_key).is_ok() {
             return Err("Duress PIN must differ from the current unlock PIN".to_string());
         }
         let identity = self.identity.lock().unwrap_or_else(|e| e.into_inner());
         let Some(identity) = identity.as_ref() else {
             return Err("Identity is not loaded".to_string());
         };
-        let wrapped = crate::identity::pin::wrap_key_with_pin(&identity.master_key, pin.as_bytes())
+        let blob = pin::wrap_key_under(&identity.master_key, &wrapping_key, &salt, wrapped.params)
             .map_err(|e| format!("Failed to set duress PIN: {e}"))?;
-        let encoded = serde_json::to_vec(&wrapped)
+        let encoded = serde_json::to_vec(&blob)
             .map_err(|e| format!("Failed to encode duress PIN: {e}"))?;
-        std::fs::write(self.duress_pin_path(), encoded)
+        write_atomic(&self.duress_pin_path(), &encoded)
             .map_err(|e| format!("Failed to persist duress PIN: {e}"))?;
         Ok(())
     }
@@ -833,22 +1193,20 @@ impl MeshRuntime {
         std::fs::remove_file(path).map_err(|e| format!("Failed to remove duress PIN: {e}"))
     }
 
+    /// Verify a duress PIN against `pin.dat` (settings flows only).
+    ///
+    /// Derives under the blob's own salt and parameters; the unlock screen
+    /// never calls this, it uses `match_duress_blob` with the shared key.
     fn duress_pin_matches(&self, pin: &str) -> Result<bool, String> {
-        let path = self.duress_pin_path();
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(err) => return Err(format!("Failed to read duress PIN: {err}")),
+        let Some(wrapped) = self.read_duress_blob() else {
+            return Ok(false);
         };
-        let wrapped: crate::identity::pin::PinWrappedKey = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Failed to decode duress PIN: {e}"))?;
-        match crate::identity::pin::unwrap_key_with_pin(&wrapped, pin.as_bytes()) {
+        match pin::unwrap_key_with_pin(&wrapped, pin.as_bytes()) {
             Ok(_) => Ok(true),
-            Err(crate::identity::pin::PinError::WrongPin) => Ok(false),
+            Err(PinError::WrongPin) => Ok(false),
             Err(err) => Err(format!("Failed to verify duress PIN: {err}")),
         }
     }
-
     fn reset_identity_runtime_state(&mut self) {
         // Wipe key material first through the guarded path, then clear state.
         self.clear_identity_keys();
@@ -1120,64 +1478,53 @@ impl MeshRuntime {
     /// Returns `Ok(())` on success, `Err(reason)` on failure (wrong PIN, file
     /// missing, or I/O error).
     pub fn unlock_identity(&mut self, pin: Option<String>) -> Result<(), String> {
-        let data_dir = std::path::PathBuf::from(&self.data_dir);
-        if pin.is_some() {
-            let state = self.load_pin_attempt_state();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            match crate::identity::pin::is_attempt_allowed(&state, now) {
-                Ok(()) => {}
-                Err(crate::identity::pin::PinError::LockedOut) => {
-                    return Err("PIN entry is temporarily locked. Try again later.".to_string());
-                }
-                Err(err) => return Err(format!("PIN unlock failed: {err}")),
+        let started = std::time::Instant::now();
+        // Zeroized on drop so the PIN does not linger on the heap after the
+        // derivation (§3.10 "process monitoring mitigation").
+        let pin = pin.map(zeroize::Zeroizing::new);
+        let is_pin_attempt = pin.is_some();
+        let result = self.unlock_identity_inner(pin.as_deref().map(String::as_str));
+        // §3.9 / §3.10: every PIN attempt — correct, wrong or duress — returns
+        // at the same wall-clock offset. The derivation and decision above
+        // take a fraction of the budget; the remainder is slept here, in
+        // Rust, so no caller can skip it. A no-PIN auto-unlock at startup is
+        // not a guess and is not padded.
+        if is_pin_attempt {
+            if let Some(remaining) = UNLOCK_RESPONSE_DEADLINE.checked_sub(started.elapsed()) {
+                std::thread::sleep(remaining);
             }
         }
-        let identity = match SelfIdentity::load_from_disk(&data_dir, pin.as_deref()) {
-            Ok(identity) => identity,
-            Err(IdentityError::WrongPin) => {
-                let Some(pin) = pin.as_deref() else {
-                    return Err("Wrong PIN".to_string());
-                };
-                if !self.duress_pin_matches(pin)? {
-                    if self.record_failed_pin_attempt()? {
-                        return Err(
-                            "Too many wrong PIN attempts. Local data was erased.".to_string()
-                        );
-                    }
-                    return Err("Wrong PIN".to_string());
-                }
-                // Begin the 60–120 s gradual wind-down (§3.9.2 transition masking).
-                // This immediately erases Layer 2/3 files while spawning a
-                // background thread to taper old-identity Layer 1 traffic.
-                let (_erase_result, wind_down) =
-                    crate::identity::killswitch::begin_duress_wind_down(&data_dir);
-                // This runs on the duress path; a poisoned lock must not turn
-                // the erase into a panic across the FFI boundary. The slot only
-                // holds an Option, so the poisoned value is safe to overwrite.
-                *self
-                    .duress_wind_down
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(wind_down);
-                self.reset_identity_runtime_state();
-                let fresh_identity = SelfIdentity::generate(None);
-                fresh_identity
-                    .save_to_disk(&data_dir, Some(pin))
-                    .map_err(|e| format!("Failed to activate duress identity: {e}"))?;
-                self.clear_duress_pin_file()?;
-                fresh_identity
-            }
+        result
+    }
+
+    /// The unlock decision, without the response-time padding.
+    fn unlock_identity_inner(&mut self, pin: Option<&str>) -> Result<(), String> {
+        let data_dir = std::path::PathBuf::from(&self.data_dir);
+        let record = match read_master_key_record(&data_dir) {
+            Ok(record) => record,
             Err(IdentityError::NotFound(_)) => {
                 return Err("No identity found — call mi_create_identity first".to_string());
             }
             Err(other) => return Err(format!("Identity unlock failed: {other}")),
         };
+        let identity = match record {
+            MasterKeyRecord::Plain(master_key) => {
+                // No PIN configured: nothing to count, and stale counter
+                // files from a removed PIN must not survive.
+                let identity = SelfIdentity::load_dat_file(&data_dir, master_key)
+                    .map_err(|e| format!("Identity unlock failed: {e}"))?;
+                self.clear_pin_attempt_files()?;
+                identity
+            }
+            MasterKeyRecord::Wrapped(wrapped) => {
+                self.unlock_wrapped_identity(&data_dir, &wrapped, pin)?
+            }
+        };
         self.activate_identity(identity);
         self.ensure_layer1_transport_started()?;
-        self.clear_pin_attempt_state()?;
-
+        // Settings are loaded now; push the wipe threshold into the counter
+        // so the next locked-screen attempt enforces the user's choice.
+        self.sync_pin_counter_threshold()?;
         // Build and sign our self-entry for the gossip network map (§4.5).
         // This lets other nodes learn our addresses and public keys.
         {
@@ -1227,7 +1574,7 @@ impl MeshRuntime {
                         kem_encapsulation_key: kem_ek,
                         preauth_sig,
                     }],
-                    last_seen: now,
+                    version: crate::network::map::MAP_ENTRY_FORMAT_VERSION,
                     transport_hints: vec![],
                     public_profile,
                     services: vec![],
@@ -1250,6 +1597,118 @@ impl MeshRuntime {
         Ok(())
     }
 
+    /// One PIN attempt against a wrapped `identity.key` (§3.10).
+    ///
+    /// Order of operations:
+    /// 1. counter present and authentic, else tamper wipe;
+    /// 2. clock readable (never substituted), backoff and rollback checks;
+    /// 3. exactly one Argon2id derivation under the record's salt/params;
+    /// 4. the derived key is tried against the primary record and the
+    ///    duress blob — both are microsecond AEAD opens;
+    /// 5. correct → load, migrate a legacy record, zero the counter;
+    ///    duress → `begin_duress_rotation`; neither → count the failure.
+    fn unlock_wrapped_identity(
+        &mut self,
+        data_dir: &std::path::Path,
+        wrapped: &WrappedMasterKey,
+        pin: Option<&str>,
+    ) -> Result<SelfIdentity, String> {
+        let Some(pin) = pin else {
+            return Err("PIN required".to_string());
+        };
+        // A PIN outside 4–16 digits cannot be the configured one; it is not
+        // a guess at the secret, so it is refused without being counted.
+        if pin::validate_pin(pin.as_bytes()).is_err() {
+            return Err("Wrong PIN".to_string());
+        }
+
+        // 1. Counter.
+        let Some(state) = self.load_pin_attempt_state(wrapped.legacy)? else {
+            let message = self.wipe_for_counter_tamper();
+            self.reset_identity_runtime_state();
+            return Err(message);
+        };
+
+        // 2. Clock and backoff. A clock error refuses the attempt outright;
+        // zero is never written in its place.
+        let now = Self::wall_clock_secs()?;
+        match pin::is_attempt_allowed(&state, now) {
+            Ok(()) => {}
+            Err(PinError::LockedOut) => {
+                return Err("PIN entry is temporarily locked. Try again later.".to_string());
+            }
+            Err(err) => return Err(format!("PIN unlock failed: {err}")),
+        }
+
+        // 3. The single derivation.
+        let wrapping_key = wrapped
+            .derive_wrapping_key(pin.as_bytes())
+            .map_err(|e| format!("PIN unlock failed: {e}"))?;
+
+        // 4. Try both records.
+        let primary = wrapped.open(&wrapping_key);
+        let duress = self.match_duress_blob(wrapped, &wrapping_key, pin.as_bytes());
+
+        // 5. Decide.
+        match primary {
+            Ok(master_key) => {
+                let identity = SelfIdentity::load_dat_file(data_dir, master_key)
+                    .map_err(|e| format!("Identity unlock failed: {e}"))?;
+                if wrapped.legacy {
+                    self.migrate_legacy_wrap(data_dir, &identity, pin)?;
+                }
+                // The PIN is proven: the counter restarts from zero. The
+                // stored threshold is kept until settings are loaded.
+                self.save_pin_attempt_state(&PinAttemptState {
+                    failed_attempts: 0,
+                    last_failed_at: 0,
+                    wipe_threshold: state.wipe_threshold,
+                })?;
+                Ok(identity)
+            }
+            Err(IdentityError::WrongPin) => match duress {
+                Some((key, salt, params)) => self.begin_duress_rotation(key, salt, params),
+                None => {
+                    if self.record_failed_pin_attempt(state, now)? {
+                        return Err(
+                            "Too many wrong PIN attempts. Local data was erased.".to_string()
+                        );
+                    }
+                    Err("Wrong PIN".to_string())
+                }
+            },
+            Err(other) => Err(format!("Identity unlock failed: {other}")),
+        }
+    }
+
+    /// Re-wrap a legacy mode 0x01 `identity.key` as mode 0x02 under the
+    /// spec parameters after a successful unlock.
+    ///
+    /// If a duress blob exists, its salt and parameters are adopted so the
+    /// duress PIN keeps working without re-entry; otherwise a fresh salt is
+    /// drawn. This is the one place a correct unlock performs a second
+    /// derivation, and it happens once per identity.
+    fn migrate_legacy_wrap(
+        &self,
+        data_dir: &std::path::Path,
+        identity: &SelfIdentity,
+        pin: &str,
+    ) -> Result<(), String> {
+        self.diagnostic_log("identity", "pin_wrap_migrate_0x01_to_0x02");
+        let (salt, params) = match self.duress_blob_salt_params() {
+            Some(existing) => existing,
+            None => {
+                let mut salt = [0u8; SALT_LEN];
+                Self::fill_random(&mut salt)?;
+                (salt, KdfParams::SPEC)
+            }
+        };
+        let wrapping_key = pin::derive_key_from_pin(pin.as_bytes(), &salt, params)
+            .map_err(|e| format!("Failed to upgrade PIN wrap: {e}"))?;
+        identity
+            .save_wrapped(data_dir, &wrapping_key, &salt, params)
+            .map_err(|e| format!("Failed to upgrade PIN wrap: {e}"))
+    }
     /// Return backend-owned security configuration for settings screens.
     pub fn get_security_config(&self) -> String {
         serde_json::json!({
@@ -1312,6 +1771,9 @@ impl MeshRuntime {
         }
 
         self.save_settings();
+        // The unlock screen reads the wipe threshold from the sealed counter
+        // (the settings vault is locked then), so mirror the change there.
+        self.sync_pin_counter_threshold()?;
         Ok(())
     }
 
@@ -1321,7 +1783,14 @@ impl MeshRuntime {
     }
 
     /// Replace the current duress PIN after verifying the old duress PIN.
+    ///
+    /// Requires an unlocked identity first: the verification below runs a
+    /// derivation outside the attempt counter, so it must never be reachable
+    /// from a locked device as a backoff-free guessing oracle.
     pub fn change_duress_pin(&self, current_pin: String, new_pin: String) -> Result<(), String> {
+        if !self.identity_unlocked {
+            return Err("Identity must be unlocked before changing the duress PIN".to_string());
+        }
         if !self.duress_pin_matches(&current_pin)? {
             return Err("Wrong duress PIN".to_string());
         }
@@ -1329,7 +1798,12 @@ impl MeshRuntime {
     }
 
     /// Remove the configured duress PIN after verifying it.
+    ///
+    /// Unlocked-only for the same reason as `change_duress_pin`.
     pub fn remove_duress_pin(&self, current_pin: String) -> Result<(), String> {
+        if !self.identity_unlocked {
+            return Err("Identity must be unlocked before removing the duress PIN".to_string());
+        }
         if !self.duress_pin_matches(&current_pin)? {
             return Err("Wrong duress PIN".to_string());
         }
@@ -1822,17 +2296,67 @@ impl MeshRuntime {
     }
 
     /// Persist the currently unlocked identity with a PIN-wrapped master key.
+    ///
+    /// When `identity.key` is already a current-format wrap, the existing
+    /// salt and parameters are kept so a duress blob wrapped under them
+    /// stays valid; the new PIN is also checked against that blob so the
+    /// two can never coincide. Otherwise a fresh salt is drawn and any
+    /// stale duress blob is removed. The sealed attempt counter is written
+    /// before the key file so a crash in between leaves a consistent state.
     pub fn set_pin(&mut self, pin: String) -> Result<(), String> {
         if !self.identity_unlocked {
             return Err("Identity must be unlocked before setting a PIN".to_string());
         }
+        pin::validate_pin(pin.as_bytes()).map_err(|e| e.to_string())?;
         let data_dir = std::path::Path::new(&self.data_dir);
+
+        // Keep the salt of an existing current-format wrap.
+        let existing = match read_master_key_record(data_dir) {
+            Ok(MasterKeyRecord::Wrapped(w)) if !w.legacy => w.shared_salt().map(|s| (s, w.params)),
+            Ok(_) => None,
+            Err(IdentityError::NotFound(_)) => None,
+            Err(e) => return Err(format!("Failed to read identity key: {e}")),
+        };
+        let (salt, params, keep_duress) = match existing {
+            Some((salt, params)) => (salt, params, true),
+            None => {
+                let mut salt = [0u8; SALT_LEN];
+                Self::fill_random(&mut salt)?;
+                (salt, KdfParams::SPEC, false)
+            }
+        };
+
+        // One derivation under the chosen salt.
+        let wrapping_key = pin::derive_key_from_pin(pin.as_bytes(), &salt, params)
+            .map_err(|e| format!("Failed to set PIN: {e}"))?;
+        if keep_duress {
+            // A duress blob under this salt must not open with the new PIN,
+            // or the primary record would always win and the duress PIN
+            // would silently stop working.
+            if let Some(blob) = self.read_duress_blob() {
+                if pin::open_wrapped_key(&blob, &wrapping_key).is_ok() {
+                    return Err("New PIN must differ from the duress PIN".to_string());
+                }
+            }
+        } else {
+            // A blob under any other salt can never match again.
+            self.clear_duress_pin_file()?;
+        }
+
+        // Counter before key file: an identity that is PIN-wrapped must
+        // always have a sealed counter beside it (§3.10).
+        self.save_pin_attempt_state(&PinAttemptState {
+            failed_attempts: 0,
+            last_failed_at: 0,
+            wipe_threshold: self.current_pin_wipe_threshold(),
+        })?;
+
         let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
         let identity = guard
             .as_ref()
             .ok_or_else(|| "Identity is not loaded".to_string())?;
         identity
-            .save_to_disk(data_dir, Some(&pin))
+            .save_wrapped(data_dir, &wrapping_key, &salt, params)
             .map_err(|e| format!("Failed to set PIN: {e}"))?;
         drop(guard);
         let flags = self
@@ -1875,7 +2399,13 @@ impl MeshRuntime {
     }
 
     /// Change the current PIN after verifying the existing one.
+    ///
+    /// Unlocked-only: the verification below derives outside the attempt
+    /// counter and must not serve a locked device as a guessing oracle.
     pub fn change_pin(&mut self, current_pin: String, new_pin: String) -> Result<(), String> {
+        if !self.identity_unlocked {
+            return Err("Identity must be unlocked before changing the PIN".to_string());
+        }
         let data_dir = std::path::Path::new(&self.data_dir);
         SelfIdentity::load_from_disk(data_dir, Some(&current_pin)).map_err(|e| match e {
             IdentityError::WrongPin => "Wrong PIN".to_string(),
@@ -1901,6 +2431,11 @@ impl MeshRuntime {
         identity
             .save_to_disk(data_dir, None)
             .map_err(|e| format!("Failed to remove PIN: {e}"))?;
+        drop(guard);
+        // Without a PIN there is nothing to count and no unlock screen for
+        // a duress PIN to be entered on; both records go with the wrap.
+        self.clear_pin_attempt_files()?;
+        self.clear_duress_pin_file()?;
         Ok(())
     }
 
@@ -2196,6 +2731,12 @@ impl MeshRuntime {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        // Remember the token so a `pairing_hello` presenting it is honoured
+        // only while this payload is valid (§8.3); a hello without one of our
+        // issued tokens never creates a contact.
+        let expires_at = now + crate::pairing::methods::QR_EXPIRY_LIVE;
+        self.remember_pairing_token(token, expires_at);
+
         let payload = serde_json::json!({
             "version":              1,
             "peer_id":              peer_id_hex,
@@ -2214,7 +2755,7 @@ impl MeshRuntime {
             "display_name":         display_name,
             "display_name_sig":     display_name_sig,
             "transport_hints":      hints,
-            "expiry":               now + crate::pairing::methods::QR_EXPIRY_LIVE,
+            "expiry":               expires_at,
             // ML-KEM-768 encapsulation key (hex) — enables PQXDH (§3.4.1).
             "kem_pub":              hex::encode(&id.kem_encapsulation_key),
         });
@@ -2316,6 +2857,38 @@ impl MeshRuntime {
         std::path::Path::new(&self.data_dir)
             .join("identity.dat")
             .exists()
+    }
+}
+
+/// Background half of a duress unlock (§3.9.2 step 4), run off the
+/// response path by `begin_duress_rotation`.
+///
+/// Order matters: the Self-Disavowed marker and the Layer 2/3 erase come
+/// first (`duress_erase` overwrites `identity.key` before unlinking it and
+/// removes `pin.dat`), then the counter files, then the replacement
+/// identity. Each step is independent of the thread's survival: a crash at
+/// any point leaves either no Layer 2 identity or a complete new one, never
+/// the old one. Failures are logged the way the killswitch logs its own —
+/// there is no caller left to report to.
+fn finish_duress_rotation(
+    data_dir: &std::path::Path,
+    key_bytes: &[u8],
+    dat_bytes: &[u8],
+    counter_key: &[u8; 32],
+    sealed_counter: &[u8],
+) {
+    let erase = crate::identity::killswitch::duress_erase(data_dir);
+    if !erase.broadcast_sent {
+        eprintln!("[identity] WARNING: duress Self-Disavowed marker could not be written");
+    }
+    if let Err(e) = write_atomic(&data_dir.join("pin_counter.key"), counter_key) {
+        eprintln!("[identity] WARNING: duress counter key not written: {e}");
+    }
+    if let Err(e) = write_atomic(&data_dir.join("pin_attempts.sealed"), sealed_counter) {
+        eprintln!("[identity] WARNING: duress attempt counter not written: {e}");
+    }
+    if let Err(e) = write_identity_files(data_dir, key_bytes, dat_bytes) {
+        eprintln!("[identity] WARNING: duress replacement identity not written: {e}");
     }
 }
 
@@ -2445,5 +3018,386 @@ mod tests {
             identity.is_none(),
             "identity must be None after concurrent clear_identity_keys"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // App PIN: sealed counter, backoff, timing, migration (§3.9, §3.10)
+    // ------------------------------------------------------------------
+
+    use crate::identity::pin::{self, PinAttemptState, UNLOCK_RESPONSE_DEADLINE};
+    use crate::identity::self_identity::{
+        encode_legacy_wrapped_key_file, parse_master_key_record, MasterKeyRecord, SelfIdentity,
+    };
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    /// Tolerance for the three unlock outcomes' response times. The padding
+    /// makes each attempt take `UNLOCK_RESPONSE_DEADLINE`; what remains is
+    /// scheduler jitter and, on a machine where one derivation alone exceeds
+    /// the deadline, Argon2 run-to-run variance.
+    const TIMING_TOLERANCE: Duration = Duration::from_millis(150);
+
+    /// A runtime in a fresh temp dir with no network side effects.
+    fn quiet_runtime(dir: &TempDir) -> MeshRuntime {
+        let rt = MeshRuntime::new(dir.path().to_string_lossy().into_owned());
+        // Keep the Layer 1 reconcile from binding sockets or starting mDNS.
+        let mut flags = rt.transport_flags.lock().unwrap_or_else(|e| e.into_inner());
+        flags.clearnet = false;
+        flags.clearnet_fallback = false;
+        flags.mesh_discovery = false;
+        drop(flags);
+        rt
+    }
+
+    /// Create an identity, protect it with `pin` (and optionally a duress
+    /// PIN), then lock it so the next call is a real unlock attempt.
+    fn locked_pin_runtime(pin: &str, duress: Option<&str>) -> (TempDir, MeshRuntime, [u8; 32]) {
+        let dir = TempDir::new().expect("tempdir");
+        let mut rt = quiet_runtime(&dir);
+        rt.create_identity(Some("Pinned".into())).expect("create");
+        let original_pub = rt
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .expect("identity loaded")
+            .ed25519_pub;
+        rt.set_pin(pin.to_string()).expect("set_pin");
+        if let Some(duress) = duress {
+            rt.set_duress_pin(duress.to_string()).expect("set duress");
+        }
+        rt.reset_identity();
+        (dir, rt, original_pub)
+    }
+
+    /// Current wall-clock seconds for tests that seed the counter.
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+    }
+
+    /// Read the sealing key and open the sealed counter on disk.
+    fn read_sealed_counter(dir: &TempDir) -> PinAttemptState {
+        let key_bytes = std::fs::read(dir.path().join("pin_counter.key")).expect("counter key");
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&key_bytes);
+        let sealed = std::fs::read(dir.path().join("pin_attempts.sealed")).expect("sealed");
+        pin::open_attempt_state(&sealed, &key).expect("counter authenticates")
+    }
+
+    /// Overwrite the sealed counter with `state` under the existing key.
+    fn write_sealed_counter(dir: &TempDir, state: &PinAttemptState) {
+        let key_bytes = std::fs::read(dir.path().join("pin_counter.key")).expect("counter key");
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&key_bytes);
+        let sealed = pin::seal_attempt_state(state, &key).expect("seal");
+        std::fs::write(dir.path().join("pin_attempts.sealed"), sealed).expect("write sealed");
+    }
+
+    /// Wait for the background duress rotation to finish writing the
+    /// replacement identity under `pin`, or fail after a generous bound.
+    fn wait_for_duress_rotation(dir: &TempDir, pin: &str) -> SelfIdentity {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let done = !dir.path().join("pin.dat").exists()
+                && dir.path().join("pin_attempts.sealed").exists()
+                && dir.path().join("pin_counter.key").exists();
+            if done {
+                if let Ok(identity) = SelfIdentity::load_from_disk(dir.path(), Some(pin)) {
+                    return identity;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "duress rotation did not persist the replacement identity in time"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Assert that every pair of durations is within the tolerance.
+    fn assert_close(label: &str, durations: &[(&str, Duration)]) {
+        for (name_a, a) in durations {
+            for (name_b, b) in durations {
+                let gap = if a > b { *a - *b } else { *b - *a };
+                assert!(
+                    gap <= TIMING_TOLERANCE,
+                    "{label}: {name_a} ({a:?}) and {name_b} ({b:?}) differ by {gap:?}, over {TIMING_TOLERANCE:?}"
+                );
+            }
+        }
+    }
+
+    /// §3.10 "Timing normalization": correct, wrong and duress PINs respond
+    /// at the same wall-clock offset, each at least the one-second deadline,
+    /// and the duress erase happens after the call has returned.
+    #[test]
+    fn unlock_timing_normalized_across_outcomes() {
+        let (dir, mut rt, original_pub) = locked_pin_runtime("1234", Some("9999"));
+
+        let started = Instant::now();
+        let wrong = rt.unlock_identity(Some("0000".into()));
+        let t_wrong = started.elapsed();
+        assert_eq!(wrong.unwrap_err(), "Wrong PIN");
+        assert!(!rt.identity_unlocked);
+
+        let started = Instant::now();
+        rt.unlock_identity(Some("1234".into())).expect("correct PIN unlocks");
+        let t_ok = started.elapsed();
+        assert!(rt.identity_unlocked);
+        rt.reset_identity();
+
+        let started = Instant::now();
+        rt.unlock_identity(Some("9999".into())).expect("duress PIN looks like a normal unlock");
+        let t_duress = started.elapsed();
+        assert!(rt.identity_unlocked, "duress unlock presents an unlocked app");
+
+        for (name, t) in [("wrong", t_wrong), ("correct", t_ok), ("duress", t_duress)] {
+            assert!(
+                t >= UNLOCK_RESPONSE_DEADLINE,
+                "{name} returned after {t:?}, before the {UNLOCK_RESPONSE_DEADLINE:?} deadline"
+            );
+        }
+        assert_close(
+            "unlock outcomes",
+            &[("wrong", t_wrong), ("correct", t_ok), ("duress", t_duress)],
+        );
+
+        // The foreground already runs the replacement self ...
+        let fresh_pub = rt
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .expect("replacement identity loaded")
+            .ed25519_pub;
+        assert_ne!(fresh_pub, original_pub, "duress must rotate the self");
+        // ... and the background thread persists it under the duress PIN,
+        // which is now the legitimate unlock PIN (§3.9.2 step 5).
+        let persisted = wait_for_duress_rotation(&dir, "9999");
+        assert_eq!(persisted.ed25519_pub, fresh_pub);
+        assert!(
+            SelfIdentity::load_from_disk(dir.path(), Some("1234")).is_err(),
+            "the old PIN must not open the replacement identity"
+        );
+        assert!(
+            dir.path().join("killswitch_broadcast.pending").exists(),
+            "Self-Disavowed marker must be written for the old self"
+        );
+        assert!(rt
+            .duress_wind_down
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some());
+    }
+
+    /// §3.10: deleting the counter while a PIN is set is tampering — the
+    /// identity is wiped behind a Self-Disavowed marker, never reset to
+    /// zero failures.
+    #[test]
+    fn deleted_counter_with_pin_set_wipes_instead_of_resetting() {
+        let (dir, mut rt, _) = locked_pin_runtime("1234", None);
+        std::fs::remove_file(dir.path().join("pin_attempts.sealed")).expect("delete counter");
+
+        let err = rt.unlock_identity(Some("1234".into())).unwrap_err();
+        assert!(err.contains("tampered"), "unexpected error: {err}");
+        assert!(!rt.identity_unlocked);
+        assert!(!dir.path().join("identity.key").exists());
+        assert!(!dir.path().join("identity.dat").exists());
+        assert!(dir.path().join("killswitch_broadcast.pending").exists());
+        // Nothing is left to guess at; the counter was not quietly recreated.
+        assert!(!dir.path().join("pin_attempts.sealed").exists());
+        let again = rt.unlock_identity(Some("1234".into())).unwrap_err();
+        assert!(again.contains("No identity"), "unexpected error: {again}");
+    }
+
+    /// Editing a single byte of the sealed counter is the same tampering.
+    #[test]
+    fn edited_counter_with_pin_set_wipes() {
+        let (dir, mut rt, _) = locked_pin_runtime("1234", None);
+        let path = dir.path().join("pin_attempts.sealed");
+        let mut bytes = std::fs::read(&path).expect("read counter");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        std::fs::write(&path, bytes).expect("rewrite counter");
+
+        let err = rt.unlock_identity(Some("1234".into())).unwrap_err();
+        assert!(err.contains("tampered"), "unexpected error: {err}");
+        assert!(!dir.path().join("identity.dat").exists());
+    }
+
+    /// Removing the sealing key (leaving the counter) is tampering too.
+    #[test]
+    fn deleted_counter_key_with_pin_set_wipes() {
+        let (dir, mut rt, _) = locked_pin_runtime("1234", None);
+        std::fs::remove_file(dir.path().join("pin_counter.key")).expect("delete key");
+
+        let err = rt.unlock_identity(Some("1234".into())).unwrap_err();
+        assert!(err.contains("tampered"), "unexpected error: {err}");
+        assert!(!dir.path().join("identity.dat").exists());
+    }
+
+    /// A wall clock that reads earlier than the last recorded failure keeps
+    /// the lock, even for the correct PIN, and the counter is left as it was.
+    #[test]
+    fn clock_rollback_keeps_unlock_locked() {
+        let (dir, mut rt, _) = locked_pin_runtime("1234", None);
+        // Six failures recorded "in the future": what the file looks like
+        // after the clock is moved back past them.
+        let seeded = PinAttemptState {
+            failed_attempts: 6,
+            last_failed_at: now_secs() + 100_000,
+            wipe_threshold: None,
+        };
+        write_sealed_counter(&dir, &seeded);
+
+        let err = rt.unlock_identity(Some("1234".into())).unwrap_err();
+        assert!(err.contains("locked"), "unexpected error: {err}");
+        assert!(!rt.identity_unlocked);
+        assert_eq!(read_sealed_counter(&dir), seeded, "counter must not be rewritten");
+        assert!(dir.path().join("identity.dat").exists(), "a lock is not a wipe");
+    }
+
+    /// Backoff is enforced from the sealed counter across a lock/unlock
+    /// cycle: a sixth failure starts the 30 s delay and the correct PIN is
+    /// refused until it passes.
+    #[test]
+    fn backoff_applies_after_sixth_failure() {
+        let (dir, mut rt, _) = locked_pin_runtime("1234", None);
+        write_sealed_counter(
+            &dir,
+            &PinAttemptState {
+                failed_attempts: 5,
+                last_failed_at: now_secs(),
+                wipe_threshold: None,
+            },
+        );
+        assert_eq!(rt.unlock_identity(Some("0000".into())).unwrap_err(), "Wrong PIN");
+        let state = read_sealed_counter(&dir);
+        assert_eq!(state.failed_attempts, 6);
+        assert!(state.last_failed_at > 0, "a real timestamp is recorded, never zero");
+
+        let err = rt.unlock_identity(Some("1234".into())).unwrap_err();
+        assert!(err.contains("locked"), "unexpected error: {err}");
+        assert!(!rt.identity_unlocked);
+    }
+
+    /// The wipe threshold stored in the counter is enforced at the locked
+    /// screen, where the settings vault is unreadable.
+    #[test]
+    fn wipe_threshold_enforced_from_sealed_counter() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut rt = quiet_runtime(&dir);
+        rt.create_identity(None).expect("create");
+        rt.set_pin("1234".to_string()).expect("set_pin");
+        rt.set_security_config(r#"{"wrongPinWipeEnabled": true, "wrongPinWipeThreshold": 3}"#)
+            .expect("config");
+        assert_eq!(read_sealed_counter(&dir).wipe_threshold, Some(3));
+        rt.reset_identity();
+
+        assert_eq!(rt.unlock_identity(Some("0000".into())).unwrap_err(), "Wrong PIN");
+        assert_eq!(rt.unlock_identity(Some("0001".into())).unwrap_err(), "Wrong PIN");
+        let err = rt.unlock_identity(Some("0002".into())).unwrap_err();
+        assert!(err.contains("erased"), "unexpected error: {err}");
+        assert!(!dir.path().join("identity.dat").exists());
+        assert!(dir.path().join("killswitch_broadcast.pending").exists());
+    }
+
+    /// A legacy mode 0x01 identity.key (argon2 crate defaults, no counter)
+    /// is bootstrapped on its first attempt, unlocks with its PIN, and is
+    /// re-wrapped as mode 0x02 under the spec parameters.
+    #[test]
+    fn legacy_0x01_identity_migrates_to_0x02_on_unlock() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut rt = quiet_runtime(&dir);
+        rt.create_identity(Some("Legacy".into())).expect("create");
+        let (master_key, original_pub) = {
+            let guard = rt.identity.lock().unwrap_or_else(|e| e.into_inner());
+            let id = guard.as_ref().expect("identity");
+            (*id.master_key, id.ed25519_pub)
+        };
+        // What an earlier build left on disk: legacy wrap, plaintext counter.
+        let legacy = encode_legacy_wrapped_key_file(&master_key, b"4321").expect("legacy");
+        std::fs::write(dir.path().join("identity.key"), legacy).expect("write legacy");
+        std::fs::write(
+            dir.path().join("pin_attempts.json"),
+            serde_json::to_vec(&PinAttemptState {
+                failed_attempts: 2,
+                last_failed_at: now_secs() - 10,
+                wipe_threshold: None,
+            })
+            .expect("json"),
+        )
+        .expect("write legacy counter");
+        rt.reset_identity();
+
+        // A wrong PIN is counted on top of the carried-over history.
+        assert_eq!(rt.unlock_identity(Some("0000".into())).unwrap_err(), "Wrong PIN");
+        assert!(!dir.path().join("pin_attempts.json").exists(), "plaintext counter removed");
+        assert_eq!(read_sealed_counter(&dir).failed_attempts, 3);
+
+        rt.unlock_identity(Some("4321".into())).expect("legacy PIN unlocks");
+        let bytes = std::fs::read(dir.path().join("identity.key")).expect("key");
+        match parse_master_key_record(&bytes).expect("parse") {
+            MasterKeyRecord::Wrapped(w) => {
+                assert!(!w.legacy, "must be re-wrapped as 0x02");
+                assert_eq!(w.params, pin::KdfParams::SPEC);
+            }
+            MasterKeyRecord::Plain(_) => panic!("migration must keep the PIN wrap"),
+        }
+        assert_eq!(read_sealed_counter(&dir).failed_attempts, 0);
+        let reloaded = SelfIdentity::load_from_disk(dir.path(), Some("4321")).expect("0x02 load");
+        assert_eq!(reloaded.ed25519_pub, original_pub);
+    }
+
+    /// Changing the unlock PIN keeps the duress blob valid (shared salt),
+    /// refuses a new PIN equal to the duress PIN, and the duress PIN still
+    /// triggers rotation afterwards.
+    #[test]
+    fn change_pin_preserves_duress_and_rejects_collision() {
+        let (dir, mut rt, original_pub) = locked_pin_runtime("1234", Some("9999"));
+        rt.unlock_identity(Some("1234".into())).expect("unlock");
+        rt.change_pin("1234".into(), "5555".into()).expect("change pin");
+        assert_eq!(
+            rt.change_pin("5555".into(), "9999".into()).unwrap_err(),
+            "New PIN must differ from the duress PIN"
+        );
+        assert!(dir.path().join("pin.dat").exists(), "duress blob kept across PIN change");
+        rt.reset_identity();
+
+        rt.unlock_identity(Some("9999".into())).expect("duress still works");
+        let fresh = wait_for_duress_rotation(&dir, "9999");
+        assert_ne!(fresh.ed25519_pub, original_pub);
+    }
+
+    /// Removing the PIN removes the counter and the duress blob, and a
+    /// no-PIN unlock then needs neither.
+    #[test]
+    fn remove_pin_clears_counter_and_duress() {
+        let (dir, mut rt, _) = locked_pin_runtime("1234", Some("9999"));
+        rt.unlock_identity(Some("1234".into())).expect("unlock");
+        rt.remove_pin("1234".into()).expect("remove pin");
+        assert!(!dir.path().join("pin_attempts.sealed").exists());
+        assert!(!dir.path().join("pin_counter.key").exists());
+        assert!(!dir.path().join("pin.dat").exists());
+        rt.reset_identity();
+        rt.unlock_identity(None).expect("no-PIN unlock");
+        assert!(rt.identity_unlocked);
+    }
+
+    /// Settings flows that verify a PIN outside the counter are refused on
+    /// a locked device, so they cannot serve as a backoff-free oracle.
+    #[test]
+    fn pin_verification_flows_require_unlock() {
+        let (_dir, mut rt, _) = locked_pin_runtime("1234", Some("9999"));
+        assert!(rt.change_pin("1234".into(), "5555".into()).unwrap_err().contains("unlocked"));
+        assert!(rt.remove_pin("1234".into()).unwrap_err().contains("unlocked"));
+        assert!(rt
+            .change_duress_pin("9999".into(), "8888".into())
+            .unwrap_err()
+            .contains("unlocked"));
+        assert!(rt.remove_duress_pin("9999".into()).unwrap_err().contains("unlocked"));
     }
 }
