@@ -142,6 +142,10 @@ path = "fuzz_targets/fuzz_identity_payload.rs"
 name = "fuzz_ffi_json_inputs"
 path = "fuzz_targets/fuzz_ffi_json_inputs.rs"
 
+[[bin]]
+name = "fuzz_ipp_response"
+path = "fuzz_targets/fuzz_ipp_response.rs"
+
 # --- Target 10: KCP segment input parser (§5.31) ---------------------------
 #
 # Exercises `KcpState::input()` with arbitrary bytes. KCP segments arrive from
@@ -176,7 +180,7 @@ path = "fuzz_targets/fuzz_sphinx_packet.rs"
 name = "fuzz_store_forward"
 path = "fuzz_targets/fuzz_store_forward.rs"
 
-# --- Target 14: Encrypted offline bundle decode (§5.28) -------------------
+# --- Target 12: Encrypted offline bundle decode (§5.28) -------------------
 #
 # Drives OfflineBundle::open_as_recipient() with arbitrary bytes to ensure
 # that AEAD failures, bad magic, truncation, and corrupt lengths all return
@@ -185,7 +189,7 @@ path = "fuzz_targets/fuzz_store_forward.rs"
 name = "fuzz_offline_bundle_decode"
 path = "fuzz_targets/fuzz_offline_bundle_decode.rs"
 
-# --- Target 15: Backup envelope header validation (§3.7.4) -----------------
+# --- Target 13: Backup envelope header validation (§3.7.4) -----------------
 #
 # Parses arbitrary bytes as an EncryptedBackup envelope and runs the
 # pre-KDF structural gate (version, type, Argon2id floor/ceiling, salt and
@@ -194,22 +198,41 @@ path = "fuzz_targets/fuzz_offline_bundle_decode.rs"
 name = "fuzz_backup_restore"
 path = "fuzz_targets/fuzz_backup_restore.rs"
 
-[[bin]]
-name = "fuzz_ring_verify"
-path = "fuzz_targets/fuzz_ring_verify.rs"
-
+# --- Target 14: Link handshake parsers (§5.1, §5.2) -------------------------
+#
+# Parses arbitrary bytes as HandshakeInit / HandshakeResponse (fixed-suite
+# header, key-confirmed Noise_IK fields) and as the trusted-tunnel PSK
+# agreement messages and signed tunnel-key binding, then drives the
+# responder / initiator completion paths with fixed keys.  A foreign suite,
+# a forged or replayed Init, or a forged Response must never panic or
+# install a session.
 [[bin]]
 name = "fuzz_wireguard_handshake"
 path = "fuzz_targets/fuzz_wireguard_handshake.rs"
 
+# --- Target 15: Ring signature verification (§3.5.2) ----------------------
+#
+# Drives the `MI-AOS-R255-1` wire-length gate and verifier with arbitrary
+# signature bytes against a deterministic fixture ring. Truncation, scalar
+# malleability and hostile ring points must all be rejected without panics.
+[[bin]]
+name = "fuzz_ring_verify"
+path = "fuzz_targets/fuzz_ring_verify.rs"
+
+# --- Target 16: Link handshake frames (§5.1 MI-LINK-1) ----------------------
+#
+# Drives `transport::link_auth` hello/auth parsing and responder verification
+# with arbitrary bytes. An unauthenticated socket must never panic the poll
+# loop or be keyed on a peer id without a valid signature.
 [[bin]]
 name = "fuzz_link_auth_frame"
 path = "fuzz_targets/fuzz_link_auth_frame.rs"
 
+# --- Target 17: Admin command payloads (§3.9.3) -----------------------------
+#
+# Drives `mesh::admin_command::parse_admin_command` and request verification
+# with arbitrary bytes. A forged killswitch payload must never parse into a
+# verified request or panic the mesh packet handler.
 [[bin]]
 name = "fuzz_admin_command"
 path = "fuzz_targets/fuzz_admin_command.rs"
-
-[[bin]]
-name = "fuzz_ipp_response"
-path = "fuzz_targets/fuzz_ipp_response.rs"
