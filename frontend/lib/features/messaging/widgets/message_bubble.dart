@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/widgets/focusable_tile.dart';
+import '../../../core/widgets/gesture_hint_overlay.dart';
 import 'package:flutter/services.dart';
 
 import '../../../backend/models/message_models.dart';
@@ -299,6 +300,9 @@ class MessageBubble extends StatelessWidget {
   /// Edit and "Delete for everyone" are only offered for outgoing messages —
   /// we cannot edit or remotely delete messages sent by other users.
   void _showContextMenu(BuildContext context) {
+    // Opening the long-press sheet means the user knows the gesture, so the
+    // §22.35.1 "Hold for reactions" hint must never fire (or must go away).
+    GestureHintOverlay.mark_performed(GestureHint.long_press_reactions);
     showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(

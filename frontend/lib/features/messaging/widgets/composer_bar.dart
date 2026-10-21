@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../../app/motion.dart';
+
 import '../../../backend/models/message_models.dart';
 
 /// ComposerBar — the message input strip at the bottom of a thread.
@@ -170,7 +172,11 @@ class _ComposerBarState extends State<ComposerBar> {
                   // AnimatedContainer smoothly transitions the Send button between
                   // its disabled and active states when _hasText flips.
                   AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
+                    // Reduced motion (§22.1.7): swap states instantly.
+                    duration: motion_duration(
+                      context,
+                      const Duration(milliseconds: 150),
+                    ),
                     child: _hasText
                         // Filled (tinted) button when there is text to send.
                         ? IconButton.filled(

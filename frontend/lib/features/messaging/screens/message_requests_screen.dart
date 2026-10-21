@@ -47,6 +47,7 @@ import '../../../backend/models/peer_models.dart';
 // EmptyState — shared widget for zero-data screens.
 // Shows a centred icon + title + body when a list has no items.
 import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/load_gate.dart';
 // TrustBadge — the compact coloured pill/circle that renders trust level.
 // compact: true renders as a small 20×20 circle with the level number.
 import '../../../features/contacts/widgets/trust_badge.dart';
@@ -122,50 +123,59 @@ class _MessageRequestsScreenState extends State<MessageRequestsScreen> {
             child: RefreshIndicator(
               // Pull-to-refresh re-fetches from the backend.
               onRefresh: messaging.loadRequests,
-              child: messaging.requests.isEmpty
-                  // Zero-state: centred placeholder with icon and copy.
-                  ? const EmptyState(
-                      icon: Icons.mark_unread_chat_alt_outlined,
-                      title: 'No pending requests',
-                      body:
-                          'Message requests from new contacts will appear here.',
-                    )
-                  // Non-empty: a separated list, one tile per request.
-                  // ListView.separated draws a thin Divider between items
-                  // without needing a separate widget for each gap.
-                  : ListView.separated(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      // The `_` wildcard discards both parameters (index,
-                      // BuildContext) since the divider is always the same.
-                      separatorBuilder: (_, _) =>
-                          const Divider(height: 1, indent: 72),
-                      itemCount: messaging.requests.length,
-                      itemBuilder: (ctx, i) {
-                        // Capture the request at index i into a local so the
-                        // closures below always reference the correct item
-                        // even if the list changes between builds.
-                        final req = messaging.requests[i];
-                        return _MessageRequestTile(
-                          request: req,
-                          // _accept and _decline are instance methods on State
-                          // so they can safely use `this.context` and `mounted`
-                          // after the await completes.
-                          onAccept: () => _accept(messaging, req),
-                          onDecline: () => _decline(messaging, req),
-                          // Open the sender's contact detail for evaluation.
-                          // Uses ctx (from itemBuilder) rather than the State
-                          // context because this is a synchronous push — no
-                          // async gap, so using ctx is safe here.
-                          onViewContact: () => Navigator.push(
-                            ctx,
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  ContactDetailScreen(peerId: req.peerId),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+              // LoadGate (§22.50 / §22.51): 3 x 88 px shimmer while loading,
+              // the ErrorBanner after a failed load, empty state only after a
+              // successful load found nothing.
+              child: LoadGate(
+                loading: messaging.loading_requests,
+                error: messaging.requests_error,
+                is_empty: messaging.requests.isEmpty,
+                shimmer_count: 3,
+                shimmer_height: 88,
+                on_retry: messaging.loadRequests,
+                // Zero-state: centred placeholder with icon and copy.
+                empty: const EmptyState(
+                  icon: Icons.mark_unread_chat_alt_outlined,
+                  title: 'No pending requests',
+                  body: 'Message requests from new contacts will appear here.',
+                ),
+                // Non-empty: a separated list, one tile per request.
+                // ListView.separated draws a thin Divider between items
+                // without needing a separate widget for each gap.
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  // The `_` wildcard discards both parameters (index,
+                  // BuildContext) since the divider is always the same.
+                  separatorBuilder: (_, _) =>
+                      const Divider(height: 1, indent: 72),
+                  itemCount: messaging.requests.length,
+                  itemBuilder: (ctx, i) {
+                    // Capture the request at index i into a local so the
+                    // closures below always reference the correct item
+                    // even if the list changes between builds.
+                    final req = messaging.requests[i];
+                    return _MessageRequestTile(
+                      request: req,
+                      // _accept and _decline are instance methods on State
+                      // so they can safely use `this.context` and `mounted`
+                      // after the await completes.
+                      onAccept: () => _accept(messaging, req),
+                      onDecline: () => _decline(messaging, req),
+                      // Open the sender's contact detail for evaluation.
+                      // Uses ctx (from itemBuilder) rather than the State
+                      // context because this is a synchronous push — no
+                      // async gap, so using ctx is safe here.
+                      onViewContact: () => Navigator.push(
+                        ctx,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              ContactDetailScreen(peerId: req.peerId),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ),
           ),
         ],

@@ -42,6 +42,7 @@ import '../../backend/event_models.dart';
 import '../../backend/models/file_transfer_models.dart';
 // FileTransferModel, TransferStatus, TransferDirection — typed transfer data.
 import '../../backend/models/settings_models.dart';
+
 // ServiceModel — describes a mesh service (name, config, active status).
 
 /// Manages all file-transfer state for the Files section of the app.
@@ -104,6 +105,12 @@ class FilesState extends ChangeNotifier {
   /// Starts empty; populated by [loadTransfers].
   List<FileTransferModel> _transfers = const [];
 
+  /// True while [loadTransfers] is in flight.
+  bool _loading_transfers = false;
+
+  /// Failure text from the last transfer load, or null.
+  String? _transfers_error;
+
   /// Mesh services configured on this device.
   /// Used by FilesSharedScreen to show what the device is offering.
   List<ServiceModel> _services = const [];
@@ -125,9 +132,11 @@ class FilesState extends ChangeNotifier {
   /// WHY filter here instead of in the widget?  Centralising the filter keeps
   /// widget code simple and ensures consistent definitions across the app.
   List<FileTransferModel> get incomingOffers => _transfers
-      .where((t) =>
-          t.status == TransferStatus.pending &&
-          t.direction == TransferDirection.receive)
+      .where(
+        (t) =>
+            t.status == TransferStatus.pending &&
+            t.direction == TransferDirection.receive,
+      )
       .toList();
 
   /// Transfers currently in progress (either uploading or downloading).
@@ -142,6 +151,12 @@ class FilesState extends ChangeNotifier {
   /// cancelled).  Uses [TransferStatus.isDone].
   List<FileTransferModel> get completedTransfers =>
       _transfers.where((t) => t.status.isDone).toList();
+
+  /// True while the transfer list is being fetched (§22.50 shimmer).
+  bool get loading_transfers => _loading_transfers;
+
+  /// Why the last transfer load failed, or null (§22.51).
+  String? get transfers_error => _transfers_error;
 
   /// The services list, for widgets that display or configure mesh services.
   List<ServiceModel> get services => _services;
@@ -160,7 +175,20 @@ class FilesState extends ChangeNotifier {
     // List<FileTransferModel> decoded from JSON.  It is synchronous today
     // (the backend returns cached in-memory state), but the Future<void>
     // return type leaves room for a truly async implementation.
-    _transfers = _bridge.fetchFileTransfers();
+    _loading_transfers = true;
+    _transfers_error = null;
+    if (!_disposed) notifyListeners();
+    try {
+      _transfers = _bridge.fetchFileTransfers();
+    } on Object catch (_) {
+      // A failed load keeps the old list and reports why, so the screen never
+      // claims "No transfers" about a load that did not finish.
+      final reason = _bridge.getLastError();
+      _transfers_error = (reason == null || reason.isEmpty)
+          ? "Couldn't load transfers. Pull down to retry."
+          : reason;
+    }
+    _loading_transfers = false;
     if (!_disposed) notifyListeners();
   }
 

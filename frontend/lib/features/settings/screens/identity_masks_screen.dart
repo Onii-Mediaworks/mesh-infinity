@@ -32,6 +32,7 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../../backend/backend_bridge.dart';
+import '../../you/mask_intro_card.dart';
 import '../settings_state.dart';
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,15 @@ class _IdentityMasksScreenState extends State<IdentityMasksScreen> {
       appBar: AppBar(
         title: const Text('Identity & Masks'),
         actions: [
+          // Help icon (§22.10.2): re-read what a mask is.
+          IconButton(
+            icon: const Icon(Icons.help_outline),
+            tooltip: "What's a mask?",
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const MaskIntroScreen()),
+            ),
+          ),
           // Global "New mask" button in the AppBar for easy access.
           TextButton.icon(
             onPressed: () => _createMask(),

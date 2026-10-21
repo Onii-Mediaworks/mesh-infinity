@@ -41,6 +41,7 @@ import '../features/settings/screens/backup_screen.dart';
 import '../features/settings/screens/known_limitations_screen.dart';
 import '../features/settings/screens/notification_screen.dart';
 import '../features/settings/screens/security_screen.dart';
+import '../features/you/mask_intro_card.dart';
 
 /// Full-screen help hub that shortcuts to the most important parts of the app.
 ///
@@ -105,6 +106,16 @@ class HelpScreen extends StatelessWidget {
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _push(context, const BackupScreen()),
+          ),
+
+          // Mask definition (CMR-024): the word is first met after onboarding,
+          // so its explanation must stay re-readable here.
+          ListTile(
+            leading: const Icon(Icons.theater_comedy_outlined),
+            title: Text(mask_intro_title),
+            subtitle: const Text('What a mask is and why you have one.'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _push(context, const MaskIntroScreen()),
           ),
 
           const Divider(height: 1),

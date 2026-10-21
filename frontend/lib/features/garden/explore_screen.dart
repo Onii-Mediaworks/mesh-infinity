@@ -39,10 +39,12 @@ import '../../core/widgets/empty_state.dart';
 import '../../app/app_theme.dart';
 // MeshTheme — brand and secondary colours used by _NetworkTypeBadge.
 import '../../core/widgets/focus_ring.dart';
+import '../../core/widgets/load_gate.dart';
 // FocusRing — shell focus ring around the Join button (§22.36 rule 3).
 import '../../shell/primary_focus.dart';
 // PrimaryFocus — declares where key/pad focus lands on open (§22.36).
 import '../tidbits/widgets/garden_gnome.dart'; // §22.12.5 #20 Garden Gnome
+
 // GardenGnomeWidget — the §22.12.5 design-flourish widget.
 
 /// Discoverable-garden browser screen.
@@ -68,6 +70,10 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
   /// True while _load() is running — shows a full-screen spinner.
   bool _loading = true;
 
+  // Failure text from the last discovery, or null (§22.51).  A failed load
+  // shows the ErrorBanner, never "No gardens found".
+  String? _error;
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -92,11 +98,22 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
 
     // discoverGardens() queries the local mesh discovery layer (synchronous
     // FFI call today — returns cached results from Rust's service registry).
-    final gardens = bridge.discoverGardens();
+    List<Map<String, dynamic>>? gardens;
+    String? error;
+    try {
+      gardens = bridge.discoverGardens();
+    } on Object catch (_) {
+      // Report the failure instead of showing the empty state.
+      final reason = bridge.getLastError();
+      error = (reason == null || reason.isEmpty)
+          ? "Couldn't load gardens. Check your mesh connection."
+          : reason;
+    }
 
     if (mounted) {
       setState(() {
-        _gardens = gardens;
+        if (gardens != null) _gardens = gardens;
+        _error = error;
         _loading = false;
       });
     }
@@ -154,14 +171,20 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator());
-
-    if (_gardens.isEmpty) {
+    // LoadGate (§22.50 / §22.51): shimmer while loading, ErrorBanner after a
+    // failed load, and the empty state only after a successful empty load.
+    return LoadGate(
+      loading: _loading,
+      error: _error,
+      is_empty: _gardens.isEmpty,
+      on_retry: _load,
+      shimmer_count: 4,
+      shimmer_height: 72,
       // Empty state + optional Garden Gnome easter-egg (§22.12.5 #20).
       // The Gnome is rendered below the EmptyState — it never replaces it.
       // GardenGnomeWidget uses its own internal random seed to decide whether
       // to show itself on any given calendar day (~1-in-5 chance).
-      return const Column(
+      empty: const Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           EmptyState(
@@ -171,12 +194,16 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
           ),
           GardenGnomeWidget(),
         ],
-      );
-    }
+      ),
+      child: _gardens_list(),
+    );
+  }
 
-    // Non-empty: scrollable list of discoverable gardens.
-    // PrimaryFocus (§22.36 rule 2): the first row's Join button is the
-    // primary action, since the rows themselves are not tappable.
+  /// Scrollable list of discoverable gardens.
+  ///
+  /// PrimaryFocus (§22.36 rule 2): the first row's Join button is the
+  /// primary action, since the rows themselves are not tappable.
+  Widget _gardens_list() {
     return PrimaryFocus(
       child: RefreshIndicator(
         onRefresh: _load,
@@ -241,7 +268,7 @@ class _GardenTileState extends State<_GardenTile> {
     final cs = theme.colorScheme;
 
     // Parse with null-safe casts — backend maps use dynamic values.
-    final name        = garden['name']        as String? ?? 'Unnamed garden';
+    final name = garden['name'] as String? ?? 'Unnamed garden';
     final description = garden['description'] as String? ?? '';
     final memberCount = (garden['memberCount'] as num?)?.toInt() ?? 0;
     final networkType = garden['networkType'] as String? ?? 'public';
@@ -251,50 +278,62 @@ class _GardenTileState extends State<_GardenTile> {
 
     return ListTile(
       focusNode: _row_focus,
-      contentPadding:
-          const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
 
       // Garden avatar — rounded square with brand-tinted background.
       leading: ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          width: 48, height: 48,
+          width: 48,
+          height: 48,
           color: MeshTheme.brand.withValues(alpha: 0.12),
           child: const Icon(Icons.groups_outlined, color: MeshTheme.brand),
         ),
       ),
 
       // Title row: name + networkType badge on the right of the name.
-      title: Row(children: [
-        Expanded(
-          child: Text(name,
-            style: theme.textTheme.titleSmall,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis),
-        ),
-        // Badge shows public/open/closed/private/joined — see _NetworkTypeBadge.
-        _NetworkTypeBadge(type: networkType),
-      ]),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              name,
+              style: theme.textTheme.titleSmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // Badge shows public/open/closed/private/joined — see _NetworkTypeBadge.
+          _NetworkTypeBadge(type: networkType),
+        ],
+      ),
 
       // Subtitle row: member count + description snippet.
-      subtitle: Row(children: [
-        Icon(Icons.people_outline, size: 14, color: cs.onSurfaceVariant),
-        const SizedBox(width: 4),
-        Text('$memberCount member${memberCount == 1 ? '' : 's'}',
-          style: theme.textTheme.bodySmall
-              ?.copyWith(color: cs.onSurfaceVariant)),
-        // Description is optional — only render it if the backend provided one.
-        if (description.isNotEmpty) ...[
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(description,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: cs.onSurfaceVariant),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis),
+      subtitle: Row(
+        children: [
+          Icon(Icons.people_outline, size: 14, color: cs.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Text(
+            '$memberCount member${memberCount == 1 ? '' : 's'}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: cs.onSurfaceVariant,
+            ),
           ),
+          // Description is optional — only render it if the backend provided one.
+          if (description.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                description,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: cs.onSurfaceVariant,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ],
-      ]),
+      ),
 
       // Trailing: check icon for already-joined gardens; Join button otherwise.
       // Showing a check (not the join button) prevents accidental re-join
@@ -302,10 +341,7 @@ class _GardenTileState extends State<_GardenTile> {
       // The Join button carries the shell focus ring (§22.36 rule 3); 20 dp
       // matches the M3 outlined-button pill.
       trailing: joined
-          ? Icon(
-              Icons.check_circle_outline,
-              color: cs.primary,
-            )
+          ? Icon(Icons.check_circle_outline, color: cs.primary)
           : FocusRing(
               radius: 20,
               child: OutlinedButton(
@@ -348,7 +384,10 @@ class _NetworkTypeBadge extends StatelessWidget {
       child: Text(
         _label(),
         style: TextStyle(
-          fontSize: 10, color: color, fontWeight: FontWeight.w600),
+          fontSize: 10,
+          color: color,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
@@ -356,21 +395,21 @@ class _NetworkTypeBadge extends StatelessWidget {
   /// Returns the badge background/text colour for the given networkType,
   /// resolved from the ambient theme's [colors].
   Color _color(MeshColors colors) => switch (type) {
-    'joined'  => colors.sec_green,
-    'public'  => MeshTheme.brand,
-    'open'    => colors.sec_green,
-    'closed'  => colors.sec_amber,
+    'joined' => colors.sec_green,
+    'public' => MeshTheme.brand,
+    'open' => colors.sec_green,
+    'closed' => colors.sec_amber,
     'private' => colors.sec_purple,
-    _         => MeshTheme.brand, // Unknown type — fall back to brand.
+    _ => MeshTheme.brand, // Unknown type — fall back to brand.
   };
 
   /// Returns the human-readable label for the given networkType.
   String _label() => switch (type) {
-    'joined'  => 'Joined',
-    'public'  => 'Public',
-    'open'    => 'Open',
-    'closed'  => 'Closed',
+    'joined' => 'Joined',
+    'public' => 'Public',
+    'open' => 'Open',
+    'closed' => 'Closed',
     'private' => 'Private',
-    _         => type, // Pass through unknown types verbatim.
+    _ => type, // Pass through unknown types verbatim.
   };
 }

@@ -45,6 +45,8 @@ import 'package:flutter/material.dart';
 // it manually through every constructor call.
 import 'package:provider/provider.dart';
 
+import '../../../app/motion.dart';
+
 // MessageModel holds a single message returned by searchMessages().
 // Fields we use: id (scroll target), roomId (which thread to open),
 // sender (display name), text (body to highlight), timestamp.
@@ -217,7 +219,8 @@ class _ConversationSearchScreenState extends State<ConversationSearchScreen> {
           // we don't know how long the Rust query will take.
           // Animates in/out by switching between a sized and zero-height box.
           AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
+            // Reduced motion (§22.1.7): the bar appears instantly.
+            duration: motion_duration(context, const Duration(milliseconds: 150)),
             height: _searching ? 3 : 0,
             child: _searching
                 ? LinearProgressIndicator(

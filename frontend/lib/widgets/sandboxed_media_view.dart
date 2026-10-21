@@ -15,6 +15,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../app/motion.dart';
+
 // ---------------------------------------------------------------------------
 // AttachmentRef — minimal descriptor for a media attachment
 // ---------------------------------------------------------------------------
@@ -172,8 +174,16 @@ class _SandboxedMediaViewState extends State<SandboxedMediaView> {
       PageRouteBuilder<void>(
         opaque: false,
         barrierColor: Colors.black87,
-        transitionDuration: const Duration(milliseconds: 500),
-        reverseTransitionDuration: const Duration(milliseconds: 300),
+        // Reduced motion (§22.1.7): the viewer opens and closes with an
+        // instant cross-fade (zero duration).
+        transitionDuration: motion_duration(
+          context,
+          const Duration(milliseconds: 500),
+        ),
+        reverseTransitionDuration: motion_duration(
+          context,
+          const Duration(milliseconds: 300),
+        ),
         pageBuilder: (ctx, animation, secondary) => FadeTransition(
           opacity: animation,
           child: _FullscreenViewer(

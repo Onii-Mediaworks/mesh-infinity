@@ -51,6 +51,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../app/motion.dart';
+
 import '../../../backend/backend_bridge.dart';
 // BackendBridge — used for sendTypingIndicator() and loSecRequest().
 import '../../../backend/event_bus.dart';
@@ -73,6 +75,8 @@ import '../widgets/message_bubble.dart';
 import '../widgets/composer_bar.dart';
 // HintRow — tappable controller hints above the composer (§22.36 rule 5).
 import '../../../core/widgets/hint_row.dart';
+import '../../../core/widgets/error_banner.dart';
+import '../../../core/widgets/gesture_hint_overlay.dart';
 // PrimaryFocus — key/pad focus lands on the composer on open (§22.36 rule 2).
 import '../../../shell/primary_focus.dart';
 // SecondaryActionIntent — the Y-button reply route named in the hint row.
@@ -238,7 +242,8 @@ class _ThreadScreenState extends State<ThreadScreen> {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+          // Reduced motion (§22.1.7): jump to the bottom with a zero duration.
+          duration: motion_duration(context, const Duration(milliseconds: 300)),
           curve: Curves.easeOut,
         );
       }
@@ -533,6 +538,10 @@ class _ThreadScreenState extends State<ThreadScreen> {
 
     // Resolve typing peer IDs to human-readable display names.
     // Falls back to a truncated peer ID (8 chars) for peers not in PeersState.
+    // Index of the first received bubble, the anchor of the §22.35.1
+    // "Hold for reactions" hint (-1 when the thread has none).
+    final first_received = messaging.messages.indexWhere((m) => !m.isOutgoing);
+
     final typingNames = messaging.typingPeers.map((id) {
       final match = peers.peers.where((p) => p.id == id);
       return match.isNotEmpty ? match.first.name : id.substring(0, 8);
@@ -595,6 +604,18 @@ class _ThreadScreenState extends State<ThreadScreen> {
             child: messaging.loadingMessages
                 // Loading spinner while fetchMessages() is in flight.
                 ? const Center(child: CircularProgressIndicator())
+                : messaging.messages.isEmpty &&
+                        messaging.messages_error != null
+                    // A failed load is an error, not an empty thread (§22.51).
+                    ? ListView(
+                        children: [
+                          ErrorBanner(
+                            message: messaging.messages_error!,
+                            onRetry: () =>
+                                messaging.loadMessages(widget.roomId),
+                          ),
+                        ],
+                      )
                 : messaging.messages.isEmpty
                     // Empty state — no messages yet.
                     ? Center(
@@ -612,7 +633,7 @@ class _ThreadScreenState extends State<ThreadScreen> {
                         itemCount: messaging.messages.length,
                         itemBuilder: (ctx, i) {
                           final msg = messaging.messages[i];
-                          return MessageBubble(
+                          final bubble = MessageBubble(
                             message: msg,
                             onDelete: () => messaging.deleteMessage(msg.id),
                             onReply: () => _setReplyTo(msg),
@@ -626,6 +647,15 @@ class _ThreadScreenState extends State<ThreadScreen> {
                                 ? () => _handleDeleteForEveryone(msg)
                                 : null,
                             onForward: () => _handleForward(msg),
+                          );
+                          // §22.35.1: the "Hold for reactions" hint floats
+                          // over the first received bubble, the first time
+                          // the user opens a thread that has one.
+                          if (i != first_received) return bubble;
+                          return GestureHintOverlay(
+                            hint: GestureHint.long_press_reactions,
+                            trigger: true,
+                            child: bubble,
                           );
                         },
                       ),

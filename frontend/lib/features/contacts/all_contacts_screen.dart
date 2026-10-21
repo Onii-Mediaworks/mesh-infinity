@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/widgets/focus_ring.dart';
+import '../../core/widgets/load_gate.dart';
 import '../../shell/primary_focus.dart';
 import '../../shell/shell_state.dart';
 import '../peers/peers_state.dart';
@@ -33,26 +34,35 @@ class AllContactsScreen extends StatelessWidget {
         child: RefreshIndicator(
           // Pull-to-refresh forces a fresh load from the Rust backend.
           onRefresh: peers.loadPeers,
-          child: peers.peers.isEmpty
-              ? _EmptyContacts(onAdd: () => _openPairing(context))
-              : ListView.separated(
-                  itemCount: peers.peers.length,
-                  // Divider indented to 72px aligns with the text column,
-                  // not the leading avatar — consistent across all list screens.
-                  separatorBuilder: (ctx, i) =>
-                      const Divider(height: 1, indent: 72),
-                  itemBuilder: (context, i) {
-                    final peer = peers.peers[i];
-                    return PeerTile(
-                      peer: peer,
-                      // selected: false — this list does not maintain a selected
-                      // highlight; selection state lives in ShellState and is
-                      // only meaningful in the wide-layout detail pane.
-                      selected: false,
-                      onTap: () => _openDetail(context, peer.id),
-                    );
-                  },
-                ),
+          // LoadGate (§22.50 / §22.51): 5 x 68 px shimmer while loading, the
+          // ErrorBanner after a failed load, empty state only after an empty
+          // successful load.
+          child: LoadGate(
+            loading: peers.loading,
+            error: peers.load_error,
+            is_empty: peers.peers.isEmpty,
+            shimmer_count: 5,
+            shimmer_height: 68,
+            empty: _EmptyContacts(onAdd: () => _openPairing(context)),
+            child: ListView.separated(
+              itemCount: peers.peers.length,
+              // Divider indented to 72px aligns with the text column,
+              // not the leading avatar — consistent across all list screens.
+              separatorBuilder: (ctx, i) =>
+                  const Divider(height: 1, indent: 72),
+              itemBuilder: (context, i) {
+                final peer = peers.peers[i];
+                return PeerTile(
+                  peer: peer,
+                  // selected: false — this list does not maintain a selected
+                  // highlight; selection state lives in ShellState and is
+                  // only meaningful in the wide-layout detail pane.
+                  selected: false,
+                  onTap: () => _openDetail(context, peer.id),
+                );
+              },
+            ),
+          ),
         ),
       ),
       // Focus ring on the FAB (§22.36 rule 3); 16 dp matches the M3 FAB.
@@ -82,8 +92,8 @@ class AllContactsScreen extends StatelessWidget {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ContactDetailScreen(peerId: peerId)),
-      // When the user returns from the detail screen, clear the selection so
-      // the list row is no longer highlighted.
+        // When the user returns from the detail screen, clear the selection so
+        // the list row is no longer highlighted.
       ).then((_) => shell.selectPeer(null));
     }
     // Wide layout (≥ 1200px): the detail pane renders based on selectedPeerId;
@@ -115,14 +125,17 @@ class _EmptyContacts extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.people_outline,
-              size: 56, color: Theme.of(context).colorScheme.outline),
+          Icon(
+            Icons.people_outline,
+            size: 56,
+            color: Theme.of(context).colorScheme.outline,
+          ),
           const SizedBox(height: 16),
           Text(
             'No contacts yet',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
+              color: Theme.of(context).colorScheme.outline,
+            ),
           ),
           const SizedBox(height: 8),
           FilledButton.tonal(

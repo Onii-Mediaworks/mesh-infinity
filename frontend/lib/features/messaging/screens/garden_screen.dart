@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/load_gate.dart';
 // EmptyState — shared zero-data placeholder.
 import '../../../shell/shell_state.dart';
 // ShellState — controls selected room for the wide-layout detail pane.
@@ -32,6 +33,7 @@ import '../widgets/thread_list_tile.dart';
 import 'create_group_screen.dart';
 // CreateGroupScreen — form for creating a new group (name, description, policy).
 import 'thread_screen.dart';
+
 // ThreadScreen — full message thread view for a room.
 
 /// Lists all group rooms ("gardens") the user is a member of.
@@ -71,32 +73,39 @@ class GardenScreen extends StatelessWidget {
       body: RefreshIndicator(
         // Pull-to-refresh re-fetches rooms from the backend.
         onRefresh: messaging.loadRooms,
-        child: communities.isEmpty
-            ? EmptyState(
-                icon: Icons.groups_outlined,
-                title: 'No gardens yet',
-                body:
-                    'Create a shared space for ongoing group and community conversations.',
-                action: FilledButton.icon(
-                  onPressed: () => _openCreateGroup(context),
-                  icon: const Icon(Icons.group_add_outlined),
-                  label: const Text('Create a garden'),
-                ),
-              )
-            : ListView.builder(
-                itemCount: communities.length,
-                itemBuilder: (context, index) {
-                  final community = communities[index];
-                  return ThreadListTile(
-                    room: community,
-                    // Highlight on wide layout when this is the open room.
-                    selected:
-                        isWide && shell.selectedRoomId == community.id,
-                    onTap: () => _openCommunity(context, community.id, isWide),
-                    onDelete: () => messaging.deleteRoom(community.id),
-                  );
-                },
-              ),
+        // LoadGate (§22.50 / §22.51): 4 x 72 px shimmer while loading, the
+        // ErrorBanner after a failed load, empty state only after an empty load.
+        child: LoadGate(
+          loading: messaging.loading_rooms,
+          error: messaging.rooms_error,
+          is_empty: communities.isEmpty,
+          shimmer_count: 4,
+          shimmer_height: 72,
+          empty: EmptyState(
+            icon: Icons.groups_outlined,
+            title: 'No gardens yet',
+            body:
+                'Create a shared space for ongoing group and community conversations.',
+            action: FilledButton.icon(
+              onPressed: () => _openCreateGroup(context),
+              icon: const Icon(Icons.group_add_outlined),
+              label: const Text('Create a garden'),
+            ),
+          ),
+          child: ListView.builder(
+            itemCount: communities.length,
+            itemBuilder: (context, index) {
+              final community = communities[index];
+              return ThreadListTile(
+                room: community,
+                // Highlight on wide layout when this is the open room.
+                selected: isWide && shell.selectedRoomId == community.id,
+                onTap: () => _openCommunity(context, community.id, isWide),
+                onDelete: () => messaging.deleteRoom(community.id),
+              );
+            },
+          ),
+        ),
       ),
       // Extended FAB with a label for discoverability — the user may not
       // immediately recognise the AppBar icon's purpose.

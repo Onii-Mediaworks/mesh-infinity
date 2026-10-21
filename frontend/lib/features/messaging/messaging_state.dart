@@ -68,6 +68,7 @@ import '../../backend/models/message_models.dart';
 // Fields: id, roomId, sender, text, timestamp, isOutgoing.
 // MessageRequest — a pending inbound conversation from a low-trust peer.
 import '../../backend/models/room_models.dart';
+
 // RoomSummary — a typed Dart object representing one room (conversation).
 // Fields: id, name, lastMessage, unreadCount, timestamp.
 
@@ -171,6 +172,20 @@ class MessagingState extends ChangeNotifier {
   /// Pending message requests from low-trust peers (§22.5.4).
   List<MessageRequest> _requests = const [];
 
+  /// Failure text from the last room load, or null when it succeeded
+  /// (§22.51 "Load conversations fails").  Screens show it instead of the
+  /// empty state so a failed load is never mistaken for "no conversations".
+  String? _rooms_error;
+
+  /// Failure text from the last message load, or null.
+  String? _messages_error;
+
+  /// True while a request-list load is in flight (§22.50 shimmer).
+  bool _loading_requests = false;
+
+  /// Failure text from the last request load, or null.
+  String? _requests_error;
+
   // -------------------------------------------------------------------------
   // Public getters — read-only access for the UI
   // -------------------------------------------------------------------------
@@ -190,6 +205,21 @@ class MessagingState extends ChangeNotifier {
 
   /// True while messages are being fetched from the backend.
   bool get loadingMessages => _loadingMessages;
+
+  /// Why the last message load failed, or null (§22.51).
+  String? get messages_error => _messages_error;
+
+  /// True while the room list is being fetched (§22.50 shimmer).
+  bool get loading_rooms => _loadingRooms;
+
+  /// Why the last room load failed, or null (§22.51).
+  String? get rooms_error => _rooms_error;
+
+  /// True while the message-request list is being fetched.
+  bool get loading_requests => _loading_requests;
+
+  /// Why the last request load failed, or null.
+  String? get requests_error => _requests_error;
 
   /// Peer IDs currently typing in the active room (§10.2.1).
   Set<String> get typingPeers => Set.unmodifiable(_typingPeers);
@@ -225,6 +255,9 @@ class MessagingState extends ChangeNotifier {
     // is still executing would overwrite results non-deterministically.
     if (_loadingRooms) return;
     _loadingRooms = true;
+    _rooms_error = null;
+    // Tell the list a load is in flight so it can draw shimmer (§22.50).
+    if (!_disposed) notifyListeners();
 
     try {
       // fetchRooms() calls into Rust via FFI and returns a List<RoomSummary>
@@ -244,14 +277,22 @@ class MessagingState extends ChangeNotifier {
 
       _rooms = rooms;
       _activeRoomId = activeId;
-
-      // Tell every watching widget to rebuild with the new data.
-      // At this point _rooms has new content, so ConversationListScreen will
-      // render the updated list on its next build() call.
-      if (!_disposed) notifyListeners();
-    } finally {
-      _loadingRooms = false;
+    } on Object catch (_) {
+      // A failed load must not look like an empty list (§22.51): keep the
+      // previous rooms and surface the backend's reason, or the spec fallback.
+      _rooms_error = _failure(
+        "Couldn't load conversations. Pull down to retry.",
+      );
     }
+    _loadingRooms = false;
+    if (!_disposed) notifyListeners();
+  }
+
+  /// The backend's last error text (§22.51 "strings come from
+  /// getLastError()"), or [fallback] when it has none.
+  String _failure(String fallback) {
+    final reason = _bridge.getLastError();
+    return (reason == null || reason.isEmpty) ? fallback : reason;
   }
 
   /// Fetches the messages for [roomId] and stores them in _messages.
@@ -276,8 +317,14 @@ class MessagingState extends ChangeNotifier {
       notifyListeners(); // Rebuild now so the spinner appears immediately.
     }
 
-    final msgs = _bridge.fetchMessages(roomId);
-    _messages = msgs;
+    _messages_error = null;
+    try {
+      _messages = _bridge.fetchMessages(roomId);
+    } on Object catch (_) {
+      // Report the failure; an empty thread would claim "No messages yet".
+      _messages = const [];
+      _messages_error = _failure("Couldn't load messages. Try again.");
+    }
 
     _loadingMessages = false;
     if (!_disposed) {
@@ -423,7 +470,18 @@ class MessagingState extends ChangeNotifier {
   /// Called from MessageRequestsScreen.initState() (initial load) and from
   /// the Undo action in the decline SnackBar.
   Future<void> loadRequests() async {
-    _requests = _bridge.fetchMessageRequests();
+    _loading_requests = true;
+    _requests_error = null;
+    if (!_disposed) notifyListeners();
+    try {
+      _requests = _bridge.fetchMessageRequests();
+    } on Object catch (_) {
+      // Same rule as loadRooms: a failure is reported, never shown as empty.
+      _requests_error = _failure(
+        "Couldn't load message requests. Pull down to retry.",
+      );
+    }
+    _loading_requests = false;
     // Guard against calling notifyListeners after dispose (same pattern as
     // loadRooms / loadMessages above).
     if (!_disposed) notifyListeners();

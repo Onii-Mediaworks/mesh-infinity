@@ -33,6 +33,8 @@ import 'package:provider/provider.dart';
 
 import '../../../core/widgets/empty_state.dart';
 // EmptyState — shared zero-data placeholder widget.
+import '../../../core/widgets/load_gate.dart';
+// LoadGate — shimmer / error banner / empty state selection (§22.50, §22.51).
 import '../messaging_state.dart';
 // MessagingState — the single source of truth for rooms and messages.
 import '../../../shell/shell_state.dart';
@@ -45,6 +47,7 @@ import 'create_room_screen.dart';
 import 'thread_screen.dart';
 // ThreadScreen — the full message thread view.
 import 'search_screen.dart';
+
 // MessageSearchScreen — local full-text search across all message history.
 
 /// Main list of direct conversations in the Chat section.
@@ -101,33 +104,42 @@ class ConversationListScreen extends StatelessWidget {
       body: RefreshIndicator(
         // Pull-to-refresh re-fetches rooms from the backend.
         onRefresh: messaging.loadRooms,
-        child: directRooms.isEmpty
-            ? EmptyState(
-                icon: Icons.chat_bubble_outline,
-                title: 'No conversations yet',
-                body: 'Add a contact, then start chatting.',
-                // Direct the user to the Contacts section to add someone.
-                // Once a contact is added, they can start a conversation here.
-                action: FilledButton.icon(
-                  onPressed: () => shell.selectSection(AppSection.contacts),
-                  icon: const Icon(Icons.person_add_outlined),
-                  label: const Text('Add a contact'),
-                ),
-              )
-            : ListView.builder(
-                itemCount: directRooms.length,
-                itemBuilder: (context, i) {
-                  final room = directRooms[i];
-                  return ThreadListTile(
-                    room: room,
-                    // Highlight this tile on wide layouts when it is the
-                    // currently open room in the detail pane.
-                    selected: isWide && shell.selectedRoomId == room.id,
-                    onTap: () => _openRoom(context, room.id, isWide),
-                    onDelete: () => messaging.deleteRoom(room.id),
-                  );
-                },
-              ),
+        // LoadGate: shimmer while rooms load (6 x 72 px, §22.50), the
+        // ErrorBanner after a failed load (§22.51, pull down to retry), and
+        // the empty state only after a successful load found nothing.
+        child: LoadGate(
+          loading: messaging.loading_rooms,
+          error: messaging.rooms_error,
+          is_empty: directRooms.isEmpty,
+          shimmer_count: 6,
+          shimmer_height: 72,
+          empty: EmptyState(
+            icon: Icons.chat_bubble_outline,
+            title: 'No conversations yet',
+            body: 'Add a contact, then start chatting.',
+            // Direct the user to the Contacts section to add someone.
+            // Once a contact is added, they can start a conversation here.
+            action: FilledButton.icon(
+              onPressed: () => shell.selectSection(AppSection.contacts),
+              icon: const Icon(Icons.person_add_outlined),
+              label: const Text('Add a contact'),
+            ),
+          ),
+          child: ListView.builder(
+            itemCount: directRooms.length,
+            itemBuilder: (context, i) {
+              final room = directRooms[i];
+              return ThreadListTile(
+                room: room,
+                // Highlight this tile on wide layouts when it is the
+                // currently open room in the detail pane.
+                selected: isWide && shell.selectedRoomId == room.id,
+                onTap: () => _openRoom(context, room.id, isWide),
+                onDelete: () => messaging.deleteRoom(room.id),
+              );
+            },
+          ),
+        ),
       ),
       // FAB — always visible, provides a large tap target for starting a
       // conversation without needing to reach the AppBar.

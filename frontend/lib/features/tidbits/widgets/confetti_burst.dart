@@ -28,6 +28,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../app/app_theme.dart'; // MeshTheme brand colours
+import '../../../app/motion.dart'; // reduced-motion rule (§22.1.7)
 
 // ---------------------------------------------------------------------------
 // Public API — TidbitOverlay helper (also used by callers directly)
@@ -139,6 +140,29 @@ class _ConfettiBurstState extends State<ConfettiBurst>
       (_) => _Particle.random(_rng, _palette),
     );
 
+    // The burst is started in didChangeDependencies: the reduced-motion
+    // preference lives in MediaQuery, which cannot be read in initState.
+  }
+
+  // True once the one-shot decision (play or skip) has been made.
+  bool _started = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+
+    if (reduced_motion(context)) {
+      // Reduced motion (§22.1.7, §22.34): the burst is decorative, so its
+      // static equivalent is nothing.  Report completion on the next frame
+      // so the overlay entry that hosts us removes itself.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onComplete?.call();
+      });
+      return;
+    }
+
     // Start immediately.
     _controller.forward();
   }
@@ -155,6 +179,9 @@ class _ConfettiBurstState extends State<ConfettiBurst>
 
   @override
   Widget build(BuildContext context) {
+    // Reduced motion: draw nothing (see didChangeDependencies).
+    if (reduced_motion(context)) return const SizedBox.shrink();
+
     return AnimatedBuilder(
       animation: _controller,
       builder: (ctx, _) {

@@ -61,6 +61,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../app/motion.dart';
 import '../app/app_theme.dart';
 import '../backend/event_bus.dart';
 import '../backend/event_models.dart';
@@ -273,7 +274,8 @@ class _SecurityBanner extends StatelessWidget {
       height: height,
       // 200 ms easeOut is fast enough to feel responsive but slow enough
       // for the user to notice the banner appearing (not instant pop-in).
-      duration: const Duration(milliseconds: 200),
+      // Reduced motion (§22.1.7): the bar shows and hides instantly.
+      duration: motion_duration(context, const Duration(milliseconds: 200)),
       curve: Curves.easeOut,
       color: color,
       // When height is 0 render nothing at all.  Using a conditional child

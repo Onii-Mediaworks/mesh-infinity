@@ -24,6 +24,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/widgets/empty_state.dart';
+import '../../../core/widgets/load_gate.dart';
 // EmptyState — shared zero-data placeholder widget used when _transfers is empty.
 import '../../../core/widgets/section_header.dart';
 // SectionHeader — a styled "label" row that separates the three transfer groups.
@@ -32,6 +33,7 @@ import '../files_state.dart';
 import '../widgets/transfer_tile.dart';
 // TransferTile — renders one transfer row with progress bar and action buttons.
 import 'send_file_sheet.dart';
+
 // SendFileSheet — the "pick file + pick peer" bottom sheet.
 
 /// The main list screen for the Files section.
@@ -80,12 +82,20 @@ class TransfersScreen extends StatelessWidget {
         // Useful if a background transfer completed while the app was
         // minimised and the EventBus missed the final state event.
         onRefresh: files.loadTransfers,
-        child: ListView(
-          padding: const EdgeInsets.only(bottom: 16),
-          children: [
-            // Empty state — shown when no transfers exist at all.
-            // Provides a direct call-to-action so the user knows what to do.
-            if (files.transfers.isEmpty)
+        // LoadGate (§22.50 / §22.51): 3 x 80 px shimmer while loading, the
+        // ErrorBanner after a failed load, and the "No transfers" empty state
+        // only after a successful load found nothing.
+        child: LoadGate(
+          loading: files.loading_transfers,
+          error: files.transfers_error,
+          is_empty: files.transfers.isEmpty,
+          shimmer_count: 3,
+          shimmer_height: 80,
+          // Empty state — provides a direct call-to-action so the user knows
+          // what to do.  Wrapped in a ListView so pull-to-refresh still works.
+          empty: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
               EmptyState(
                 icon: Icons.folder_open_outlined,
                 title: 'No transfers',
@@ -95,8 +105,12 @@ class TransfersScreen extends StatelessWidget {
                   icon: const Icon(Icons.upload_file_outlined),
                   label: const Text('Send a file'),
                 ),
-              )
-            else ...[
+              ),
+            ],
+          ),
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 16),
+            children: [
               // ---- SECTION 1: Incoming Offers --------------------------------
               // Inbound transfers that the peer has proposed but we have not
               // yet accepted or declined.  Shown first because they require
@@ -137,7 +151,7 @@ class TransfersScreen extends StatelessWidget {
                   TransferTile(transfer: t),
               ],
             ],
-          ],
+          ),
         ),
       ),
     );

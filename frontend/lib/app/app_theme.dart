@@ -107,6 +107,14 @@ class MeshTheme {
     Color(0xFF60A5FA),         // sky blue
   ];
 
+  /// Gesture-hint pill background (§22.35.1): semi-transparent near-black,
+  /// identical in both themes because hints float over arbitrary content.
+  static const Color hintPill = Colors.black87;
+
+  /// Gesture-hint text and hand icon, drawn on [hintPill].  White on 87%
+  /// black is far above the 4.5:1 text bar in either theme.
+  static const Color hintForeground = Colors.white;
+
   // ---------------------------------------------------------------------------
   // light()
   //

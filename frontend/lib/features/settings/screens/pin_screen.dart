@@ -22,10 +22,13 @@
 // (used by iOS, Android, and countless banking apps).  Users are familiar
 // with it.
 //
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../../app/motion.dart';
 import '../../../app/app_theme.dart';
 import '../../../backend/backend_bridge.dart';
 import '../settings_state.dart';
@@ -45,6 +48,38 @@ enum PinScreenMode {
   remove,
   // Re-authentication gate — single entry, no close button, no back navigation.
   unlock,
+}
+
+// ---------------------------------------------------------------------------
+// Backoff schedule (mirror of backend/identity/pin.rs `backoff_delay`)
+// ---------------------------------------------------------------------------
+
+/// Seconds the backend refuses a PIN attempt after [failures] consecutive
+/// failures (§3.10).  The backend exposes no "seconds remaining" accessor
+/// and its identity code is out of scope for the UI, so the schedule is
+/// mirrored here to draw the lockout countdown.  The backend stays the
+/// enforcer; this only labels the wait.
+int pin_backoff_secs(int failures) {
+  // Attempts 1-5 carry no delay.
+  if (failures <= 5) return 0;
+  return switch (failures) {
+    6 => 30,
+    7 => 120,
+    8 => 600,
+    9 => 3600,
+    10 => 86400,
+    _ => 259200,
+  };
+}
+
+/// Formats a wait as "0:30", "2:00", "1:00:00" or "3 days" for the countdown.
+String format_wait(int secs) {
+  if (secs >= 172800) return '${(secs / 86400).ceil()} days';
+  final h = secs ~/ 3600;
+  final m = (secs % 3600) ~/ 60;
+  final ss = (secs % 60).toString().padLeft(2, '0');
+  if (h > 0) return '$h:${m.toString().padLeft(2, '0')}:$ss';
+  return '$m:$ss';
 }
 
 // ---------------------------------------------------------------------------
@@ -86,8 +121,22 @@ class _PinScreenState extends State<PinScreen>
   String _firstPin = '';
   String _currentPin = '';
 
-  // Whether this entry was wrong (triggers shake + red fill).
+  // Whether the last entry was wrong.  Stays true (text + icon visible)
+  // until the next key press (§22.10.10); never cleared by a timer.
   bool _wrong = false;
+
+  // Text of the wrong-entry line ("Wrong PIN" or a mismatch message).
+  String _wrong_label = 'Wrong PIN';
+
+  // Wrong verifications on this screen.  The backend holds the real counter
+  // (never logged, §21.2.2); this session count only drives the countdown
+  // and the last-two warning.
+  int _failures = 0;
+
+  // When the current lockout ends, and the whole seconds left until then.
+  DateTime? _lock_until;
+  int _lock_left = 0;
+  Timer? _lock_timer;
 
   // Whether unlock has failed at least once in this session.
   bool _hasUnlockFailure = false;
@@ -119,6 +168,7 @@ class _PinScreenState extends State<PinScreen>
   void dispose() {
     _pinController.dispose();
     _shakeController.dispose();
+    _lock_timer?.cancel();
     _pinFocusNode.dispose();
     super.dispose();
   }
@@ -181,13 +231,9 @@ class _PinScreenState extends State<PinScreen>
       return;
     }
 
-    // Clear the "wrong" state as soon as the user starts re-entering.
-    if (_wrong) setState(() => _wrong = false);
-
-    // Auto-advance when minimum length (4) is reached and the user hasn't
-    // confirmed yet.  In practice we wait for explicit submission via
-    // the Submit button or hardware Enter key.
-    setState(() {}); // Rebuild to update the dot display.
+    // The wrong-PIN line is cleared by the next key press, not by a timer.
+    // The same rebuild refreshes the dot display.
+    setState(() => _wrong = false);
   }
 
   // Called when the user submits the current step's PIN.
@@ -197,6 +243,9 @@ class _PinScreenState extends State<PinScreen>
     // Minimum length check — button is disabled below 4 digits, but
     // guard here in case of programmatic calls.
     if (pin.length < 4) return;
+
+    // Refuse while locked out; the backend would reject it anyway.
+    if (_lock_left > 0) return;
 
     switch (widget.mode) {
       case PinScreenMode.setup:
@@ -223,13 +272,13 @@ class _PinScreenState extends State<PinScreen>
     } else {
       // Confirm step: pins must match.
       if (pin != _firstPin) {
-        _triggerWrong();
+        _triggerWrong(label: "PINs don't match", counts: false);
         return;
       }
       final bridge = context.read<BackendBridge>();
       final ok = bridge.setPin(pin);
       if (!ok) {
-        _triggerWrong();
+        _triggerWrong(label: "Couldn't set PIN", counts: false);
         return;
       }
       context.read<SettingsState>().loadAll();
@@ -252,7 +301,7 @@ class _PinScreenState extends State<PinScreen>
       setState(() => _step = 2);
     } else {
       if (pin != _firstPin) {
-        _triggerWrong();
+        _triggerWrong(label: "PINs don't match", counts: false);
         return;
       }
       final bridge = context.read<BackendBridge>();
@@ -312,22 +361,48 @@ class _PinScreenState extends State<PinScreen>
     _triggerWrong();
   }
 
-  // Trigger the "wrong PIN" visual: shake + red fill + failure counter.
-  void _triggerWrong() {
+  // Show the wrong-entry feedback (§22.10.10): a text line with an icon that
+  // stays until the next key press, plus a decorative shake.  [counts] is
+  // true for a failed PIN verification (feeds lockout and tries-left) and
+  // false for a setup mismatch, which the backend never counts.
+  void _triggerWrong({String label = 'Wrong PIN', bool counts = true}) {
     HapticFeedback.vibrate();
     _pinController.clear();
     setState(() {
       _wrong = true;
+      _wrong_label = label;
       _hasUnlockFailure = true;
+      if (counts) _failures++;
     });
+    if (counts) _start_lockout();
 
-    // Shake animation — plays once and stops.
-    _shakeController.forward(from: 0);
+    // The shake is decoration only; under reduced motion (§22.1.7) it is
+    // skipped and the text line carries the whole signal.
+    if (!reduced_motion(context)) _shakeController.forward(from: 0);
+  }
 
-    // Reset the red fill after 400ms (matching shake duration).
-    Future.delayed(const Duration(milliseconds: 400), () {
-      if (mounted) setState(() => _wrong = false);
+  // Begin the lockout countdown when the schedule demands a wait.
+  void _start_lockout() {
+    final wait = pin_backoff_secs(_failures);
+    if (wait == 0) return;
+    _lock_until = DateTime.now().add(Duration(seconds: wait));
+    _lock_left = wait;
+    _lock_timer?.cancel();
+    _lock_timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final left = _lock_until!.difference(DateTime.now()).inSeconds;
+      if (!mounted) return;
+      setState(() => _lock_left = left > 0 ? left : 0);
+      if (left <= 0) _lock_timer?.cancel();
     });
+  }
+
+  // Attempts left before auto-wipe, or null when nothing may be shown.
+  // CMR-023: only when the wipe is armed and only for the last two tries.
+  int? _tries_left() {
+    final settings = context.read<SettingsState>();
+    if (!settings.wrongPinWipeEnabled || _failures == 0) return null;
+    final left = settings.wrongPinWipeThreshold - _failures;
+    return (left >= 1 && left <= 2) ? left : null;
   }
 
   // ---------------------------------------------------------------------------
@@ -401,6 +476,9 @@ class _PinScreenState extends State<PinScreen>
                         child: _PinDots(entered: pinLen, wrong: _wrong),
                       ),
 
+                      // Wrong-entry, lockout and tries-left lines.
+                      _feedback(context),
+
                       const SizedBox(height: 28),
 
                       // Hidden text field — captures keyboard input on all platforms.
@@ -449,7 +527,7 @@ class _PinScreenState extends State<PinScreen>
                 child: SizedBox(
                   width: double.infinity,
                   child: FilledButton(
-                    onPressed: pinLen >= 4 ? _submit : null,
+                    onPressed: (pinLen >= 4 && _lock_left == 0) ? _submit : null,
                     child: Text(
                       _step == _maxStep ? _finalButtonLabel : 'Continue',
                     ),
@@ -459,6 +537,51 @@ class _PinScreenState extends State<PinScreen>
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // Text feedback under the dots, announced as a live region.  Every line
+  // pairs an icon with words so colour is never the only signal (WCAG 1.4.1).
+  Widget _feedback(BuildContext context) {
+    final colors = MeshColors.of(context);
+    final tt = Theme.of(context).textTheme;
+    final tries = _tries_left();
+    final lines = <(IconData, String)>[
+      if (_wrong) (Icons.error_outline, _wrong_label),
+      if (_lock_left > 0)
+        (
+          Icons.timer_outlined,
+          'Too many attempts. Try again in ${format_wait(_lock_left)}',
+        ),
+      if (_wrong && tries != null)
+        (
+          Icons.warning_amber_rounded,
+          '$tries ${tries == 1 ? 'try' : 'tries'} left before this device erases',
+        ),
+    ];
+    return Semantics(
+      liveRegion: true,
+      child: Column(
+        children: [
+          for (final (icon, text) in lines)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 18, color: colors.sec_red),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      text,
+                      style: tt.bodyMedium?.copyWith(color: colors.sec_red),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -564,7 +687,8 @@ class _PinDots extends StatelessWidget {
             : cs.outline.withValues(alpha: 0.3);
 
         return AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
+          // Reduced motion (§22.1.7): dots change colour instantly.
+          duration: motion_duration(context, const Duration(milliseconds: 150)),
           margin: const EdgeInsets.symmetric(horizontal: 6),
           width: 14,
           height: 14,

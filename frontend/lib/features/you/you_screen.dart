@@ -42,6 +42,7 @@ import '../../backend/backend_bridge.dart';
 import '../../backend/models/settings_models.dart';
 import '../../widgets/mask_avatar.dart';
 import '../settings/settings_state.dart';
+import 'mask_intro_card.dart';
 import '../settings/screens/profile_edit_screen.dart';
 import '../tidbits/tidbits.dart'; // Copy Confetti §22.12.5 #7, TapTrigger
 
@@ -196,6 +197,8 @@ class _YouScreenState extends State<YouScreen> {
                 children: [
                   _SelfCard(identity: identity),
                   const SizedBox(height: 24),
+                  // First-use definition of "mask" (CMR-024), shown until dismissed.
+                  const MaskIntroGate(),
                   _MasksSection(
                     masks: _masks,
                     loading: _masks_loading,

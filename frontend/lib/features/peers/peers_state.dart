@@ -63,12 +63,19 @@ class PeersState extends ChangeNotifier {
   /// True while a full peer fetch is in progress. Drives loading indicators.
   bool _loading = false;
 
+  /// Failure text from the last peer load, or null (§22.51 "Load contacts
+  /// fails").  Screens show it instead of the empty state.
+  String? _load_error;
+
   /// The current peer list. Returns the same list object between updates so
   /// that downstream widgets using == comparisons get the right answer.
   List<PeerModel> get peers => _peers;
 
   /// Whether a full reload is currently in flight.
   bool get loading => _loading;
+
+  /// Why the last peer load failed, or null.
+  String? get load_error => _load_error;
 
   // ---------------------------------------------------------------------------
   // Data loading
@@ -80,11 +87,21 @@ class PeersState extends ChangeNotifier {
   /// Callers can also invoke this directly (e.g. pull-to-refresh).
   Future<void> loadPeers() async {
     _loading = true;
+    _load_error = null;
     // Notify immediately so the UI shows the loading indicator before the
     // (potentially slow) FFI call starts.
     if (!_disposed) notifyListeners();
 
-    _peers = _bridge.fetchPeers();
+    try {
+      _peers = _bridge.fetchPeers();
+    } on Object catch (_) {
+      // Keep the previous peers and report the failure; an empty list here
+      // would claim "No contacts yet" about a load that never finished.
+      final reason = _bridge.getLastError();
+      _load_error = (reason == null || reason.isEmpty)
+          ? "Couldn't load contacts. Pull down to retry."
+          : reason;
+    }
 
     _loading = false;
     if (!_disposed) notifyListeners();
@@ -130,6 +147,17 @@ class PeersState extends ChangeNotifier {
     return ok;
   }
 
+  /// Blocks or unblocks [peerId] (§22.8.2 "Block contact").
+  ///
+  /// The backend owns the block list; on success the peer list is re-fetched
+  /// so the `blocked` flag the contact screen renders comes straight from the
+  /// contact store rather than from an optimistic local edit.
+  Future<bool> setPeerBlocked(String peerId, {required bool blocked}) async {
+    final ok = _bridge.setPeerBlocked(peerId, blocked: blocked);
+    if (ok) await loadPeers();
+    return ok;
+  }
+
   // ---------------------------------------------------------------------------
   // Lookup helpers
   // ---------------------------------------------------------------------------
@@ -157,9 +185,12 @@ class PeersState extends ChangeNotifier {
         // Replace the existing peer record in-place (same ID → new data).
         // If the peer isn't in the list yet, append it — this handles the race
         // where PeerUpdated fires before PeerAdded was processed.
+        // Presence events do not carry the block flag, so the known value is
+        // kept: block state only changes through setPeerBlocked(), which
+        // re-fetches the list.
         _peers = [
           for (final p in _peers)
-            if (p.id == peer.id) peer else p,
+            if (p.id == peer.id) peer.copyWith(blocked: p.blocked) else p,
         ];
         if (!_peers.any((p) => p.id == peer.id)) {
           _peers = [..._peers, peer];

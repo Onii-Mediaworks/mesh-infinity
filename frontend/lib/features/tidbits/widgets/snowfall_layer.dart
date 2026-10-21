@@ -29,6 +29,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../../app/motion.dart'; // reduced-motion rule (§22.1.7)
+
 // ---------------------------------------------------------------------------
 // SnowfallLayer
 // ---------------------------------------------------------------------------
@@ -95,7 +97,25 @@ class _SnowfallLayerState extends State<SnowfallLayer>
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 6),
-    )..repeat(); // loops forever while the widget is in the tree
+    );
+    // The loop is started or stopped in didChangeDependencies, where the
+    // reduced-motion preference can be read.
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_active) return;
+
+    if (reduced_motion(context)) {
+      // Reduced motion (§22.1.7): freeze the snow in a fixed frame instead
+      // of looping, so the seasonal look stays but nothing moves.
+      _controller
+        ..stop()
+        ..value = 0.35;
+    } else if (!_controller.isAnimating) {
+      _controller.repeat(); // loops forever while the widget is in the tree
+    }
   }
 
   @override

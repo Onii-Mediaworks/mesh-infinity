@@ -55,6 +55,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../app/motion.dart';
 import '../app/app_theme.dart';
 import '../features/messaging/messaging_state.dart';
 import '../backend/models/file_transfer_models.dart';
@@ -620,7 +621,8 @@ class _DrawerItem extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: AnimatedContainer(
           // 150 ms fade so the highlight transitions smoothly on section change.
-          duration: const Duration(milliseconds: 150),
+          // Reduced motion (§22.1.7): no fade between active states.
+          duration: motion_duration(context, const Duration(milliseconds: 150)),
           margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(

@@ -12,6 +12,7 @@ import '../../../app/app_theme.dart';
 import '../../../backend/backend_bridge.dart';
 import '../../../backend/models/settings_models.dart';
 import '../../../widgets/mask_avatar.dart';
+import '../../you/mask_intro_card.dart';
 import '../../settings/screens/identity_masks_screen.dart';
 
 /// Shows the MaskSwitcherSheet as a modal bottom sheet.
@@ -74,6 +75,12 @@ class _MaskSwitcherSheetState extends State<MaskSwitcherSheet> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // First-use definition of "mask" (CMR-024), shown until dismissed.
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: MaskIntroGate(),
+          ),
+
           // Header row: "Active identity" title + "Manage" link
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 8, 8),
