@@ -1429,10 +1429,10 @@ impl PluginRegistry {
             }
             // Executable plugins remain unavailable until an OS-isolated
             // worker process is implemented for this platform.
-            return Err(MeshError::TransportUnavailable(
+            Err(MeshError::TransportUnavailable(
                 "executable plugins".to_string(),
                 "OS-isolated plugin worker is not available".to_string(),
-            ));
+            ))
         }
 
         #[cfg(test)]

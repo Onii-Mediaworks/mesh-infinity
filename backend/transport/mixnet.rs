@@ -307,7 +307,8 @@ impl MixnetNode {
                     .map_err(|_| MixnetError::MalformedPayload)?;
                 let delivery = match plaintext.split_first() {
                     Some((&PAYLOAD_DATA, message)) => Some(message.to_vec()),
-                    Some((&PAYLOAD_COVER, message)) if message.is_empty() => None,
+                    // A cover packet carries no bytes after its tag.
+                    Some((&PAYLOAD_COVER, [])) => None,
                     _ => return Err(MixnetError::MalformedPayload),
                 };
                 self.replay.check_and_insert(packet.key_epoch, replay_tag)?;
@@ -576,7 +577,10 @@ mod tests {
         ChaCha20Rng::seed_from_u64(0xDEAD_BEEF_CAFE_1337)
     }
 
-    fn route(count: usize) -> (Vec<[u8; 32]>, Vec<[u8; 32]>, Vec<[u8; 32]>) {
+    /// Secrets, public keys and node ids for a synthetic route.
+    type RouteKeys = (Vec<[u8; 32]>, Vec<[u8; 32]>, Vec<[u8; 32]>);
+
+    fn route(count: usize) -> RouteKeys {
         let secrets: Vec<[u8; 32]> = (1..=count).map(|index| [index as u8; 32]).collect();
         let public_keys = secrets
             .iter()

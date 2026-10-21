@@ -60,45 +60,45 @@ const TARGETS: &[ClientlessTarget] = &[
 ];
 
 /// Return the current process target as reported by Rust compile-time cfgs.
+///
+/// Each supported triple is its own `cfg`-gated constant, so exactly one arm
+/// exists per build and the fallback arm is compiled only when none of the
+/// known triples match. That keeps the function free of unreachable code
+/// (and of the `#[allow]` that used to hide it) on every target.
 pub fn current_target() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
-    {
-        return "x86_64-unknown-linux-gnu";
-    }
+    const TARGET: &str = "x86_64-unknown-linux-gnu";
     #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
-    {
-        return "aarch64-unknown-linux-gnu";
-    }
+    const TARGET: &str = "aarch64-unknown-linux-gnu";
     #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
-    {
-        return "x86_64-unknown-linux-musl";
-    }
+    const TARGET: &str = "x86_64-unknown-linux-musl";
     #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "musl"))]
-    {
-        return "aarch64-unknown-linux-musl";
-    }
+    const TARGET: &str = "aarch64-unknown-linux-musl";
     #[cfg(all(target_os = "android", target_arch = "aarch64"))]
-    {
-        return "aarch64-linux-android";
-    }
+    const TARGET: &str = "aarch64-linux-android";
     #[cfg(all(target_os = "android", target_arch = "arm"))]
-    {
-        return "armv7-linux-androideabi";
-    }
+    const TARGET: &str = "armv7-linux-androideabi";
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        return "x86_64-apple-darwin";
-    }
+    const TARGET: &str = "x86_64-apple-darwin";
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        return "aarch64-apple-darwin";
-    }
+    const TARGET: &str = "aarch64-apple-darwin";
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    {
-        return "x86_64-pc-windows-msvc";
-    }
-    #[allow(unreachable_code)]
-    "unknown"
+    const TARGET: &str = "x86_64-pc-windows-msvc";
+    // Any host outside the packaged set reports "unknown" rather than a
+    // wrong triple; the WebUI shows it as an unsupported build.
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"),
+        all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"),
+        all(target_os = "linux", target_arch = "x86_64", target_env = "musl"),
+        all(target_os = "linux", target_arch = "aarch64", target_env = "musl"),
+        all(target_os = "android", target_arch = "aarch64"),
+        all(target_os = "android", target_arch = "arm"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "windows", target_arch = "x86_64"),
+    )))]
+    const TARGET: &str = "unknown";
+    TARGET
 }
 
 /// Structured profile contract returned by the WebUI API.

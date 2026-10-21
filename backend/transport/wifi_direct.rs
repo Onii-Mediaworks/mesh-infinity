@@ -2130,7 +2130,9 @@ mod tests {
         let _result = WifiDirectTransport::is_available();
     }
 
-    #[cfg(not(target_os = "linux"))]
+    // Only the Android build reads the adapter state; desktop builds report
+    // Wi-Fi Direct as unavailable outright, so this test is Android-only.
+    #[cfg(target_os = "android")]
     #[test]
     fn test_android_adapter_state_controls_non_linux_availability() {
         update_android_adapter_state(

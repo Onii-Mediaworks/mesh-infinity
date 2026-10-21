@@ -262,27 +262,20 @@ fn ip_in_cidr(addr: std::net::IpAddr, cidr: &str) -> bool {
             if prefix_len > 128 {
                 return false;
             }
-            // Represent both addresses as two u64 words (high 64 bits, low 64 bits).
-            let cand_bytes = candidate.octets();
-            let net_bytes = network.octets();
-            let cand_hi = u64::from_be_bytes(cand_bytes[0..8].try_into().unwrap());
-            let cand_lo = u64::from_be_bytes(cand_bytes[8..16].try_into().unwrap());
-            let net_hi = u64::from_be_bytes(net_bytes[0..8].try_into().unwrap());
-            let net_lo = u64::from_be_bytes(net_bytes[8..16].try_into().unwrap());
+            // Treat each address as one 128-bit integer. `u128::from` is
+            // infallible, which removes the slice-to-array unwraps that a
+            // reviewer would otherwise have to prove safe by inspection.
+            let cand = u128::from(candidate);
+            let net = u128::from(network);
 
             if prefix_len == 0 {
+                // /0 matches the entire IPv6 space.
                 return true;
             }
-            if prefix_len <= 64 {
-                // The entire match is decided by the high word.
-                let mask_hi: u64 = u64::MAX << (64 - prefix_len);
-                (cand_hi & mask_hi) == (net_hi & mask_hi)
-            } else {
-                // High word must match fully; low word is masked.
-                let low_bits = prefix_len - 64;
-                let mask_lo: u64 = u64::MAX << (64 - low_bits);
-                cand_hi == net_hi && (cand_lo & mask_lo) == (net_lo & mask_lo)
-            }
+            // Host-order mask with the top `prefix_len` bits set. prefix_len is
+            // 1..=128 here, so the shift amount is 0..=127 and never overflows.
+            let mask: u128 = u128::MAX << (128 - prefix_len);
+            (cand & mask) == (net & mask)
         }
 
         // Mismatched address families never match.

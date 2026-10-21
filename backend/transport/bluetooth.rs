@@ -113,7 +113,7 @@ mod tests {
             .expect("CSRNG must be available in test context");
         assert_eq!(token.len(), ROTATING_TOKEN_BYTES);
         // The peer-hash bytes (4–7) are deterministic for a given peer_id.
-        let expected_hash = sha2::Sha256::digest(&peer_id);
+        let expected_hash = sha2::Sha256::digest(peer_id);
         assert_eq!(token[4], expected_hash[0]);
         assert_eq!(token[5], expected_hash[1]);
         assert_eq!(token[6], expected_hash[2]);

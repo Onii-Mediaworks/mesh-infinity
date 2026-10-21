@@ -723,7 +723,7 @@ impl StoreForwardServer {
         }
 
         // Sort by priority (highest first), then deposit time (oldest first).
-        deliverable.sort_by(|a, b| b.priority.cmp(&a.priority));
+        deliverable.sort_by_key(|m| std::cmp::Reverse(m.priority));
 
         // Execute this step in the protocol sequence.
         deliverable
