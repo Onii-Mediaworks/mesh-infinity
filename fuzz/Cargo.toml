@@ -193,3 +193,7 @@ path = "fuzz_targets/fuzz_offline_bundle_decode.rs"
 [[bin]]
 name = "fuzz_backup_restore"
 path = "fuzz_targets/fuzz_backup_restore.rs"
+
+[[bin]]
+name = "fuzz_ring_verify"
+path = "fuzz_targets/fuzz_ring_verify.rs"

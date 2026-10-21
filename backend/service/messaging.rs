@@ -23,7 +23,6 @@ use crate::service::runtime::{bootstrap_ratchet_session, MeshRuntime};
 use ed25519_dalek::{Signature, Signer, Verifier};
 use x25519_dalek::StaticSecret as X25519Secret;
 
-const GROUP_MESSAGE_RING_SIG_DOMAIN: &[u8] = b"meshinfinity-group-ring-message-v1";
 const GROUP_MESSAGE_INNER_SIG_DOMAIN: &[u8] = b"meshinfinity-group-inner-sender-v1";
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -77,22 +76,19 @@ fn build_group_inner_signature_message(
     message
 }
 
-fn build_group_ring_signature_message(
-    group_id: &[u8; 32],
-    epoch: u64,
-    nonce: &[u8; 12],
-    wrapped: &[u8],
-) -> Vec<u8> {
-    let mut message = Vec::with_capacity(
-        GROUP_MESSAGE_RING_SIG_DOMAIN.len() + group_id.len() + nonce.len() + wrapped.len() + 16,
-    );
-    message.extend_from_slice(GROUP_MESSAGE_RING_SIG_DOMAIN);
-    message.extend_from_slice(group_id);
-    message.extend_from_slice(&epoch.to_le_bytes());
-    message.extend_from_slice(nonce);
-    message.extend_from_slice(&(wrapped.len() as u64).to_le_bytes());
-    message.extend_from_slice(wrapped);
-    message
+/// The canonical `group_message_sk` envelope the ring signature covers.
+///
+/// SPEC §3.5.2: "The ciphertext is the entire canonical group envelope
+/// being authenticated, including its authenticated header."  For the
+/// Sender Key frame that is the outer AEAD nonce followed by the wrapped
+/// ciphertext.  The group id and epoch are *not* repeated here because the
+/// ring transcript already binds them from the verifier's own record; the
+/// frame's copies are only used to find that record.
+fn group_sk_envelope_bytes(nonce: &[u8; 12], wrapped: &[u8]) -> Vec<u8> {
+    let mut envelope = Vec::with_capacity(nonce.len() + wrapped.len());
+    envelope.extend_from_slice(nonce);
+    envelope.extend_from_slice(wrapped);
+    envelope
 }
 
 /// Why a group control payload could not be opened with the ratchet.
@@ -218,26 +214,104 @@ impl MeshRuntime {
             .map(|group| (group, room))
     }
 
-    fn ring_public_keys_for_group(
+    /// Seal a group control payload for one member under their ratchet session.
+    ///
+    /// Group control frames (`group_invite`, `group_rekey`,
+    /// `group_ring_commit`) encrypt `payload` directly under the next
+    /// ratchet message key with ChaCha20-Poly1305 and an all-zero nonce (the
+    /// key is single-use), carry the ratchet header as a top-level field,
+    /// and attach our pending X3DH init header while the peer has not yet
+    /// replied.  Returns `None` when we hold no session for `member` — the
+    /// caller cannot reach them until a session exists.  The sessions lock
+    /// is held for the whole step so two frames cannot race one send key.
+    fn seal_group_control_frame(
         &self,
-        group: &crate::groups::group::Group,
-    ) -> Option<Vec<[u8; 32]>> {
+        member: PeerId,
+        frame_type: &str,
+        payload: &[u8],
+    ) -> Option<serde_json::Value> {
+        use chacha20poly1305::{
+            aead::{Aead, Nonce},
+            ChaCha20Poly1305, Key, KeyInit,
+        };
+
         let our_peer_id = self
             .identity
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .map(|identity| (identity.peer_id(), identity.ed25519_pub))?;
-        let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
-        let mut ring = Vec::with_capacity(group.members.len());
+            .map(|identity| identity.peer_id())?;
+
+        let mut sessions = self
+            .ratchet_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let session = sessions.get_mut(&member)?;
+        let (header, msg_key) = session.next_send_msg_key().ok()?;
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
+        let nonce = Nonce::<ChaCha20Poly1305>::default();
+        let ciphertext = cipher.encrypt(&nonce, payload).ok()?;
+
+        let mut frame = serde_json::json!({
+            "type":           frame_type,
+            "sender":         hex::encode(our_peer_id.0),
+            "ratchet_header": serde_json::to_value(&header).ok()?,
+            "ciphertext":     hex::encode(&ciphertext),
+        });
+        // First contact: the peer needs our X3DH init header to derive the
+        // session this frame was sealed under.
+        let x3dh_fields = self
+            .x3dh_pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&member)
+            .copied();
+        if let Some((eph, ik)) = x3dh_fields {
+            if let Some(obj) = frame.as_object_mut() {
+                obj.insert(
+                    "x3dh_eph_pub".into(),
+                    serde_json::Value::String(hex::encode(eph)),
+                );
+                obj.insert(
+                    "x3dh_encrypted_ik".into(),
+                    serde_json::Value::String(hex::encode(ik)),
+                );
+            }
+        }
+        Some(frame)
+    }
+
+    /// Announce our ring public key for `group` to every other member.
+    ///
+    /// This is the "authenticated membership commit" of SPEC §3.5.2: the
+    /// key travels inside each member's ratchet session, so the recipient
+    /// knows exactly which authenticated peer it belongs to.  Members we
+    /// have no session with yet are skipped; they learn the key from the
+    /// admin's next invite snapshot or our next commit.
+    fn broadcast_ring_key_commit(
+        &self,
+        group: &crate::groups::group::Group,
+        ring_public: &[u8; 32],
+    ) {
+        let payload = serde_json::json!({
+            "type":    "group_ring_commit",
+            "groupId": hex::encode(group.group_id),
+            "ringPub": hex::encode(ring_public),
+        });
+        let Ok(payload_bytes) = serde_json::to_vec(&payload) else {
+            return;
+        };
         for member in &group.members {
-            if *member == our_peer_id.0 {
-                ring.push(our_peer_id.1);
+            if *member == group.our_peer_id {
                 continue;
             }
-            ring.push(contacts.get(member)?.ed25519_public);
+            if let Some(frame) =
+                self.seal_group_control_frame(*member, "group_ring_commit", &payload_bytes)
+            {
+                self.send_raw_frame(&member.to_hex(), &frame);
+            }
         }
-        Some(ring)
+        self.save_ratchet_sessions();
     }
 
     #[allow(clippy::too_many_arguments)] // All params are distinct message metadata fields
@@ -307,8 +381,17 @@ impl MeshRuntime {
         }
     }
 
+    /// Send a Sender Key group message authenticated by a ring signature.
+    ///
+    /// The outer envelope is signed with our dedicated ring key for the
+    /// group under profile `MI-AOS-R255-1` (§3.5.2), so recipients can
+    /// check it came from a current member without the outer layer naming
+    /// us.  Under the spec's release gate an unreviewed build cannot sign:
+    /// Private/Closed groups have no attributable fallback (only Open and
+    /// Public groups keep attributable outer authentication), so the error
+    /// is surfaced as an `Error` event and nothing is sent.
     fn send_ring_group_message(&mut self, room_id_hex: &str, text: &str) -> bool {
-        use crate::crypto::ring_sig::ring_sign;
+        use crate::crypto::ring_sig::{ring_sign, RingContextType};
         use crate::crypto::sender_keys::SenderKey;
         use crate::service::runtime::try_random_fill;
 
@@ -423,19 +506,38 @@ impl MeshRuntime {
             Err(_) => return false,
         };
 
-        let ring = match self.ring_public_keys_for_group(&group) {
-            Some(value) => value,
-            None => return false,
+        // The ring is every member's committed ring key; a member we have
+        // no key for cannot be represented, so the message cannot be sent
+        // until their commit arrives.
+        let Some(ring) = group.sorted_ring() else {
+            self.push_event(
+                "Error",
+                serde_json::json!({
+                    "message": "group ring is incomplete: a member has not committed a ring key"
+                }),
+            );
+            return false;
         };
-        let ring_message = build_group_ring_signature_message(
-            &group.group_id,
-            group.sender_key_epoch,
-            &nonce_bytes,
-            &wrapped,
-        );
-        let ring_sig = match ring_sign(&identity_signing_key.to_bytes(), &ring, &ring_message) {
+        // Our own ring scalar — dedicated to this group, never the identity key.
+        let Some(ring_secret) = group.my_ring_secret else {
+            self.push_event(
+                "Error",
+                serde_json::json!({ "message": "no ring key for this group yet" }),
+            );
+            return false;
+        };
+        let context = group.ring_context(RingContextType::Application);
+        let envelope_bytes = group_sk_envelope_bytes(&nonce_bytes, &wrapped);
+        let ring_sig = match ring_sign(&ring_secret, &ring, &context, &envelope_bytes) {
             Ok(value) => value,
-            Err(_) => return false,
+            // Includes `ProfileNotEnabled` under the §3.5.2 release gate.
+            Err(error) => {
+                self.push_event(
+                    "Error",
+                    serde_json::json!({ "message": format!("ring signing failed: {error}") }),
+                );
+                return false;
+            }
         };
 
         let frame = serde_json::json!({
@@ -580,6 +682,9 @@ impl MeshRuntime {
         }
         if frame_type == "group_reinclusion_request" {
             return self.process_group_reinclusion_request_frame(envelope);
+        }
+        if frame_type == "group_ring_commit" {
+            return self.process_group_ring_commit_frame(envelope);
         }
 
         // Store-and-forward.
@@ -738,6 +843,14 @@ impl MeshRuntime {
             Some(c) => c,
             None => return false,
         };
+
+        // A blocked contact (§22.8.2 "Block contact") is dropped here, before
+        // any session or decrypt work: the block costs nothing to enforce and
+        // nothing is sent back, so the sender cannot tell a block from an
+        // offline peer.
+        if contact.blocked {
+            return false;
+        }
 
         // Resolve a session for this sender.  An existing one is used as-is.
         // If none exists, build a *candidate* from the frame's X3DH material
@@ -1645,9 +1758,32 @@ impl MeshRuntime {
                     match session.encrypt(&frame_bytes) {
                         Ok(ct) => {
                             let envelope = serde_json::json!({ "wg_ct": hex::encode(&ct) });
-                            serde_json::to_vec(&envelope).unwrap_or(frame_bytes)
+                            match serde_json::to_vec(&envelope) {
+                                Ok(bytes) => bytes,
+                                // Cannot happen for a hex string, but never
+                                // fall back to the plaintext frame.
+                                Err(_) => return,
+                            }
                         }
-                        Err(_) => frame_bytes, // Encrypt error — send plaintext.
+                        // Fail closed (§5.1: no fallback to plaintext under
+                        // any circumstances).  A nonce overflow means the
+                        // session is exhausted: drop it so the next frame
+                        // goes out only after a fresh handshake.
+                        Err(e) => {
+                            if matches!(
+                                e,
+                                crate::transport::wireguard::WireGuardError::NonceOverflow
+                            ) {
+                                wg.remove(&peer_id);
+                            }
+                            self.push_event(
+                                "Error",
+                                serde_json::json!({
+                                    "message": format!("link encryption failed, frame dropped: {e}")
+                                }),
+                            );
+                            return;
+                        }
                     }
                 } else {
                     frame_bytes
@@ -2048,7 +2184,7 @@ impl MeshRuntime {
             signed_by: sender_bytes,
             signature: vec![],
         };
-        let group = Group::new_as_member(
+        let mut group = Group::new_as_member(
             gid_bytes,
             profile,
             crate::groups::group::GroupKeys {
@@ -2062,11 +2198,65 @@ impl MeshRuntime {
             sender_key_epoch,
             now,
         );
+
+        // Ring keys the admin already knows (§3.5.2).  The invite arrived
+        // over the admin's authenticated session, so this is the admin's
+        // attestation of each member's key; `commit_member_ring_key` still
+        // drops non-members and invalid points individually rather than
+        // rejecting the whole invite.
+        if let Some(ring_keys) = inv.get("memberRingKeys").and_then(|v| v.as_object()) {
+            for (peer_hex, key_value) in ring_keys {
+                let Some(peer) = hex::decode(peer_hex)
+                    .ok()
+                    .filter(|b| b.len() == 32)
+                    .map(|b| {
+                        let mut a = [0u8; 32];
+                        a.copy_from_slice(&b);
+                        PeerId(a)
+                    })
+                else {
+                    continue;
+                };
+                let Some(key) = key_value
+                    .as_str()
+                    .and_then(|s| hex::decode(s).ok())
+                    .filter(|b| b.len() == 32)
+                    .map(|b| {
+                        let mut a = [0u8; 32];
+                        a.copy_from_slice(&b);
+                        a
+                    })
+                else {
+                    continue;
+                };
+                // Our own slot is always minted locally below, never imported.
+                if peer == our_peer_id {
+                    continue;
+                }
+                let _ = group.commit_member_ring_key(&peer, key);
+            }
+        }
+
+        // Mint our own dedicated ring key for this group.  An RNG failure
+        // leaves it unset; sending will surface that, and a later send can
+        // retry.  Membership itself does not depend on it.
+        let our_ring_public = if group.profile.network_type.uses_ring_signatures() {
+            group.ensure_ring_keypair().ok()
+        } else {
+            None
+        };
+
+        let group_snapshot = group.clone();
         self.groups
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(group);
         self.save_groups();
+
+        // Commit our ring key to the members we already have sessions with.
+        if let Some(ring_public) = our_ring_public {
+            self.broadcast_ring_key_commit(&group_snapshot, &ring_public);
+        }
 
         // Create a conversation room for this group so the UI shows it immediately.
         let mut room = crate::messaging::room::Room::new_group(&name, members);
@@ -2260,10 +2450,15 @@ impl MeshRuntime {
     ///
     /// For private and closed groups the sender is not carried in plaintext.
     /// Instead:
-    /// - `wrapped` is authenticated by an AOS ring signature over the current
-    ///   member identity key set
+    /// - `nonce || wrapped` is authenticated by an `MI-AOS-R255-1` ring
+    ///   signature over the members' committed ring keys, under a context
+    ///   (group, epoch, roster) taken from our own record (§3.5.2)
     /// - the sender identity and its attributable Ed25519 signature live only
     ///   inside the encrypted Sender Key plaintext
+    ///
+    /// The frame's `epoch` must equal our current epoch: old-epoch traffic is
+    /// never accepted as current content, and checking it first avoids O(n)
+    /// ring arithmetic on a frame that cannot verify.
     fn process_group_message_sk_frame(&self, envelope: &serde_json::Value) -> bool {
         let outer_group_id_hex = match envelope.get("groupId").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
@@ -2311,24 +2506,34 @@ impl MeshRuntime {
             _ => return false,
         };
 
-        let (group_snapshot, ring_public_keys) = {
+        let group_snapshot = {
             let groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
-            let group = match groups
+            match groups
                 .iter()
                 .find(|candidate| candidate.group_id == gid_bytes)
             {
                 Some(value) => value.clone(),
                 None => return false,
-            };
-            let ring = match self.ring_public_keys_for_group(&group) {
-                Some(value) => value,
-                None => return false,
-            };
-            (group, ring)
+            }
         };
-        let ring_message =
-            build_group_ring_signature_message(&gid_bytes, epoch, &nonce_bytes, &wrapped);
-        if !crate::crypto::ring_sig::ring_verify(&ring_public_keys, &ring_message, &ring_sig) {
+        // Cheap checks before the O(n) ring walk (§3.5.2 "rate-limit before
+        // expensive work"): the epoch must be current and the ring complete.
+        if epoch != group_snapshot.sender_key_epoch {
+            return false;
+        }
+        let Some(ring) = group_snapshot.sorted_ring() else {
+            return false;
+        };
+        // Everything in the context is ours, not the frame's: an attacker
+        // cannot choose the roster or epoch their signature is checked under.
+        let context =
+            group_snapshot.ring_context(crate::crypto::ring_sig::RingContextType::Application);
+        let envelope_bytes = group_sk_envelope_bytes(&nonce_bytes, &wrapped);
+        // Any error — forged, malformed, or `ProfileNotEnabled` under the
+        // release gate — is a silent drop (§16.1 error policy).
+        if crate::crypto::ring_sig::ring_verify(&ring, &context, &envelope_bytes, &ring_sig)
+            .is_err()
+        {
             return false;
         }
 
@@ -2609,6 +2814,13 @@ impl MeshRuntime {
                     .map(|m| hex::encode(m.0)).collect::<Vec<_>>(),
                 "name":        group.profile.display_name.clone(),
                 "description": group.profile.description.clone(),
+                // Every ring key we know, so the re-joiner can rebuild the
+                // ring without waiting for each member to re-commit.
+                "memberRingKeys": group.member_ring_keys.iter()
+                    .map(|(peer, key)| {
+                        (hex::encode(peer), serde_json::Value::String(hex::encode(key)))
+                    })
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
             });
             match serde_json::to_vec(&serde_json::json!({
                 "type":   "group_invite",
@@ -2622,62 +2834,115 @@ impl MeshRuntime {
         // Encrypt with the requester's ratchet session.
         // If the ratchet session is missing we cannot help — the admin would
         // need to trigger a full re-pair out-of-band.
-        use chacha20poly1305::{
-            aead::{Aead, Nonce},
-            ChaCha20Poly1305, Key, KeyInit,
-        };
-        let frame_opt = {
-            let mut sessions = self
-                .ratchet_sessions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if let Some(session) = sessions.get_mut(&requester_peer_id) {
-                if let Ok((header, msg_key)) = session.next_send_msg_key() {
-                    let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
-                    let nonce = Nonce::<ChaCha20Poly1305>::default();
-                    cipher
-                        .encrypt(&nonce, invite_payload_bytes.as_ref())
-                        .ok()
-                        .map(|ct| {
-                            let x3dh_fields = self
-                                .x3dh_pending
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .get(&requester_peer_id)
-                                .copied();
-                            let mut f = serde_json::json!({
-                                "type":           "group_invite",
-                                "sender":         hex::encode(our_peer_id.0),
-                                "ratchet_header": serde_json::to_value(&header)
-                                    .unwrap_or(serde_json::Value::Null),
-                                "ciphertext":     hex::encode(&ct),
-                            });
-                            if let Some((eph, ik)) = x3dh_fields {
-                                if let Some(obj) = f.as_object_mut() {
-                                    obj.insert(
-                                        "x3dh_eph_pub".into(),
-                                        serde_json::Value::String(hex::encode(eph)),
-                                    );
-                                    obj.insert(
-                                        "x3dh_encrypted_ik".into(),
-                                        serde_json::Value::String(hex::encode(ik)),
-                                    );
-                                }
-                            }
-                            f
-                        })
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        if let Some(frame) = frame_opt {
+        if let Some(frame) =
+            self.seal_group_control_frame(requester_peer_id, "group_invite", &invite_payload_bytes)
+        {
             self.send_raw_frame(&requester_hex, &frame);
             self.save_ratchet_sessions();
         }
+        true
+    }
+
+    /// Handle an incoming `group_ring_commit` frame (§3.5.2).
+    ///
+    /// A member is committing the ring public key they will sign group
+    /// envelopes with.  The payload is sealed under the sender's ratchet
+    /// session, so the key is bound to an authenticated peer; we then
+    /// require that peer to be a current member and the key to be a valid
+    /// non-identity ristretto255 point before recording it.  Everything
+    /// else is a silent drop.
+    fn process_group_ring_commit_frame(&self, envelope: &serde_json::Value) -> bool {
+        let sender_hex = match envelope.get("sender").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return false,
+        };
+        let ciphertext_hex = match envelope.get("ciphertext").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => return false,
+        };
+        let ct = match hex::decode(ciphertext_hex) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let sender_bytes: [u8; 32] = match hex::decode(&sender_hex) {
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => return false,
+        };
+        let sender_peer_id = PeerId(sender_bytes);
+
+        // Same session handling as the other group control frames: a
+        // candidate session from an X3DH header is installed only once the
+        // payload authenticates.
+        let candidate = self.group_frame_candidate_session(envelope, sender_peer_id);
+        let header_val = match envelope.get("ratchet_header") {
+            Some(v) => v.clone(),
+            None => return false,
+        };
+        let ratchet_header: RatchetHeader = match serde_json::from_value(header_val) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let plaintext = match self.open_group_ratchet_payload(
+            sender_peer_id,
+            candidate,
+            &ratchet_header,
+            &ct,
+        ) {
+            Ok(pt) => pt,
+            Err(_) => return false,
+        };
+        // The receive chain advanced: persist it so a crash cannot replay
+        // this position against the vault copy.
+        self.save_ratchet_sessions();
+
+        let inner: serde_json::Value = match serde_json::from_slice(&plaintext) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let gid_bytes: [u8; 32] = match inner
+            .get("groupId")
+            .and_then(|v| v.as_str())
+            .and_then(|s| hex::decode(s).ok())
+        {
+            Some(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => return false,
+        };
+        let ring_public: [u8; 32] = match inner
+            .get("ringPub")
+            .and_then(|v| v.as_str())
+            .and_then(|s| hex::decode(s).ok())
+        {
+            Some(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => return false,
+        };
+
+        // Record the key only for a current member of a group we are in;
+        // `commit_member_ring_key` also rejects invalid points.
+        let committed = {
+            let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+            match groups.iter_mut().find(|g| g.group_id == gid_bytes) {
+                Some(group) => group
+                    .commit_member_ring_key(&sender_peer_id, ring_public)
+                    .is_ok(),
+                None => false,
+            }
+        };
+        if !committed {
+            return false;
+        }
+        self.save_groups();
         true
     }
 }
@@ -3638,7 +3903,7 @@ impl crate::service::runtime::MeshRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::ring_sig::ring_sign;
+    use crate::crypto::ring_sig::{generate_ring_keypair, ring_sign, RingContextType};
     use crate::crypto::sender_keys::SenderKey;
     use crate::groups::group::{Group, GroupKeys, GroupPublicProfile, NetworkType};
     use crate::pairing::contact::{ContactRecord, ContactStore};
@@ -3690,7 +3955,7 @@ mod tests {
         let group_id = [0x33; 32];
         let symmetric_key = [0x44; 32];
         let members = vec![sender_identity.peer_id(), recipient_peer_id];
-        let group = Group::new_as_member(
+        let mut group = Group::new_as_member(
             group_id,
             GroupPublicProfile {
                 group_id,
@@ -3714,6 +3979,15 @@ mod tests {
             1,
             1,
         );
+        // Both members have committed dedicated ring keys (§3.5.2); the
+        // sender's is what the outer envelope will be signed with.
+        let sender_ring = generate_ring_keypair().unwrap();
+        group
+            .commit_member_ring_key(&sender_identity.peer_id(), sender_ring.public)
+            .unwrap();
+        group.ensure_ring_keypair().unwrap();
+        let ring = group.sorted_ring().unwrap();
+        let ring_context = group.ring_context(RingContextType::Application);
         runtime
             .groups
             .lock()
@@ -3781,14 +4055,9 @@ mod tests {
                 wrapped_inner_bytes.as_ref(),
             )
             .unwrap();
-        let ring = vec![sender_identity.ed25519_pub, recipient_ed25519_pub];
-        let ring_message = build_group_ring_signature_message(&group_id, 1, &nonce_bytes, &wrapped);
-        let ring_sig = ring_sign(
-            &sender_identity.ed25519_signing.to_bytes(),
-            &ring,
-            &ring_message,
-        )
-        .unwrap();
+        let envelope_bytes = group_sk_envelope_bytes(&nonce_bytes, &wrapped);
+        let ring_sig =
+            ring_sign(&sender_ring.secret, &ring, &ring_context, &envelope_bytes).unwrap();
 
         let frame = serde_json::json!({
             "type": "group_message_sk",
@@ -3800,6 +4069,23 @@ mod tests {
         });
 
         assert!(frame.get("sender").is_none());
+        // The identity key never signs the outer layer: the ring key is not
+        // derived from it, and the frame carries only the ring proof.
+        let _ = recipient_ed25519_pub;
+
+        // Negative vectors at the service boundary before the real frame:
+        // a stale epoch, a tampered envelope and a malformed proof are all
+        // dropped silently.
+        let mut stale = frame.clone();
+        stale["epoch"] = serde_json::json!(2);
+        assert!(!runtime.process_group_message_sk_frame(&stale));
+        let mut tampered = frame.clone();
+        tampered["nonce"] = serde_json::json!(hex::encode([0x78; 12]));
+        assert!(!runtime.process_group_message_sk_frame(&tampered));
+        let mut malformed = frame.clone();
+        malformed["ring_sig"] = serde_json::json!("00");
+        assert!(!runtime.process_group_message_sk_frame(&malformed));
+
         assert!(runtime.process_group_message_sk_frame(&frame));
 
         let stored_messages = runtime
@@ -4296,5 +4582,276 @@ mod tests {
             before,
             "legacy frame changed session"
         );
+    }
+
+    /// §22.8.2 block gate: a genuine, decryptable first message from a
+    /// blocked contact is dropped before any session is installed, and the
+    /// same message is accepted once the block is lifted.  The frame is
+    /// cryptographically valid, so the only thing standing between it and
+    /// the message store is the block flag.
+    #[test]
+    fn test_blocked_contact_direct_message_is_dropped_until_unblocked() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let alice_hex = alice.peer_id().to_hex();
+
+        // Alice's genuine first message, built exactly as send_text_message does.
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let genuine = direct_frame(
+            &alice,
+            &bob_x25519,
+            &mut alice_session,
+            Some(&alice_init),
+            "alice-blocked-1",
+            "hello",
+        );
+
+        // Blocked: dropped, no session, nothing stored.
+        runtime.set_peer_blocked(&alice_hex, true).unwrap();
+        assert!(
+            !runtime.process_inbound_frame(&genuine),
+            "blocked contact's message accepted"
+        );
+        assert!(
+            !has_session(&runtime, &alice),
+            "session installed for blocked contact"
+        );
+        assert_eq!(stored_count(&runtime), 0);
+
+        // Unblocked: the very same frame bootstraps the session and lands.
+        runtime.set_peer_blocked(&alice_hex, false).unwrap();
+        assert!(
+            runtime.process_inbound_frame(&genuine),
+            "unblocked contact's message rejected"
+        );
+        assert!(has_session(&runtime, &alice));
+        assert_eq!(stored_count(&runtime), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Ring key commit tests (§3.5.2 "authenticated membership commit")
+    // -----------------------------------------------------------------------
+
+    /// Build a group control frame from `sender` exactly as
+    /// `seal_group_control_frame` does on the sending side: payload sealed
+    /// under the next ratchet message key, header top-level, optional X3DH
+    /// init fields for a first contact.
+    fn group_control_frame(
+        sender: &SelfIdentity,
+        session: &mut DoubleRatchetSession,
+        init: Option<&X3dhInitHeader>,
+        frame_type: &str,
+        payload: &serde_json::Value,
+    ) -> serde_json::Value {
+        use chacha20poly1305::{
+            aead::{Aead, Nonce},
+            ChaCha20Poly1305, Key, KeyInit,
+        };
+        let (ratchet_header, msg_key) = session.next_send_msg_key().unwrap();
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&msg_key));
+        let nonce = Nonce::<ChaCha20Poly1305>::default();
+        let ciphertext = cipher
+            .encrypt(&nonce, serde_json::to_vec(payload).unwrap().as_ref())
+            .unwrap();
+        let mut frame = serde_json::json!({
+            "type":           frame_type,
+            "sender":         sender.peer_id().to_hex(),
+            "ratchet_header": serde_json::to_value(&ratchet_header).unwrap(),
+            "ciphertext":     hex::encode(&ciphertext),
+        });
+        if let Some(h) = init {
+            let obj = frame.as_object_mut().unwrap();
+            obj.insert("x3dh_eph_pub".into(), hex::encode(h.eph_pub).into());
+            obj.insert(
+                "x3dh_encrypted_ik".into(),
+                hex::encode(h.encrypted_ik_pub).into(),
+            );
+        }
+        frame
+    }
+
+    /// Install a Private group on the runtime with `members`, returning its id.
+    fn install_private_group(
+        runtime: &MeshRuntime,
+        members: Vec<PeerId>,
+        admin: PeerId,
+    ) -> [u8; 32] {
+        let group_id = [0x36; 32];
+        let our_peer_id = runtime
+            .identity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .unwrap()
+            .peer_id();
+        let group = Group::new_as_member(
+            group_id,
+            GroupPublicProfile {
+                group_id,
+                display_name: "Commit Group".to_string(),
+                description: String::new(),
+                avatar_hash: None,
+                network_type: NetworkType::Private,
+                member_count: None,
+                created_at: 1,
+                signed_by: admin.0,
+                signature: vec![],
+            },
+            GroupKeys {
+                ed25519_public: [0x55; 32],
+                ed25519_private: None,
+                x25519_public: [0x66; 32],
+                symmetric_key: [0x44; 32],
+            },
+            our_peer_id,
+            (members, vec![admin]),
+            1,
+            1,
+        );
+        runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(group);
+        group_id
+    }
+
+    /// The recorded ring key for `peer` in the runtime's group, if any.
+    fn recorded_ring_key(
+        runtime: &MeshRuntime,
+        group_id: &[u8; 32],
+        peer: &PeerId,
+    ) -> Option<[u8; 32]> {
+        runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .find(|g| g.group_id == *group_id)
+            .and_then(|g| g.member_ring_keys.get(&peer.0).copied())
+    }
+
+    /// A member's authenticated `group_ring_commit` records their key, after
+    /// which the runtime can assemble the full ring.
+    #[test]
+    fn test_group_ring_commit_records_member_key() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob = runtime
+            .identity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .unwrap()
+            .peer_id();
+        let group_id = install_private_group(&runtime, vec![alice.peer_id(), bob], alice.peer_id());
+
+        // Alice bootstraps a session and commits her ring key in one frame.
+        let (mut session, init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let alice_ring = generate_ring_keypair().unwrap();
+        let payload = serde_json::json!({
+            "type":    "group_ring_commit",
+            "groupId": hex::encode(group_id),
+            "ringPub": hex::encode(alice_ring.public),
+        });
+        let frame = group_control_frame(
+            &alice,
+            &mut session,
+            Some(&init),
+            "group_ring_commit",
+            &payload,
+        );
+        assert!(runtime.process_inbound_frame(&frame));
+        assert_eq!(
+            recorded_ring_key(&runtime, &group_id, &alice.peer_id()),
+            Some(alice_ring.public)
+        );
+
+        // With Bob's own key minted, the ring is complete and sorted.
+        let mut groups = runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let group = groups.iter_mut().find(|g| g.group_id == group_id).unwrap();
+        let bob_ring = group.ensure_ring_keypair().unwrap();
+        let ring = group.sorted_ring().unwrap();
+        let mut expected = vec![alice_ring.public, bob_ring];
+        expected.sort_unstable();
+        assert_eq!(ring, expected);
+    }
+
+    /// Commits from non-members and commits of invalid points are dropped,
+    /// leaving the ring incomplete rather than poisoned.
+    #[test]
+    fn test_group_ring_commit_rejects_non_member_and_invalid_point() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        let mallory = SelfIdentity::generate(Some("Mallory".to_string()));
+        add_contact(&runtime, &alice);
+        add_contact(&runtime, &mallory);
+        let bob = runtime
+            .identity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .unwrap()
+            .peer_id();
+        let group_id = install_private_group(&runtime, vec![alice.peer_id(), bob], alice.peer_id());
+
+        // Mallory is a contact but not a member: authenticated, still refused.
+        let (mut m_session, m_init) = initiate_session(
+            &runtime,
+            &mallory.x25519_secret,
+            mallory.x25519_pub.as_bytes(),
+        );
+        let mallory_ring = generate_ring_keypair().unwrap();
+        let frame = group_control_frame(
+            &mallory,
+            &mut m_session,
+            Some(&m_init),
+            "group_ring_commit",
+            &serde_json::json!({
+                "type":    "group_ring_commit",
+                "groupId": hex::encode(group_id),
+                "ringPub": hex::encode(mallory_ring.public),
+            }),
+        );
+        assert!(!runtime.process_inbound_frame(&frame));
+        assert_eq!(
+            recorded_ring_key(&runtime, &group_id, &mallory.peer_id()),
+            None
+        );
+
+        // Alice is a member but commits the identity point: refused.
+        let (mut a_session, a_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let frame = group_control_frame(
+            &alice,
+            &mut a_session,
+            Some(&a_init),
+            "group_ring_commit",
+            &serde_json::json!({
+                "type":    "group_ring_commit",
+                "groupId": hex::encode(group_id),
+                "ringPub": hex::encode([0u8; 32]),
+            }),
+        );
+        assert!(!runtime.process_inbound_frame(&frame));
+        assert_eq!(
+            recorded_ring_key(&runtime, &group_id, &alice.peer_id()),
+            None
+        );
+        // The ring cannot be assembled while a member's key is missing.
+        let groups = runtime
+            .groups
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let group = groups.iter().find(|g| g.group_id == group_id).unwrap();
+        assert!(group.sorted_ring().is_none());
     }
 }

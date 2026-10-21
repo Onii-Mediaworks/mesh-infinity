@@ -36,6 +36,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::crypto::ring_sig::{
+    generate_ring_keypair, ring_public_key, validate_ring_public_key, RingContext, RingContextType,
+    RingSigError,
+};
 use crate::identity::peer_id::PeerId;
 
 // ---------------------------------------------------------------------------
@@ -157,37 +161,37 @@ mod serde_opt_key32 {
 }
 
 // ---------------------------------------------------------------------------
-// Serde helper: serialize peer sender key maps with hex-string keys
+// Serde helper: serialize peer-keyed maps with hex-string keys
 // ---------------------------------------------------------------------------
 
-/// Custom serde module for `HashMap<[u8; 32], PeerSenderKeyState>`.
+/// Custom serde module for `HashMap<[u8; 32], V>` keyed by raw peer IDs.
 ///
-/// The vault layer is JSON-backed, so map keys must be strings. Group sender
-/// key state is naturally keyed by raw peer ID bytes, so we encode those keys
-/// as lowercase hex on the wire and restore them on load.
-mod serde_peer_sender_keys {
+/// The vault layer is JSON-backed, so map keys must be strings. Per-member
+/// group state (Sender Key state, ring public keys) is naturally keyed by
+/// raw peer ID bytes, so we encode those keys as lowercase hex on the wire
+/// and restore them on load. The value type is whatever serde already
+/// handles; a 32-byte array becomes a JSON number sequence.
+mod serde_peer_keyed_map {
     use std::collections::HashMap;
 
     use serde::de::Error as DeError;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use super::PeerSenderKeyState;
-
-    pub fn serialize<S: Serializer>(
-        value: &HashMap<[u8; 32], PeerSenderKeyState>,
+    pub fn serialize<S: Serializer, V: Serialize>(
+        value: &HashMap<[u8; 32], V>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        let encoded: HashMap<String, &PeerSenderKeyState> = value
+        let encoded: HashMap<String, &V> = value
             .iter()
             .map(|(peer_id, state)| (hex::encode(peer_id), state))
             .collect();
         encoded.serialize(serializer)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
+    pub fn deserialize<'de, D: Deserializer<'de>, V: Deserialize<'de>>(
         deserializer: D,
-    ) -> Result<HashMap<[u8; 32], PeerSenderKeyState>, D::Error> {
-        let encoded = HashMap::<String, PeerSenderKeyState>::deserialize(deserializer)?;
+    ) -> Result<HashMap<[u8; 32], V>, D::Error> {
+        let encoded = HashMap::<String, V>::deserialize(deserializer)?;
         let mut decoded = HashMap::with_capacity(encoded.len());
         for (peer_id_hex, state) in encoded {
             let peer_id_bytes = hex::decode(&peer_id_hex).map_err(DeError::custom)?;
@@ -302,11 +306,11 @@ impl NetworkType {
     /// so routing nodes cannot determine which member acted.
     /// Open and Public groups don't need this because membership is not secret.
     ///
-    /// The cryptographic primitive exists in `crypto::ring_sig`, but the group
-    /// operation and messaging paths still need to route the relevant private
-    /// and closed-group actions through it rather than plain attributable
-    /// signatures. Until those call sites are wired, this returns `false` to
-    /// avoid overstating the current privacy property.
+    /// The primitive lives in `crypto::ring_sig` (profile `MI-AOS-R255-1`)
+    /// and the Sender Key messaging and governance paths route Private and
+    /// Closed traffic through it.  Note the spec's release gate: unless the
+    /// build enables `ring-sig-unreviewed`, those paths get a typed
+    /// `ProfileNotEnabled` error rather than a signature.
     pub fn uses_ring_signatures(&self) -> bool {
         matches!(self, Self::Private | Self::Closed)
     }
@@ -468,9 +472,29 @@ pub struct Group {
     /// Received Sender Keys from other group members.
     /// Key: peer_id bytes; Value: (chain_key, next_iteration, verifying_key_bytes).
     /// Persisted so we can decrypt out-of-order / restored messages.
-    #[serde(default, with = "serde_peer_sender_keys")]
+    #[serde(default, with = "serde_peer_keyed_map")]
     /// The peer sender keys for this instance.
     pub peer_sender_keys: std::collections::HashMap<[u8; 32], PeerSenderKeyState>,
+
+    // ---- Ring signature keys (§3.5.2) -------------------------------------
+    /// Our dedicated ring scalar for this group, profile `MI-AOS-R255-1`.
+    ///
+    /// Generated independently of every other key we hold: the spec forbids
+    /// reusing identity, session or signing scalars for the ring.  `None`
+    /// until `ensure_ring_keypair` has run (or for Open/Public groups, which
+    /// never use rings).  Serialized as hex so the vault can store it.
+    #[serde(default, with = "serde_opt_key32")]
+    pub my_ring_secret: Option<[u8; 32]>,
+
+    /// Ring public keys committed by members, keyed by peer ID.
+    ///
+    /// Each entry is a canonical ristretto255 point `P = xG` that the member
+    /// committed over their authenticated ratchet session (the "authenticated
+    /// membership commit" of §3.5.2).  Our own key is included so the ring
+    /// can be assembled from this map alone.  A member missing here cannot
+    /// be placed in the ring, which makes `sorted_ring` return `None`.
+    #[serde(default, with = "serde_peer_keyed_map")]
+    pub member_ring_keys: std::collections::HashMap<[u8; 32], [u8; 32]>,
 }
 
 /// Key material bundle passed to `Group::new_as_creator` and `Group::new_as_member`.
@@ -536,6 +560,8 @@ impl Group {
             my_sender_iteration: 0,
             my_sender_signing_key: None,
             peer_sender_keys: std::collections::HashMap::new(),
+            my_ring_secret: None,
+            member_ring_keys: std::collections::HashMap::new(),
         }
     }
 
@@ -578,7 +604,113 @@ impl Group {
             my_sender_iteration: 0,
             my_sender_signing_key: None,
             peer_sender_keys: std::collections::HashMap::new(),
+            my_ring_secret: None,
+            member_ring_keys: std::collections::HashMap::new(),
         }
+    }
+
+    // ---- Ring signature helpers (§3.5.2) -----------------------------------
+
+    /// Make sure we hold a ring keypair for this group and return its public key.
+    ///
+    /// Generates a fresh dedicated scalar on first use and records our own
+    /// public key in `member_ring_keys`.  Subsequent calls are idempotent and
+    /// re-derive the public key from the stored secret, which also validates
+    /// that the stored secret is still a canonical nonzero scalar.
+    pub fn ensure_ring_keypair(&mut self) -> Result<[u8; 32], RingSigError> {
+        let public = match self.my_ring_secret {
+            // Existing secret: re-derive rather than trust a cached copy.
+            Some(secret) => ring_public_key(&secret)?,
+            // First use: draw a new keypair from the OS RNG.
+            None => {
+                let keypair = generate_ring_keypair()?;
+                self.my_ring_secret = Some(keypair.secret);
+                keypair.public
+            }
+        };
+        // Our own entry must be present for `sorted_ring` to include us.
+        self.member_ring_keys.insert(self.our_peer_id.0, public);
+        Ok(public)
+    }
+
+    /// Record a member's committed ring public key.
+    ///
+    /// Rejects keys that are not canonical non-identity points so one bad
+    /// commit cannot make every later ring unverifiable.  Only members may
+    /// commit; the caller is responsible for having authenticated `peer_id`
+    /// as the actual sender.  A member may replace their own key.
+    pub fn commit_member_ring_key(
+        &mut self,
+        peer_id: &PeerId,
+        public: [u8; 32],
+    ) -> Result<(), RingSigError> {
+        if !self.is_member(peer_id) {
+            return Err(RingSigError::SignerNotInRing);
+        }
+        validate_ring_public_key(&public)?;
+        self.member_ring_keys.insert(peer_id.0, public);
+        Ok(())
+    }
+
+    /// Hash of the committed roster, the `roster_commit_hash` of §3.5.2.
+    ///
+    /// SPEC §3.5.2 binds the transcript to "roster_commit_hash[32]" but the
+    /// MLS-style commit log that would define it (§8.7) is not yet part of
+    /// this codebase.  Until it is, the roster commitment is a domain-
+    /// separated SHA-256 over the sorted, deduplicated member peer IDs, so
+    /// any change to who is in the group changes every transcript.
+    pub fn roster_commit_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+
+        // Sorted and deduplicated so the order members were added in (or
+        // an accidental duplicate) cannot produce two different hashes for
+        // the same roster.
+        let mut roster: Vec<[u8; 32]> = self.members.iter().map(|peer| peer.0).collect();
+        roster.sort_unstable();
+        roster.dedup();
+
+        let mut hasher = Sha256::new();
+        // Domain label, then the member count, then the IDs.
+        hasher.update(b"MeshInfinity/ring-roster-v1");
+        hasher.update((roster.len() as u32).to_be_bytes());
+        for peer in &roster {
+            hasher.update(peer);
+        }
+        hasher.finalize().into()
+    }
+
+    /// The ring context for an envelope of `context_type` in this group.
+    ///
+    /// Every field is taken from our own authenticated record — never from
+    /// an inbound frame — which is what makes verification "locally
+    /// authenticated" in the sense of §3.5.2.
+    pub fn ring_context(&self, context_type: RingContextType) -> RingContext {
+        RingContext {
+            group_id: self.group_id,
+            content_epoch: self.sender_key_epoch,
+            roster_commit_hash: self.roster_commit_hash(),
+            context_type,
+        }
+    }
+
+    /// The current ring: every member's committed ring public key, sorted.
+    ///
+    /// Returns `None` if any member has not committed a key yet, because a
+    /// ring missing a member would both exclude that member from signing
+    /// and misrepresent the anonymity set.  The ring is sorted by encoding
+    /// as the profile requires; `ring_sign`/`ring_verify` re-sort anyway.
+    pub fn sorted_ring(&self) -> Option<Vec<[u8; 32]>> {
+        let mut ring = Vec::with_capacity(self.members.len());
+        for member in &self.members {
+            ring.push(*self.member_ring_keys.get(&member.0)?);
+        }
+        ring.sort_unstable();
+        // Two members sharing a key is a commit bug, not a usable ring.
+        ring.dedup();
+        if ring.len() != self.members.len() {
+            return None;
+        }
+        Some(ring)
     }
 
     /// Whether a rekeying is due.
@@ -806,5 +938,91 @@ mod tests {
         assert_eq!(restored_state.chain_key, [0x33; 32]);
         assert_eq!(restored_state.next_iteration, 7);
         assert_eq!(restored_state.verifying_key, [0x44; 32]);
+    }
+
+    /// Ring keys survive the vault round trip: our secret as hex, members'
+    /// public keys keyed by hex peer id (§3.5.2 "dedicated ring scalars").
+    #[test]
+    fn test_group_json_round_trip_with_ring_keys() {
+        let mut group = test_group(1000);
+        let our_public = group.ensure_ring_keypair().unwrap();
+        // A second call must not rotate the key.
+        assert_eq!(group.ensure_ring_keypair().unwrap(), our_public);
+        let other = crate::crypto::ring_sig::generate_ring_keypair().unwrap();
+        group.members.push(PeerId([0x22; 32]));
+        group
+            .commit_member_ring_key(&PeerId([0x22; 32]), other.public)
+            .unwrap();
+
+        let serialized = serde_json::to_string(&group).unwrap();
+        let restored: Group = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.my_ring_secret, group.my_ring_secret);
+        assert_eq!(restored.member_ring_keys, group.member_ring_keys);
+        // The restored record builds the same sorted ring.
+        let mut expected = vec![our_public, other.public];
+        expected.sort_unstable();
+        assert_eq!(restored.sorted_ring(), Some(expected));
+        // A pre-ring vault record (no ring fields) still loads.
+        let legacy: Group = serde_json::from_str(
+            &serialized
+                .replace(
+                    &format!(
+                        "\"my_ring_secret\":\"{}\",",
+                        hex::encode(group.my_ring_secret.unwrap())
+                    ),
+                    "",
+                )
+                .replace("\"member_ring_keys\":{", "\"member_ring_keys_ignored\":{"),
+        )
+        .unwrap();
+        assert!(legacy.my_ring_secret.is_none());
+        assert!(legacy.member_ring_keys.is_empty());
+    }
+
+    /// The ring is unusable until every member has committed a key, and
+    /// commits are refused for non-members and invalid points.
+    #[test]
+    fn test_ring_requires_every_member_key() {
+        let mut group = test_group(1000);
+        group.ensure_ring_keypair().unwrap();
+        group.members.push(PeerId([0x22; 32]));
+        assert!(group.sorted_ring().is_none(), "missing member key");
+
+        let outsider = crate::crypto::ring_sig::generate_ring_keypair().unwrap();
+        assert!(group
+            .commit_member_ring_key(&PeerId([0x99; 32]), outsider.public)
+            .is_err());
+        assert!(group
+            .commit_member_ring_key(&PeerId([0x22; 32]), [0u8; 32])
+            .is_err());
+        assert!(group.sorted_ring().is_none());
+
+        group
+            .commit_member_ring_key(&PeerId([0x22; 32]), outsider.public)
+            .unwrap();
+        assert_eq!(group.sorted_ring().map(|r| r.len()), Some(2));
+    }
+
+    /// The roster commitment depends only on the set of members, not on
+    /// insertion order or accidental duplicates, and changes when the
+    /// roster changes.
+    #[test]
+    fn test_roster_commit_hash_is_order_independent() {
+        let mut a = test_group(1000);
+        a.members.push(PeerId([0x22; 32]));
+        a.members.push(PeerId([0x33; 32]));
+        let mut b = test_group(1000);
+        b.members.push(PeerId([0x33; 32]));
+        b.members.push(PeerId([0x22; 32]));
+        b.members.push(PeerId([0x22; 32]));
+        assert_eq!(a.roster_commit_hash(), b.roster_commit_hash());
+
+        let context = a.ring_context(RingContextType::Application);
+        assert_eq!(context.group_id, a.group_id);
+        assert_eq!(context.content_epoch, a.sender_key_epoch);
+        assert_eq!(context.roster_commit_hash, a.roster_commit_hash());
+
+        b.members.push(PeerId([0x44; 32]));
+        assert_ne!(a.roster_commit_hash(), b.roster_commit_hash());
     }
 }

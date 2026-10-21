@@ -33,5 +33,5 @@ pub mod sigma;
 pub mod session;
 // Sub-module: signing — see module-level docs for details.
 pub mod signing;
-// Sub-module: ring_sig — AOS ring signatures for anonymous group operations (§3.5.2).
+// Sub-module: ring_sig — AOS ring signatures, profile MI-AOS-R255-1 (§3.5.2).
 pub mod ring_sig;

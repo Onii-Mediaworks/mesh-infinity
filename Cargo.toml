@@ -120,6 +120,15 @@ vpn-routing = []
 # transport randomness from the operating system.
 fuzzing = []
 
+# Enables the `MI-AOS-R255-1` ring-signature profile (SPEC §3.5.2) on the
+# production group-messaging and governance paths.  The spec's release gate
+# forbids enabling that construction outside isolated tests until it has had
+# independent cryptographic review, so this is OFF by default: without it,
+# `crypto::ring_sig::ring_sign`/`ring_verify` return `ProfileNotEnabled` and
+# the call sites surface that instead of silently degrading.  Unit tests and
+# the `fuzzing` feature exercise the profile without this switch.
+ring-sig-unreviewed = []
+
 # =============================================================================
 # [dependencies] — external libraries this project requires
 # =============================================================================

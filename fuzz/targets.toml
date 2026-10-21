@@ -138,3 +138,10 @@ owner_module = "backend/identity/pin.rs"
 threat = "malformed or forged sealed PIN attempt counter bytes causing panic, authenticating under the wrong key, or decoding to a state that resets backoff"
 required_by_spec = true
 unblock_condition = "harness calling open_attempt_state() under a fixed key and asserting any Ok result round-trips through seal_attempt_state(), with a seed corpus of one sealed record"
+
+[[target]]
+name = "fuzz_ring_verify"
+status = "active"
+owner_module = "backend/crypto/ring_sig.rs"
+threat = "malformed or malleable MI-AOS-R255-1 ring signature bytes (bad length, non-canonical scalars, hostile ring points) panicking the verifier or verifying without a valid chain"
+required_by_spec = true

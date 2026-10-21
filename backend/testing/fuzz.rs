@@ -33,7 +33,6 @@
 use std::panic;
 
 use crate::crypto::double_ratchet::RatchetHeader;
-use crate::crypto::ring_sig::{ring_verify, RingSignature};
 use crate::identity::peer_id::PeerId;
 use crate::transport::kcp::KcpState;
 use crate::transport::mixnet::{MixRole, MixnetNode, MixnetPacket, MIXNET_MTU};
@@ -98,9 +97,11 @@ pub fn fuzz_wireguard_decrypt(data: &[u8]) -> bool {
         // We use deterministic keys so the session is consistently constructed
         // across fuzz runs -- the fuzz input is the *packet*, not the keys.
         let initiator_secret = x25519_dalek::StaticSecret::from([0xAA; 32]);
+        let initiator_pub = x25519_dalek::PublicKey::from(&initiator_secret);
         let responder_secret = x25519_dalek::StaticSecret::from([0xBB; 32]);
         let responder_pub = x25519_dalek::PublicKey::from(&responder_secret);
-        let psk = zeroize::Zeroizing::new([0u8; 32]);
+        // A no-PSK tunnel: the packet layer under test is PSK-independent.
+        let psk = crate::transport::wireguard::TunnelPsk::None;
 
         // Peer IDs for both sides of the handshake.
         let initiator_id = PeerId([0x11; 32]);
@@ -108,15 +109,20 @@ pub fn fuzz_wireguard_decrypt(data: &[u8]) -> bool {
 
         // Step 1: Initiator creates handshake.
         let (pending, init_msg) =
-            PendingInitiatorHandshake::new(initiator_secret, responder_pub, psk.clone());
+            match PendingInitiatorHandshake::new(initiator_secret, responder_pub, psk.clone(), 1) {
+                Ok(pair) => pair,
+                Err(_) => return,
+            };
 
         // Step 2: Responder processes the handshake init and produces a session.
-        let (responder_session, response) = match respond_to_handshake(
+        let (responder_session, response, _ts) = match respond_to_handshake(
             &init_msg,
             &responder_secret,
+            &initiator_pub,
             &psk,
             responder_id,
             initiator_id,
+            None,
         ) {
             Ok(result) => result,
             // If the handshake fails (e.g. due to key issues), skip decrypt test.
@@ -351,77 +357,78 @@ pub fn fuzz_ratchet_header(data: &[u8]) -> bool {
 // Target 5: Ring signature verification
 // ---------------------------------------------------------------------------
 
-/// Fuzz target: Ring signature verification.
+/// Map the harness size byte to a ring size in `1..=4`.
 ///
-/// Tests that arbitrary bytes interpreted as ring signature components don't
-/// cause panics in the verification path.  The AOS ring signature verifier
-/// (SS 3.5.2) must gracefully reject malformed signatures without crashing.
+/// Small rings keep each fuzz execution cheap (verification is O(n) point
+/// operations) while still covering the n=1 edge and multi-member chains.
 ///
-/// Attack surface: ring signatures arrive from group members and are verified
-/// by every recipient.  A malicious group member could craft a pathological
-/// signature to crash other nodes.
+/// Available only to isolated test builds, like the fixture it indexes
+/// (SPEC §3.5.2 release gate).
+#[cfg(any(test, feature = "fuzzing"))]
+pub fn ring_fuzz_size(size_byte: u8) -> usize {
+    1 + usize::from(size_byte % 4)
+}
+
+/// Fuzz target: ring signature verification (SPEC §3.5.2, `MI-AOS-R255-1`).
+///
+/// Layout of `data`: one size byte selecting a deterministic fixture ring
+/// of `1..=4` members, then the candidate signature bytes.  The harness
+/// drives both untrusted-byte boundaries a recipient exposes:
+///
+/// 1. `RingSignature::from_bytes` — the wire-length gate.
+/// 2. `ring_verify` — canonical scalar parsing and the challenge walk,
+///    against the fixture's authenticated ring and context.
+///
+/// It additionally feeds the first 32 signature bytes back in as a ring
+/// entry so the roster validator (`parse_ring`) sees attacker-shaped
+/// points too, even though production rosters are locally authenticated.
+///
+/// Attack surface: a malicious group member can send any `ring_sig` field;
+/// every recipient parses and verifies it before touching the ciphertext.
+/// Nothing here may panic, and only a genuine signature may verify.
+///
+/// Available only to isolated test builds (SPEC §3.5.2 release gate).
+#[cfg(any(test, feature = "fuzzing"))]
 pub fn fuzz_ring_verify(data: &[u8]) -> bool {
+    use crate::crypto::ring_sig::{ring_fixture, ring_verify, RingSignature, FIXTURE_CIPHERTEXT};
+
     // Wrap in catch_unwind for panic safety.
     let result = panic::catch_unwind(|| {
-        // We need at least enough bytes to construct a minimal ring (2 keys)
-        // and a minimal signature (2 challenges + 2 responses).
-        //
-        // Ring: 2 * 32 = 64 bytes for public keys.
-        // Signature: 2*32 (challenges) + 2*32 (responses) = 128 bytes.
-        // Total minimum: 64 + 128 = 192 bytes.
-        //
-        // For shorter inputs, we pad with zeros to exercise the verifier
-        // with degenerate but structurally complete inputs.
+        // Size byte, then signature; an empty input exercises the n=1
+        // fixture with an empty signature.
+        let (size_byte, signature_bytes) = data
+            .split_first()
+            .map_or((0u8, data), |(b, rest)| (*b, rest));
+        let fixture = ring_fixture(ring_fuzz_size(size_byte));
 
-        // Build a ring of 2 public keys from the fuzz input.
-        let mut ring = [[0u8; 32]; 2];
-        if data.len() >= 32 {
-            ring[0].copy_from_slice(&data[..32]);
-        }
-        if data.len() >= 64 {
-            ring[1].copy_from_slice(&data[32..64]);
-        }
-
-        // Build a signature from the remaining bytes (or zeros if too short).
-        let mut c0 = [0u8; 32];
-        let mut c1 = [0u8; 32];
-        let mut r0 = [0u8; 32];
-        let mut r1 = [0u8; 32];
-
-        // Fill signature fields from fuzz data if available.
-        let mut offset = 64;
-        if data.len() >= offset + 32 {
-            c0.copy_from_slice(&data[offset..offset + 32]);
-            offset += 32;
-        }
-        if data.len() >= offset + 32 {
-            c1.copy_from_slice(&data[offset..offset + 32]);
-            offset += 32;
-        }
-        if data.len() >= offset + 32 {
-            r0.copy_from_slice(&data[offset..offset + 32]);
-            offset += 32;
-        }
-        if data.len() >= offset + 32 {
-            r1.copy_from_slice(&data[offset..offset + 32]);
-        }
-
-        // Construct the RingSignature and call verify.
-        let sig = RingSignature {
-            c: vec![c0, c1],
-            r: vec![r0, r1],
+        // Boundary 1: the length gate must be total.
+        let Ok(signature) = RingSignature::from_bytes(signature_bytes) else {
+            return;
         };
 
-        // The message to verify against is whatever bytes remain, or empty.
-        let msg_start = 64 + 128;
-        let message = if data.len() > msg_start {
-            &data[msg_start..]
-        } else {
-            &[]
-        };
+        // Boundary 2: verification against the authenticated fixture.
+        // Any Err is fine; a panic is a bug.
+        let _ = ring_verify(
+            &fixture.ring,
+            &fixture.context,
+            FIXTURE_CIPHERTEXT,
+            &signature,
+        );
 
-        // Call the verifier -- must never panic, only return true/false.
-        let _valid = ring_verify(&ring, message, &sig);
+        // Roster validation with an attacker-shaped entry: take the first
+        // 32 signature bytes as a candidate public key in slot 0.
+        if signature_bytes.len() >= 32 {
+            let mut hostile_ring = fixture.ring.clone();
+            let mut candidate = [0u8; 32];
+            candidate.copy_from_slice(&signature_bytes[..32]);
+            hostile_ring[0] = candidate;
+            let _ = ring_verify(
+                &hostile_ring,
+                &fixture.context,
+                FIXTURE_CIPHERTEXT,
+                &signature,
+            );
+        }
     });
 
     // Return true if no panic occurred.

@@ -37,7 +37,9 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::ring_sig::{ring_sign, ring_verify, RingSignature};
+use crate::crypto::ring_sig::{
+    ring_sign, ring_verify, RingContext, RingContextType, RingSignature,
+};
 use crate::crypto::signing::{sign, verify, DOMAIN_GROUP_GOVERNANCE};
 use crate::error::MeshError;
 use crate::identity::peer_id::PeerId;
@@ -238,10 +240,50 @@ pub enum GovernanceProof {
         signature: Vec<u8>,
     },
     /// Unlinkable ring proof used for Private and Closed groups.
+    ///
+    /// Produced under profile `MI-AOS-R255-1` (§3.5.2) over the members'
+    /// dedicated ring keys, with a `membership` context bound to the group,
+    /// content epoch and roster commitment the proposer saw.
     Ring {
-        /// AOS ring signature over the current member public-key set.
+        /// The `c[0] || s[..]` wire-form ring signature, hex in JSON.
         ring_signature: RingSignature,
     },
+}
+
+/// The locally authenticated ring a Private/Closed proposal is checked against.
+///
+/// Everything here comes from the verifier's own group record (§3.5.2:
+/// "All context is locally authenticated, not trusted from an attacker's
+/// claimed roster").  `Group::sorted_ring`, `Group::sender_key_epoch` and
+/// `Group::roster_commit_hash` supply the three fields in production.
+#[derive(Clone, Debug)]
+pub struct RingRoster {
+    /// The members' committed ring public keys (any order; sorted internally).
+    pub keys: Vec<[u8; 32]>,
+    /// The content epoch the proposal belongs to.
+    pub content_epoch: u64,
+    /// Commitment to the roster the ring was built from.
+    pub roster_commit_hash: [u8; 32],
+}
+
+impl RingRoster {
+    /// The transcript context for a proposal in `group_id`.
+    ///
+    /// Governance group IDs are 16 bytes while the ring transcript binds a
+    /// 32-byte `group_id`; the 16 bytes are placed first and zero-padded,
+    /// which is injective and keeps the two namespaces aligned.  Proposals
+    /// are membership operations over the roster, so the context type is
+    /// `membership`, never `application`.
+    fn ring_context(&self, group_id: &[u8; 16]) -> RingContext {
+        let mut wide_group_id = [0u8; 32];
+        wide_group_id[..16].copy_from_slice(group_id);
+        RingContext {
+            group_id: wide_group_id,
+            content_epoch: self.content_epoch,
+            roster_commit_hash: self.roster_commit_hash,
+            context_type: RingContextType::Membership,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -500,13 +542,24 @@ pub fn create_proposal(
 }
 
 /// Create a proposal with an unlinkable ring proof for Private/Closed groups.
+///
+/// `ring_secret` is the proposer's dedicated ring scalar for this group —
+/// never their identity key — and `roster` is the ring it belongs to.
+///
+/// # Errors
+///
+/// Any ring failure is surfaced as `MeshError::Internal`.  In builds that
+/// have not enabled the unreviewed profile (§3.5.2 release gate) that is
+/// `ProfileNotEnabled`; callers that can use an attributable proof instead
+/// (§3.5.2: admin actions "require encrypted, attributable credentials")
+/// should fall back to `create_proposal`.
 pub fn create_ring_proposal(
     group_id: &[u8; 16],
     proposer_role: &GroupRole,
     action: GovernanceAction,
     policy: &GovernancePolicy,
-    secret_key: &[u8; 32],
-    ring: &[[u8; 32]],
+    ring_secret: &[u8; 32],
+    roster: &RingRoster,
 ) -> Result<Proposal, MeshError> {
     policy.validate()?;
     if !policy.proposer_roles.contains(proposer_role) {
@@ -523,8 +576,15 @@ pub fn create_ring_proposal(
     getrandom::fill(&mut id)
         .map_err(|e| MeshError::Internal(format!("RNG failed for proposal ID: {}", e)))?;
     let message = proposal_message(&id, group_id, &action, now, expires_at)?;
-    let ring_signature = ring_sign(secret_key, ring, &message)
-        .map_err(|e| MeshError::Internal(format!("ring proposal signing failed: {e}")))?;
+    // The proposal message is the "ciphertext" the transcript hashes: it is
+    // the whole canonical payload being authenticated.
+    let ring_signature = ring_sign(
+        ring_secret,
+        &roster.keys,
+        &roster.ring_context(group_id),
+        &message,
+    )
+    .map_err(|e| MeshError::Internal(format!("ring proposal signing failed: {e}")))?;
 
     Ok(Proposal {
         id,
@@ -891,7 +951,12 @@ pub fn tally_votes(
 }
 
 /// Verify a proposal proof, optionally allowing an unlinkable ring proof.
-pub fn verify_proposal_signature(proposal: &Proposal, ring: Option<&[[u8; 32]]>) -> bool {
+///
+/// `ring` is the verifier's own view of the group's ring; a proposal with a
+/// ring proof is rejected outright when no ring is supplied.  Under the
+/// §3.5.2 release gate an unreviewed build rejects every ring proof, which
+/// is the safe direction: an unverifiable proposal is simply not acted on.
+pub fn verify_proposal_signature(proposal: &Proposal, ring: Option<&RingRoster>) -> bool {
     let Ok(message) = proposal_message(
         &proposal.id,
         &proposal.group_id,
@@ -919,8 +984,16 @@ pub fn verify_proposal_signature(proposal: &Proposal, ring: Option<&[[u8; 32]]>)
             if proposal.proposer.is_some() {
                 return false;
             }
-            ring.map(|public_ring| ring_verify(public_ring, &message, ring_signature))
-                .unwrap_or(false)
+            ring.map(|roster| {
+                ring_verify(
+                    &roster.keys,
+                    &roster.ring_context(&proposal.group_id),
+                    &message,
+                    ring_signature,
+                )
+                .is_ok()
+            })
+            .unwrap_or(false)
         }
     }
 }
@@ -1034,6 +1107,28 @@ mod tests {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
         let public = signing_key.verifying_key().to_bytes();
         (secret, public)
+    }
+
+    /// Create a deterministic ring keypair for testing (§3.5.2).
+    ///
+    /// A small fixed integer is a canonical nonzero scalar, so the public
+    /// key derivation cannot fail.  Distinct from `test_keypair` on purpose:
+    /// ring scalars must never be identity scalars.
+    fn test_ring_keypair(seed: u8) -> ([u8; 32], [u8; 32]) {
+        let mut secret = [0u8; 32];
+        secret[0] = seed;
+        let public = crate::crypto::ring_sig::ring_public_key(&secret)
+            .expect("small fixed scalar is canonical");
+        (secret, public)
+    }
+
+    /// A roster over `keys` at epoch 1 with a fixed roster commitment.
+    fn test_roster(keys: Vec<[u8; 32]>) -> RingRoster {
+        RingRoster {
+            keys,
+            content_epoch: 1,
+            roster_commit_hash: [0x5a; 32],
+        }
     }
 
     /// Create a PeerId from a public key.
@@ -2143,9 +2238,9 @@ mod tests {
     fn test_ring_proposal_verification() {
         let group_id = [0x91; 16];
         let policy = test_policy();
-        let (sk1, pk1) = test_keypair(220);
-        let (_, pk2) = test_keypair(221);
-        let ring = vec![pk1, pk2];
+        let (rk1, rp1) = test_ring_keypair(220);
+        let (_, rp2) = test_ring_keypair(221);
+        let roster = test_roster(vec![rp1, rp2]);
 
         let proposal = create_ring_proposal(
             &group_id,
@@ -2154,14 +2249,84 @@ mod tests {
                 settings_json: "{}".to_string(),
             },
             &policy,
-            &sk1,
-            &ring,
+            &rk1,
+            &roster,
         )
         .expect("ring proposal should succeed");
 
         assert!(proposal.proposer.is_none());
-        assert!(verify_proposal_signature(&proposal, Some(&ring)));
+        assert!(verify_proposal_signature(&proposal, Some(&roster)));
         assert!(!verify_proposal_signature(&proposal, None));
+
+        // The proof survives a JSON round trip (the proposal is gossiped).
+        let json = serde_json::to_string(&proposal).expect("serialise proposal");
+        let restored: Proposal = serde_json::from_str(&json).expect("deserialise proposal");
+        assert!(verify_proposal_signature(&restored, Some(&roster)));
+    }
+
+    /// A ring proof is bound to the epoch and roster commitment it was made
+    /// under: replaying it after a rekey or membership change fails
+    /// (§3.5.2 cross-epoch / cross-roster replay vectors).
+    #[test]
+    fn test_ring_proposal_rejected_under_other_epoch_or_roster() {
+        let group_id = [0x94; 16];
+        let (rk1, rp1) = test_ring_keypair(222);
+        let (_, rp2) = test_ring_keypair(223);
+        let (_, rp3) = test_ring_keypair(224);
+        let roster = test_roster(vec![rp1, rp2]);
+
+        let proposal = create_ring_proposal(
+            &group_id,
+            &GroupRole::Admin,
+            GovernanceAction::ChangeSettings {
+                settings_json: "{}".to_string(),
+            },
+            &test_policy(),
+            &rk1,
+            &roster,
+        )
+        .expect("ring proposal should succeed");
+        assert!(verify_proposal_signature(&proposal, Some(&roster)));
+
+        // Same ring, later epoch.
+        let mut later_epoch = roster.clone();
+        later_epoch.content_epoch += 1;
+        assert!(!verify_proposal_signature(&proposal, Some(&later_epoch)));
+
+        // Same ring, different roster commitment.
+        let mut other_roster = roster.clone();
+        other_roster.roster_commit_hash[0] ^= 0xff;
+        assert!(!verify_proposal_signature(&proposal, Some(&other_roster)));
+
+        // A ring that gained a member: the signature length no longer matches.
+        let grown = test_roster(vec![rp1, rp2, rp3]);
+        assert!(!verify_proposal_signature(&proposal, Some(&grown)));
+
+        // Same proof, different group: the transcript's group_id differs.
+        let mut moved = proposal.clone();
+        moved.group_id = [0x95; 16];
+        assert!(!verify_proposal_signature(&moved, Some(&roster)));
+    }
+
+    /// Signing failures are surfaced as typed `MeshError`s, never as a
+    /// proposal with an empty or fake proof.
+    #[test]
+    fn test_ring_proposal_signing_errors_surface() {
+        let group_id = [0x96; 16];
+        let (_, rp1) = test_ring_keypair(225);
+        let (outsider_secret, _) = test_ring_keypair(226);
+        let roster = test_roster(vec![rp1]);
+        let result = create_ring_proposal(
+            &group_id,
+            &GroupRole::Admin,
+            GovernanceAction::ChangeSettings {
+                settings_json: "{}".to_string(),
+            },
+            &test_policy(),
+            &outsider_secret,
+            &roster,
+        );
+        assert!(matches!(result, Err(MeshError::Internal(_))));
     }
 
     /// A ring proof must never count as a vote: one member holding one
@@ -2177,8 +2342,9 @@ mod tests {
             voter_roles: vec![GroupRole::Admin, GroupRole::Moderator, GroupRole::Member],
         };
         let (sk1, pk1) = test_keypair(230);
-        let (_, pk2) = test_keypair(231);
-        let ring = vec![pk1, pk2];
+        let (rk1, rp1) = test_ring_keypair(230);
+        let (_, rp2) = test_ring_keypair(231);
+        let roster = test_roster(vec![rp1, rp2]);
         let proposer = peer_id(&pk1);
 
         let mut proposal = test_proposal(
@@ -2197,8 +2363,13 @@ mod tests {
         sig_payload.extend_from_slice(&proposal.id);
         sig_payload.push(VoteDecision::Approve.as_byte());
         for _ in 0..(eligible * 3) {
-            let ring_signature =
-                ring_sign(&sk1, &ring, &sig_payload).expect("ring signing works in tests");
+            let ring_signature = ring_sign(
+                &rk1,
+                &roster.keys,
+                &roster.ring_context(&group_id),
+                &sig_payload,
+            )
+            .expect("ring signing works in tests");
             proposal.votes.push(Vote {
                 decision: VoteDecision::Approve,
                 proof: GovernanceProof::Ring { ring_signature },
