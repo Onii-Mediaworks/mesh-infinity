@@ -24,6 +24,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../../app/app_theme.dart'; // MeshColors status tokens
 import '../../network/network_state.dart';
 // OverlayClientStatus — the connection state enum shared across overlays.
 
@@ -50,7 +51,7 @@ class ZeroNetStatusCard extends StatelessWidget {
     final tt = Theme.of(context).textTheme;
 
     // Resolve a semantic color for the status indicator dot.
-    final statusColor = _statusColor(instance.status);
+    final statusColor = _statusColor(instance.status, MeshColors.of(context));
 
     return Card(
       // Card styling comes from the app-wide CardThemeData in app_theme.dart —
@@ -198,11 +199,12 @@ class ZeroNetStatusCard extends StatelessWidget {
   };
 
   /// Semantic color for [OverlayClientStatus] from the Mesh Infinity palette.
-  static Color _statusColor(OverlayClientStatus s) => switch (s) {
-    OverlayClientStatus.connected     => const Color(0xFF22C55E), // secGreen
-    OverlayClientStatus.connecting    => const Color(0xFFF59E0B), // secAmber
-    OverlayClientStatus.disconnected  => const Color(0xFF9CA3AF), // neutral grey
-    OverlayClientStatus.error         => const Color(0xFFEF4444), // secRed
-    OverlayClientStatus.notConfigured => const Color(0xFF9CA3AF), // neutral grey
+  static Color _statusColor(OverlayClientStatus s, MeshColors colors) =>
+      switch (s) {
+    OverlayClientStatus.connected     => colors.sec_green,
+    OverlayClientStatus.connecting    => colors.sec_amber,
+    OverlayClientStatus.disconnected  => colors.trust_color(0), // neutral
+    OverlayClientStatus.error         => colors.sec_red,
+    OverlayClientStatus.notConfigured => colors.trust_color(0), // neutral
   };
 }

@@ -7,6 +7,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../app/app_theme.dart'; // MeshColors status tokens
 import '../../../backend/backend_bridge.dart';
 import '../../../platform/android_app_catalog_bridge.dart';
 import '../../../platform/android_vpn_bridge.dart';
@@ -128,8 +129,8 @@ class _AppConnectorScreenState extends State<AppConnectorScreen> {
                           Container(
                             width: 8,
                             height: 8,
-                            decoration: const BoxDecoration(
-                              color: Color(0xFF22C55E), // secGreen
+                            decoration: BoxDecoration(
+                              color: MeshColors.of(context).sec_green,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -137,7 +138,7 @@ class _AppConnectorScreenState extends State<AppConnectorScreen> {
                           Text(
                             _statusSummary(net, configuredApps, mode),
                             style: tt.bodySmall?.copyWith(
-                              color: const Color(0xFF22C55E),
+                              color: MeshColors.of(context).sec_green,
                             ),
                           ),
                         ],

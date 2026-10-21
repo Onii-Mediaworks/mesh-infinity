@@ -30,6 +30,8 @@
 
 import 'package:flutter/material.dart';
 
+import '../../../app/app_theme.dart'; // MeshColors status tokens
+
 // ---------------------------------------------------------------------------
 // AdvancedWarningDialog
 // ---------------------------------------------------------------------------
@@ -59,11 +61,11 @@ class AdvancedWarningDialog extends StatelessWidget {
 
     return AlertDialog(
       // Warning icon in amber — signals caution without the severity of red.
-      icon: const Icon(
+      icon: Icon(
         Icons.warning_amber_rounded,
-        // Use a fixed amber instead of theme.tertiary to match the Mesh
-        // Infinity secAmber semantic color (F59E0B) for all warning states.
-        color: Color(0xFFF59E0B),
+        // Use the per-theme sec_amber token instead of theme.tertiary so all
+        // warning states share one semantic colour (SPEC §22.1.1).
+        color: MeshColors.of(context).sec_amber,
         size: 36,
       ),
 

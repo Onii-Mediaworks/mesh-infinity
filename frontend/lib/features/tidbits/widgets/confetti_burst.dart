@@ -114,18 +114,9 @@ class _ConfettiBurstState extends State<ConfettiBurst>
   late final List<_Particle> _particles;
   final math.Random _rng = math.Random();
 
-  // Palette: brand blue + pastels to match the app's visual language.
-  // Deliberately excludes dark/heavy colours so confetti looks celebratory.
-  static const List<Color> _palette = [
-    MeshTheme.brand,           // brand blue
-    Color(0xFF6EE7B7),         // mint green (trust6)
-    Color(0xFFF59E0B),         // amber
-    Color(0xFFEC4899),         // pink
-    Color(0xFFA78BFA),         // violet
-    Color(0xFF34D399),         // green
-    Color(0xFFFBBF24),         // yellow
-    Color(0xFF60A5FA),         // sky blue
-  ];
+  // Palette: decorative, defined in app_theme.dart (SPEC §22.1.1).
+  // design: DESIGN-LANGUAGE.md "token layer is names-first"
+  static const List<Color> _palette = MeshTheme.confettiPalette;
 
   @override
   void initState() {

@@ -25,6 +25,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../../app/app_theme.dart'; // MeshColors status tokens
 import '../models/zeronet_member.dart';
 // ZeroNetMember is the data model rendered by this tile.
 
@@ -71,8 +72,8 @@ class MemberListTile extends StatelessWidget {
     // The leading icon changes color based on authorization state so the
     // user can scan the roster at a glance without reading the button label.
     final iconColor = member.authorized
-        ? const Color(0xFF22C55E) // secGreen — authorized, traffic flows
-        : const Color(0xFFF59E0B); // secAmber — pending/denied, traffic blocked
+        ? MeshColors.of(context).sec_green // authorized, traffic flows
+        : MeshColors.of(context).sec_amber; // pending/denied, traffic blocked
 
     return ListTile(
       // Leading icon: person with a status-colored tint.

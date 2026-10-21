@@ -28,6 +28,7 @@ import '../../../features/tailscale/widgets/priority_badge.dart';
 // PriorityBadge lives in the Tailscale directory as the canonical shared
 // widget — ZeroTier imports it from there rather than duplicating it.
 
+import '../../../app/app_theme.dart'; // MeshColors status tokens
 import '../../network/network_state.dart';
 // OverlayClientStatus — the shared connection-state enum.
 
@@ -68,7 +69,7 @@ class ZeroNetListTile extends StatelessWidget {
     final tt = Theme.of(context).textTheme;
 
     // Status color — follows the Mesh Infinity semantic palette.
-    final statusColor = _statusColor(instance.status);
+    final statusColor = _statusColor(instance.status, MeshColors.of(context));
 
     return ListTile(
       // ---- Leading: status indicator dot ------------------------------------
@@ -175,12 +176,13 @@ class ZeroNetListTile extends StatelessWidget {
   };
 
   /// Semantic color from the Mesh Infinity palette for the given status.
-  static Color _statusColor(OverlayClientStatus s) => switch (s) {
-    OverlayClientStatus.connected     => const Color(0xFF22C55E), // secGreen
-    OverlayClientStatus.connecting    => const Color(0xFFF59E0B), // secAmber
-    OverlayClientStatus.disconnected  => const Color(0xFF9CA3AF), // neutral
-    OverlayClientStatus.error         => const Color(0xFFEF4444), // secRed
-    OverlayClientStatus.notConfigured => const Color(0xFF9CA3AF), // neutral
+  static Color _statusColor(OverlayClientStatus s, MeshColors colors) =>
+      switch (s) {
+    OverlayClientStatus.connected     => colors.sec_green,
+    OverlayClientStatus.connecting    => colors.sec_amber,
+    OverlayClientStatus.disconnected  => colors.trust_color(0), // neutral
+    OverlayClientStatus.error         => colors.sec_red,
+    OverlayClientStatus.notConfigured => colors.trust_color(0), // neutral
   };
 }
 
@@ -276,7 +278,7 @@ class _InstanceMenu extends StatelessWidget {
           FilledButton(
             // Red fill signals a destructive action.
             style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFEF4444), // secRed
+              backgroundColor: MeshColors.of(context).sec_red,
               foregroundColor: Colors.white,
             ),
             onPressed: () => Navigator.of(context).pop(true),

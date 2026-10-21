@@ -40,6 +40,8 @@
 
 import 'package:flutter/material.dart';
 
+import '../app/app_theme.dart'; // MeshTheme.avatarPalette
+
 /// The 8 avatar background colours available when creating a mask.
 ///
 /// Ordered by visual distinctiveness — adjacent colours are intentionally
@@ -48,16 +50,10 @@ import 'package:flutter/material.dart';
 ///
 /// Index 0 is the brand blue, which is also the default for new masks before
 /// the user chooses a colour.
-const List<Color> kMaskAvatarColors = [
-  Color(0xFF2C6EE2), // brand blue
-  Color(0xFF7C3AED), // purple
-  Color(0xFF059669), // green
-  Color(0xFFEF4444), // red
-  Color(0xFFF59E0B), // amber
-  Color(0xFF0EA5E9), // sky blue
-  Color(0xFFEC4899), // pink
-  Color(0xFF64748B), // slate
-];
+// design: DESIGN-LANGUAGE.md "token layer is names-first"
+// The values live in app_theme.dart (SPEC §22.1.1); this alias keeps the
+// existing call sites working without a second copy of the palette.
+const List<Color> kMaskAvatarColors = MeshTheme.avatarPalette;
 
 /// The four rendering sizes for a [MaskAvatar].
 ///

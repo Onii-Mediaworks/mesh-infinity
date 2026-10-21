@@ -71,6 +71,43 @@ class MeshTheme {
   static const Color ambientBadge = Color(0xFF4A5280);
 
   // ---------------------------------------------------------------------------
+  // Decorative palettes
+  //
+  // design: DESIGN-LANGUAGE.md "token layer is names-first"
+  //
+  // These are decorative fills, not status or text colours, so they carry no
+  // WCAG contrast requirement and are identical in both themes. They live here
+  // (not in widgets) so SPEC §22.1.1 holds: no raw colour literals in screens.
+  // ---------------------------------------------------------------------------
+
+  /// Avatar background palette. Initials are drawn in white on top of these,
+  /// and the hashed pick must stay stable across releases, so do not reorder.
+  /// Index 0 is the brand blue (default for new masks).
+  static const List<Color> avatarPalette = [
+    Color(0xFF2C6EE2), // brand blue
+    Color(0xFF7C3AED), // purple
+    Color(0xFF059669), // green
+    Color(0xFFEF4444), // red
+    Color(0xFFF59E0B), // amber
+    Color(0xFF0EA5E9), // sky blue
+    Color(0xFFEC4899), // pink
+    Color(0xFF64748B), // slate
+  ];
+
+  /// Confetti particle palette: brand blue plus pastels, deliberately free of
+  /// dark/heavy colours so the burst reads as celebratory on either ground.
+  static const List<Color> confettiPalette = [
+    brand,                     // brand blue
+    Color(0xFF6EE7B7),         // mint green
+    Color(0xFFF59E0B),         // amber
+    Color(0xFFEC4899),         // pink
+    Color(0xFFA78BFA),         // violet
+    Color(0xFF34D399),         // green
+    Color(0xFFFBBF24),         // yellow
+    Color(0xFF60A5FA),         // sky blue
+  ];
+
+  // ---------------------------------------------------------------------------
   // light()
   //
   // Builds the light-mode ThemeData.  Flutter's Material 3 theming system
