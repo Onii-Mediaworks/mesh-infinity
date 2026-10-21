@@ -354,17 +354,15 @@ class _GardenTileState extends State<_GardenTile> {
 }
 
 // ---------------------------------------------------------------------------
-// _NetworkTypeBadge — small pill showing the garden's join policy
+// _NetworkTypeBadge — neutral chip showing the garden's join policy
 // ---------------------------------------------------------------------------
 
-/// A small coloured pill badge indicating a garden's networkType.
+/// A neutral outlined chip naming a garden's networkType (§22.6.1, CMR-025).
 ///
-/// Colour semantics:
-///   joined  → green (already a member)
-///   public  → brand blue (open to all)
-///   open    → green (open to all, membership visible)
-///   closed  → amber (invitation only, name visible)
-///   private → purple (completely hidden, invitation only)
+/// It deliberately carries no security colour: green, amber and purple are
+/// reserved for verified / LoSec / compromised states, and a private garden
+/// must not wear the same colour as a compromised contact. Meaning comes
+/// from the icon and the label, drawn in `onSurfaceVariant`.
 class _NetworkTypeBadge extends StatelessWidget {
   const _NetworkTypeBadge({required this.type});
 
@@ -373,34 +371,47 @@ class _NetworkTypeBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = _color(MeshColors.of(context));
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(
-        _label(),
-        style: TextStyle(
-          fontSize: 10,
-          color: color,
-          fontWeight: FontWeight.w600,
+    // One neutral role for icon, text and outline; the theme supplies the
+    // contrast-safe value for light and dark.
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Semantics(
+      // Screen readers get the policy by name, not "chip".
+      label: '${_label()} garden',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: color.withValues(alpha: 0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Icon first so the policy is readable at a glance without
+            // relying on colour (§22.34).
+            Icon(_icon(), size: 12, color: color),
+            const SizedBox(width: 3),
+            Text(
+              _label(),
+              style: TextStyle(
+                fontSize: 10,
+                color: color,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  /// Returns the badge background/text colour for the given networkType,
-  /// resolved from the ambient theme's [colors].
-  Color _color(MeshColors colors) => switch (type) {
-    'joined' => colors.sec_green,
-    'public' => MeshTheme.brand,
-    'open' => colors.sec_green,
-    'closed' => colors.sec_amber,
-    'private' => colors.sec_purple,
-    _ => MeshTheme.brand, // Unknown type — fall back to brand.
+  /// One icon per join policy, so the chip never depends on colour.
+  IconData _icon() => switch (type) {
+    'joined' => Icons.check_circle_outline,
+    'public' => Icons.public,
+    'open' => Icons.lock_open_outlined,
+    'closed' => Icons.lock_outline,
+    'private' => Icons.visibility_off_outlined,
+    _ => Icons.help_outline, // Unknown type — say so rather than guess.
   };
 
   /// Returns the human-readable label for the given networkType.
