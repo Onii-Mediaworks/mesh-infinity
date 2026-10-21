@@ -152,3 +152,17 @@ status = "active"
 owner_module = "backend/transport/wireguard.rs"
 threat = "malformed, foreign-suite, forged or replayed link handshake / PSK-agreement / tunnel-key-binding bytes causing panic, suite downgrade, or an unauthenticated session install"
 required_by_spec = true
+
+[[target]]
+name = "fuzz_link_auth_frame"
+status = "active"
+owner_module = "backend/transport/link_auth.rs"
+threat = "malformed or forged link_hello / link_auth frames from an unauthenticated TCP socket panicking the poll loop or binding a connection to a peer id without a valid signature"
+required_by_spec = true
+
+[[target]]
+name = "fuzz_admin_command"
+status = "active"
+owner_module = "backend/mesh/admin_command.rs"
+threat = "forged or malformed AdminCommand killswitch payloads panicking the handler or verifying without the InnerCircle contact's signature"
+required_by_spec = true

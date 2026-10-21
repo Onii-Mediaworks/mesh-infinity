@@ -125,6 +125,15 @@ pub struct SettingsVault {
     /// Mesh participation profile (0 = minimal, 1 = standard, 2 = generous).
     #[serde(default = "default_bandwidth_profile")]
     pub bandwidth_profile: u8,
+    /// Whether the §22.42 onboarding flow reached its Done step.
+    ///
+    /// Set only by `set_onboarding_complete` (the Done step, §22.42.7).  A
+    /// launch that finds an identity but not this flag resumes onboarding at
+    /// the identity step, so killing the app after identity creation cannot
+    /// skip the mandatory §22.23 disclosures or the PIN offer.  Older vaults
+    /// without the field deserialise as `false` and therefore resume too.
+    #[serde(default)]
+    pub onboarding_complete: bool,
 }
 
 /// Minimal plaintext startup posture for Layer 1 before full identity unlock.
@@ -442,6 +451,14 @@ pub struct MeshRuntime {
     pub active_tier: Mutex<u8>,
     /// Mesh participation profile (0 = minimal, 1 = standard, 2 = generous).
     pub bandwidth_profile: Mutex<u8>,
+    /// Whether onboarding reached its Done step (§22.42); see `SettingsVault`.
+    /// Defaults to `false` until the settings vault is loaded on unlock.
+    pub onboarding_complete: Mutex<bool>,
+    /// Protocol server settings (§20.2–§20.8).  Read by the servers on each
+    /// session request and edited by the §22.54 configuration screens, so a
+    /// save takes effect without a restart.  Persisted in its own vault
+    /// collection (`protocol_servers`) by `save_protocol_server_config`.
+    pub protocol_server_config: Mutex<crate::services::server_config::ProtocolServerConfig>,
     /// Persisted mask metadata for the identity & masks UI.
     pub masks: Mutex<Vec<crate::identity::mask::MaskMetadata>>,
     /// Backend-owned directory of discoverable Gardens.
@@ -525,10 +542,23 @@ pub struct MeshRuntime {
     pub pqxdh_pending: PqxdhPendingMap,
     /// Clearnet TCP listener socket (non-blocking).
     pub clearnet_listener: Mutex<Option<std::net::TcpListener>>,
-    /// Active identified clearnet connections: peer_id_hex → stream.
+    /// Active authenticated clearnet connections: peer_id_hex → stream.
+    ///
+    /// A connection is inserted here only after the `transport::link_auth`
+    /// handshake proved the remote side holds the key behind that peer id.
     pub clearnet_connections: Mutex<std::collections::HashMap<String, std::net::TcpStream>>,
-    /// Pending incoming connections not yet identified by a first message.
-    pub clearnet_pending_incoming: Mutex<Vec<(std::net::TcpStream, Vec<u8>)>>,
+    /// Accepted connections still inside the link handshake (§5.1).
+    ///
+    /// Bounded by `MAX_PENDING_LINKS` and aged out after `LINK_AUTH_TIMEOUT`
+    /// so unauthenticated sockets cannot accumulate.
+    pub clearnet_pending_incoming: Mutex<Vec<PendingLink>>,
+    /// Pairing tokens this device has issued in QR / link payloads (§8.3).
+    ///
+    /// A `pairing_hello` creates a contact only if it presents one of these
+    /// unexpired tokens; the list is bounded by `MAX_PENDING_PAIRINGS`.
+    pub pending_pairings: Mutex<Vec<PendingPairing>>,
+    /// Signatures of remote killswitch requests already presented (§3.9.3).
+    pub killswitch_replay: Mutex<crate::mesh::admin_command::KillswitchReplayCache>,
     /// Per-peer receive buffers for partial TCP frames.
     pub clearnet_recv_buffers: Mutex<std::collections::HashMap<String, Vec<u8>>>,
     /// Clearnet TCP listen port (default 7234).
@@ -671,6 +701,13 @@ impl MeshRuntime {
             remote_wipe_enabled: Mutex::new(false),
             active_tier: Mutex::new(0),
             bandwidth_profile: Mutex::new(default_bandwidth_profile()),
+            // Nobody has finished onboarding on a fresh runtime; the vault
+            // load on unlock replaces this with the persisted value.
+            onboarding_complete: Mutex::new(false),
+            // §20 defaults until the settings vault is loaded on unlock.
+            protocol_server_config: Mutex::new(
+                crate::services::server_config::ProtocolServerConfig::default(),
+            ),
             masks: Mutex::new(Vec::new()),
             discoverable_gardens: Mutex::new(Vec::new()),
             android_proximity_state: Mutex::new(AndroidProximityState::default()),
@@ -709,6 +746,10 @@ impl MeshRuntime {
             clearnet_listener: Mutex::new(None),
             clearnet_connections: Mutex::new(std::collections::HashMap::new()),
             clearnet_pending_incoming: Mutex::new(Vec::new()),
+            // No pairing payload has been issued and no killswitch request
+            // has been seen on a fresh runtime.
+            pending_pairings: Mutex::new(Vec::new()),
+            killswitch_replay: Mutex::new(crate::mesh::admin_command::KillswitchReplayCache::new()),
             clearnet_recv_buffers: Mutex::new(std::collections::HashMap::new()),
             clearnet_port: Mutex::new(7_234),
             outbox: Mutex::new(Vec::new()),
@@ -913,22 +954,61 @@ pub fn try_read_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     Some(payload)
 }
 
-/// Extract the sender peer_id hex from a raw frame payload.
+/// Most accepted-but-unauthenticated sockets held at once.
 ///
-/// Parses only the top-level JSON `"sender"` field without decrypting the
-/// message body.  Used to identify which peer sent a frame so we can key
-/// the TCP connection map.
+/// Each costs a file descriptor and a small buffer; beyond this, new
+/// connections are closed on accept rather than queued, so a flood of idle
+/// sockets cannot exhaust descriptors before any of them authenticates.
+pub const MAX_PENDING_LINKS: usize = 64;
+
+/// How long an accepted socket may stay unauthenticated before it is closed.
+pub const LINK_AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Read timeout for the blocking outbound side of the link handshake.
+pub const LINK_AUTH_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Most issued-but-unused pairing tokens remembered at once (§8.3).
 ///
-/// Validates that the sender is exactly 64 hex characters (32 bytes).
-pub fn extract_frame_sender(frame_payload: &[u8]) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_slice(frame_payload).ok()?;
-    let sender = v.get("sender").and_then(|s| s.as_str())?;
-    // A valid peer ID is exactly 32 bytes = 64 hex characters.
-    if sender.len() == 64 && sender.bytes().all(|b| b.is_ascii_hexdigit()) {
-        Some(sender.to_string())
-    } else {
-        None
+/// A user regenerating a QR code rapidly only needs the most recent few; the
+/// oldest is evicted first.
+pub const MAX_PENDING_PAIRINGS: usize = 8;
+
+/// An accepted TCP connection that has not yet completed the link handshake.
+///
+/// Lives in `MeshRuntime::clearnet_pending_incoming` until the
+/// `transport::link_auth` exchange succeeds (promoted to
+/// `clearnet_connections`), fails (socket dropped) or times out.
+pub struct PendingLink {
+    /// The accepted, non-blocking socket.
+    pub stream: std::net::TcpStream,
+    /// Bytes received so far that do not yet form a complete frame.
+    pub buf: Vec<u8>,
+    /// When the socket was accepted, for `LINK_AUTH_TIMEOUT` ageing.
+    pub accepted_at: std::time::Instant,
+    /// Responder state once our challenge has been sent; `None` before the
+    /// peer's `link_hello` arrives.
+    pub challenge: Option<crate::transport::link_auth::ResponderLink>,
+}
+
+impl PendingLink {
+    /// Wrap a freshly accepted socket with an empty buffer and no challenge.
+    pub fn new(stream: std::net::TcpStream) -> Self {
+        Self {
+            stream,
+            buf: Vec::new(),
+            accepted_at: std::time::Instant::now(),
+            challenge: None,
+        }
     }
+}
+
+/// A pairing token this device issued in a QR / link payload (§8.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPairing {
+    /// The random 32-byte token embedded in the payload.
+    pub token: [u8; 32],
+    /// Unix seconds after which the token no longer admits a hello.
+    pub expires_at: u64,
 }
 
 /// Detect the primary outbound-capable local IP address.

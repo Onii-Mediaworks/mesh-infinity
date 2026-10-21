@@ -364,8 +364,9 @@ impl MeshRuntime {
 
     /// Connect to a peer via the Tor network.
     ///
-    /// Opens a Tor `DataStream` to `onion_addr:port` and inserts the resulting
-    /// `TcpStream` into `clearnet_connections` under `peer_id_hex`.  Port 0
+    /// Opens a Tor `DataStream` to `onion_addr:port`, runs the mutual link
+    /// handshake against `peer_id_hex` (§5.1), and only then inserts the
+    /// `TcpStream` into `clearnet_connections` under that id.  Port 0
     /// defaults to `DEFAULT_HS_PORT` (7234).
     pub fn tor_connect(
         &self,
@@ -376,8 +377,15 @@ impl MeshRuntime {
         let port = if port == 0 { DEFAULT_HS_PORT } else { port };
         let guard = self.tor_transport.lock().unwrap_or_else(|e| e.into_inner());
         let tor = guard.as_ref().ok_or("Tor not enabled")?;
-        let stream = tor
+        let mut stream = tor
             .connect(peer_id_hex, onion_addr, port)
+            .map_err(|e| format!("tor_connect: {e}"))?;
+        // The onion address is a reachability hint; the handshake is the
+        // proof that whoever answered holds the key behind `peer_id_hex`.
+        self.authenticate_outbound_link(&mut stream, peer_id_hex)
+            .map_err(|e| format!("tor_connect: link authentication failed: {e}"))?;
+        stream
+            .set_nonblocking(true)
             .map_err(|e| format!("tor_connect: {e}"))?;
         self.clearnet_connections
             .lock()

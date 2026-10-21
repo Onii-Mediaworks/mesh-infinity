@@ -29,6 +29,8 @@
 //! The `DeduplicationCache` prevents forwarding loops. Each `MeshPacket`
 //! carries a unique `packet_id`; if we see the same ID twice we discard it.
 
+/// Signed administrative commands carried in `AdminCommand` packets (§3.9.3).
+pub mod admin_command;
 pub mod coordinator;
 pub mod forwarder;
 pub mod packet;
