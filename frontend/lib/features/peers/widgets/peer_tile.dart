@@ -23,6 +23,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../backend/models/peer_models.dart';
+import '../../../core/widgets/focusable_tile.dart';
 import 'trust_badge.dart';
 
 /// A single list row representing [peer] in the contacts list.
@@ -61,68 +62,72 @@ class PeerTile extends StatelessWidget {
             ? Colors.orange
             : Colors.grey;
 
-    return ListTile(
-      selected: selected,
-      // Subtle tint so the selected tile is visually distinct without being
-      // distracting (0.3 alpha keeps the text readable on any background).
-      selectedTileColor: cs.primaryContainer.withValues(alpha: 0.3),
+    // FocusableTile draws the shell focus ring around the row when a key or
+    // pad lands on it (§22.36 rule 3); touch behaviour is unchanged.
+    return FocusableTile(
+      child: ListTile(
+          selected: selected,
+          // Subtle tint so the selected tile is visually distinct without being
+          // distracting (0.3 alpha keeps the text readable on any background).
+          selectedTileColor: cs.primaryContainer.withValues(alpha: 0.3),
 
-      // ── Avatar with status dot overlay ──────────────────────────────────
-      leading: Stack(
-        children: [
-          // Main avatar circle: first letter of the display name, uppercased
-          // for legibility. Falls back to '?' when the name is empty (e.g.
-          // before the backend delivers the peer's public profile).
-          CircleAvatar(
-            backgroundColor: cs.secondaryContainer,
-            child: Text(
-              peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
-              style: TextStyle(
-                color: cs.onSecondaryContainer,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-
-          // Status dot: 10×10 circle at bottom-right of the avatar.
-          // The white border visually separates it from the avatar background
-          // so it remains readable against any avatar colour.
-          // Semantics label exposes the status to screen readers since the
-          // colour alone would be inaccessible.
-          Positioned(
-            right: 0,
-            bottom: 0,
-            child: Semantics(
-              label: peer.status,
-              child: Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: statusColor,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: cs.surface, width: 1.5),
+          // ── Avatar with status dot overlay ──────────────────────────────────
+          leading: Stack(
+            children: [
+              // Main avatar circle: first letter of the display name, uppercased
+              // for legibility. Falls back to '?' when the name is empty (e.g.
+              // before the backend delivers the peer's public profile).
+              CircleAvatar(
+                backgroundColor: cs.secondaryContainer,
+                child: Text(
+                  peer.name.isNotEmpty ? peer.name[0].toUpperCase() : '?',
+                  style: TextStyle(
+                    color: cs.onSecondaryContainer,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
-            ),
+
+              // Status dot: 10×10 circle at bottom-right of the avatar.
+              // The white border visually separates it from the avatar background
+              // so it remains readable against any avatar colour.
+              // Semantics label exposes the status to screen readers since the
+              // colour alone would be inaccessible.
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: Semantics(
+                  label: peer.status,
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: statusColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: cs.surface, width: 1.5),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-        ],
+
+          // Display name with fallback to a 12-char prefix of the peer ID.
+          // Showing a partial ID is better than "Unknown" because power users
+          // can cross-reference it with the full ID in the detail screen.
+          title: Text(peer.name.isNotEmpty ? peer.name : peer.id.substring(0, 12)),
+
+          // Localised status string from the backend, e.g. "Online", "Offline 3m ago".
+          subtitle: Text(
+            peer.status,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+
+          // Compact trust badge shows the tier number without the full label.
+          trailing: TrustBadge(level: peer.trustLevel, compact: true),
+
+          onTap: onTap,
       ),
-
-      // Display name with fallback to a 12-char prefix of the peer ID.
-      // Showing a partial ID is better than "Unknown" because power users
-      // can cross-reference it with the full ID in the detail screen.
-      title: Text(peer.name.isNotEmpty ? peer.name : peer.id.substring(0, 12)),
-
-      // Localised status string from the backend, e.g. "Online", "Offline 3m ago".
-      subtitle: Text(
-        peer.status,
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-
-      // Compact trust badge shows the tier number without the full label.
-      trailing: TrustBadge(level: peer.trustLevel, compact: true),
-
-      onTap: onTap,
     );
   }
 }

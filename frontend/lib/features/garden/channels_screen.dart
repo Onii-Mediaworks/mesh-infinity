@@ -34,6 +34,12 @@ import '../../backend/models/room_models.dart';
 // unreadCount, timestamp.
 import '../../shell/shell_state.dart';
 // ShellState — controls which section/sub-page/room is currently active.
+import '../../shell/primary_focus.dart';
+// PrimaryFocus — declares where key/pad focus lands on open (§22.36).
+import '../../core/widgets/focusable_tile.dart';
+// FocusableTile — shell focus ring around each row (§22.36 rule 3).
+import '../../core/widgets/hint_row.dart';
+// HintRow — tappable controller hints (§22.36 rule 5).
 import '../messaging/messaging_state.dart';
 // MessagingState — owns the rooms list and exposes loadRooms() / selectRoom().
 import '../messaging/screens/thread_screen.dart';
@@ -59,26 +65,32 @@ class ChannelsScreen extends StatelessWidget {
     final gardens = messaging.rooms.where((r) => r.isGroup).toList();
 
     return Scaffold(
-      body: RefreshIndicator(
-        // Pull-to-refresh re-fetches the room list from the backend.
-        onRefresh: messaging.loadRooms,
-        child: gardens.isEmpty
-            ? _EmptyGarden(
-                // Navigate to the Explore tab (sub-page index 2) when the
-                // user wants to discover public gardens to join.
-                onExplore: () =>
-                    context.read<ShellState>().selectSubPage(2), // → Explore
-              )
-            : ListView.separated(
-                itemCount: gardens.length,
-                // 1px divider indented to 72px to align with the text
-                // start point past the avatar (40px) + padding.
-                separatorBuilder: (ctx, i) =>
-                    const Divider(height: 1, indent: 72),
-                itemBuilder: (context, i) =>
-                    _GardenTile(room: gardens[i]),
-              ),
+      // PrimaryFocus (§22.36 rule 2): first garden row, or the "Find a
+      // garden" button when the user has joined none.
+      body: PrimaryFocus(
+        child: RefreshIndicator(
+          // Pull-to-refresh re-fetches the room list from the backend.
+          onRefresh: messaging.loadRooms,
+          child: gardens.isEmpty
+              ? _EmptyGarden(
+                  // Navigate to the Explore tab (sub-page index 2) when the
+                  // user wants to discover public gardens to join.
+                  onExplore: () =>
+                      context.read<ShellState>().selectSubPage(2), // → Explore
+                )
+              : ListView.separated(
+                  itemCount: gardens.length,
+                  // 1px divider indented to 72px to align with the text
+                  // start point past the avatar (40px) + padding.
+                  separatorBuilder: (ctx, i) =>
+                      const Divider(height: 1, indent: 72),
+                  itemBuilder: (context, i) =>
+                      _GardenTile(room: gardens[i]),
+                ),
+        ),
       ),
+      // Controller hint row (§22.36 rule 5), collapsed until a pad is seen.
+      bottomNavigationBar: HintRow(hints: [Hint.section_next]),
     );
   }
 }
@@ -99,79 +111,82 @@ class _GardenTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      // Avatar: first letter of the garden name on a tertiary-container circle.
-      // Falls back to 'G' if the name is empty (should not happen in practice).
-      leading: CircleAvatar(
-        backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
-        child: Text(
-          room.name.isNotEmpty ? room.name[0].toUpperCase() : 'G',
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onTertiaryContainer,
-            fontWeight: FontWeight.w600,
+    // FocusableTile draws the shell focus ring around the row (§22.36 rule 3).
+    return FocusableTile(
+      child: ListTile(
+          // Avatar: first letter of the garden name on a tertiary-container circle.
+          // Falls back to 'G' if the name is empty (should not happen in practice).
+          leading: CircleAvatar(
+            backgroundColor: Theme.of(context).colorScheme.tertiaryContainer,
+            child: Text(
+              room.name.isNotEmpty ? room.name[0].toUpperCase() : 'G',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onTertiaryContainer,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
-        ),
+
+          // Garden name — bold when there are unread messages to draw attention.
+          title: Text(
+            room.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: room.unreadCount > 0
+                ? const TextStyle(fontWeight: FontWeight.w700)
+                : null,
+          ),
+
+          // Last-message preview — null subtitle omits the row entirely rather
+          // than showing an empty line.
+          subtitle: room.lastMessage.isNotEmpty
+              ? Text(room.lastMessage,
+                  maxLines: 1, overflow: TextOverflow.ellipsis)
+              : null,
+
+          // Unread badge — shown only when unreadCount > 0.
+          // Caps at "99+" to keep the pill narrow on small screens.
+          trailing: room.unreadCount > 0
+              ? Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primary,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    room.unreadCount > 99 ? '99+' : '${room.unreadCount}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                )
+              : null,
+
+          onTap: () {
+            final shell = context.read<ShellState>();
+            final width = MediaQuery.sizeOf(context).width;
+
+            // Tell MessagingState the active room so messages are loaded
+            // and the unread counter is cleared.
+            shell.selectRoom(room.id);
+
+            if (width < 1200) {
+              // Narrow layout: push the thread as a full-page route.
+              // When the user pops back, clear the selected room in ShellState
+              // so the side pane does not remain highlighted.
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => ThreadScreen(roomId: room.id)),
+              ).then((_) => shell.selectRoom(null));
+            }
+            // Wide layout: ShellState.selectRoom() already updated the selected
+            // room ID, which the detail pane listens to.  No route push needed.
+          },
       ),
-
-      // Garden name — bold when there are unread messages to draw attention.
-      title: Text(
-        room.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: room.unreadCount > 0
-            ? const TextStyle(fontWeight: FontWeight.w700)
-            : null,
-      ),
-
-      // Last-message preview — null subtitle omits the row entirely rather
-      // than showing an empty line.
-      subtitle: room.lastMessage.isNotEmpty
-          ? Text(room.lastMessage,
-              maxLines: 1, overflow: TextOverflow.ellipsis)
-          : null,
-
-      // Unread badge — shown only when unreadCount > 0.
-      // Caps at "99+" to keep the pill narrow on small screens.
-      trailing: room.unreadCount > 0
-          ? Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                room.unreadCount > 99 ? '99+' : '${room.unreadCount}',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                ),
-              ),
-            )
-          : null,
-
-      onTap: () {
-        final shell = context.read<ShellState>();
-        final width = MediaQuery.sizeOf(context).width;
-
-        // Tell MessagingState the active room so messages are loaded
-        // and the unread counter is cleared.
-        shell.selectRoom(room.id);
-
-        if (width < 1200) {
-          // Narrow layout: push the thread as a full-page route.
-          // When the user pops back, clear the selected room in ShellState
-          // so the side pane does not remain highlighted.
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (_) => ThreadScreen(roomId: room.id)),
-          ).then((_) => shell.selectRoom(null));
-        }
-        // Wide layout: ShellState.selectRoom() already updated the selected
-        // room ID, which the detail pane listens to.  No route push needed.
-      },
     );
   }
 }

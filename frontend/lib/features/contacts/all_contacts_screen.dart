@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/widgets/focus_ring.dart';
+import '../../shell/primary_focus.dart';
 import '../../shell/shell_state.dart';
 import '../peers/peers_state.dart';
 import 'screens/contact_detail_screen.dart';
@@ -25,34 +27,42 @@ class AllContactsScreen extends StatelessWidget {
     final peers = context.watch<PeersState>();
 
     return Scaffold(
-      body: RefreshIndicator(
-        // Pull-to-refresh forces a fresh load from the Rust backend.
-        onRefresh: peers.loadPeers,
-        child: peers.peers.isEmpty
-            ? _EmptyContacts(onAdd: () => _openPairing(context))
-            : ListView.separated(
-                itemCount: peers.peers.length,
-                // Divider indented to 72px aligns with the text column,
-                // not the leading avatar — consistent across all list screens.
-                separatorBuilder: (ctx, i) =>
-                    const Divider(height: 1, indent: 72),
-                itemBuilder: (context, i) {
-                  final peer = peers.peers[i];
-                  return PeerTile(
-                    peer: peer,
-                    // selected: false — this list does not maintain a selected
-                    // highlight; selection state lives in ShellState and is
-                    // only meaningful in the wide-layout detail pane.
-                    selected: false,
-                    onTap: () => _openDetail(context, peer.id),
-                  );
-                },
-              ),
+      // PrimaryFocus (§22.36 rule 2): first contact row, or the "Add a
+      // contact" button when there are none.
+      body: PrimaryFocus(
+        child: RefreshIndicator(
+          // Pull-to-refresh forces a fresh load from the Rust backend.
+          onRefresh: peers.loadPeers,
+          child: peers.peers.isEmpty
+              ? _EmptyContacts(onAdd: () => _openPairing(context))
+              : ListView.separated(
+                  itemCount: peers.peers.length,
+                  // Divider indented to 72px aligns with the text column,
+                  // not the leading avatar — consistent across all list screens.
+                  separatorBuilder: (ctx, i) =>
+                      const Divider(height: 1, indent: 72),
+                  itemBuilder: (context, i) {
+                    final peer = peers.peers[i];
+                    return PeerTile(
+                      peer: peer,
+                      // selected: false — this list does not maintain a selected
+                      // highlight; selection state lives in ShellState and is
+                      // only meaningful in the wide-layout detail pane.
+                      selected: false,
+                      onTap: () => _openDetail(context, peer.id),
+                    );
+                  },
+                ),
+        ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _openPairing(context),
-        tooltip: 'Add contact',
-        child: const Icon(Icons.person_add_outlined),
+      // Focus ring on the FAB (§22.36 rule 3); 16 dp matches the M3 FAB.
+      floatingActionButton: FocusRing(
+        radius: 16,
+        child: FloatingActionButton(
+          onPressed: () => _openPairing(context),
+          tooltip: 'Add contact',
+          child: const Icon(Icons.person_add_outlined),
+        ),
       ),
     );
   }

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../../../core/widgets/focusable_tile.dart';
 import 'package:flutter/services.dart';
 
 import '../../../backend/models/message_models.dart';
@@ -238,11 +240,23 @@ class MessageBubble extends StatelessWidget {
 
     // Align the bubble to the right for outgoing, left for incoming.
     // Horizontal padding gives breathing room against the screen edge.
+    //
+    // FocusableTile makes the bubble a focus stop for keyboard and pad users
+    // and gives the §22.35 gestures their button routes (§22.36 rule 4):
+    //   context menu (Shift+F10 / Menu / X) → the long-press sheet,
+    //   secondary action (Y)               → reply, like the swipe-right.
+    // The bubble's own GestureDetector keeps touch behaviour unchanged.
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 3),
       child: Align(
         alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
-        child: bubble,
+        child: FocusableTile(
+          owns_focus: true,
+          radius: 18,
+          on_context_menu: () => _showContextMenu(context),
+          on_secondary: onReply,
+          child: bubble,
+        ),
       ),
     );
   }

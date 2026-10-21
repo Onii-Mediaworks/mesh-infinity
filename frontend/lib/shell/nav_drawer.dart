@@ -68,7 +68,9 @@ import '../features/zerotier/zerotier_state.dart';
 import '../features/zerotier/zerotier_hub_screen.dart';
 import 'help_screen.dart';
 import 'badge_state.dart';
+import 'primary_focus.dart';
 import 'shell_state.dart';
+import '../core/widgets/focus_ring.dart';
 
 /// Left navigation drawer that switches the app between top-level sections.
 ///
@@ -108,15 +110,21 @@ class NavDrawer extends StatelessWidget {
                 children: [
                   // ---- Social group ----------------------------------------
                   // Chat: Tier-1 count = total unread messages in direct rooms.
-                  _DrawerItem(
-                    section: AppSection.chat,
-                    icon: Icons.chat_bubble_outline,
-                    selectedIcon: Icons.chat_bubble,
-                    label: 'Chat',
-                    active: shell.activeSection == AppSection.chat,
-                    onTap: () => _select(context, AppSection.chat),
-                    criticalBadge: _chatCritical(context),
-                    ambientActive: badges.ambientVisibleFor(AppSection.chat),
+                  // Also the menu anchor: the main-menu intent (F10 / Start)
+                  // lands focus here on layouts with a permanent drawer
+                  // (§22.36 rule 1, see PrimaryFocus.claim).
+                  PrimaryFocus(
+                    role: FocusRole.menu,
+                    child: _DrawerItem(
+                      section: AppSection.chat,
+                      icon: Icons.chat_bubble_outline,
+                      selectedIcon: Icons.chat_bubble,
+                      label: 'Chat',
+                      active: shell.activeSection == AppSection.chat,
+                      onTap: () => _select(context, AppSection.chat),
+                      criticalBadge: _chatCritical(context),
+                      ambientActive: badges.ambientVisibleFor(AppSection.chat),
+                    ),
                   ),
 
                   // Garden: Tier-1 count = total unread messages in group rooms.
@@ -239,9 +247,8 @@ class NavDrawer extends StatelessWidget {
                       },
                       // Key-expiry warning: show a red dot when any tailnet's
                       // key is expiring within 7 days (§5.22 key rotation).
-                      criticalDot: tailscale.tailnets.any(
-                        (t) => t.isKeyExpiringSoon,
-                      )
+                      criticalDot:
+                          tailscale.tailnets.any((t) => t.isKeyExpiringSoon)
                           ? _NetworkDotColor.red
                           : null,
                       criticalBadge: null,
@@ -604,69 +611,74 @@ class _DrawerItem extends StatelessWidget {
     // The brand colour is used for the active item highlight and active text.
     final activeColor = MeshTheme.brand;
 
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: AnimatedContainer(
-        // 150 ms fade so the highlight transitions smoothly on section change.
-        duration: const Duration(milliseconds: 150),
-        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          // Active item gets a 12% opacity tinted background; inactive items
-          // are transparent so the drawer background shows through.
-          color: active
-              ? activeColor.withValues(alpha: 0.12)
-              : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          children: [
-            // Switch to the filled icon variant when this section is active.
-            Icon(
-              active ? selectedIcon : icon,
-              size: 22,
-              color: active ? activeColor : cs.onSurfaceVariant,
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(
-                label,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  // Active label is bold and brand-coloured; inactive is
-                  // normal weight in the default surface colour.
-                  fontWeight: active ? FontWeight.w600 : FontWeight.normal,
-                  color: active ? activeColor : cs.onSurface,
+    // FocusRing draws the shell focus ring when a key or pad lands on this
+    // row (§22.36 rule 3); the radius matches the InkWell's 12 px corners.
+    return FocusRing(
+      radius: 12,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: AnimatedContainer(
+          // 150 ms fade so the highlight transitions smoothly on section change.
+          duration: const Duration(milliseconds: 150),
+          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            // Active item gets a 12% opacity tinted background; inactive items
+            // are transparent so the drawer background shows through.
+            color: active
+                ? activeColor.withValues(alpha: 0.12)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              // Switch to the filled icon variant when this section is active.
+              Icon(
+                active ? selectedIcon : icon,
+                size: 22,
+                color: active ? activeColor : cs.onSurfaceVariant,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    // Active label is bold and brand-coloured; inactive is
+                    // normal weight in the default surface colour.
+                    fontWeight: active ? FontWeight.w600 : FontWeight.normal,
+                    color: active ? activeColor : cs.onSurface,
+                  ),
                 ),
               ),
-            ),
 
-            // ---- Tier-2 column (always 16 px wide) -----------------------
-            // The SizedBox is always present whether the dot shows or not so
-            // the label text doesn't reflow when the dot appears.
-            SizedBox(
-              width: 16,
-              child: ambientActive
-                  ? Center(
-                      child: Container(
-                        // 6×6 square dot with 1 px radius (slightly rounded
-                        // corners distinguish it visually from the circular
-                        // Tier-1 health dot).
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: MeshTheme.ambientBadge,
-                          borderRadius: BorderRadius.circular(1),
+              // ---- Tier-2 column (always 16 px wide) -----------------------
+              // The SizedBox is always present whether the dot shows or not so
+              // the label text doesn't reflow when the dot appears.
+              SizedBox(
+                width: 16,
+                child: ambientActive
+                    ? Center(
+                        child: Container(
+                          // 6×6 square dot with 1 px radius (slightly rounded
+                          // corners distinguish it visually from the circular
+                          // Tier-1 health dot).
+                          width: 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            color: MeshTheme.ambientBadge,
+                            borderRadius: BorderRadius.circular(1),
+                          ),
                         ),
-                      ),
-                    )
-                  : null,
-            ),
-            const SizedBox(width: 6),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 6),
 
-            // ---- Tier-1 column (always 28 px wide) -----------------------
-            SizedBox(width: 28, child: _tier1Widget(context)),
-          ],
+              // ---- Tier-1 column (always 28 px wide) -----------------------
+              SizedBox(width: 28, child: _tier1Widget(context)),
+            ],
+          ),
         ),
       ),
     );
@@ -688,7 +700,7 @@ class _DrawerItem extends StatelessWidget {
       final color = switch (criticalDot!) {
         _NetworkDotColor.green => colors.sec_green,
         _NetworkDotColor.amber => colors.sec_amber,
-        _NetworkDotColor.red   => colors.sec_red,
+        _NetworkDotColor.red => colors.sec_red,
       };
       return Center(
         child: Container(

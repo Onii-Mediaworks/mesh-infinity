@@ -46,9 +46,11 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'shell_state.dart';
+import 'input_map.dart';
 import 'nav_drawer.dart';
 import 'section_bottom_bar.dart';
 import 'security_status_bar.dart';
+import '../core/widgets/focus_ring.dart';
 import '../features/settings/settings_state.dart';
 
 // Section screens and navigation targets
@@ -106,15 +108,30 @@ class AppShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
+    final shell = context.watch<ShellState>();
 
+    final Widget layout;
     if (width >= _kPermanentDrawerBreak) {
       // Wide enough for a permanent drawer — choose between wide and desktop.
-      return width >= _kDesktopBreak
+      layout = width >= _kDesktopBreak
           ? const _DesktopShell()
           : const _WideShell();
+    } else {
+      // Narrow screen — hamburger-based mobile layout.
+      layout = const _MobileShell();
     }
-    // Narrow screen — hamburger-based mobile layout.
-    return const _MobileShell();
+
+    // System back goes through the same handler as Escape and the cancel
+    // face button (§22.36 rule 7).  While a detail pane is open the pop is
+    // vetoed and InputMap.back closes the pane instead; at the shell root the
+    // pop is allowed so Android minimises per platform convention.
+    return PopScope(
+      canPop: !shell.inDetailView,
+      onPopInvokedWithResult: (did_pop, _) {
+        if (!did_pop) InputMap.back(context, shell);
+      },
+      child: layout,
+    );
   }
 }
 
@@ -141,10 +158,13 @@ class _MobileShell extends StatelessWidget {
         // context that is a descendant of the Scaffold — Builder creates that
         // descendant context.
         leading: Builder(
-          builder: (ctx) => IconButton(
-            icon: const Icon(Icons.menu),
-            tooltip: 'Menu',
-            onPressed: () => Scaffold.of(ctx).openDrawer(),
+          builder: (ctx) => FocusRing(
+            radius: 20,
+            child: IconButton(
+              icon: const Icon(Icons.menu),
+              tooltip: 'Menu',
+              onPressed: () => Scaffold.of(ctx).openDrawer(),
+            ),
           ),
         ),
         title: Text(title),
@@ -394,6 +414,16 @@ String _sectionTitle(AppSection section) => switch (section) {
 /// Desktop and tablet layouts don't have an AppBar, so these actions are
 /// only shown on mobile where the AppBar is visible.
 List<Widget> _appBarActions(BuildContext context, ShellState shell) {
+  // Every action gets the shell focus ring (§22.36 rule 3); IconButtons are
+  // round, so the ring follows their 20 dp radius.
+  return [
+    for (final action in _sectionActions(context, shell))
+      FocusRing(radius: 20, child: action),
+  ];
+}
+
+/// The bare section-specific IconButtons, before the focus ring is applied.
+List<Widget> _sectionActions(BuildContext context, ShellState shell) {
   return switch (shell.activeSection) {
     AppSection.chat => [
         IconButton(

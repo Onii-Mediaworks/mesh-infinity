@@ -38,6 +38,10 @@ import '../../core/widgets/empty_state.dart';
 // EmptyState — shared zero-data placeholder shown when no gardens are found.
 import '../../app/app_theme.dart';
 // MeshTheme — brand and secondary colours used by _NetworkTypeBadge.
+import '../../core/widgets/focus_ring.dart';
+// FocusRing — shell focus ring around the Join button (§22.36 rule 3).
+import '../../shell/primary_focus.dart';
+// PrimaryFocus — declares where key/pad focus lands on open (§22.36).
 import '../tidbits/widgets/garden_gnome.dart'; // §22.12.5 #20 Garden Gnome
 // GardenGnomeWidget — the §22.12.5 design-flourish widget.
 
@@ -171,16 +175,20 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
     }
 
     // Non-empty: scrollable list of discoverable gardens.
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView.builder(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        itemCount: _gardens.length,
-        itemBuilder: (context, i) => _GardenTile(
-          garden: _gardens[i],
-          // Close over the current index so the callback always references
-          // the correct garden even if the list is rebuilt between taps.
-          onJoin: () => _joinGarden(_gardens[i]),
+    // PrimaryFocus (§22.36 rule 2): the first row's Join button is the
+    // primary action, since the rows themselves are not tappable.
+    return PrimaryFocus(
+      child: RefreshIndicator(
+        onRefresh: _load,
+        child: ListView.builder(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          itemCount: _gardens.length,
+          itemBuilder: (context, i) => _GardenTile(
+            garden: _gardens[i],
+            // Close over the current index so the callback always references
+            // the correct garden even if the list is rebuilt between taps.
+            onJoin: () => _joinGarden(_gardens[i]),
+          ),
         ),
       ),
     );
@@ -195,7 +203,11 @@ class _GardenExploreScreenState extends State<GardenExploreScreen> {
 ///
 /// Shows either a "Join" button (if not yet a member) or a green check icon
 /// (if already joined) in the trailing position.
-class _GardenTile extends StatelessWidget {
+///
+/// Stateful only to own a non-focusable node for the ListTile: the row has
+/// no tap action, so it must not be a Tab stop — focus goes straight to the
+/// Join button (§22.36 rule 2).
+class _GardenTile extends StatefulWidget {
   const _GardenTile({required this.garden, required this.onJoin});
 
   /// The raw garden map from discoverGardens().
@@ -205,7 +217,26 @@ class _GardenTile extends StatelessWidget {
   final VoidCallback onJoin;
 
   @override
+  State<_GardenTile> createState() => _GardenTileState();
+}
+
+class _GardenTileState extends State<_GardenTile> {
+  /// Keeps the row itself out of traversal; the Join button is the control.
+  final FocusNode _row_focus = FocusNode(
+    canRequestFocus: false,
+    skipTraversal: true,
+    debugLabel: 'garden_row',
+  );
+
+  @override
+  void dispose() {
+    _row_focus.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final garden = widget.garden;
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
 
@@ -219,6 +250,7 @@ class _GardenTile extends StatelessWidget {
     final joined = garden['joined'] == true;
 
     return ListTile(
+      focusNode: _row_focus,
       contentPadding:
           const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
 
@@ -267,14 +299,19 @@ class _GardenTile extends StatelessWidget {
       // Trailing: check icon for already-joined gardens; Join button otherwise.
       // Showing a check (not the join button) prevents accidental re-join
       // attempts and gives clear feedback about membership status.
+      // The Join button carries the shell focus ring (§22.36 rule 3); 20 dp
+      // matches the M3 outlined-button pill.
       trailing: joined
           ? Icon(
               Icons.check_circle_outline,
               color: cs.primary,
             )
-          : OutlinedButton(
-              onPressed: onJoin,
-              child: const Text('Join'),
+          : FocusRing(
+              radius: 20,
+              child: OutlinedButton(
+                onPressed: widget.onJoin,
+                child: const Text('Join'),
+              ),
             ),
     );
   }

@@ -38,6 +38,7 @@ import '../backend/backend_bridge.dart';
 import '../backend/event_bus.dart';
 import '../app/app_theme.dart';
 import '../shell/shell_state.dart';
+import '../shell/input_map.dart';
 import '../shell/badge_state.dart';
 import '../shell/security_status_bar.dart';
 import '../shell/app_shell.dart';
@@ -309,15 +310,19 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
           // elements during testing and is unhelpful to end users.
           debugShowCheckedModeBanner: false,
           builder: (context, child) {
+            // ShellInputScope installs the one §22.36 key/button → intent
+            // table above the Navigator, so pushed routes, sheets and
+            // dialogs all share it with the shell (see input_map.dart).
+            final body = ShellInputScope(child: child ?? const SizedBox.shrink());
             final nodeLabel = kDebugMode
                 ? Platform.environment['MESH_NODE_LABEL']?.trim()
                 : null;
-            if (nodeLabel == null || nodeLabel.isEmpty || child == null) {
-              return child ?? const SizedBox.shrink();
+            if (nodeLabel == null || nodeLabel.isEmpty) {
+              return body;
             }
             return Stack(
               children: [
-                child,
+                body,
                 Positioned(
                   top: 8,
                   right: 8,

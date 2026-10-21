@@ -71,6 +71,12 @@ import '../messaging_state.dart';
 import '../widgets/message_bubble.dart';
 // MessageBubble — renders one message with all its action affordances.
 import '../widgets/composer_bar.dart';
+// HintRow — tappable controller hints above the composer (§22.36 rule 5).
+import '../../../core/widgets/hint_row.dart';
+// PrimaryFocus — key/pad focus lands on the composer on open (§22.36 rule 2).
+import '../../../shell/primary_focus.dart';
+// SecondaryActionIntent — the Y-button reply route named in the hint row.
+import '../../../shell/input_map.dart';
 // ComposerBar — the text-input row at the bottom with send, reply, typing.
 import 'group_detail_screen.dart';
 // GroupDetailScreen — pushed when the user taps the group-info icon.
@@ -147,8 +153,13 @@ class _ThreadScreenState extends State<ThreadScreen> {
     _messaging = context.read<MessagingState>();
 
     // Tell MessagingState which room is active — loads messages and marks
-    // incoming messages as read.
-    _messaging.selectRoom(widget.roomId);
+    // incoming messages as read.  Deferred to after the first frame because
+    // selectRoom() notifies listeners synchronously, and initState runs
+    // inside the build phase: notifying there marks the provider (an
+    // ancestor) dirty mid-build, which Flutter rejects in debug mode.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _messaging.selectRoom(widget.roomId);
+    });
 
     // Register an auto-scroll listener so that every call to notifyListeners()
     // (which happens when a new message arrives) triggers _scrollToBottom.
@@ -625,12 +636,32 @@ class _ThreadScreenState extends State<ThreadScreen> {
           if (typingNames.isNotEmpty)
             _TypingIndicatorBar(names: typingNames),
 
+          // Controller hint row (§22.36 rule 5): both hints act on the
+          // focused bubble — X opens its sheet, Y replies to it.  Sits above
+          // the composer so the composer keeps the bottom edge for the IME.
+          HintRow(
+            hints: [
+              Hint.context_menu,
+              const Hint(
+                pad: 'Y',
+                key: 'Y',
+                label: 'Reply',
+                intent: SecondaryActionIntent(),
+              ),
+            ],
+          ),
+
           // Composer bar — text input + send button + reply preview.
-          ComposerBar(
-            onSend: _handleSend,
-            replyTo: _replyTo,
-            onCancelReply: _clearReply,
-            onTypingChanged: _handleTypingChanged,
+          // PrimaryFocus (§22.36 rule 2): a key or pad user lands on the
+          // message field when the thread opens; a touch user does not, so
+          // the keyboard never pops uninvited.
+          PrimaryFocus(
+            child: ComposerBar(
+              onSend: _handleSend,
+              replyTo: _replyTo,
+              onCancelReply: _clearReply,
+              onTypingChanged: _handleTypingChanged,
+            ),
           ),
         ],
       ),

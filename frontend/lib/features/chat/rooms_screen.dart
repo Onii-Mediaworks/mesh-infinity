@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../backend/models/room_models.dart';
+import '../../core/widgets/focus_ring.dart';
+import '../../core/widgets/focusable_tile.dart';
+import '../../core/widgets/hint_row.dart';
+import '../../shell/primary_focus.dart';
 import '../../shell/shell_state.dart';
 import '../messaging/messaging_state.dart';
 import '../messaging/screens/thread_screen.dart';
@@ -30,25 +34,37 @@ class RoomsScreen extends StatelessWidget {
     final rooms = messaging.rooms.where((r) => r.isGroup).toList();
 
     return Scaffold(
-      body: RefreshIndicator(
-        // Pull-to-refresh reloads the full room list from the backend.
-        onRefresh: messaging.loadRooms,
-        child: rooms.isEmpty
-            ? _EmptyRooms(onCreateRoom: () => _openCreateRoom(context))
-            : ListView.separated(
-                itemCount: rooms.length,
-                // Divider indented to 72px aligns with the text column,
-                // not the leading avatar — consistent with _DmTile.
-                separatorBuilder: (ctx, i) =>
-                    const Divider(height: 1, indent: 72),
-                itemBuilder: (context, i) =>
-                    _RoomTile(room: rooms[i]),
-              ),
+      // PrimaryFocus declares where a key or pad user lands on open
+      // (§22.36 rule 2): the first room row, or the "Create a room" button
+      // when the list is empty.
+      body: PrimaryFocus(
+        child: RefreshIndicator(
+          // Pull-to-refresh reloads the full room list from the backend.
+          onRefresh: messaging.loadRooms,
+          child: rooms.isEmpty
+              ? _EmptyRooms(onCreateRoom: () => _openCreateRoom(context))
+              : ListView.separated(
+                  itemCount: rooms.length,
+                  // Divider indented to 72px aligns with the text column,
+                  // not the leading avatar — consistent with _DmTile.
+                  separatorBuilder: (ctx, i) =>
+                      const Divider(height: 1, indent: 72),
+                  itemBuilder: (context, i) =>
+                      _RoomTile(room: rooms[i]),
+                ),
+        ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _openCreateRoom(context),
-        tooltip: 'New room',
-        child: const Icon(Icons.add),
+      // Controller hint row (§22.36 rule 5): the shoulder-button tab switch
+      // is the only pad-only action on this list.  Collapsed until a pad or
+      // key-driven focus has been seen.
+      bottomNavigationBar: HintRow(hints: [Hint.section_next]),
+      floatingActionButton: FocusRing(
+        radius: 16,
+        child: FloatingActionButton(
+          onPressed: () => _openCreateRoom(context),
+          tooltip: 'New room',
+          child: const Icon(Icons.add),
+        ),
       ),
     );
   }
@@ -71,51 +87,55 @@ class _RoomTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      leading: CircleAvatar(
-        // primaryContainer distinguishes group-room avatars from DM avatars
-        // (which use secondaryContainer) — helps users scan at a glance.
-        backgroundColor:
-            Theme.of(context).colorScheme.primaryContainer,
-        child: Text(
-          // '#' fallback signals "this is a room" when the name is empty,
-          // borrowing the IRC/Slack convention for channel names.
-          room.name.isNotEmpty ? room.name[0].toUpperCase() : '#',
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onPrimaryContainer,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ),
-      title: Text(
-        room.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        // Bold title visually flags unread messages without requiring the user
-        // to look at the badge — the text weight alone signals activity.
-        style: room.unreadCount > 0
-            ? const TextStyle(fontWeight: FontWeight.w700)
-            : null,
-      ),
-      // Last message preview — only shown when a message exists.
-      subtitle: room.lastMessage.isNotEmpty
-          ? Text(
-              room.lastMessage,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+    // FocusableTile draws the shell focus ring around the row (§22.36 rule
+    // 3); there is no long-press sheet on room rows yet, so no menu route.
+    return FocusableTile(
+      child: ListTile(
+          leading: CircleAvatar(
+            // primaryContainer distinguishes group-room avatars from DM avatars
+            // (which use secondaryContainer) — helps users scan at a glance.
+            backgroundColor:
+                Theme.of(context).colorScheme.primaryContainer,
+            child: Text(
+              // '#' fallback signals "this is a room" when the name is empty,
+              // borrowing the IRC/Slack convention for channel names.
+              room.name.isNotEmpty ? room.name[0].toUpperCase() : '#',
               style: TextStyle(
-                // onSurfaceVariant de-emphasises the preview relative to the
-                // room name, matching the visual hierarchy in most chat apps.
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+                fontWeight: FontWeight.w600,
               ),
-            )
-          : null,
-      // Delegate the unread badge to _UnreadBadge to avoid duplicating the
-      // pill-decoration code that also appears in _DmTile.
-      trailing: room.unreadCount > 0
-          ? _UnreadBadge(count: room.unreadCount)
-          : null,
-      onTap: () => _open(context, room.id),
+            ),
+          ),
+          title: Text(
+            room.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            // Bold title visually flags unread messages without requiring the user
+            // to look at the badge — the text weight alone signals activity.
+            style: room.unreadCount > 0
+                ? const TextStyle(fontWeight: FontWeight.w700)
+                : null,
+          ),
+          // Last message preview — only shown when a message exists.
+          subtitle: room.lastMessage.isNotEmpty
+              ? Text(
+                  room.lastMessage,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    // onSurfaceVariant de-emphasises the preview relative to the
+                    // room name, matching the visual hierarchy in most chat apps.
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                )
+              : null,
+          // Delegate the unread badge to _UnreadBadge to avoid duplicating the
+          // pill-decoration code that also appears in _DmTile.
+          trailing: room.unreadCount > 0
+              ? _UnreadBadge(count: room.unreadCount)
+              : null,
+          onTap: () => _open(context, room.id),
+      ),
     );
   }
 

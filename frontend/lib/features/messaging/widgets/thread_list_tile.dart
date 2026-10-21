@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../backend/models/room_models.dart';
+import '../../../core/widgets/focusable_tile.dart';
 
 /// ThreadListTile — a single row in the Rooms / Direct-Messages list.
 ///
@@ -47,54 +48,60 @@ class ThreadListTile extends StatelessWidget {
     // this is a Garden channel or a private chat without exposing any IDs.
     final fallbackLabel = room.isGroup ? 'Garden' : 'Chat';
 
-    return ListTile(
-      selected: selected,
-      // Subtle tinted highlight for the active tile without full contrast.
-      selectedTileColor: cs.primaryContainer.withValues(alpha: 0.3),
-      leading: CircleAvatar(
-        backgroundColor: cs.primaryContainer,
-        child: room.name.isNotEmpty
-            // First letter of the room name as an initial — faster to scan
-            // than a generic icon for users who have many rooms.
-            ? Text(
-                room.name[0].toUpperCase(),
-                style: TextStyle(
-                  color: cs.onPrimaryContainer,
-                  fontWeight: FontWeight.bold,
-                ),
-              )
-            // Fallback icon when the room has no name yet (e.g. a newly
-            // created room that hasn't been named, or a one-shot pairing room).
-            : Icon(leadingIcon, color: cs.onPrimaryContainer),
+    // FocusableTile adds the shell focus ring and routes the context-menu
+    // intent (Shift+F10 / Menu / X) to the same dialog the long press opens
+    // (§22.36 rules 3 and 4).
+    return FocusableTile(
+      on_context_menu: () => _showDeleteDialog(context),
+      child: ListTile(
+          selected: selected,
+          // Subtle tinted highlight for the active tile without full contrast.
+          selectedTileColor: cs.primaryContainer.withValues(alpha: 0.3),
+          leading: CircleAvatar(
+            backgroundColor: cs.primaryContainer,
+            child: room.name.isNotEmpty
+                // First letter of the room name as an initial — faster to scan
+                // than a generic icon for users who have many rooms.
+                ? Text(
+                    room.name[0].toUpperCase(),
+                    style: TextStyle(
+                      color: cs.onPrimaryContainer,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  )
+                // Fallback icon when the room has no name yet (e.g. a newly
+                // created room that hasn't been named, or a one-shot pairing room).
+                : Icon(leadingIcon, color: cs.onPrimaryContainer),
+          ),
+          title: Text(
+            room.name.isNotEmpty ? room.name : fallbackLabel,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          // Only render a subtitle row when there is something to show — an empty
+          // subtitle would leave an awkward blank line below the title.
+          subtitle: room.lastMessage.isNotEmpty
+              ? Text(
+                  room.lastMessage,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                )
+              : null,
+          // Unread badge: shown only when there are unread messages (> 0).
+          // null collapses the trailing slot so nothing takes up space.
+          trailing: room.unreadCount > 0
+              ? Badge(
+                  label: Text('${room.unreadCount}'),
+                  backgroundColor: cs.primary,
+                  textColor: cs.onPrimary,
+                )
+              : null,
+          onTap: onTap,
+          // Long-press to delete: hides a destructive action behind a gesture that
+          // is harder to trigger accidentally than a swipe or a single tap.
+          onLongPress: () => _showDeleteDialog(context),
       ),
-      title: Text(
-        room.name.isNotEmpty ? room.name : fallbackLabel,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      // Only render a subtitle row when there is something to show — an empty
-      // subtitle would leave an awkward blank line below the title.
-      subtitle: room.lastMessage.isNotEmpty
-          ? Text(
-              room.lastMessage,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
-            )
-          : null,
-      // Unread badge: shown only when there are unread messages (> 0).
-      // null collapses the trailing slot so nothing takes up space.
-      trailing: room.unreadCount > 0
-          ? Badge(
-              label: Text('${room.unreadCount}'),
-              backgroundColor: cs.primary,
-              textColor: cs.onPrimary,
-            )
-          : null,
-      onTap: onTap,
-      // Long-press to delete: hides a destructive action behind a gesture that
-      // is harder to trigger accidentally than a swipe or a single tap.
-      onLongPress: () => _showDeleteDialog(context),
     );
   }
 

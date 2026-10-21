@@ -160,6 +160,25 @@ List<String> subPageLabels(AppSection section) => switch (section) {
 };
 
 // ---------------------------------------------------------------------------
+// Input source — which kind of device drove the last interaction (§22.36)
+// ---------------------------------------------------------------------------
+
+/// The device class behind the most recent user interaction.
+///
+/// The shell input layer (`input_map.dart`) updates [ShellState.last_input]
+/// from raw pointer and key events.  Widgets use it to decide whether a
+/// keyboard/controller affordance (focus ring, hint row) should be visible:
+/// a touch user never sees them, a pad user always does.
+enum InputSource {
+  /// A touch, stylus or mouse interaction — focus affordances stay hidden.
+  pointer,
+  /// A keyboard key press — the focus ring is drawn, hints show key names.
+  keyboard,
+  /// A gamepad button or D-pad press — hints show physical button names.
+  gamepad,
+}
+
+// ---------------------------------------------------------------------------
 // ShellState — ChangeNotifier for navigation
 // ---------------------------------------------------------------------------
 
@@ -205,6 +224,34 @@ class ShellState extends ChangeNotifier {
   /// the full vertical height.  Set to true by [selectRoom], [selectPeer],
   /// and [enterDetailView]; set to false by any top-level navigation action.
   bool _inDetailView = false;
+
+  // ---- Controller / keyboard input state (§22.36) ----
+  //
+  // These are ValueNotifiers rather than plain fields so the handful of
+  // widgets that care (focus rings, hint rows, the Shortcuts table) can
+  // listen to exactly one value without rebuilding on every navigation
+  // change that goes through notifyListeners().
+
+  /// Whether the confirm and cancel face buttons are swapped (§22.36 rule 8).
+  ///
+  /// False = Xbox layout (A confirms, B cancels).  True = Nintendo / some
+  /// Sony layouts (the right-hand face button cancels, the bottom one
+  /// confirms).  Resolved once in the input map; nothing else reads raw
+  /// face-button keys.  Session-scoped for now — persisting it to the
+  /// backend settings store is a follow-up.
+  final ValueNotifier<bool> confirm_swap = ValueNotifier<bool>(false);
+
+  /// The device class behind the most recent interaction.
+  ///
+  /// Starts at [InputSource.pointer] so a cold start on a phone shows no
+  /// focus ring until the user actually presses a key or pad button.
+  final ValueNotifier<InputSource> last_input =
+      ValueNotifier<InputSource>(InputSource.pointer);
+
+  /// Sticky flag: true once a gamepad has been seen or a key has moved
+  /// focus (§22.36 rule 5).  Hint rows stay hidden until this flips and
+  /// stay visible for the rest of the session once it has.
+  final ValueNotifier<bool> hints_wanted = ValueNotifier<bool>(false);
 
   // -------------------------------------------------------------------------
   // Read API — getters
@@ -386,5 +433,26 @@ class ShellState extends ChangeNotifier {
     _selectedTransferId = null;
     _inDetailView = false;
     notifyListeners();
+  }
+
+  /// Record that an input event came from [source] (§22.36).
+  ///
+  /// Called by the shell input layer for every pointer-down and key event.
+  /// Keyboard and gamepad input also arm [hints_wanted] permanently for the
+  /// session, because a user who has a pad or keyboard in hand benefits from
+  /// the hint row even if they touch the screen in between.
+  void note_input(InputSource source) {
+    last_input.value = source;
+    if (source != InputSource.pointer) hints_wanted.value = true;
+  }
+
+  /// Release the ValueNotifiers alongside the ChangeNotifier so listeners
+  /// attached by focus rings and hint rows do not outlive the shell.
+  @override
+  void dispose() {
+    confirm_swap.dispose();
+    last_input.dispose();
+    hints_wanted.dispose();
+    super.dispose();
   }
 }

@@ -126,30 +126,44 @@ class _ComposerBarState extends State<ComposerBar> {
                       tooltip: 'Attach file',
                     ),
                   Expanded(
-                    child: TextField(
-                      controller: _controller,
-                      // Allow up to 4 lines before the field starts scrolling.
-                      maxLines: 4,
-                      minLines: 1,
-                      // Auto-capitalise the first letter of each sentence for
-                      // convenience on mobile keyboards.
-                      textCapitalization: TextCapitalization.sentences,
-                      decoration: InputDecoration(
-                        hintText: 'Message',
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        // isDense shrinks internal padding to keep the field compact.
-                        isDense: true,
-                        // Pill-shaped border with no visible border line — the
-                        // filled background is the visual container.
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
+                    // The confirm face button sends while the field is
+                    // focused (§22.36 rule 1, "Compose / send").  Space and
+                    // Enter never reach this action: DefaultTextEditingShortcuts
+                    // stops them inside a text field, so typing is unaffected.
+                    child: Actions(
+                      actions: <Type, Action<Intent>>{
+                        ActivateIntent: CallbackAction<ActivateIntent>(
+                          onInvoke: (_) {
+                            _send();
+                            return null;
+                          },
                         ),
+                      },
+                      child: TextField(
+                          controller: _controller,
+                          // Allow up to 4 lines before the field starts scrolling.
+                          maxLines: 4,
+                          minLines: 1,
+                          // Auto-capitalise the first letter of each sentence for
+                          // convenience on mobile keyboards.
+                          textCapitalization: TextCapitalization.sentences,
+                          decoration: InputDecoration(
+                            hintText: 'Message',
+                            contentPadding:
+                                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            // isDense shrinks internal padding to keep the field compact.
+                            isDense: true,
+                            // Pill-shaped border with no visible border line — the
+                            // filled background is the visual container.
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(24),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                          // Hardware-keyboard Enter key triggers a send, matching
+                          // the desktop convention for chat apps.
+                          onSubmitted: (_) => _send(),
                       ),
-                      // Hardware-keyboard Enter key triggers a send, matching
-                      // the desktop convention for chat apps.
-                      onSubmitted: (_) => _send(),
                     ),
                   ),
                   const SizedBox(width: 4),
