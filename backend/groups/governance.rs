@@ -698,60 +698,21 @@ pub fn cast_vote(
     Ok(())
 }
 
-/// Cast a governance vote using an unlinkable ring proof.
-pub fn cast_ring_vote(
-    proposal: &mut Proposal,
-    voter_role: &GroupRole,
-    decision: VoteDecision,
-    secret_key: &[u8; 32],
-    ring: &[[u8; 32]],
-    policy: &GovernancePolicy,
-    eligible_voter_count: usize,
-) -> Result<(), MeshError> {
-    if proposal.status != ProposalStatus::Open {
-        return Err(MeshError::Internal(format!(
-            "proposal is {:?}, not Open — cannot accept votes",
-            proposal.status,
-        )));
-    }
-    if !policy.voter_roles.contains(voter_role) {
-        return Err(MeshError::Internal(format!(
-            "role {:?} is not allowed to vote",
-            voter_role,
-        )));
-    }
-
-    let mut sig_payload = Vec::with_capacity(17);
-    sig_payload.extend_from_slice(&proposal.id);
-    sig_payload.push(decision.as_byte());
-    let ring_signature = ring_sign(secret_key, ring, &sig_payload)
-        .map_err(|e| MeshError::Internal(format!("ring vote signing failed: {e}")))?;
-
-    proposal.votes.push(Vote {
-        decision,
-        proof: GovernanceProof::Ring { ring_signature },
-    });
-    tally_votes_with_ring(proposal, policy, eligible_voter_count, Some(ring));
-    Ok(())
-}
-
-/// Verify that a vote's Ed25519 signature is valid.
+/// Verify that a vote carries a valid attributable Ed25519 proof.
 ///
 /// Reconstructs the signed payload (proposal_id || decision_byte) and
 /// verifies the signature against the voter's public key (which is
 /// their peer ID, since PeerId wraps a 32-byte Ed25519 public key).
 ///
-/// Returns true if the signature is valid, false otherwise.
+/// A `GovernanceProof::Ring` on a vote is always rejected. SPEC §3.5.2 and
+/// §8.7 state that anonymous ring membership "cannot itself authorize admin
+/// actions or multiple votes": an unlinkable proof has no voter identity,
+/// so nothing could stop one member from casting the whole quorum. Ring
+/// proofs remain valid for *proposals* (see `verify_proposal_signature`),
+/// where anonymity of the proposer does not affect the decision.
+///
+/// Returns true if the proof is a valid attributable signature.
 pub fn verify_vote_signature(proposal_id: &[u8; 16], vote: &Vote) -> bool {
-    verify_vote_signature_with_ring(proposal_id, vote, None)
-}
-
-/// Verify a vote proof, optionally permitting ring proofs against the supplied ring.
-pub fn verify_vote_signature_with_ring(
-    proposal_id: &[u8; 16],
-    vote: &Vote,
-    ring: Option<&[[u8; 32]]>,
-) -> bool {
     // Reconstruct the exact payload that was signed.
     // Must match the construction in cast_vote exactly.
     let mut sig_payload = Vec::with_capacity(17);
@@ -766,6 +727,9 @@ pub fn verify_vote_signature_with_ring(
             ed25519_public,
             signature,
         } => {
+            // The claimed signer must be the peer ID derived from the key
+            // that actually verifies, or a valid signature by key X could be
+            // recorded as a vote by peer Y.
             if PeerId::from_ed25519_pub(ed25519_public) != *signer {
                 return false;
             }
@@ -776,9 +740,27 @@ pub fn verify_vote_signature_with_ring(
                 signature,
             )
         }
-        GovernanceProof::Ring { ring_signature } => ring
-            .map(|public_ring| ring_verify(public_ring, &sig_payload, ring_signature))
-            .unwrap_or(false),
+        // Unlinkable proofs carry no identity to deduplicate on, so they
+        // can never count toward quorum or threshold (§3.5.2).
+        GovernanceProof::Ring { .. } => false,
+    }
+}
+
+/// The attributable signer of a vote, if its proof verifies.
+///
+/// Used by `tally_votes` to count each eligible voter at most once no matter
+/// how many `Vote` records name them. Returns `None` for ring proofs and for
+/// any attributed proof whose signature fails.
+fn verified_vote_signer(proposal_id: &[u8; 16], vote: &Vote) -> Option<PeerId> {
+    // Signature and signer/key binding are checked in one place.
+    if !verify_vote_signature(proposal_id, vote) {
+        return None;
+    }
+    match &vote.proof {
+        GovernanceProof::Attributed { signer, .. } => Some(*signer),
+        // Unreachable in practice because verify_vote_signature rejects ring
+        // votes, but spelled out so a future proof kind cannot slip through.
+        GovernanceProof::Ring { .. } => None,
     }
 }
 
@@ -801,20 +783,15 @@ pub fn verify_vote_signature_with_ring(
 ///    `max_possible_approvals = current_approvals + remaining_votes`
 ///
 /// The proposal status is updated in place and also returned.
+///
+/// Only attributable votes count, and each signer counts once: the first
+/// verified vote recorded for a peer is the one tallied. Votes may reach a
+/// proposal through gossip or storage rather than `cast_vote`, so the
+/// one-vote-per-member rule is enforced here as well as at casting time.
 pub fn tally_votes(
     proposal: &mut Proposal,
     policy: &GovernancePolicy,
     eligible_voter_count: usize,
-) -> ProposalStatus {
-    tally_votes_with_ring(proposal, policy, eligible_voter_count, None)
-}
-
-/// Tally votes, verifying attributable or ring proofs as appropriate.
-pub fn tally_votes_with_ring(
-    proposal: &mut Proposal,
-    policy: &GovernancePolicy,
-    eligible_voter_count: usize,
-    ring: Option<&[[u8; 32]]>,
 ) -> ProposalStatus {
     // Only tally proposals that are still Open.
     // Decided proposals should not have their status changed.
@@ -822,29 +799,35 @@ pub fn tally_votes_with_ring(
         return proposal.status;
     }
 
-    // Verify every vote's Ed25519 signature before counting.
-    // A vote with an invalid signature is treated as if it does not exist —
-    // it is excluded from both quorum and threshold calculations. This
-    // prevents an attacker who has compromised the proposal storage (but
-    // not the voters' keys) from injecting forged votes to sway outcomes.
+    // Verify every vote's proof before counting, and count each signer at
+    // most once. A vote with an invalid signature, a ring proof, or a signer
+    // that already voted is treated as if it does not exist: it is excluded
+    // from both quorum and threshold calculations. This stops an attacker
+    // who controls proposal storage or the gossip path (but not the voters'
+    // keys) from injecting forged or duplicated votes to sway outcomes.
     //
-    // Note: we do NOT remove invalid votes from the Vec here because
-    // tally_votes takes `&mut Proposal` only for status updates, and
-    // mutating the vote list during iteration would require a separate
-    // pass. Instead, we count only verified votes below.
-    let verified_approve_count = proposal
-        .votes
-        .iter()
-        .filter(|v| verify_vote_signature_with_ring(&proposal.id, v, ring))
-        .filter(|v| v.decision == VoteDecision::Approve)
-        .count();
-
-    // Count total verified votes (regardless of decision).
-    let verified_total = proposal
-        .votes
-        .iter()
-        .filter(|v| verify_vote_signature_with_ring(&proposal.id, v, ring))
-        .count();
+    // Note: we do NOT remove rejected votes from the Vec here because
+    // tally_votes takes `&mut Proposal` only for status updates; the
+    // verified set is computed from a read-only pass instead.
+    let mut seen_signers: Vec<PeerId> = Vec::with_capacity(proposal.votes.len());
+    let mut verified_approve_count = 0usize;
+    let mut verified_total = 0usize;
+    for vote in &proposal.votes {
+        // Skip anything that is not a valid attributable proof.
+        let Some(signer) = verified_vote_signer(&proposal.id, vote) else {
+            continue;
+        };
+        // Second and later records for the same signer are ignored; the
+        // first one keeps the member's original decision.
+        if seen_signers.contains(&signer) {
+            continue;
+        }
+        seen_signers.push(signer);
+        verified_total += 1;
+        if vote.decision == VoteDecision::Approve {
+            verified_approve_count += 1;
+        }
+    }
 
     // Use the verified counts for all subsequent calculations.
     // Votes with invalid signatures are silently excluded.
@@ -2181,8 +2164,10 @@ mod tests {
         assert!(!verify_proposal_signature(&proposal, None));
     }
 
+    /// A ring proof must never count as a vote: one member holding one
+    /// secret key could otherwise cast the entire quorum (§3.5.2, §8.7).
     #[test]
-    fn test_ring_vote_verification_and_tally() {
+    fn test_ring_votes_never_count_toward_quorum() {
         let group_id = [0x92; 16];
         let policy = GovernancePolicy {
             quorum: 0.5,
@@ -2192,7 +2177,7 @@ mod tests {
             voter_roles: vec![GroupRole::Admin, GroupRole::Moderator, GroupRole::Member],
         };
         let (sk1, pk1) = test_keypair(230);
-        let (sk2, pk2) = test_keypair(231);
+        let (_, pk2) = test_keypair(231);
         let ring = vec![pk1, pk2];
         let proposer = peer_id(&pk1);
 
@@ -2205,45 +2190,77 @@ mod tests {
             },
         );
 
-        cast_ring_vote(
-            &mut proposal,
-            &GroupRole::Admin,
-            VoteDecision::Approve,
-            &sk1,
-            &ring,
-            &policy,
-            2,
-        )
-        .expect("first ring vote");
-        assert!(verify_vote_signature_with_ring(
-            &proposal.id,
-            &proposal.votes[0],
-            Some(&ring)
-        ));
-        assert_eq!(proposal.status, ProposalStatus::Approved);
+        // Inject N well-formed ring votes from the SAME key, as an attacker
+        // with storage/gossip access (or a single colluding member) would.
+        let eligible = 2usize;
+        let mut sig_payload = Vec::with_capacity(17);
+        sig_payload.extend_from_slice(&proposal.id);
+        sig_payload.push(VoteDecision::Approve.as_byte());
+        for _ in 0..(eligible * 3) {
+            let ring_signature =
+                ring_sign(&sk1, &ring, &sig_payload).expect("ring signing works in tests");
+            proposal.votes.push(Vote {
+                decision: VoteDecision::Approve,
+                proof: GovernanceProof::Ring { ring_signature },
+            });
+        }
 
-        let mut second_proposal = test_proposal(
+        // None of them is a valid vote proof, and the tally ignores them all:
+        // quorum is not met, so the proposal stays Open instead of passing.
+        for vote in &proposal.votes {
+            assert!(!verify_vote_signature(&proposal.id, vote));
+        }
+        let status = tally_votes(&mut proposal, &policy, eligible);
+        assert_eq!(status, ProposalStatus::Open);
+        assert_eq!(proposal.status, ProposalStatus::Open);
+    }
+
+    /// Duplicate attributable votes that bypass `cast_vote` (e.g. replayed
+    /// through gossip) count once per signer, so a single member cannot
+    /// reach quorum alone by repeating their own valid vote.
+    #[test]
+    fn test_duplicate_attributed_votes_count_once() {
+        let group_id = [0x93; 16];
+        let policy = GovernancePolicy {
+            quorum: 0.67,
+            approval_threshold: 0.5,
+            voting_period_secs: DEFAULT_VOTING_PERIOD_SECS,
+            proposer_roles: vec![GroupRole::Admin],
+            voter_roles: vec![GroupRole::Admin, GroupRole::Member],
+        };
+        let (sk1, pk1) = test_keypair(240);
+        let voter = peer_id(&pk1);
+
+        let mut proposal = test_proposal(
             &group_id,
-            &proposer,
+            &voter,
             &sk1,
             GovernanceAction::ChangeSettings {
                 settings_json: "{}".to_string(),
             },
         );
-        cast_ring_vote(
-            &mut second_proposal,
+
+        // One genuine vote through the API...
+        let eligible = 3usize;
+        cast_vote(
+            &mut proposal,
+            &voter,
             &GroupRole::Member,
             VoteDecision::Approve,
-            &sk2,
-            &ring,
+            &sk1,
             &policy,
-            2,
+            eligible,
         )
-        .expect("second ring vote");
-        assert!(verify_vote_signature_with_ring(
-            &second_proposal.id,
-            &second_proposal.votes[0],
-            Some(&ring),
-        ));
+        .expect("first vote is accepted");
+        // ...and the same signed record replayed twice more, straight into
+        // the vote list as a gossip peer could do.
+        let replay = proposal.votes[0].clone();
+        proposal.votes.push(replay.clone());
+        proposal.votes.push(replay);
+
+        // Three records, one signer: quorum needs 3 of 3, so still Open.
+        let status = tally_votes(&mut proposal, &policy, eligible);
+        assert_eq!(status, ProposalStatus::Open);
+        assert_eq!(proposal.votes.len(), 3);
     }
 }
