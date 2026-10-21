@@ -30,7 +30,23 @@
 //! - Integer functions return `0` on success, `-1` on failure.
 //! - Pointer functions return `null` on failure; non-null on success.
 //! - JSON strings are owned by the context (`last_response`) and are valid
-//!   until the next FFI call that writes to `last_response`.
+//!   until the next FFI call that writes to `last_response`.  Only the FFI
+//!   caller's thread ever writes `last_response`.
+//! - Error strings from `mi_get_last_error` / `mi_last_error_message` are
+//!   owned by a thread-local copy made at the moment of the call (see
+//!   "Last-error ownership" below), not by the runtime's `last_error` slot.
+//!
+//! ## Last-error ownership
+//!
+//! `MeshRuntime::set_error` runs on background threads too (Layer-1 poll,
+//! Tor bootstrap), replacing — and freeing — the runtime's `last_error`
+//! `CString` at any time.  Handing Dart a pointer into that slot would be a
+//! use-after-free race.  Instead each error read copies the current message
+//! into `LAST_ERROR_COPY`, a thread-local slot owned by the FFI layer, and
+//! returns a pointer into that copy.  Contract: the pointer is valid until
+//! the next `mi_get_last_error` / `mi_last_error_message` call *on the same
+//! thread*; no background thread can invalidate it.  Dart must still copy
+//! the string before its next error read.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -173,6 +189,30 @@ fn validate_ffi_config(cfg: &FfiMeshConfig) -> Result<(), String> {
 thread_local! {
     static PREINIT_ERROR: std::cell::RefCell<Option<CString>> =
         const { std::cell::RefCell::new(None) };
+}
+
+// Thread-local copy of the runtime's `last_error`, taken under the lock at
+// read time.  The pointer handed to Dart points here, so a background
+// `set_error` replacing the runtime's own CString cannot free it.
+thread_local! {
+    static LAST_ERROR_COPY: std::cell::RefCell<Option<CString>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Replace this thread's error copy with `snapshot` and return its pointer.
+///
+/// Returns null when there is no error.  The previous copy (if any) is freed
+/// here — which is exactly why the contract says "valid until the next error
+/// read on this thread".
+fn publish_error_copy(snapshot: Option<CString>) -> *const c_char {
+    LAST_ERROR_COPY.with(|slot| {
+        // Dropping the old copy is safe: Dart has, by contract, finished with it.
+        *slot.borrow_mut() = snapshot;
+        slot.borrow()
+            .as_ref()
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    })
 }
 
 /// Store `msg` in the pre-init thread-local error slot.
@@ -878,7 +918,12 @@ pub unsafe extern "C" fn mesh_destroy(ctx: *mut MeshContext) {
 /// Return the last error string stored in the context.
 ///
 /// Returns null if no error has been set since the last successful call.
-/// The pointer is valid until the next FFI call that writes `last_error`.
+///
+/// The returned pointer refers to a thread-local *copy* of the message,
+/// taken under the runtime's lock during this call.  It stays valid until
+/// the next `mi_get_last_error` / `mi_last_error_message` call on the same
+/// thread, regardless of what background threads do to `last_error` in the
+/// meantime (see "Last-error ownership" in the module docs).
 ///
 /// # Safety
 /// `ctx` must be non-null and point to a valid `MeshContext`.
@@ -890,25 +935,21 @@ pub unsafe extern "C" fn mi_get_last_error(ctx: *mut MeshContext) -> *const c_ch
     }
     // SAFETY: caller guarantees non-null, valid for the duration of this call.
     let ctx = unsafe { &*ctx };
-    // Return the stored error pointer if one exists, null otherwise.
-    // Dispatch on the variant.
-    match ctx
+    // Copy the message while holding the lock so a concurrent `set_error`
+    // cannot free the runtime's CString out from under the clone.
+    let snapshot = ctx
         .last_error
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
-        // Wrap the found value for the caller.
-        // Wrap the found value.
-        Some(s) => s.as_ptr(),
-        // No value available.
-        None => ptr::null(),
-    }
+        .clone();
+    // Hand out a pointer into this thread's own copy, never into the slot.
+    publish_error_copy(snapshot)
 }
 
 /// Return the last error string.
 ///
-/// - If `ctx` is non-null: returns the post-init error stored in the context.
+/// - If `ctx` is non-null: returns a thread-local copy of the post-init
+///   error stored in the context (same contract as `mi_get_last_error`).
 /// - If `ctx` is null: returns the pre-init error from thread-local storage.
 ///
 /// # Safety
@@ -951,6 +992,7 @@ pub mod identity;
 pub mod messaging;
 pub mod network;
 pub mod peers;
+pub mod services;
 pub mod transport;
 
 // Tests
@@ -1769,5 +1811,62 @@ mod tests {
     fn test_null_ctx_is_layer1_ready_returns_zero() {
         // Null context must not crash — must return 0.
         assert_eq!(unsafe { mi_is_layer1_ready(ptr::null_mut()) }, 0);
+    }
+
+    /// The pointer from `mi_get_last_error` must stay valid while a
+    /// background thread replaces (and frees) the runtime's `last_error`
+    /// slot — the race from the audit finding.  With the thread-local copy
+    /// the original text is still readable after thousands of overwrites.
+    #[test]
+    fn test_last_error_pointer_survives_background_set_error() {
+        let (ctx, _dir) = make_ctx();
+        let rt: &MeshRuntime = unsafe { &*ctx };
+
+        rt.set_error("first failure");
+        let first_ptr = unsafe { mi_get_last_error(ctx) };
+        assert!(!first_ptr.is_null());
+
+        // Hammer `set_error` from another thread, exactly like the Layer-1
+        // poll thread does on Tor bootstrap failure.  Each call drops the
+        // previous runtime CString.
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for i in 0..2_000u32 {
+                    rt.set_error(&format!("background failure {i}"));
+                }
+            });
+        });
+
+        // The pointer Dart received still reads the message it was given.
+        let still = unsafe { CStr::from_ptr(first_ptr) }.to_str().unwrap();
+        assert_eq!(still, "first failure");
+
+        // A fresh read observes the newest message and replaces the copy.
+        let latest = unsafe { CStr::from_ptr(mi_get_last_error(ctx)) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(latest, "background failure 1999");
+
+        // `mi_last_error_message` with a context shares the same contract.
+        let via_message = unsafe { CStr::from_ptr(mi_last_error_message(ctx)) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(via_message, latest);
+
+        unsafe { mesh_destroy(ctx) };
+    }
+
+    /// No error set → null, and reading does not invent an empty string.
+    #[test]
+    fn test_last_error_null_when_unset() {
+        let (ctx, _dir) = make_ctx();
+        // The error slot is empty on a fresh context (clearnet port set
+        // succeeded in make_ctx), so the read must be null.
+        *unsafe { &*ctx }.last_error.lock().unwrap() = None;
+        assert!(unsafe { mi_get_last_error(ctx) }.is_null());
+        assert!(unsafe { mi_get_last_error(ptr::null_mut()) }.is_null());
+        unsafe { mesh_destroy(ctx) };
     }
 }

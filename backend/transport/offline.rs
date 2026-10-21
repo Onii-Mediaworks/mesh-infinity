@@ -62,6 +62,17 @@ pub const BUNDLE_VERSION: u8 = 1;
 /// expiring eventually to bound storage growth on the receiver.
 pub const DEFAULT_TTL_SECS: u64 = 30 * 24 * 3600;
 
+/// Hard cap on the number of packets a single bundle may declare.
+///
+/// `packet_count` is attacker-controlled (the envelope only authenticates
+/// it to whoever holds the recipient's *public* key), so it must be bounded
+/// before it drives any allocation.  65 536 packets × the 24-byte `Vec`
+/// header is ~1.5 MiB of capacity at most; a QR/USB bundle with more
+/// packets than this is rejected outright.
+// MAX_BUNDLE_PACKETS — structural limit checked before `Vec::with_capacity`.
+// Also bounded by the body length: each packet costs at least 4 prefix bytes.
+pub const MAX_BUNDLE_PACKETS: u32 = 65_536;
+
 /// Serialised `PhysicalTransferHeader` size in bytes (fixed-width encoding).
 ///
 /// Layout:
@@ -341,8 +352,11 @@ pub struct ParsedBundle {
 /// Validation sequence per §5.28.1:
 /// 1. Verify magic and version.
 /// 2. Check `expires_at` — if past, return `Expired`.
-/// 3. Verify `checksum` — on mismatch, return `ChecksumMismatch`.
-/// 4. Caller should dedup on `bundle_id` before acting on packets.
+/// 3. Bound `packet_count` (hard cap, and against the body length) and
+///    require `total_size` to account for the body exactly — all before
+///    any allocation is sized from header fields.
+/// 4. Verify `checksum` — on mismatch, return `ChecksumMismatch`.
+/// 5. Caller should dedup on `bundle_id` before acting on packets.
 pub fn parse_bundle(data: &[u8]) -> Result<ParsedBundle, OfflineError> {
     if data.len() < HEADER_SIZE {
         return Err(OfflineError::TruncatedHeader);
@@ -360,20 +374,60 @@ pub fn parse_bundle(data: &[u8]) -> Result<ParsedBundle, OfflineError> {
         });
     }
 
-    // Parse packet stream.
+    // Bound the declared packet count before it sizes anything.  The header
+    // is attacker-controlled: a `packet_count` of u32::MAX used to request
+    // ~96 GiB from `Vec::with_capacity` and abort the importing process.
+    if header.packet_count > MAX_BUNDLE_PACKETS {
+        return Err(OfflineError::TooManyPackets {
+            declared: header.packet_count,
+            max: MAX_BUNDLE_PACKETS,
+        });
+    }
+    // Every packet costs at least its 4-byte length prefix, so the body
+    // length is a second, data-derived ceiling on the count.
+    let body_len = (data.len() - HEADER_SIZE) as u64;
+    let prefix_bytes = u64::from(header.packet_count) * 4;
+    if prefix_bytes > body_len {
+        return Err(OfflineError::PacketCountExceedsData {
+            declared: header.packet_count,
+            body_len,
+        });
+    }
+    // The declared `total_size` plus the prefixes must account for the body
+    // exactly; `build_bundle` always writes it that way, so any disagreement
+    // is corruption or tampering and is rejected before parsing.
+    let expected_body = header.total_size.checked_add(prefix_bytes);
+    if expected_body != Some(body_len) {
+        return Err(OfflineError::TotalSizeMismatch {
+            declared: header.total_size,
+            actual: body_len - prefix_bytes,
+        });
+    }
+
+    // Parse packet stream.  The capacity hint is now bounded by both checks
+    // above (≤ MAX_BUNDLE_PACKETS and ≤ body_len / 4).
     let mut packets: Vec<Vec<u8>> = Vec::with_capacity(header.packet_count as usize);
     let mut pos = HEADER_SIZE;
     while pos < data.len() {
+        // Never push past the declared count, even if the body would allow it.
+        if packets.len() >= header.packet_count as usize {
+            return Err(OfflineError::PacketCountMismatch {
+                expected: header.packet_count,
+                got: header.packet_count.saturating_add(1),
+            });
+        }
         if pos + 4 > data.len() {
             return Err(OfflineError::TruncatedPacket);
         }
         let pkt_len = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
-        if pos + pkt_len > data.len() {
-            return Err(OfflineError::TruncatedPacket);
-        }
-        packets.push(data[pos..pos + pkt_len].to_vec());
-        pos += pkt_len;
+        // Checked so a huge prefix can never overflow `pos` on 32-bit targets.
+        let end = match pos.checked_add(pkt_len) {
+            Some(end) if end <= data.len() => end,
+            _ => return Err(OfflineError::TruncatedPacket),
+        };
+        packets.push(data[pos..end].to_vec());
+        pos = end;
     }
 
     if packets.len() != header.packet_count as usize {
@@ -774,6 +828,15 @@ pub enum OfflineError {
     TruncatedPacket,
     #[error("packet count mismatch: expected {expected}, got {got}")]
     PacketCountMismatch { expected: u32, got: u32 },
+    /// The header declares more packets than `MAX_BUNDLE_PACKETS`.
+    #[error("bundle declares {declared} packets; maximum is {max}")]
+    TooManyPackets { declared: u32, max: u32 },
+    /// The header declares more packets than the body could possibly hold.
+    #[error("bundle declares {declared} packets but the body is only {body_len} bytes")]
+    PacketCountExceedsData { declared: u32, body_len: u64 },
+    /// The header's `total_size` does not account for the body bytes.
+    #[error("bundle total_size {declared} does not match the {actual} packet bytes present")]
+    TotalSizeMismatch { declared: u64, actual: u64 },
     #[error("checksum mismatch — bundle may be corrupted or tampered")]
     ChecksumMismatch,
     #[error("bundle expired at {expired_at}; current time {now}")]
@@ -935,6 +998,110 @@ mod tests {
 
         let result = parse_bundle(&bundle);
         assert!(matches!(result, Err(OfflineError::ChecksumMismatch)));
+    }
+
+    /// Byte offset of `packet_count` inside the serialised header.
+    const PACKET_COUNT_OFFSET: usize = 4 + 1 + 1 + 32 + 1 + 32 + 16 + 8 + 8;
+    /// Byte offset of `total_size` inside the serialised header.
+    const TOTAL_SIZE_OFFSET: usize = PACKET_COUNT_OFFSET + 4;
+
+    /// A small valid bundle whose header fields the tests then corrupt.
+    fn small_bundle() -> Vec<u8> {
+        build_bundle(
+            &sample_packets(),
+            RoutingMode::Broadcast,
+            [0u8; 32],
+            None,
+            [0u8; 16],
+        )
+        .unwrap()
+    }
+
+    /// Regression for the pre-allocation abort: a header claiming
+    /// `u32::MAX` packets on a ~200-byte bundle must return an error, not
+    /// request ~96 GiB and abort the process.
+    #[test]
+    fn bundle_rejects_packet_count_u32_max() {
+        let mut bundle = small_bundle();
+        bundle[PACKET_COUNT_OFFSET..PACKET_COUNT_OFFSET + 4]
+            .copy_from_slice(&u32::MAX.to_be_bytes());
+        let result = parse_bundle(&bundle);
+        assert!(
+            matches!(
+                result,
+                Err(OfflineError::TooManyPackets {
+                    declared: u32::MAX,
+                    max: MAX_BUNDLE_PACKETS
+                })
+            ),
+            "got {result:?}"
+        );
+    }
+
+    /// One over the hard cap is refused; the cap itself is still subject to
+    /// the body-length check, so a tiny bundle claiming exactly the cap is
+    /// refused by the second gate.
+    #[test]
+    fn bundle_rejects_packet_count_over_cap_and_over_body() {
+        let mut bundle = small_bundle();
+        bundle[PACKET_COUNT_OFFSET..PACKET_COUNT_OFFSET + 4]
+            .copy_from_slice(&(MAX_BUNDLE_PACKETS + 1).to_be_bytes());
+        assert!(matches!(
+            parse_bundle(&bundle),
+            Err(OfflineError::TooManyPackets { .. })
+        ));
+
+        // Exactly the cap: passes the first gate, fails the body-length gate.
+        bundle[PACKET_COUNT_OFFSET..PACKET_COUNT_OFFSET + 4]
+            .copy_from_slice(&MAX_BUNDLE_PACKETS.to_be_bytes());
+        assert!(matches!(
+            parse_bundle(&bundle),
+            Err(OfflineError::PacketCountExceedsData { .. })
+        ));
+
+        // A count that fits the body but not the declared total_size is
+        // caught by the accounting gate before the packet loop runs.
+        bundle[PACKET_COUNT_OFFSET..PACKET_COUNT_OFFSET + 4].copy_from_slice(&3u32.to_be_bytes());
+        assert!(matches!(
+            parse_bundle(&bundle),
+            Err(OfflineError::TotalSizeMismatch { .. })
+        ));
+    }
+
+    /// A tampered `total_size` is refused even when the packet stream itself
+    /// would parse.
+    #[test]
+    fn bundle_rejects_total_size_mismatch() {
+        let mut bundle = small_bundle();
+        let declared = u64::from_be_bytes(
+            bundle[TOTAL_SIZE_OFFSET..TOTAL_SIZE_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        );
+        bundle[TOTAL_SIZE_OFFSET..TOTAL_SIZE_OFFSET + 8]
+            .copy_from_slice(&(declared + 1).to_be_bytes());
+        assert!(matches!(
+            parse_bundle(&bundle),
+            Err(OfflineError::TotalSizeMismatch { .. })
+        ));
+        // u64::MAX must not overflow the accounting arithmetic.
+        bundle[TOTAL_SIZE_OFFSET..TOTAL_SIZE_OFFSET + 8].copy_from_slice(&u64::MAX.to_be_bytes());
+        assert!(matches!(
+            parse_bundle(&bundle),
+            Err(OfflineError::TotalSizeMismatch { .. })
+        ));
+    }
+
+    /// A length prefix that overruns the body is a truncation, not a panic.
+    #[test]
+    fn bundle_rejects_packet_prefix_overrun() {
+        let mut bundle = small_bundle();
+        // First packet's 4-byte prefix sits right after the header.
+        bundle[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(matches!(
+            parse_bundle(&bundle),
+            Err(OfflineError::TruncatedPacket)
+        ));
     }
 
     #[test]

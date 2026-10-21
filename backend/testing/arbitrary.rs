@@ -3,6 +3,9 @@
 //! The purpose of this module is to decode fuzz bytes into bounded values and
 //! action sequences without ad hoc parsing logic in every harness.
 
+use crate::routing::store_forward::{Priority, ReleaseCondition, StoreAndForwardRequest};
+use crate::routing::table::DeviceAddress;
+
 /// A deterministic cursor over arbitrary bytes.
 ///
 /// The cursor never panics on short input. Missing bytes degrade to zero-like
@@ -50,5 +53,88 @@ impl<'a> ByteCursor<'a> {
         let end = start + take;
         self.offset = end;
         &self.data[start..end]
+    }
+
+    /// Consume eight bytes as a little-endian u64 (zero-padded when short).
+    pub fn take_u64_le(&mut self) -> u64 {
+        let mut raw = [0u8; 8];
+        for b in raw.iter_mut() {
+            *b = self.take_u8();
+        }
+        u64::from_le_bytes(raw)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Store-and-forward deposit case (§6.8)
+// ---------------------------------------------------------------------------
+
+/// One decoded store-and-forward deposit attempt.
+///
+/// Shared by `fuzz_store_forward` and the in-tree corpus replay test so the
+/// committed seeds are decoded by exactly one layout.
+#[derive(Debug)]
+pub struct StoreForwardCase {
+    /// The deposit request built from the fuzz bytes.
+    pub request: StoreAndForwardRequest,
+    /// Inbound tunnel id used for rate limiting.
+    pub tunnel_id: u64,
+    /// The relay's notion of "now" for expiry checks.
+    pub now: u64,
+}
+
+/// Decode a `StoreForwardCase` from arbitrary bytes.
+///
+/// Layout (all fields degrade to zero when the input runs out):
+///   32 bytes destination address,
+///   1 byte payload length (bounded to 4096) + payload bytes,
+///   8 bytes expiry (LE), 8 bytes now (LE),
+///   1 byte signature length (bounded to 128) + signature bytes,
+///   1 byte priority selector, 8 bytes tunnel id (LE).
+pub fn store_forward_case(data: &[u8]) -> StoreForwardCase {
+    let mut cur = ByteCursor::new(data);
+
+    // Destination address from fuzz bytes.
+    let mut dest_bytes = [0u8; 32];
+    for b in dest_bytes.iter_mut() {
+        *b = cur.take_u8();
+    }
+    let destination = DeviceAddress(dest_bytes);
+
+    // Fuzz-controlled payload (may be empty — that is a tracked negative case).
+    let payload_len = cur.take_bounded_usize(4096);
+    let payload: Vec<u8> = (0..payload_len).map(|_| cur.take_u8()).collect();
+
+    // Fuzz-controlled expiry and relay clock.
+    let expiry = cur.take_u64_le();
+    let now = cur.take_u64_le();
+
+    // Fuzz-controlled expiry signature (arbitrary bytes — usually invalid).
+    let sig_len = cur.take_bounded_usize(128);
+    let expiry_sig: Vec<u8> = (0..sig_len).map(|_| cur.take_u8()).collect();
+
+    // Priority from one selector byte.
+    let priority = match cur.take_u8() % 3 {
+        0 => Priority::Low,
+        1 => Priority::Normal,
+        _ => Priority::Critical,
+    };
+
+    // Tunnel id last so the earlier fields keep their offsets stable.
+    let tunnel_id = cur.take_u64_le();
+
+    StoreForwardCase {
+        request: StoreAndForwardRequest {
+            destination,
+            payload,
+            expiry,
+            expiry_sig,
+            priority,
+            cancellation_pubkey: None,
+            release_condition: ReleaseCondition::Immediate,
+            application_id: None,
+        },
+        tunnel_id,
+        now,
     }
 }

@@ -37,11 +37,21 @@
 //! doesn't know who sent the message), limits are per-destination
 //! and aggregate:
 //!
-//! - Max 1 MB per individual message payload
+//! - Max 1 MB per individual message payload; empty payloads are refused
 //! - Max 500 pending messages per destination address
 //! - Max 50 MB aggregate payload per destination per 24 hours
 //! - Configurable total storage cap (default 2 GB client / 20 GB server)
 //! - Max 60 deposits per minute per inbound tunnel
+//! - Bounded number of destination queues (`MAX_DESTINATIONS`)
+//! - Storage window bounded by `MAX_TTL_SECS` (30 days), mirroring relay deposits
+//!
+//! # Envelope Accounting
+//!
+//! Every quota that counts bytes charges `stored_size()` — the payload plus
+//! `MESSAGE_OVERHEAD_BYTES` of fixed bookkeeping — rather than the bare
+//! payload length.  A zero-length (or tiny) payload therefore still consumes
+//! quota, so an attacker cannot pin an unbounded number of `StoredMessage`
+//! records by keeping each payload empty.
 
 use std::collections::HashMap;
 
@@ -126,6 +136,33 @@ pub const MAX_DEPOSITS_PER_MINUTE: u32 = 60;
 // DEFAULT_TTL_SECS — protocol constant.
 // Defined by the spec; must not change without a version bump.
 pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 3600;
+
+/// Longest storage window a deposit may request (seconds) = 30 days.
+///
+/// The signed expiry is authoritative for *earlier* deletion; this bound
+/// stops a sender (or an attacker who owns the destination key) from
+/// pinning a message for years.  Mirrors `relay_deposit::MAX_EXPIRY_SECS`.
+// MAX_TTL_SECS — relay-side courtesy bound on the signed expiry.
+// Deposits whose expiry lies further out are rejected with ExpiryTooFar.
+pub const MAX_TTL_SECS: u64 = 30 * 24 * 3600;
+
+/// Fixed accounting overhead charged for every stored message (bytes).
+///
+/// Approximates the `StoredMessage` bookkeeping: destination (32), expiry
+/// (8), signature (64), priority, release condition, application id,
+/// cancellation key, message id (16), timestamps and container overhead.
+/// Charged on top of the payload so empty payloads still consume quota.
+// MESSAGE_OVERHEAD_BYTES — envelope accounting constant.
+// Makes the storage cap a bound on heap use, not just on payload bytes.
+pub const MESSAGE_OVERHEAD_BYTES: u64 = 256;
+
+/// Maximum number of distinct destination queues held at once.
+///
+/// Per-destination quotas alone let an attacker with fresh keys create an
+/// unbounded number of queues; this caps the queue table itself.
+// MAX_DESTINATIONS — structural DoS bound on the queue table.
+// New destinations are refused with TooManyDestinations once reached.
+pub const MAX_DESTINATIONS: usize = 2048;
 
 /// Domain separator for dead man's switch cancellation signatures.
 ///
@@ -291,6 +328,12 @@ pub enum DepositResult {
     Accepted,
     /// Rejected: payload exceeds MAX_PAYLOAD_SIZE.
     PayloadTooLarge,
+    /// Rejected: payload is empty — nothing to deliver, so it only costs quota.
+    EmptyPayload,
+    /// Rejected: expiry lies more than MAX_TTL_SECS in the future.
+    ExpiryTooFar,
+    /// Rejected: the destination queue table is at MAX_DESTINATIONS.
+    TooManyDestinations,
     /// Rejected: destination queue is full (MAX_MESSAGES_PER_DEST).
     DestinationQueueFull,
     /// Rejected: destination's 24-hour aggregate limit exceeded.
@@ -433,6 +476,22 @@ impl DestinationQueue {
 }
 
 // ---------------------------------------------------------------------------
+// Envelope accounting
+// ---------------------------------------------------------------------------
+
+/// Bytes a request is charged against every quota: payload plus the fixed
+/// `MESSAGE_OVERHEAD_BYTES` of bookkeeping.
+///
+/// Saturating so a pathological payload length can never wrap to a small
+/// charge.
+pub fn stored_size(request: &StoreAndForwardRequest) -> u64 {
+    // Payload bytes are the variable part of the envelope.
+    (request.payload.len() as u64)
+        // The fixed part is what an empty payload would otherwise get for free.
+        .saturating_add(MESSAGE_OVERHEAD_BYTES)
+}
+
+// ---------------------------------------------------------------------------
 // Store-and-Forward Server
 // ---------------------------------------------------------------------------
 
@@ -507,13 +566,14 @@ impl StoreForwardServer {
 
     /// Deposit a message for deferred delivery.
     ///
-    /// Validates all quota rules before accepting:
-    /// 1. Payload size ≤ 1 MB
-    /// 2. Destination queue not full (≤ 500 messages)
-    /// 3. 24-hour aggregate payload ≤ 50 MB per destination
-    /// 4. Total storage not at cap
-    /// 5. Deposit rate ≤ 60/minute per tunnel
-    /// 6. Message not already expired
+    /// Validates all quota rules before accepting, cheapest first:
+    /// 1. Payload non-empty and ≤ 1 MB
+    /// 2. Expiry in the future and within MAX_TTL_SECS
+    /// 3. Expiry signature valid for the destination key
+    /// 4. Deposit rate ≤ 60/minute per tunnel
+    /// 5. Total storage (envelope-accounted) not at cap
+    /// 6. Destination table not at MAX_DESTINATIONS, queue not full
+    ///    (≤ 500 messages), 24-hour aggregate ≤ 50 MB per destination
     ///
     /// `tunnel_id`: identifier for the inbound tunnel (for rate limiting).
     /// `now`: current unix timestamp.
@@ -524,19 +584,31 @@ impl StoreForwardServer {
         now: u64,
     ) -> DepositResult {
         // -------------------------------------------------------------------
-        // Check 1: Payload size limit.
+        // Check 1: Payload size limits.
+        // An empty payload carries nothing to deliver; accepting it would
+        // only allocate bookkeeping, so it is refused outright.
         // -------------------------------------------------------------------
+        if request.payload.is_empty() {
+            // Return the result to the caller.
+            return DepositResult::EmptyPayload;
+        }
         if request.payload.len() > MAX_PAYLOAD_SIZE {
             // Return the result to the caller.
             return DepositResult::PayloadTooLarge;
         }
 
         // -------------------------------------------------------------------
-        // Check 2: Message not already expired.
+        // Check 2: Expiry window.
+        // Already expired is useless; too far out would pin storage for
+        // longer than the relay is willing to promise (§6.8 courtesy TTL).
         // -------------------------------------------------------------------
         if request.expiry <= now {
             // Return the result to the caller.
             return DepositResult::AlreadyExpired;
+        }
+        if request.expiry - now > MAX_TTL_SECS {
+            // Return the result to the caller.
+            return DepositResult::ExpiryTooFar;
         }
 
         // -------------------------------------------------------------------
@@ -601,17 +673,26 @@ impl StoreForwardServer {
 
         // -------------------------------------------------------------------
         // Check 5: Total storage cap.
+        // Charged at envelope size (payload + fixed overhead) so the cap
+        // bounds heap use even when every payload is tiny.
         // -------------------------------------------------------------------
-        let payload_size = request.payload.len() as u64;
-        // Validate the input length to prevent out-of-bounds access.
-        if self.total_stored_bytes + payload_size > self.storage_cap {
+        let stored = stored_size(&request);
+        // Saturating add: a cap near u64::MAX must not wrap into acceptance.
+        if self.total_stored_bytes.saturating_add(stored) > self.storage_cap {
             // Return the result to the caller.
             return DepositResult::StorageCapReached;
         }
 
         // -------------------------------------------------------------------
         // Check 6: Per-destination limits.
+        // A brand-new destination also has to fit in the queue table; this
+        // is what stops one-key-per-queue Sybil growth.
         // -------------------------------------------------------------------
+        if !self.queues.contains_key(&request.destination) && self.queues.len() >= MAX_DESTINATIONS
+        {
+            // Return the result to the caller.
+            return DepositResult::TooManyDestinations;
+        }
         let queue = self
             // Chain the operation on the intermediate result.
             .queues
@@ -627,8 +708,8 @@ impl StoreForwardServer {
             return DepositResult::DestinationQueueFull;
         }
 
-        // Max 50 MB aggregate per destination per 24 hours.
-        if queue.payload_24h + payload_size > MAX_PAYLOAD_PER_DEST_24H {
+        // Max 50 MB aggregate per destination per 24 hours (envelope-accounted).
+        if queue.payload_24h.saturating_add(stored) > MAX_PAYLOAD_PER_DEST_24H {
             // Return the result to the caller.
             return DepositResult::AggregateQuotaExceeded;
         }
@@ -636,12 +717,12 @@ impl StoreForwardServer {
         // -------------------------------------------------------------------
         // All checks passed — store the message.
         // -------------------------------------------------------------------
-        queue.payload_24h += payload_size;
+        queue.payload_24h += stored;
         // Update the total stored bytes to reflect the new state.
         // Advance total stored bytes state.
         // Advance total stored bytes state.
         // Advance total stored bytes state.
-        self.total_stored_bytes += payload_size;
+        self.total_stored_bytes += stored;
 
         // Assign a random message_id for use by cancellation signals.
         let mut message_id = [0u8; 16];
@@ -773,7 +854,7 @@ impl StoreForwardServer {
             // Transform each element.
             // Transform each element.
             // Transform each element.
-            .map(|m| m.request.payload.len() as u64)
+            .map(|m| stored_size(&m.request))
             // Chain the operation on the intermediate result.
             .sum();
 
@@ -1022,10 +1103,18 @@ mod tests {
     /// The expiry_sig is signed by the destination's key (seed = `dest` byte),
     /// since our addressing model equates destination.0 with the Ed25519 pubkey.
     fn make_request(dest: u8, payload_size: usize, expiry: u64) -> StoreAndForwardRequest {
+        make_request_seed([dest; 32], payload_size, expiry)
+    }
+
+    /// Helper: like `make_request` but with a full 32-byte key seed, so tests
+    /// can mint more than 256 distinct destinations.
+    fn make_request_seed(
+        secret: [u8; 32],
+        payload_size: usize,
+        expiry: u64,
+    ) -> StoreAndForwardRequest {
         use crate::crypto::signing;
         // In the test model, the destination address IS the Ed25519 public key.
-        // We derive the secret from `dest` so dest[0..32] == verifying_key_bytes.
-        let secret = [dest; 32];
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
         let destination = DeviceAddress(signing_key.verifying_key().to_bytes());
 
@@ -1115,18 +1204,158 @@ mod tests {
 
     #[test]
     fn test_storage_cap() {
-        // 200 bytes cap.
-        let mut server = StoreForwardServer::new(200);
+        // Cap sized for one 150-byte envelope plus a little slack, so a
+        // second 100-byte envelope cannot fit.
+        let cap = MESSAGE_OVERHEAD_BYTES + 150 + 50;
+        let mut server = StoreForwardServer::new(cap);
         let now = 1000;
         let expiry = now + 3600;
 
-        // Deposit 150 bytes: OK.
+        // Deposit 150 bytes: OK, charged at 150 + overhead.
         let r1 = server.deposit(make_request(0xAA, 150, expiry), 1, now);
         assert_eq!(r1, DepositResult::Accepted);
+        assert_eq!(server.total_bytes(), MESSAGE_OVERHEAD_BYTES + 150);
 
-        // Deposit 100 more bytes: exceeds 200 cap.
+        // Deposit 100 more bytes: 100 + overhead exceeds the remaining 50.
         let r2 = server.deposit(make_request(0xBB, 100, expiry), 2, now);
         assert_eq!(r2, DepositResult::StorageCapReached);
+    }
+
+    /// A zero-length payload is refused before any bookkeeping is allocated.
+    #[test]
+    fn test_zero_payload_rejected() {
+        let mut server = StoreForwardServer::new(100_000_000);
+        let now = 1000;
+        let r = server.deposit(make_request(0xAA, 0, now + 3600), 1, now);
+        assert_eq!(r, DepositResult::EmptyPayload);
+        assert_eq!(server.total_pending(), 0);
+        assert_eq!(server.destination_count(), 0);
+        assert_eq!(server.total_bytes(), 0);
+    }
+
+    /// The attack from the finding: one fresh destination key per deposit,
+    /// each payload as small as the relay accepts.  With envelope accounting
+    /// the storage cap bounds the number of records regardless of how many
+    /// destinations the attacker mints.
+    #[test]
+    fn test_tiny_payloads_across_many_destinations_hit_storage_cap() {
+        // Room for exactly ten one-byte envelopes.
+        let per_message = MESSAGE_OVERHEAD_BYTES + 1;
+        let mut server = StoreForwardServer::new(10 * per_message);
+        let now = 1000;
+        let expiry = now + 3600;
+
+        for i in 0..10u8 {
+            // Distinct destination and distinct tunnel per deposit, so neither
+            // the per-destination queue nor the tunnel rate limit interferes.
+            let r = server.deposit(make_request(i + 1, 1, expiry), u64::from(i) + 1, now);
+            assert_eq!(r, DepositResult::Accepted, "deposit {i}");
+        }
+        assert_eq!(server.total_pending(), 10);
+        assert_eq!(server.total_bytes(), 10 * per_message);
+
+        // The eleventh fresh destination is refused: the cap is on envelopes.
+        let r = server.deposit(make_request(0x80, 1, expiry), 99, now);
+        assert_eq!(r, DepositResult::StorageCapReached);
+        assert_eq!(server.destination_count(), 10);
+    }
+
+    /// Expiry beyond MAX_TTL_SECS is refused; exactly at the bound is fine.
+    #[test]
+    fn test_expiry_beyond_max_ttl_rejected() {
+        let mut server = StoreForwardServer::new(100_000_000);
+        let now = 1000;
+        let too_far = server.deposit(make_request(0xAA, 10, now + MAX_TTL_SECS + 1), 1, now);
+        assert_eq!(too_far, DepositResult::ExpiryTooFar);
+        let at_bound = server.deposit(make_request(0xAB, 10, now + MAX_TTL_SECS), 2, now);
+        assert_eq!(at_bound, DepositResult::Accepted);
+        // A far-future expiry from a key the attacker owns is still refused;
+        // the destination signature does not buy a longer window.
+        let years = server.deposit(make_request(0xAC, 10, u64::MAX), 3, now);
+        assert_eq!(years, DepositResult::ExpiryTooFar);
+    }
+
+    /// The destination table is bounded even when every deposit is small
+    /// enough to fit under the byte cap.
+    #[test]
+    fn test_destination_table_cap() {
+        let mut server = StoreForwardServer::new(u64::MAX);
+        let now = 1000;
+        let expiry = now + 3600;
+
+        // Fill the table with MAX_DESTINATIONS distinct keys (and tunnels).
+        for i in 0..MAX_DESTINATIONS {
+            let mut seed = [0u8; 32];
+            seed[..8].copy_from_slice(&(i as u64 + 1).to_le_bytes());
+            let r = server.deposit(make_request_seed(seed, 1, expiry), i as u64, now);
+            assert_eq!(r, DepositResult::Accepted, "destination {i}");
+        }
+        assert_eq!(server.destination_count(), MAX_DESTINATIONS);
+
+        // One more *new* destination is refused...
+        let mut fresh = [0xEEu8; 32];
+        fresh[0] = 0x01;
+        let r = server.deposit(make_request_seed(fresh, 1, expiry), 777_777, now);
+        assert_eq!(r, DepositResult::TooManyDestinations);
+
+        // ...but an existing destination can still receive messages.
+        let mut existing = [0u8; 32];
+        existing[..8].copy_from_slice(&1u64.to_le_bytes());
+        let r = server.deposit(make_request_seed(existing, 1, expiry), 777_778, now);
+        assert_eq!(r, DepositResult::Accepted);
+    }
+
+    /// GC recomputes the running total with the same envelope accounting
+    /// the deposit path used, so the two can never drift apart.
+    #[test]
+    fn test_gc_recomputes_envelope_accounting() {
+        let mut server = StoreForwardServer::new(100_000_000);
+        let now = 1000;
+        server.deposit(make_request(0xAA, 10, now + 100), 1, now);
+        server.deposit(make_request(0xBB, 20, now + 10_000), 2, now);
+        assert_eq!(server.total_bytes(), 2 * MESSAGE_OVERHEAD_BYTES + 30);
+
+        // Expire the first message and collect.
+        server.gc(now + 200);
+        assert_eq!(server.total_pending(), 1);
+        assert_eq!(server.total_bytes(), MESSAGE_OVERHEAD_BYTES + 20);
+    }
+
+    /// Replay the committed fuzz corpus through the same decoder the fuzz
+    /// target uses (TESTING_METHODOLOGY "corpus replay test coverage").
+    /// Every seed must be deposited, retrieved and collected without
+    /// panicking, and the negative seeds must hit the structural gates.
+    #[test]
+    fn test_store_forward_corpus_replay() {
+        use crate::testing::arbitrary::store_forward_case;
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/fuzz_store_forward");
+        crate::testing::corpus::assert_corpus_dir_exists(&dir);
+        let entries = crate::testing::corpus::load_corpus_entries(&dir).expect("read corpus");
+        assert!(!entries.is_empty(), "corpus must have seeds");
+        for (path, bytes) in entries {
+            let case = store_forward_case(&bytes);
+            let mut server = StoreForwardServer::new(65536);
+            let destination = case.request.destination;
+            let result = server.deposit(case.request, case.tunnel_id, case.now);
+            // None of the committed seeds carries a valid destination
+            // signature, so none may ever be accepted; each must stop at a
+            // structural gate or the signature check.
+            assert_ne!(
+                result,
+                DepositResult::Accepted,
+                "unexpected accept: {path:?}"
+            );
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.contains("zero_payload") {
+                assert_eq!(result, DepositResult::EmptyPayload, "{path:?}");
+            }
+            if name.contains("far_future") {
+                assert_eq!(result, DepositResult::ExpiryTooFar, "{path:?}");
+            }
+            let _ = server.retrieve(&destination, case.now);
+            server.gc(case.now);
+        }
     }
 
     #[test]
@@ -1211,7 +1440,8 @@ mod tests {
 
         server.deposit(make_request(0xAA, 50, expiry), 1, now);
         assert_eq!(server.total_pending(), 1);
-        assert_eq!(server.total_bytes(), 50);
+        // Charged at envelope size: payload plus the fixed overhead.
+        assert_eq!(server.total_bytes(), MESSAGE_OVERHEAD_BYTES + 50);
 
         // GC after expiry.
         server.gc(expiry + 1);

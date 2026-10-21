@@ -12,13 +12,25 @@
 //! responsive.  This module only *creates* the `FileIoState` record and
 //! sends the initial offer frame.
 //!
+//! ## Receive-side hardening (§11.1)
+//! Every field a peer controls is validated by `files::transfer` before it
+//! touches state: `transferId` is charset/length checked and only ever used
+//! as a map key, the display name is checked for separators and control
+//! bytes, and the declared size is bounded.  Accepted files are written
+//! exclusively (`create_new`) to `<data_dir>/transfers/<local random id>.part`
+//! — never to a path derived from a peer string and never to `/tmp`.  Chunks
+//! are capped per frame and against the declared size, and `file_complete`
+//! verifies the byte count and (when the offer carried one) the SHA-256.
+//!
 //! ## Error policy
 //! All `push_event` calls are best-effort.  I/O failures during transfer
 //! setup are surfaced as `"error"` status on the transfer JSON record and
 //! returned as `Err(String)` to callers.
 
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
+use crate::files::transfer;
 use crate::service::runtime::{try_random_fill, FileDirection, FileIoState, MeshRuntime};
 
 impl MeshRuntime {
@@ -166,40 +178,72 @@ impl MeshRuntime {
     // Inbound frame handlers
     // -----------------------------------------------------------------------
 
-    /// Handle an incoming `file_offer` frame (§9).
+    /// Handle an incoming `file_offer` frame (§11.1).
     ///
-    /// A peer is offering to send us a file.  Creates a pending transfer entry
-    /// in the in-memory `file_transfers` list with `status = "pending"` and
-    /// `direction = "receive"`, then emits a `TransferUpdated` event so the
-    /// Flutter UI can display an accept prompt.
+    /// A peer is offering to send us a file.  Every peer-controlled field is
+    /// validated first: `transferId` (fixed charset, bounded length — it is
+    /// only ever a map key), `name` (display-only, no separators or control
+    /// bytes), `sizeBytes` (bounded by the u32 chunk count), `fileId`
+    /// (optional 32-byte SHA-256) and `from` (bounded hex).  A valid offer
+    /// becomes a `status = "pending"`, `direction = "receive"` record and a
+    /// `TransferUpdated` event so the Flutter UI can show an accept prompt.
     ///
-    /// Returns `true` if the frame was consumed (even if already have the
-    /// transfer), `false` if the envelope was malformed.
+    /// The pending list is capped (`MAX_PENDING_OFFERS` overall and
+    /// `MAX_PENDING_OFFERS_PER_PEER` per claimed sender) so a flood of
+    /// offers cannot grow memory without bound.  The `from` field is
+    /// self-asserted by the frame, so the global cap is the hard bound.
+    ///
+    /// Returns `true` if the frame was consumed (including a duplicate id,
+    /// which is ignored rather than re-added), `false` if it was rejected.
     pub fn process_file_offer_frame(&self, envelope: &serde_json::Value) -> bool {
-        // Extract the transfer identifier — required field.
+        // Extract and validate the transfer identifier — required field.
         let tid = match envelope.get("transferId").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => return false,
         };
+        if let Err(e) = transfer::validate_transfer_id(&tid) {
+            eprintln!("[files] rejected file_offer: {e}");
+            return false;
+        }
 
-        // Extract display name and file size from offer fields.
+        // Display name: validated so a careless "save as offered name" can
+        // never escape a directory, even though we never build paths from it.
         let name = envelope
             .get("name")
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let size_bytes = envelope
-            .get("sizeBytes")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+            .unwrap_or("unknown");
+        if let Err(e) = transfer::validate_file_name(name) {
+            eprintln!("[files] rejected file_offer {tid}: {e}");
+            return false;
+        }
 
-        // Sender peer ID: included in the "from" field if present; otherwise
-        // left blank and resolved on accept from the TCP connection map.
-        let peer_id = envelope
-            .get("from")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        // Declared size: required, and bounded by what the wire can address.
+        let size_bytes = match envelope.get("sizeBytes").and_then(|v| v.as_u64()) {
+            Some(s) => s,
+            None => return false,
+        };
+        if let Err(e) = transfer::validate_offer_size(size_bytes) {
+            eprintln!("[files] rejected file_offer {tid}: {e}");
+            return false;
+        }
+
+        // Optional SHA-256 of the plaintext.  When present it must parse; it
+        // binds later chunk/complete frames to this offer and lets
+        // `file_complete` verify the reassembled file.
+        let file_id_hex = match envelope.get("fileId") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => match v.as_str().and_then(parse_file_id) {
+                Some(id) => Some(hex::encode(id)),
+                None => return false,
+            },
+        };
+
+        // Claimed sender: bounded hex or empty.  Self-asserted by the frame —
+        // used only for display and the per-peer pending cap.
+        let peer_id = envelope.get("from").and_then(|v| v.as_str()).unwrap_or("");
+        if peer_id.len() > 64 || !peer_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
 
         // Build the pending transfer record in the same JSON shape used by the
         // Flutter FileTransfer model (see memory: FileTransfer field names).
@@ -211,48 +255,92 @@ impl MeshRuntime {
             "transferredBytes":  0,
             "status":            "pending",
             "direction":         "receive",
+            "fileId":            file_id_hex,
         });
 
-        // Append to the transfer list and notify Flutter.
-        self.file_transfers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(transfer.clone());
+        // Append under the lock so the duplicate and cap checks are atomic
+        // with the insert.
+        {
+            let mut transfers = self
+                .file_transfers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+
+            // A repeated offer id is consumed but never duplicated; otherwise
+            // a peer could multiply records (and accept slots) for one id.
+            if transfers
+                .iter()
+                .any(|t| t.get("id").and_then(|v| v.as_str()) == Some(&tid))
+            {
+                return true;
+            }
+
+            // Cap the unaccepted offer list globally and per claimed sender.
+            let pending: Vec<&serde_json::Value> =
+                transfers.iter().filter(|t| is_pending_receive(t)).collect();
+            if pending.len() >= transfer::MAX_PENDING_OFFERS {
+                eprintln!("[files] rejected file_offer {tid}: pending offer cap reached");
+                return false;
+            }
+            let from_peer = pending
+                .iter()
+                .filter(|t| t.get("peerId").and_then(|v| v.as_str()) == Some(peer_id))
+                .count();
+            if from_peer >= transfer::MAX_PENDING_OFFERS_PER_PEER {
+                eprintln!("[files] rejected file_offer {tid}: per-peer pending offer cap reached");
+                return false;
+            }
+
+            transfers.push(transfer.clone());
+        }
         self.push_event("TransferUpdated", transfer);
         true
     }
 
-    /// Handle an incoming `file_chunk` frame (§9).
+    /// Handle an incoming `file_chunk` frame (§11.1).
     ///
     /// Appends the chunk bytes to the receive file.  The transfer must have
-    /// been previously accepted (i.e., a `FileIoState` with direction
-    /// `Receive` must exist in `active_file_io`) — unaccepted chunks are
-    /// silently dropped with `false`.
+    /// been previously accepted (a `FileIoState` with direction `Receive`
+    /// must exist in `active_file_io`) — unaccepted chunks are dropped.
     ///
-    /// Emits `TransferProgress` on every successful write so the UI can
-    /// update the progress bar without waiting for completion.
+    /// Before anything is written the chunk is bound to the offer (`fileId`
+    /// must match when the offer declared one) and checked against the
+    /// per-chunk cap, the declared total size, and the sequential `offset`.
+    /// Any violation aborts the transfer: the handle is closed, the partial
+    /// file is removed, and the record is marked `"failed"`.  A sender can
+    /// therefore never write more than the size the user accepted.
     ///
-    /// Returns `true` on success, `false` if the frame is malformed or the
-    /// transfer state is missing / has the wrong direction.
+    /// Emits a transfer update on every successful write so the UI can
+    /// advance the progress bar without waiting for completion.
+    ///
+    /// Returns `true` on success, `false` if the frame was rejected.
     pub fn process_file_chunk_frame(&self, envelope: &serde_json::Value) -> bool {
-        // Extract the transfer identifier.
+        // Extract and validate the transfer identifier.
         let tid = match envelope.get("transferId").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => return false,
         };
+        if transfer::validate_transfer_id(&tid).is_err() {
+            return false;
+        }
 
-        // Extract and decode the hex-encoded chunk payload.
+        // The hex payload is required; it is bounded and decoded only once
+        // we know the id names an active inbound transfer, so an unknown or
+        // send-side id can neither cost an allocation nor be marked failed.
         let data_hex = match envelope.get("data").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return false,
         };
-        let data = match hex::decode(data_hex) {
-            Ok(b) => b,
-            Err(_) => return false,
-        };
 
-        // Write to the open file handle and accumulate byte count.
-        let (_total_bytes, transferred) = {
+        // Optional binding fields carried by the sender in `poll.rs`.
+        let frame_file_id = envelope
+            .get("fileId")
+            .and_then(|v| v.as_str())
+            .and_then(parse_file_id);
+        let offset = envelope.get("offset").and_then(|v| v.as_u64());
+
+        // Validate against the accepted offer and write, all under the lock.
+        let outcome: Result<u64, String> = {
             let mut map = self
                 .active_file_io
                 .lock()
@@ -262,88 +350,179 @@ impl MeshRuntime {
                 Some(s) if s.direction == FileDirection::Receive => s,
                 _ => return false,
             };
-            if state.file.write_all(&data).is_err() {
-                // Disk full or permission error — cannot continue.
+            write_receive_chunk(state, data_hex, frame_file_id, offset)
+        };
+
+        // A violating or unwritable chunk ends the transfer.
+        let transferred = match outcome {
+            Ok(n) => n,
+            Err(reason) => {
+                self.fail_receive_transfer(&tid, &reason);
                 return false;
             }
-            state.transferred_bytes += data.len() as u64;
-            (state.total_bytes, state.transferred_bytes)
         };
 
         // Mirror the byte count into the JSON transfer record so the UI
         // shows consistent progress without re-querying.
-        {
-            let mut transfers = self
-                .file_transfers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for t in transfers.iter_mut() {
-                if t.get("id").and_then(|v| v.as_str()) == Some(&tid) {
-                    if let Some(obj) = t.as_object_mut() {
-                        obj.insert(
-                            "transferredBytes".to_string(),
-                            serde_json::Value::Number(transferred.into()),
-                        );
-                    }
-                    break;
-                }
-            }
-        }
+        self.update_transfer_record(&tid, |obj| {
+            obj.insert(
+                "transferredBytes".to_string(),
+                serde_json::Value::Number(transferred.into()),
+            );
+        });
 
         // Emit progress update for the Flutter UI.
         self.push_transfer_update(&tid);
         true
     }
 
-    /// Handle an incoming `file_complete` frame (§9).
+    /// Handle an incoming `file_complete` frame (§11.1).
     ///
-    /// Marks the receive transfer as `"completed"` (or `"failed"` when the
-    /// `ok` field is `false`) and closes the file handle by removing the
-    /// `FileIoState` from `active_file_io`.  Emits `TransferUpdated`.
+    /// Closes the receive handle and decides the final status: the transfer
+    /// is `"completed"` only when the sender reports `ok`, the byte count
+    /// equals the declared size, and — when the offer carried a `fileId` —
+    /// the SHA-256 of the file on disk matches it (§11.1 step 4).  Anything
+    /// else marks the record `"failed"` with a reason.  Emits `TransferUpdated`.
     ///
-    /// Returns `true` if the transfer ID was found, `false` if not.
+    /// Returns `true` if an active receive transfer with this id existed,
+    /// `false` otherwise (unknown or send-direction ids are ignored).
     pub fn process_file_complete_frame(&self, envelope: &serde_json::Value) -> bool {
-        // Extract the transfer identifier.
+        // Extract and validate the transfer identifier.
         let tid = match envelope.get("transferId").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => return false,
         };
+        if transfer::validate_transfer_id(&tid).is_err() {
+            return false;
+        }
 
         // `ok` defaults to `true` — absence means normal completion.
         let ok = envelope.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
 
-        // Drop the file handle by removing the IO state; this flushes any
-        // OS-level write buffer and releases the file descriptor.
+        // Take the IO state out of the map.  Dropping it flushes the OS write
+        // buffer and releases the descriptor before we hash the file.
+        let state = match self
+            .active_file_io
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&tid)
+        {
+            Some(s) if s.direction == FileDirection::Receive => s,
+            // Unknown id, or a send-side transfer (which completes itself).
+            _ => return false,
+        };
+        let (total, transferred, file_id) =
+            (state.total_bytes, state.transferred_bytes, state.file_id);
+        drop(state);
+
+        // Decide the outcome: sender's verdict, then byte count, then hash.
+        let verdict: Result<(), String> = if !ok {
+            Err("sender reported failure".to_string())
+        } else if transferred != total {
+            Err(format!("received {transferred} of {total} declared bytes"))
+        } else if file_id == [0u8; 32] {
+            // The offer carried no hash; the byte count is all we can check.
+            Ok(())
+        } else {
+            match self.transfer_save_path(&tid) {
+                Some(path) => match hash_file(&path) {
+                    Ok(actual) if actual == file_id => Ok(()),
+                    Ok(_) => Err("SHA-256 mismatch against the offered fileId".to_string()),
+                    Err(e) => Err(format!("cannot hash received file: {e}")),
+                },
+                None => Err("transfer record has no save path".to_string()),
+            }
+        };
+
+        // Record the outcome and notify the UI.
+        self.update_transfer_record(&tid, |obj| match &verdict {
+            Ok(()) => {
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String("completed".into()),
+                );
+            }
+            Err(reason) => {
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String("failed".into()),
+                );
+                obj.insert(
+                    "error".to_string(),
+                    serde_json::Value::String(reason.clone()),
+                );
+            }
+        });
+        self.push_transfer_update(&tid);
+        true
+    }
+
+    /// Abort an inbound transfer after a protocol violation or write error.
+    ///
+    /// Closes the handle, deletes the partial file (it can never be
+    /// completed), marks the record `"failed"` with `reason`, and emits a
+    /// transfer update.  Safe to call for ids with no IO state.
+    fn fail_receive_transfer(&self, tid: &str, reason: &str) {
+        eprintln!("[files] aborting inbound transfer {tid}: {reason}");
+        // Drop the handle first so the file can be removed on every platform.
         self.active_file_io
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&tid);
-
-        // Update the transfer status JSON record and emit an event.
-        {
-            let mut transfers = self
-                .file_transfers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for t in transfers.iter_mut() {
-                if t.get("id").and_then(|v| v.as_str()) == Some(&tid) {
-                    if let Some(obj) = t.as_object_mut() {
-                        obj.insert(
-                            "status".to_string(),
-                            serde_json::Value::String(if ok {
-                                "completed".to_string()
-                            } else {
-                                "failed".to_string()
-                            }),
-                        );
-                    }
-                    break;
+            .remove(tid);
+        // Remove the partial file; a missing file is not an error here.
+        if let Some(path) = self.transfer_save_path(tid) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("[files] cannot remove partial file {}: {e}", path.display());
                 }
             }
         }
+        self.update_transfer_record(tid, |obj| {
+            obj.insert(
+                "status".to_string(),
+                serde_json::Value::String("failed".into()),
+            );
+            obj.insert(
+                "error".to_string(),
+                serde_json::Value::String(reason.to_string()),
+            );
+        });
+        self.push_transfer_update(tid);
+    }
 
-        self.push_transfer_update(&tid);
-        true
+    /// Apply `edit` to the JSON record for `tid`, if one exists.
+    fn update_transfer_record(
+        &self,
+        tid: &str,
+        edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) {
+        let mut transfers = self
+            .file_transfers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Records are keyed by id; the first match is the only match because
+        // `process_file_offer_frame` refuses duplicate ids.
+        if let Some(obj) = transfers
+            .iter_mut()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(tid))
+            .and_then(|t| t.as_object_mut())
+        {
+            edit(obj);
+        }
+    }
+
+    /// The on-disk path recorded for transfer `tid`, if it has been accepted.
+    fn transfer_save_path(&self, tid: &str) -> Option<PathBuf> {
+        self.file_transfers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(tid))
+            .and_then(|t| {
+                t.get("savePath")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from)
+            })
     }
 
     // -----------------------------------------------------------------------
@@ -568,101 +747,199 @@ impl MeshRuntime {
 
     /// Accept an incoming file transfer offer.
     ///
-    /// Promotes the transfer from `"pending"` to `"active"`, optionally
-    /// setting a save path, and creates a `FileIoState` so inbound chunks
-    /// can be written.
+    /// Creates the destination file exclusively, registers a `FileIoState`
+    /// so inbound chunks can be written, and only then promotes the record
+    /// from `"pending"` to `"active"` (so a failed open leaves the offer
+    /// pending rather than stranded as active with no handle).
     ///
     /// # Parameters
     /// - `transfer_id`: the ID from the `file_offer` frame.
-    /// - `save_path`: destination path on disk; if empty, defaults to
-    ///   `/tmp/<transfer_id>` (for testing; real apps should supply a path).
+    /// - `save_path`: destination path on disk.  When empty — the normal
+    ///   case for the Flutter UI — the file is written to
+    ///   `<data_dir>/transfers/<local random id>.part`.  The path is built
+    ///   from an id *we* generate, never from the peer's `transferId`.
     ///
-    /// Returns `Ok(())` on success, `Err(String)` if the transfer ID does not
-    /// exist in the pending list.
+    /// The destination is opened with `create_new`, so an existing file is
+    /// never truncated and a pre-planted symlink is never followed, whether
+    /// the path came from the UI or from the default rule.
+    ///
+    /// Returns `Ok(())` on success, `Err(String)` if the id is malformed, is
+    /// not a pending inbound offer, or the file cannot be created.
     pub fn accept_file_transfer(&self, transfer_id: &str, save_path: &str) -> Result<(), String> {
-        // Find the transfer record, update its status, and extract metadata
-        // needed to open the destination file.
-        let (peer_id, total_bytes) = {
-            let mut transfers = self
+        // The id came from a peer originally; re-validate at this boundary.
+        transfer::validate_transfer_id(transfer_id).map_err(|e| e.to_string())?;
+
+        // Read the offer metadata without mutating the record yet.
+        let (peer_id, total_bytes, file_id) = {
+            let transfers = self
                 .file_transfers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let mut found = false;
-            let mut peer = String::new();
-            let mut sz = 0u64;
-
-            for t in transfers.iter_mut() {
-                if t.get("id").and_then(|v| v.as_str()) == Some(transfer_id) {
-                    if let Some(obj) = t.as_object_mut() {
-                        // Promote status.
-                        obj.insert(
-                            "status".to_string(),
-                            serde_json::Value::String("active".to_string()),
-                        );
-                        // Record save path in the JSON for display.
-                        if !save_path.is_empty() {
-                            obj.insert(
-                                "savePath".to_string(),
-                                serde_json::Value::String(save_path.to_string()),
-                            );
-                        }
-                    }
-                    peer = t
-                        .get("peerId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    sz = t.get("sizeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
-                    // Emit FileTransferStarted so the UI shows the accept immediately.
-                    self.push_event("FileTransferStarted", t.clone());
-                    found = true;
-                    break;
-                }
+            let record = transfers
+                .iter()
+                .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(transfer_id))
+                .ok_or_else(|| "transfer not found".to_string())?;
+            // Only an unaccepted inbound offer can be accepted; a second
+            // accept must not open a second handle on the same transfer.
+            if !is_pending_receive(record) {
+                return Err("transfer is not a pending inbound offer".into());
             }
-
-            if !found {
-                return Err("transfer not found".into());
-            }
-            (peer, sz)
+            let peer = record
+                .get("peerId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let size = record
+                .get("sizeBytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            // The offer's SHA-256, if it carried one; zeros mean "unknown".
+            let file_id = record
+                .get("fileId")
+                .and_then(|v| v.as_str())
+                .and_then(parse_file_id)
+                .unwrap_or([0u8; 32]);
+            (peer, size, file_id)
         };
 
-        // Choose the actual save path: use provided path or default to /tmp.
-        let resolved_path = if save_path.is_empty() {
-            format!("/tmp/{transfer_id}")
+        // Resolve the destination: the caller's path, or our own random id
+        // under the private transfer directory.
+        let resolved_path: PathBuf = if save_path.is_empty() {
+            let mut local_id = [0u8; 16];
+            if !try_random_fill(&mut local_id) {
+                return Err("RNG unavailable".into());
+            }
+            let dir = transfer::transfer_dir(Path::new(&self.data_dir));
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot create transfer dir {}: {e}", dir.display()))?;
+            transfer::receive_path(Path::new(&self.data_dir), &hex::encode(local_id))
+                .map_err(|e| e.to_string())?
         } else {
-            save_path.to_string()
+            PathBuf::from(save_path)
         };
 
-        // Open (or create) the destination file in write mode.
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&resolved_path)
+        // Create the file exclusively; never truncate, never follow a symlink.
+        let file = transfer::create_receive_file(&resolved_path).map_err(|e| {
+            eprintln!(
+                "[files] ERROR: cannot create save path {}: {e}",
+                resolved_path.display()
+            );
+            format!("cannot create save path: {e}")
+        })?;
+
+        // Register IO state so incoming chunks can be written by
+        // process_file_chunk_frame.
+        let io_state = FileIoState {
+            direction: FileDirection::Receive,
+            peer_id,
+            file_id,
+            total_bytes,
+            transferred_bytes: 0,
+            file,
+        };
+        self.active_file_io
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(transfer_id.to_string(), io_state);
+
+        // Promote the record and tell the UI where the file is going.
+        let display_path = resolved_path.to_string_lossy().into_owned();
+        self.update_transfer_record(transfer_id, |obj| {
+            obj.insert(
+                "status".to_string(),
+                serde_json::Value::String("active".into()),
+            );
+            obj.insert(
+                "savePath".to_string(),
+                serde_json::Value::String(display_path),
+            );
+        });
+        // Emit FileTransferStarted so the UI shows the accept immediately.
+        if let Some(record) = self
+            .file_transfers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(transfer_id))
+            .cloned()
         {
-            Ok(file) => {
-                // Register IO state so incoming chunks can be written by
-                // process_file_chunk_frame.
-                let io_state = FileIoState {
-                    direction: FileDirection::Receive,
-                    peer_id,
-                    file_id: [0u8; 32], // unknown until first chunk arrives
-                    total_bytes,
-                    transferred_bytes: 0,
-                    file,
-                };
-                self.active_file_io
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(transfer_id.to_string(), io_state);
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("[files] ERROR: cannot open save path {resolved_path}: {e}");
-                Err(format!("cannot open save path: {e}"))
-            }
+            self.push_event("FileTransferStarted", record);
         }
+        Ok(())
     }
+}
+
+/// Validate one inbound chunk against the accepted offer and append it.
+///
+/// Order of checks, cheapest first: the hex length is bounded before any
+/// decode (an oversized frame never allocates), the chunk is bound to the
+/// offer's `fileId`, then `check_chunk` applies the per-chunk cap, the
+/// declared total, and the sequential offset.  Only then is the chunk
+/// written.  Returns the new byte count, or the reason the transfer must
+/// be aborted.
+fn write_receive_chunk(
+    state: &mut FileIoState,
+    data_hex: &str,
+    frame_file_id: Option<[u8; 32]>,
+    offset: Option<u64>,
+) -> Result<u64, String> {
+    // Two hex characters per byte: bound the text before decoding it.
+    if data_hex.len() > transfer::MAX_CHUNK_BYTES * 2 {
+        return Err(transfer::TransferError::ChunkTooLarge(data_hex.len() / 2).to_string());
+    }
+    let data = hex::decode(data_hex).map_err(|_| "chunk data is not hex".to_string())?;
+    // Bind the chunk to the offer: when the offer carried a fileId the chunk
+    // must carry the same one.
+    if state.file_id != [0u8; 32] && frame_file_id != Some(state.file_id) {
+        return Err("chunk fileId does not match the accepted offer".to_string());
+    }
+    // Per-chunk cap, declared total, and sequential offset.
+    transfer::check_chunk(
+        state.transferred_bytes,
+        state.total_bytes,
+        data.len(),
+        offset,
+    )
+    .map_err(|e| e.to_string())?;
+    // Disk full or permission error — cannot continue.
+    state
+        .file
+        .write_all(&data)
+        .map_err(|e| format!("write failed: {e}"))?;
+    state.transferred_bytes += data.len() as u64;
+    Ok(state.transferred_bytes)
+}
+
+/// Whether a transfer record is an inbound offer the user has not acted on.
+fn is_pending_receive(record: &serde_json::Value) -> bool {
+    record.get("status").and_then(|v| v.as_str()) == Some("pending")
+        && record.get("direction").and_then(|v| v.as_str()) == Some("receive")
+}
+
+/// Parse a 64-hex-character SHA-256 `fileId`; anything else is `None`.
+fn parse_file_id(hex_str: &str) -> Option<[u8; 32]> {
+    // Bound before decoding so an oversized field never allocates.
+    if hex_str.len() != 64 {
+        return None;
+    }
+    hex::decode(hex_str).ok()?.try_into().ok()
+}
+
+/// SHA-256 of the file at `path`, streamed in 64 KiB reads.
+fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn guess_mime_type(path: &std::path::Path) -> String {
@@ -709,4 +986,346 @@ fn storage_capacity_bytes(path: &str) -> Option<u64> {
 #[cfg(not(unix))]
 fn storage_capacity_bytes(_path: &str) -> Option<u64> {
     None
+}
+
+// ---------------------------------------------------------------------------
+// Tests — inbound transfer hardening (§11.1)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::files::transfer::{
+        MAX_CHUNK_BYTES, MAX_PENDING_OFFERS, MAX_PENDING_OFFERS_PER_PEER, MAX_TRANSFER_BYTES,
+    };
+    use tempfile::TempDir;
+
+    /// A runtime rooted in a fresh temp dir with no network side effects.
+    fn runtime() -> (MeshRuntime, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let rt = MeshRuntime::new(dir.path().to_string_lossy().into_owned());
+        (rt, dir)
+    }
+
+    /// Hex SHA-256 of `bytes`, the `fileId` an honest sender would offer.
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(bytes))
+    }
+
+    /// A well-formed inbound offer frame.
+    fn offer(id: &str, size: u64) -> serde_json::Value {
+        serde_json::json!({
+            "type": "file_offer",
+            "transferId": id,
+            "name": "report.pdf",
+            "sizeBytes": size,
+        })
+    }
+
+    /// A chunk frame carrying `data` for transfer `id`.
+    fn chunk(id: &str, data: &[u8]) -> serde_json::Value {
+        serde_json::json!({
+            "type": "file_chunk",
+            "transferId": id,
+            "data": hex::encode(data),
+        })
+    }
+
+    /// The transfer record for `id`, if any.
+    fn record(rt: &MeshRuntime, id: &str) -> Option<serde_json::Value> {
+        rt.file_transfers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(id))
+            .cloned()
+    }
+
+    /// `status` of the record for `id`.
+    fn status(rt: &MeshRuntime, id: &str) -> String {
+        record(rt, id)
+            .and_then(|t| t.get("status").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_default()
+    }
+
+    /// `savePath` of the record for `id`.
+    fn save_path(rt: &MeshRuntime, id: &str) -> PathBuf {
+        PathBuf::from(
+            record(rt, id)
+                .and_then(|t| t.get("savePath").and_then(|v| v.as_str()).map(String::from))
+                .expect("savePath recorded"),
+        )
+    }
+
+    /// Offers whose `transferId` is path-shaped, empty, or oversized never
+    /// become records — the id from the finding included.
+    #[test]
+    fn offer_with_traversal_id_is_rejected() {
+        let (rt, _dir) = runtime();
+        for bad in [
+            "../home/user/.config/meshinfinity/settings.vault",
+            "/etc/passwd",
+            "..\\..\\settings.vault",
+            "..",
+            "",
+            "id with space",
+            "id\0nul",
+        ] {
+            assert!(!rt.process_file_offer_frame(&offer(bad, 10)), "{bad:?}");
+        }
+        let long = "a".repeat(65);
+        assert!(!rt.process_file_offer_frame(&offer(&long, 10)));
+        assert!(rt.file_transfers.lock().unwrap().is_empty());
+    }
+
+    /// Bad names, missing or oversized sizes, malformed fileId/from fields.
+    #[test]
+    fn offer_with_bad_fields_is_rejected() {
+        let (rt, _dir) = runtime();
+        let mut bad_name = offer("t1", 10);
+        bad_name["name"] = serde_json::json!("../../.ssh/authorized_keys");
+        assert!(!rt.process_file_offer_frame(&bad_name));
+
+        let mut no_size = offer("t2", 10);
+        no_size.as_object_mut().unwrap().remove("sizeBytes");
+        assert!(!rt.process_file_offer_frame(&no_size));
+
+        let huge = offer("t3", MAX_TRANSFER_BYTES + 1);
+        assert!(!rt.process_file_offer_frame(&huge));
+
+        let mut bad_fid = offer("t4", 10);
+        bad_fid["fileId"] = serde_json::json!("not-hex");
+        assert!(!rt.process_file_offer_frame(&bad_fid));
+
+        let mut bad_from = offer("t5", 10);
+        bad_from["from"] = serde_json::json!("../peer");
+        assert!(!rt.process_file_offer_frame(&bad_from));
+
+        assert!(rt.file_transfers.lock().unwrap().is_empty());
+        // A clean offer is accepted and a repeat of the same id is consumed
+        // without creating a second record.
+        assert!(rt.process_file_offer_frame(&offer("ok", 10)));
+        assert!(rt.process_file_offer_frame(&offer("ok", 10)));
+        assert_eq!(rt.file_transfers.lock().unwrap().len(), 1);
+    }
+
+    /// Accepting with an empty save path writes under `<data_dir>/transfers/`,
+    /// never `/tmp`, and a second accept cannot open a second handle.
+    #[test]
+    fn accept_defaults_under_data_dir() {
+        let (rt, dir) = runtime();
+        assert!(rt.process_file_offer_frame(&offer("abc123", 4)));
+        rt.accept_file_transfer("abc123", "").unwrap();
+
+        let path = save_path(&rt, "abc123");
+        assert!(
+            path.starts_with(transfer::transfer_dir(dir.path())),
+            "{path:?}"
+        );
+        assert!(path.extension().is_some_and(|e| e == "part"));
+        // The file name is a 32-hex local id, not the peer's transfer id.
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(stem.len(), 32);
+        assert!(stem.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(path.exists());
+        assert_eq!(status(&rt, "abc123"), "active");
+        assert!(rt.active_file_io.lock().unwrap().contains_key("abc123"));
+
+        // Already active: a second accept is refused.
+        assert!(rt.accept_file_transfer("abc123", "").is_err());
+        // Unknown and malformed ids are refused too.
+        assert!(rt.accept_file_transfer("nope", "").is_err());
+        assert!(rt.accept_file_transfer("../x", "").is_err());
+    }
+
+    /// An explicit save path that already exists is never truncated.
+    #[test]
+    fn accept_refuses_to_truncate_existing_file() {
+        let (rt, dir) = runtime();
+        let target = dir.path().join("settings.vault");
+        std::fs::write(&target, b"precious").unwrap();
+
+        assert!(rt.process_file_offer_frame(&offer("t1", 8)));
+        let err = rt
+            .accept_file_transfer("t1", target.to_str().unwrap())
+            .expect_err("existing file must not be opened");
+        assert!(err.contains("cannot create save path"), "{err}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"precious");
+        // A failed open leaves the offer pending, not stranded as active.
+        assert_eq!(status(&rt, "t1"), "pending");
+        assert!(!rt.active_file_io.lock().unwrap().contains_key("t1"));
+    }
+
+    /// Chunks are capped per frame and against the declared size; a
+    /// violation aborts the transfer and removes the partial file.
+    #[test]
+    fn chunks_cannot_exceed_declared_size() {
+        let (rt, _dir) = runtime();
+        assert!(rt.process_file_offer_frame(&offer("t1", 10)));
+        rt.accept_file_transfer("t1", "").unwrap();
+        let path = save_path(&rt, "t1");
+
+        // Six bytes fit; five more would overflow the declared ten.
+        assert!(rt.process_file_chunk_frame(&chunk("t1", b"abcdef")));
+        assert!(!rt.process_file_chunk_frame(&chunk("t1", b"ghijk")));
+        assert_eq!(status(&rt, "t1"), "failed");
+        assert!(!rt.active_file_io.lock().unwrap().contains_key("t1"));
+        assert!(!path.exists(), "partial file is removed on abort");
+        // Nothing further is written for the aborted transfer.
+        assert!(!rt.process_file_chunk_frame(&chunk("t1", b"x")));
+
+        // A single oversized chunk is refused before it is even decoded,
+        // even when the declared total (the protocol maximum) would allow it.
+        assert!(rt.process_file_offer_frame(&offer("t2", MAX_TRANSFER_BYTES)));
+        rt.accept_file_transfer("t2", "").unwrap();
+        let big = vec![0u8; MAX_CHUNK_BYTES + 1];
+        assert!(!rt.process_file_chunk_frame(&chunk("t2", &big)));
+        assert_eq!(status(&rt, "t2"), "failed");
+
+        // Exactly one chunk-sized frame is fine.
+        assert!(rt.process_file_offer_frame(&offer("t3", MAX_CHUNK_BYTES as u64)));
+        rt.accept_file_transfer("t3", "").unwrap();
+        let exact = vec![7u8; MAX_CHUNK_BYTES];
+        assert!(rt.process_file_chunk_frame(&chunk("t3", &exact)));
+        assert_eq!(std::fs::read(save_path(&rt, "t3")).unwrap(), exact);
+    }
+
+    /// An out-of-order `offset` aborts rather than silently corrupting.
+    #[test]
+    fn chunk_with_wrong_offset_aborts() {
+        let (rt, _dir) = runtime();
+        assert!(rt.process_file_offer_frame(&offer("t1", 10)));
+        rt.accept_file_transfer("t1", "").unwrap();
+        let mut first = chunk("t1", b"abc");
+        first["offset"] = serde_json::json!(0);
+        assert!(rt.process_file_chunk_frame(&first));
+        let mut replay = chunk("t1", b"abc");
+        replay["offset"] = serde_json::json!(0);
+        assert!(!rt.process_file_chunk_frame(&replay));
+        assert_eq!(status(&rt, "t1"), "failed");
+    }
+
+    /// Chunks and unaccepted transfers: a chunk for a pending (unaccepted)
+    /// or unknown id is dropped and nothing is written anywhere.
+    #[test]
+    fn chunk_for_unaccepted_transfer_is_dropped() {
+        let (rt, dir) = runtime();
+        assert!(rt.process_file_offer_frame(&offer("t1", 10)));
+        assert!(!rt.process_file_chunk_frame(&chunk("t1", b"abc")));
+        assert!(!rt.process_file_chunk_frame(&chunk("ghost", b"abc")));
+        assert!(!rt.process_file_chunk_frame(&chunk("../x", b"abc")));
+        assert_eq!(status(&rt, "t1"), "pending");
+        assert!(!transfer::transfer_dir(dir.path()).exists());
+        // An oversized chunk aimed at a pending id must not flip it to failed.
+        let big = vec![0u8; MAX_CHUNK_BYTES + 1];
+        assert!(!rt.process_file_chunk_frame(&chunk("t1", &big)));
+        assert_eq!(status(&rt, "t1"), "pending");
+    }
+
+    /// When the offer carried a fileId, chunks must carry the same one.
+    #[test]
+    fn chunk_file_id_must_match_offer() {
+        let (rt, _dir) = runtime();
+        let mut o = offer("t1", 5);
+        o["fileId"] = serde_json::json!(sha256_hex(b"hello"));
+        assert!(rt.process_file_offer_frame(&o));
+        rt.accept_file_transfer("t1", "").unwrap();
+
+        // Wrong fileId → rejected and aborted.
+        let mut wrong = chunk("t1", b"hel");
+        wrong["fileId"] = serde_json::json!(sha256_hex(b"other"));
+        assert!(!rt.process_file_chunk_frame(&wrong));
+        assert_eq!(status(&rt, "t1"), "failed");
+
+        // Missing fileId on a bound transfer is also rejected.
+        let mut o2 = offer("t2", 5);
+        o2["fileId"] = serde_json::json!(sha256_hex(b"hello"));
+        assert!(rt.process_file_offer_frame(&o2));
+        rt.accept_file_transfer("t2", "").unwrap();
+        assert!(!rt.process_file_chunk_frame(&chunk("t2", b"hel")));
+        assert_eq!(status(&rt, "t2"), "failed");
+    }
+
+    /// Pending offers are capped per claimed sender and globally.
+    #[test]
+    fn pending_offer_caps() {
+        let (rt, _dir) = runtime();
+        // Per-peer: the 17th pending offer from one sender is refused.
+        for i in 0..MAX_PENDING_OFFERS_PER_PEER {
+            let mut o = offer(&format!("p{i}"), 1);
+            o["from"] = serde_json::json!("aa");
+            assert!(rt.process_file_offer_frame(&o), "offer {i}");
+        }
+        let mut extra = offer("p_extra", 1);
+        extra["from"] = serde_json::json!("aa");
+        assert!(!rt.process_file_offer_frame(&extra));
+        // Another sender still has room.
+        let mut other = offer("q0", 1);
+        other["from"] = serde_json::json!("bb");
+        assert!(rt.process_file_offer_frame(&other));
+
+        // Global: fill the rest with distinct senders, then one more fails.
+        let mut n = rt.file_transfers.lock().unwrap().len();
+        let mut i = 0u32;
+        while n < MAX_PENDING_OFFERS {
+            let mut o = offer(&format!("g{i}"), 1);
+            o["from"] = serde_json::json!(format!("{:04x}", 0x1000 + i / 8));
+            assert!(rt.process_file_offer_frame(&o), "global fill {i}");
+            n += 1;
+            i += 1;
+        }
+        let mut over = offer("g_over", 1);
+        over["from"] = serde_json::json!("ffff");
+        assert!(!rt.process_file_offer_frame(&over));
+        assert_eq!(rt.file_transfers.lock().unwrap().len(), MAX_PENDING_OFFERS);
+    }
+
+    /// Completion verifies the byte count and the offered SHA-256.
+    #[test]
+    fn complete_verifies_size_and_hash() {
+        let (rt, _dir) = runtime();
+        let fid = sha256_hex(b"hello");
+        let complete = |id: &str| serde_json::json!({ "type": "file_complete", "transferId": id, "fileId": fid, "ok": true });
+
+        // Honest transfer: completed, bytes on disk match.
+        let mut o = offer("good", 5);
+        o["fileId"] = serde_json::json!(fid);
+        assert!(rt.process_file_offer_frame(&o));
+        rt.accept_file_transfer("good", "").unwrap();
+        let mut c = chunk("good", b"hello");
+        c["fileId"] = serde_json::json!(fid);
+        assert!(rt.process_file_chunk_frame(&c));
+        assert!(rt.process_file_complete_frame(&complete("good")));
+        assert_eq!(status(&rt, "good"), "completed");
+        assert_eq!(std::fs::read(save_path(&rt, "good")).unwrap(), b"hello");
+
+        // Right length, wrong bytes: hash mismatch → failed.
+        let mut o = offer("tampered", 5);
+        o["fileId"] = serde_json::json!(fid);
+        assert!(rt.process_file_offer_frame(&o));
+        rt.accept_file_transfer("tampered", "").unwrap();
+        let mut c = chunk("tampered", b"hellx");
+        c["fileId"] = serde_json::json!(fid);
+        assert!(rt.process_file_chunk_frame(&c));
+        assert!(rt.process_file_complete_frame(&complete("tampered")));
+        assert_eq!(status(&rt, "tampered"), "failed");
+
+        // Short: fewer bytes than declared → failed.
+        let mut o = offer("short", 5);
+        o["fileId"] = serde_json::json!(fid);
+        assert!(rt.process_file_offer_frame(&o));
+        rt.accept_file_transfer("short", "").unwrap();
+        let mut c = chunk("short", b"hel");
+        c["fileId"] = serde_json::json!(fid);
+        assert!(rt.process_file_chunk_frame(&c));
+        assert!(rt.process_file_complete_frame(&complete("short")));
+        assert_eq!(status(&rt, "short"), "failed");
+
+        // Unknown or never-accepted ids are ignored.
+        assert!(!rt.process_file_complete_frame(&complete("ghost")));
+        assert!(rt.process_file_offer_frame(&offer("pending", 1)));
+        assert!(!rt.process_file_complete_frame(&complete("pending")));
+        assert_eq!(status(&rt, "pending"), "pending");
+    }
 }

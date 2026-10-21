@@ -28,6 +28,9 @@
 //! Mismatch = `FileTransferComplete { ok: false }`.
 
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -47,6 +50,227 @@ pub const DEFAULT_CHUNK_SIZE: u32 = 65_536;
 // SLIDING_WINDOW_SIZE — protocol constant.
 // Defined by the spec; must not change without a version bump.
 pub const SLIDING_WINDOW_SIZE: u32 = 64;
+
+/// Longest wire `transferId` the receive side accepts.
+///
+/// Our own ids are 32 hex characters (128 random bits); 64 leaves room for
+/// other implementations while keeping map keys and JSON records bounded.
+// MAX_TRANSFER_ID_LEN — receive-side structural limit (§11.1 offer/accept).
+// Anything longer is dropped before it reaches the transfer list.
+pub const MAX_TRANSFER_ID_LEN: usize = 64;
+
+/// Longest display name accepted from a `file_offer`.
+///
+/// 255 bytes is the common filesystem component limit; the name is only
+/// ever shown to the user, never used to build a path, but keeping it
+/// bounded stops a peer from bloating the transfer list.
+// MAX_FILE_NAME_LEN — receive-side structural limit (§11.1 offer).
+// Display-only; the on-disk name is derived from a local random id.
+pub const MAX_FILE_NAME_LEN: usize = 255;
+
+/// Largest single `file_chunk` payload the receive side writes to disk.
+///
+/// Equal to the negotiated chunk size (§11.1: "max chunk_size bytes"); the
+/// sender in `poll.rs` never emits more than `FILE_CHUNK_SIZE` per frame.
+// MAX_CHUNK_BYTES — receive-side structural limit (§11.1 chunk).
+// A larger chunk is a protocol violation and aborts the transfer.
+pub const MAX_CHUNK_BYTES: usize = DEFAULT_CHUNK_SIZE as usize;
+
+/// Largest file size an offer may declare.
+///
+/// `chunk_count` is a `u32` and chunks are at most `DEFAULT_CHUNK_SIZE`
+/// bytes, so this is the protocol's own addressable ceiling (§11.1).
+// MAX_TRANSFER_BYTES — derived from the u32 chunk_count wire field.
+// Offers above it cannot be expressed on the wire and are rejected.
+pub const MAX_TRANSFER_BYTES: u64 = (u32::MAX as u64) * (DEFAULT_CHUNK_SIZE as u64);
+
+/// Pending (not yet accepted) inbound offers allowed per claimed sender.
+// MAX_PENDING_OFFERS_PER_PEER — DoS bound on the unaccepted offer list.
+// The sender string is self-asserted, so the global cap is the hard bound.
+pub const MAX_PENDING_OFFERS_PER_PEER: usize = 16;
+
+/// Pending inbound offers allowed across all senders.
+// MAX_PENDING_OFFERS — hard DoS bound on the unaccepted offer list.
+// Beyond this, new offers are dropped until the user accepts or cancels.
+pub const MAX_PENDING_OFFERS: usize = 128;
+
+/// Sub-directory of the app data directory that receives inbound transfers.
+// TRANSFER_DIR_NAME — the only place accepted files are written by default.
+// Lives under the private app data dir, never under a world-writable path.
+pub const TRANSFER_DIR_NAME: &str = "transfers";
+
+// ---------------------------------------------------------------------------
+// Receive-side validation (§11.1)
+// ---------------------------------------------------------------------------
+
+/// Reasons the receive side refuses an offer, chunk, or save path.
+///
+/// Every variant is a structural violation by the remote peer (or a local
+/// caller passing peer data through unchecked); none is an I/O failure.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+// TransferError — typed rejection reasons for inbound transfer frames.
+// Surfaced as log lines and as the `error` field on the transfer record.
+pub enum TransferError {
+    /// The wire `transferId` was empty.
+    #[error("transfer id is empty")]
+    EmptyId,
+    /// The wire `transferId` exceeded `MAX_TRANSFER_ID_LEN` bytes.
+    #[error("transfer id longer than {MAX_TRANSFER_ID_LEN} bytes")]
+    IdTooLong,
+    /// The wire `transferId` used a byte outside `[0-9A-Za-z_-]`.
+    #[error("transfer id contains a byte outside [0-9A-Za-z_-]")]
+    IdCharset,
+    /// The offered file name was empty.
+    #[error("file name is empty")]
+    EmptyName,
+    /// The offered file name exceeded `MAX_FILE_NAME_LEN` bytes.
+    #[error("file name longer than {MAX_FILE_NAME_LEN} bytes")]
+    NameTooLong,
+    /// The offered file name carried a separator, NUL, or control byte.
+    #[error("file name contains a path separator, NUL, or control byte")]
+    NameCharset,
+    /// The offered file name was `.` or `..`.
+    #[error("file name is a reserved path component")]
+    NameReserved,
+    /// The declared size cannot be expressed by a u32 chunk count.
+    #[error("declared size {0} exceeds the addressable maximum")]
+    SizeTooLarge(u64),
+    /// A single chunk exceeded `MAX_CHUNK_BYTES`.
+    #[error("chunk of {0} bytes exceeds the {MAX_CHUNK_BYTES}-byte chunk limit")]
+    ChunkTooLarge(usize),
+    /// Writing the chunk would exceed the size declared in the offer.
+    #[error("chunk would push the transfer past its declared size")]
+    ChunkOverflow,
+    /// The chunk's `offset` did not match the bytes written so far.
+    #[error("chunk offset {got} does not match the expected offset {expected}")]
+    ChunkOutOfOrder { expected: u64, got: u64 },
+}
+
+/// Check that a wire `transferId` is non-empty, bounded, and drawn from
+/// `[0-9A-Za-z_-]` only.
+///
+/// The id is used as a map key and echoed in JSON records; it is never used
+/// to build a filesystem path, but a fixed charset keeps logs and records
+/// free of separators, NULs, and control bytes regardless.
+pub fn validate_transfer_id(id: &str) -> Result<(), TransferError> {
+    // Empty ids would collide with "no transfer" lookups.
+    if id.is_empty() {
+        return Err(TransferError::EmptyId);
+    }
+    // Bound the key length before scanning its bytes.
+    if id.len() > MAX_TRANSFER_ID_LEN {
+        return Err(TransferError::IdTooLong);
+    }
+    // Only URL-safe alphanumerics; hex ids from `start_file_transfer` pass.
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(TransferError::IdCharset);
+    }
+    Ok(())
+}
+
+/// Check that an offered display name is safe to show and store.
+///
+/// The name is display-only, but a stupid-user path (saving under the
+/// offered name) must still never escape a directory, so separators,
+/// NULs, control bytes, and `.`/`..` are refused up front.
+pub fn validate_file_name(name: &str) -> Result<(), TransferError> {
+    // An empty name gives the user nothing to decide on.
+    if name.is_empty() {
+        return Err(TransferError::EmptyName);
+    }
+    // Bound before scanning.
+    if name.len() > MAX_FILE_NAME_LEN {
+        return Err(TransferError::NameTooLong);
+    }
+    // Separators on either platform, NUL, and ASCII control bytes.
+    if name
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+    {
+        return Err(TransferError::NameCharset);
+    }
+    // `.` and `..` are directory references, not file names.
+    if name == "." || name == ".." {
+        return Err(TransferError::NameReserved);
+    }
+    Ok(())
+}
+
+/// Check that an offer's declared size fits the protocol's u32 chunk count.
+pub fn validate_offer_size(size: u64) -> Result<(), TransferError> {
+    // Sizes beyond this cannot be chunk-addressed on the wire.
+    if size > MAX_TRANSFER_BYTES {
+        return Err(TransferError::SizeTooLarge(size));
+    }
+    Ok(())
+}
+
+/// Check that a chunk may be appended to a receive transfer.
+///
+/// `transferred` is the byte count written so far, `total` the size from
+/// the accepted offer, `chunk_len` the decoded chunk size, and `offset`
+/// the chunk's declared offset if the frame carried one.
+pub fn check_chunk(
+    transferred: u64,
+    total: u64,
+    chunk_len: usize,
+    offset: Option<u64>,
+) -> Result<(), TransferError> {
+    // Per-chunk cap: the sender agreed to the chunk size in the offer.
+    if chunk_len > MAX_CHUNK_BYTES {
+        return Err(TransferError::ChunkTooLarge(chunk_len));
+    }
+    // Total cap: the declared size is the ceiling on what we write to disk.
+    // A checked add means an arithmetic overflow is itself an overflow of
+    // the transfer, never a wrap-around that slips under `total`.
+    let end = transferred
+        .checked_add(chunk_len as u64)
+        .ok_or(TransferError::ChunkOverflow)?;
+    if end > total {
+        return Err(TransferError::ChunkOverflow);
+    }
+    // Chunks are appended sequentially; an offset that disagrees with the
+    // bytes already written would corrupt the file silently.
+    if let Some(got) = offset {
+        if got != transferred {
+            return Err(TransferError::ChunkOutOfOrder {
+                expected: transferred,
+                got,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Directory under the app data dir where inbound transfers are written.
+pub fn transfer_dir(data_dir: &Path) -> PathBuf {
+    // Always inside the private app data directory; never `/tmp`.
+    data_dir.join(TRANSFER_DIR_NAME)
+}
+
+/// Build the on-disk path for an inbound transfer from a *local* id.
+///
+/// `local_id` must be an id we generated ourselves (random hex); it is
+/// validated anyway so a caller can never route a peer string through here.
+/// The result is always `<data_dir>/transfers/<local_id>.part`.
+pub fn receive_path(data_dir: &Path, local_id: &str) -> Result<PathBuf, TransferError> {
+    // Defence in depth: even a local id must satisfy the fixed charset.
+    validate_transfer_id(local_id)?;
+    // `.part` marks an in-progress download until `file_complete` verifies it.
+    Ok(transfer_dir(data_dir).join(format!("{local_id}.part")))
+}
+
+/// Create the destination file for an inbound transfer, exclusively.
+///
+/// `create_new` fails if anything already exists at `path` — a regular
+/// file, a symlink, or a directory — so an existing file is never truncated
+/// and a pre-planted symlink is never followed.
+pub fn create_receive_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
 
 // ---------------------------------------------------------------------------
 // Protocol Messages
@@ -484,5 +708,135 @@ mod tests {
         // ACK one — window opens.
         state.mark_ack(0);
         assert!(state.can_send());
+    }
+
+    // ── Receive-side validation ──────────────────────────────────────────────
+
+    /// Path-shaped and oversized transfer ids are refused; plain ids pass.
+    #[test]
+    fn transfer_id_rejects_traversal_and_oversize() {
+        // A peer-chosen id that would have become `/tmp/../home/...`.
+        assert_eq!(
+            validate_transfer_id("../home/user/.config/meshinfinity/settings.vault"),
+            Err(TransferError::IdCharset)
+        );
+        assert_eq!(validate_transfer_id("a/b"), Err(TransferError::IdCharset));
+        assert_eq!(validate_transfer_id("a\\b"), Err(TransferError::IdCharset));
+        assert_eq!(validate_transfer_id(".."), Err(TransferError::IdCharset));
+        assert_eq!(validate_transfer_id("id\0"), Err(TransferError::IdCharset));
+        assert_eq!(validate_transfer_id(""), Err(TransferError::EmptyId));
+        let long = "a".repeat(MAX_TRANSFER_ID_LEN + 1);
+        assert_eq!(validate_transfer_id(&long), Err(TransferError::IdTooLong));
+        // Our own 32-hex ids and URL-safe ids are fine.
+        assert_eq!(validate_transfer_id(&"f".repeat(32)), Ok(()));
+        assert_eq!(validate_transfer_id("abc_DEF-123"), Ok(()));
+    }
+
+    /// Names with separators, control bytes, or dot entries are refused.
+    #[test]
+    fn file_name_rejects_separators_and_reserved() {
+        assert_eq!(
+            validate_file_name("../../etc/passwd"),
+            Err(TransferError::NameCharset)
+        );
+        assert_eq!(
+            validate_file_name("dir\\x.txt"),
+            Err(TransferError::NameCharset)
+        );
+        assert_eq!(
+            validate_file_name("x\u{7}.txt"),
+            Err(TransferError::NameCharset)
+        );
+        assert_eq!(
+            validate_file_name("x\0.txt"),
+            Err(TransferError::NameCharset)
+        );
+        assert_eq!(validate_file_name("."), Err(TransferError::NameReserved));
+        assert_eq!(validate_file_name(".."), Err(TransferError::NameReserved));
+        assert_eq!(validate_file_name(""), Err(TransferError::EmptyName));
+        let long = "n".repeat(MAX_FILE_NAME_LEN + 1);
+        assert_eq!(validate_file_name(&long), Err(TransferError::NameTooLong));
+        assert_eq!(validate_file_name("photo (1).jpg"), Ok(()));
+    }
+
+    /// Chunk caps: per-chunk size, declared total, and sequential offsets.
+    #[test]
+    fn check_chunk_enforces_size_total_and_order() {
+        // One byte over the chunk limit.
+        assert_eq!(
+            check_chunk(0, u64::MAX, MAX_CHUNK_BYTES + 1, None),
+            Err(TransferError::ChunkTooLarge(MAX_CHUNK_BYTES + 1))
+        );
+        // Exactly at the chunk limit is fine when the total allows it.
+        assert_eq!(
+            check_chunk(0, MAX_CHUNK_BYTES as u64, MAX_CHUNK_BYTES, None),
+            Ok(())
+        );
+        // Would exceed the declared total.
+        assert_eq!(
+            check_chunk(6, 10, 5, None),
+            Err(TransferError::ChunkOverflow)
+        );
+        // Fills the declared total exactly.
+        assert_eq!(check_chunk(6, 10, 4, Some(6)), Ok(()));
+        // Any chunk against a zero-size offer overflows.
+        assert_eq!(
+            check_chunk(0, 0, 1, None),
+            Err(TransferError::ChunkOverflow)
+        );
+        // Offset must equal bytes written so far.
+        assert_eq!(
+            check_chunk(6, 10, 4, Some(0)),
+            Err(TransferError::ChunkOutOfOrder {
+                expected: 6,
+                got: 0
+            })
+        );
+        // Checked arithmetic: a huge `transferred` cannot wrap past `total`.
+        assert_eq!(
+            check_chunk(u64::MAX, u64::MAX, 1, None),
+            Err(TransferError::ChunkOverflow)
+        );
+    }
+
+    /// Offer sizes beyond the u32 chunk-count ceiling are refused.
+    #[test]
+    fn offer_size_bounded_by_chunk_count() {
+        assert_eq!(validate_offer_size(MAX_TRANSFER_BYTES), Ok(()));
+        assert_eq!(
+            validate_offer_size(MAX_TRANSFER_BYTES + 1),
+            Err(TransferError::SizeTooLarge(MAX_TRANSFER_BYTES + 1))
+        );
+    }
+
+    /// The receive path always lands in `<data_dir>/transfers/` and only
+    /// accepts a charset-validated local id.
+    #[test]
+    fn receive_path_is_rooted_in_transfer_dir() {
+        let data_dir = Path::new("/data/app");
+        let path = receive_path(data_dir, "0123456789abcdef0123456789abcdef").unwrap();
+        assert!(path.starts_with(transfer_dir(data_dir)));
+        assert!(path.to_string_lossy().ends_with(".part"));
+        // A traversal id can never produce a path.
+        assert_eq!(
+            receive_path(data_dir, "../x"),
+            Err(TransferError::IdCharset)
+        );
+    }
+
+    /// `create_receive_file` never truncates an existing file.
+    #[test]
+    fn create_receive_file_refuses_existing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.bin");
+        std::fs::write(&path, b"keep me").unwrap();
+        // Exclusive create must fail on the existing file...
+        assert!(create_receive_file(&path).is_err());
+        // ...and leave its contents untouched.
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
+        // A fresh path is created normally.
+        let fresh = dir.path().join("fresh.part");
+        assert!(create_receive_file(&fresh).is_ok());
+        assert!(fresh.exists());
     }
 }

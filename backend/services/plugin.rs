@@ -42,6 +42,11 @@
 //!   and each invocation sets a deadline of `MAX_CPU_PER_CALLBACK_MS` ticks.
 //!   The epoch counter is advanced by a background thread; when the deadline
 //!   is reached, wasmtime traps the WASM execution and returns an error.
+//! - **Memory and table limits** (§18.1 "Resource enforcement"): every Store
+//!   installs a `wasmtime::ResourceLimiter` built from the plugin's
+//!   `max_memory_mb` plus fixed table/instance caps.  A `memory.grow` past
+//!   the cap traps immediately; the plugin is killed (status `Failed`,
+//!   "stopped: memory limit exceeded") and the host continues unaffected.
 //! - **Capability-based I/O**: WASI preview1 is linked but configured with
 //!   no filesystem mounts and no network access — an empty `WasiCtxBuilder`.
 //!   Plugins can only call the two host imports we explicitly expose:
@@ -125,7 +130,107 @@ struct SandboxState {
     /// no network access, no pre-opened directories, no env vars. Plugins
     /// cannot touch the host filesystem or initiate network calls through WASI.
     wasi: wasmtime_wasi::p1::WasiP1Ctx,
+
+    /// Memory / table / instance caps enforced by wasmtime for this Store.
+    ///
+    /// Built by `sandbox_limits()` from the plugin's `max_memory_mb` (§18.1).
+    /// wasmtime consults it on every `memory.grow`, `table.grow`, and
+    /// instantiation through the `ResourceLimiter` impl below.
+    limits: wasmtime::StoreLimits,
+
+    /// Set when wasmtime asked to grow memory past the cap and was refused.
+    ///
+    /// The refusal surfaces as a trap from the guest's `memory.grow`; this
+    /// flag lets `run_hook` tell a memory kill apart from an ordinary crash.
+    memory_limit_hit: bool,
 }
+
+/// Delegate every resource decision to the per-Store `StoreLimits`, recording
+/// a memory-cap refusal so the caller can report "memory limit exceeded".
+#[cfg(all(test, not(target_os = "ios")))]
+impl wasmtime::ResourceLimiter for SandboxState {
+    /// Called before linear memory grows from `current` to `desired` bytes.
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        // `StoreLimits` applies the byte cap configured in `sandbox_limits()`.
+        // With `trap_on_grow_failure` it reports a refusal as `Err` (which
+        // wasmtime turns into a trap); without it, as `Ok(false)`.  Either
+        // way the refusal is the §18.1 "plugin exceeding this limit" event.
+        match self.limits.memory_growing(current, desired, maximum) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                self.memory_limit_hit = true;
+                Ok(false)
+            }
+            Err(e) => {
+                self.memory_limit_hit = true;
+                Err(e)
+            }
+        }
+    }
+
+    /// Called before a table grows from `current` to `desired` elements.
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        // Table growth is capped by `MAX_PLUGIN_TABLE_ELEMENTS`.
+        self.limits.table_growing(current, desired, maximum)
+    }
+
+    /// Maximum instances this Store may hold (one plugin per Store).
+    fn instances(&self) -> usize {
+        self.limits.instances()
+    }
+
+    /// Maximum tables this Store may hold.
+    fn tables(&self) -> usize {
+        self.limits.tables()
+    }
+
+    /// Maximum linear memories this Store may hold.
+    fn memories(&self) -> usize {
+        self.limits.memories()
+    }
+}
+
+/// Build the wasmtime resource caps for one plugin invocation (§18.1).
+///
+/// `max_memory_mb` comes from the plugin manifest (bounded at parse time to
+/// `1..=MAX_PLUGIN_MEMORY_MB`).  `trap_on_grow_failure` turns a refused
+/// `memory.grow` into a trap so the plugin is stopped at once rather than
+/// left to retry in a loop until the CPU deadline fires.
+#[cfg(all(test, not(target_os = "ios")))]
+fn sandbox_limits(max_memory_mb: u32) -> wasmtime::StoreLimits {
+    // Convert the manifest's MiB figure into the byte cap wasmtime expects.
+    let memory_bytes = (max_memory_mb as usize).saturating_mul(1024 * 1024);
+    wasmtime::StoreLimitsBuilder::new()
+        // Linear memory may never exceed the manifest's max_memory_mb.
+        .memory_size(memory_bytes)
+        // Function/reference tables: bounded count and bounded elements.
+        .table_elements(MAX_PLUGIN_TABLE_ELEMENTS)
+        .tables(MAX_PLUGIN_TABLES)
+        // One plugin instance with one linear memory per Store.
+        .instances(MAX_PLUGIN_INSTANCES)
+        .memories(MAX_PLUGIN_MEMORIES)
+        // Refused growth traps the guest instead of returning -1.
+        .trap_on_grow_failure(true)
+        .build()
+}
+
+/// Marker error attached when a hook ends because the plugin hit its memory cap.
+///
+/// `invoke_hook_sandboxed` downcasts for this to apply the §18.1 "immediately
+/// killed" rule instead of the crash-loop counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("plugin memory limit exceeded")]
+pub struct MemoryLimitExceeded;
 
 /// The WASM plugin execution sandbox (non-iOS only, §18.1).
 ///
@@ -479,6 +584,7 @@ impl PluginSandbox {
         &mut self,
         plugin_id: &[u8; 16],
         plugin_permissions: Vec<PluginPermission>,
+        max_memory_mb: u32,
         hook_name: &str,
         input: &serde_json::Value,
     ) -> anyhow::Result<Option<serde_json::Value>> {
@@ -517,8 +623,18 @@ impl PluginSandbox {
         let state = SandboxState {
             permissions: plugin_permissions,
             wasi: wasi_ctx,
+            limits: sandbox_limits(max_memory_mb),
+            memory_limit_hit: false,
         };
         let mut store = wasmtime::Store::new(&self.engine, state);
+
+        // --- Install the resource limiter (§18.1) -----------------------------
+        //
+        // From here on wasmtime consults `SandboxState::memory_growing` /
+        // `table_growing` before every growth, including the initial memory
+        // allocation during instantiation. A module whose declared minimum
+        // memory already exceeds `max_memory_mb` fails to instantiate.
+        store.limiter(|state| state);
 
         // --- Configure epoch-based CPU time limiting -------------------------
         //
@@ -539,7 +655,15 @@ impl PluginSandbox {
         // `linker.instantiate` resolves all WASM imports (WASI functions + our
         // two mesh:: functions) and produces a live WASM instance. This step
         // calls the WASM start function if present (typically none in plugins).
-        let instance = self.linker.instantiate(&mut store, &module)?;
+        let instance = match self.linker.instantiate(&mut store, &module) {
+            Ok(instance) => instance,
+            // Instantiation reserves the module's minimum memory through the
+            // limiter; a refusal there is a memory-limit kill, not a crash.
+            Err(e) if store.data().memory_limit_hit => {
+                return Err(anyhow::Error::from(e).context(MemoryLimitExceeded));
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         // --- Get a reference to the WASM linear memory ----------------------
         //
@@ -677,10 +801,23 @@ impl PluginSandbox {
             }
             Err(trap_err) => {
                 // The plugin trapped. This could be:
-                //   a) An epoch timeout (CPU time limit exceeded)
-                //   b) A WASM trap (unreachable, out-of-bounds, stack overflow)
-                //   c) An import failure (e.g., tried to call an unlisted import)
+                //   a) A refused memory.grow past max_memory_mb (§18.1 kill)
+                //   b) An epoch timeout (CPU time limit exceeded)
+                //   c) A WASM trap (unreachable, out-of-bounds, stack overflow)
+                //   d) An import failure (e.g., tried to call an unlisted import)
                 //
+                // Memory kills are reported first and do not touch the
+                // crash/timeout counters: the plugin is stopped outright.
+                if store.data().memory_limit_hit {
+                    tracing::error!(
+                        "plugin {:?} exceeded its {} MiB memory limit: {}",
+                        hex::encode(plugin_id),
+                        max_memory_mb,
+                        trap_err
+                    );
+                    return Err(anyhow::Error::from(trap_err).context(MemoryLimitExceeded));
+                }
+
                 // We distinguish timeouts from other traps by inspecting the error.
                 // wasmtime represents epoch interrupts as a specific trap kind.
                 let is_timeout = trap_err
@@ -756,6 +893,34 @@ pub const CRASH_QUARANTINE_THRESHOLD: u32 = 3;
 // SHUTDOWN_DEADLINE_SECS — protocol constant.
 // Defined by the spec; must not change without a version bump.
 pub const SHUTDOWN_DEADLINE_SECS: u64 = 5;
+
+/// Largest `max_memory_mb` a manifest may request (1 GiB).
+///
+/// §18.1 guides all plugins combined to stay under ~25% of device RAM; a
+/// single plugin asking for more than this is refused at manifest parse.
+// MAX_PLUGIN_MEMORY_MB — manifest validation bound for the memory cap.
+// The default is `PluginResources::default().max_memory_mb` (64 MiB).
+pub const MAX_PLUGIN_MEMORY_MB: u32 = 1024;
+
+/// Maximum WASM tables a plugin instance may own.
+// MAX_PLUGIN_TABLES — sandbox resource cap (§18.1 table limits).
+// One function table plus a few reference tables is ample for plugins.
+pub const MAX_PLUGIN_TABLES: usize = 4;
+
+/// Maximum elements across any one WASM table a plugin may grow to.
+// MAX_PLUGIN_TABLE_ELEMENTS — sandbox resource cap (§18.1 table limits).
+// Bounds `table.grow` so a plugin cannot inflate host memory via tables.
+pub const MAX_PLUGIN_TABLE_ELEMENTS: usize = 10_000;
+
+/// Maximum instances per Store — exactly the one plugin being invoked.
+// MAX_PLUGIN_INSTANCES — sandbox resource cap.
+// A fresh Store per call means there is never a reason for more.
+pub const MAX_PLUGIN_INSTANCES: usize = 1;
+
+/// Maximum linear memories per Store — the plugin's single `memory` export.
+// MAX_PLUGIN_MEMORIES — sandbox resource cap.
+// Multi-memory plugins are not part of the §18 ABI.
+pub const MAX_PLUGIN_MEMORIES: usize = 1;
 
 // ---------------------------------------------------------------------------
 // Plugin Permission
@@ -966,6 +1131,16 @@ pub struct RegistryManifest {
     /// Minimum Mesh Infinity version required to run this plugin.
     // Used for compatibility checks during install.
     pub min_app_version: String,
+    /// Linear-memory cap for the sandbox, in MiB (§18.1 `max_memory_mb`).
+    // Validated to 1..=MAX_PLUGIN_MEMORY_MB by parse_manifest(); applied to
+    // every Store via `sandbox_limits()`.
+    #[serde(default = "default_plugin_memory_mb")]
+    pub max_memory_mb: u32,
+}
+
+/// Serde default for `max_memory_mb`: the §18.1 figure from `PluginResources`.
+fn default_plugin_memory_mb() -> u32 {
+    PluginResources::default().max_memory_mb
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1191,11 @@ pub struct Plugin {
     pub hooks: Vec<String>,
     /// Minimum application version covered by the package signature.
     pub min_app_version: String,
+    /// Linear-memory cap for the sandbox, in MiB (§18.1 `max_memory_mb`).
+    // Copied from the manifest at install; passed to run_hook() per call.
+    // Defaults on load so registries persisted before this field still open.
+    #[serde(default = "default_plugin_memory_mb")]
+    pub max_memory_mb: u32,
     /// True only after the complete manifest and WASM digest verify.
     #[serde(default)]
     pub package_verified: bool,
@@ -1295,6 +1475,7 @@ impl PluginRegistry {
             signature,
             hooks: manifest.hooks,
             min_app_version: manifest.min_app_version,
+            max_memory_mb: manifest.max_memory_mb,
             package_verified: false,
             wasm_hash: [0u8; 32],
             installed_at,
@@ -1648,9 +1829,12 @@ impl PluginRegistry {
                 }
             }
 
-            // Snapshot the plugin's permissions and ID before the mutable borrow.
-            // We need these after the sandbox call when we may mutate the registry.
+            // Snapshot the plugin's permissions, memory cap, name and ID before
+            // the mutable borrow. We need these after the sandbox call when we
+            // may mutate the registry.
             let plugin_permissions = plugin.permissions.clone();
+            let max_memory_mb = plugin.max_memory_mb;
+            let plugin_name = plugin.name.clone();
             let pid = *plugin_id;
 
             // Record the start time for wall-clock timing.
@@ -1668,7 +1852,8 @@ impl PluginRegistry {
             //
             // If the plugin has no compiled module (no wasm_bytes), run_hook
             // returns Ok(None) and we record an empty output.
-            let run_result = sandbox.run_hook(&pid, plugin_permissions, hook_name, &input);
+            let run_result =
+                sandbox.run_hook(&pid, plugin_permissions, max_memory_mb, hook_name, &input);
 
             // Measure actual wall-clock time of the WASM execution.
             let duration_ms = start.elapsed().as_millis() as u64;
@@ -1680,12 +1865,27 @@ impl PluginRegistry {
                     output_value
                 }
                 Err(ref trap_err) => {
-                    // The WASM module trapped (timeout or crash).
+                    // The WASM module trapped (memory kill, timeout or crash).
                     // Check whether this plugin has crossed an auto-management threshold.
                     let timeout_count = sandbox.timeout_count(&pid);
                     let crash_count = sandbox.crash_count(&pid);
 
-                    if timeout_count >= TIMEOUT_AUTO_DISABLE {
+                    if trap_err.downcast_ref::<MemoryLimitExceeded>().is_some() {
+                        // §18.1: a plugin exceeding max_memory_mb is killed at
+                        // once — no three-strikes counter — and the user sees
+                        // "Plugin [name] was stopped: memory limit exceeded."
+                        tracing::error!(
+                            "stopping plugin {:?} ({}): memory limit exceeded",
+                            hex::encode(pid),
+                            plugin_name
+                        );
+                        if let Some(p) = self.plugins.iter_mut().find(|p| p.id == pid) {
+                            p.status = PluginStatus::Failed(format!(
+                                "Plugin {} was stopped: memory limit exceeded",
+                                plugin_name
+                            ));
+                        }
+                    } else if timeout_count >= TIMEOUT_AUTO_DISABLE {
                         // Three consecutive timeouts — auto-suspend per §18 spec.
                         // Suspend the plugin; the user will see a notification in the UI.
                         tracing::warn!(
@@ -1768,6 +1968,7 @@ impl PluginRegistry {
             permissions: plugin.permissions.clone(),
             hooks: plugin.hooks.clone(),
             min_app_version: plugin.min_app_version.clone(),
+            max_memory_mb: plugin.max_memory_mb,
         };
         let Ok(payload) = Self::signed_package_payload(&manifest, wasm_bytes) else {
             return false;
@@ -1951,6 +2152,25 @@ pub fn parse_manifest(json: &str) -> Result<RegistryManifest, MeshError> {
         .unwrap_or("0.0.0")
         .to_string();
 
+    // Extract the "max_memory_mb" field (§18.1) — defaults to the spec's
+    // 64 MiB when absent. A present value must be an integer in
+    // 1..=MAX_PLUGIN_MEMORY_MB; zero would make every plugin unloadable and
+    // an oversized cap would defeat the limit, so both are rejected.
+    let max_memory_mb = match value.get("max_memory_mb") {
+        None | Some(serde_json::Value::Null) => PluginResources::default().max_memory_mb,
+        Some(raw) => {
+            let mb = raw.as_u64().ok_or_else(|| {
+                MeshError::MalformedFrame("plugin manifest max_memory_mb must be an integer".into())
+            })?;
+            if mb == 0 || mb > u64::from(MAX_PLUGIN_MEMORY_MB) {
+                return Err(MeshError::MalformedFrame(format!(
+                    "plugin manifest max_memory_mb must be 1..={MAX_PLUGIN_MEMORY_MB}, got {mb}"
+                )));
+            }
+            mb as u32
+        }
+    };
+
     // All fields validated — construct the RegistryManifest.
     // The registry trusts this output and won't re-validate.
     Ok(RegistryManifest {
@@ -1961,6 +2181,7 @@ pub fn parse_manifest(json: &str) -> Result<RegistryManifest, MeshError> {
         permissions,
         hooks,
         min_app_version,
+        max_memory_mb,
     })
 }
 
@@ -2018,6 +2239,7 @@ mod tests {
             ],
             hooks: vec!["on_message".to_string()],
             min_app_version: "0.1.0".to_string(),
+            max_memory_mb: PluginResources::default().max_memory_mb,
         }
     }
 
@@ -2950,5 +3172,188 @@ mod tests {
             "plugin with ReadMessages should handle on_message_received"
         );
         assert_eq!(results[0].hook_name, "on_message_received");
+    }
+
+    // ── Memory limit enforcement (§18.1) ─────────────────────────────────────
+
+    /// A plugin that grows linear memory forever.  Without a limiter it
+    /// would climb towards wasmtime's 4 GiB ceiling (or spin until the CPU
+    /// deadline); with the limiter the first refused `memory.grow` traps.
+    #[cfg(all(test, not(target_os = "ios")))]
+    const MEMORY_HOG_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "hook_dispatch") (param i32 i32 i32 i32) (result i64)
+            (loop $grow
+              (drop (memory.grow (i32.const 1)))
+              (br $grow))
+            (i64.const 0)))
+    "#;
+
+    /// A well-behaved plugin that touches no extra memory and returns no output.
+    #[cfg(all(test, not(target_os = "ios")))]
+    const QUIET_WAT: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "hook_dispatch") (param i32 i32 i32 i32) (result i64)
+            (i64.const 0)))
+    "#;
+
+    /// run_hook stops a memory hog at the manifest cap and reports it as a
+    /// memory kill, not a timeout or an ordinary crash; the host keeps going.
+    #[cfg(all(test, not(target_os = "ios")))]
+    #[test]
+    fn test_run_hook_kills_plugin_at_memory_limit() {
+        let mut sandbox = PluginSandbox::new().expect("sandbox");
+        let plugin_id = [0x42u8; 16];
+        sandbox
+            .load_module(plugin_id, MEMORY_HOG_WAT.as_bytes())
+            .expect("wat compiles");
+
+        // Two MiB cap: the hog starts at one page and must be refused long
+        // before it could approach anything the host would notice.
+        let started = std::time::Instant::now();
+        let result = sandbox.run_hook(
+            &plugin_id,
+            vec![PluginPermission::ReadMessages],
+            2,
+            "on_message",
+            &serde_json::json!({"text": "hi"}),
+        );
+        let err = result.expect_err("memory hog must not succeed");
+        assert!(
+            err.downcast_ref::<MemoryLimitExceeded>().is_some(),
+            "expected MemoryLimitExceeded, got: {err:#}"
+        );
+        // Killed by the limiter, not by the 100 ms epoch deadline.
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(MAX_CPU_PER_CALLBACK_MS * 5),
+            "memory kill must not wait for the CPU deadline"
+        );
+        // Memory kills bypass the crash-loop and timeout counters.
+        assert_eq!(sandbox.crash_count(&plugin_id), 0);
+        assert_eq!(sandbox.timeout_count(&plugin_id), 0);
+
+        // The host is unaffected: the same sandbox runs a quiet plugin next.
+        let quiet_id = [0x43u8; 16];
+        sandbox
+            .load_module(quiet_id, QUIET_WAT.as_bytes())
+            .expect("wat compiles");
+        let output = sandbox
+            .run_hook(
+                &quiet_id,
+                Vec::new(),
+                2,
+                "on_message",
+                &serde_json::json!({}),
+            )
+            .expect("quiet plugin runs");
+        assert!(output.is_none());
+    }
+
+    /// A module whose minimum memory already exceeds the cap never
+    /// instantiates — the limiter is consulted at instantiation too.
+    #[cfg(all(test, not(target_os = "ios")))]
+    #[test]
+    fn test_run_hook_refuses_module_larger_than_cap() {
+        let mut sandbox = PluginSandbox::new().expect("sandbox");
+        let plugin_id = [0x44u8; 16];
+        // 48 pages = 3 MiB minimum memory against a 2 MiB cap.
+        let big = r#"
+            (module
+              (memory (export "memory") 48)
+              (func (export "hook_dispatch") (param i32 i32 i32 i32) (result i64)
+                (i64.const 0)))
+        "#;
+        sandbox
+            .load_module(plugin_id, big.as_bytes())
+            .expect("wat compiles");
+        let err = sandbox
+            .run_hook(
+                &plugin_id,
+                Vec::new(),
+                2,
+                "on_message",
+                &serde_json::json!({}),
+            )
+            .expect_err("oversized module must not instantiate");
+        assert!(
+            err.downcast_ref::<MemoryLimitExceeded>().is_some(),
+            "{err:#}"
+        );
+        // The same module runs once the cap allows it.
+        assert!(sandbox
+            .run_hook(
+                &plugin_id,
+                Vec::new(),
+                4,
+                "on_message",
+                &serde_json::json!({})
+            )
+            .is_ok());
+    }
+
+    /// Through the registry, a memory kill marks the plugin Failed with the
+    /// §18.1 user-facing message immediately (no three-strikes), and the
+    /// registry keeps serving other plugins.
+    #[cfg(all(test, not(target_os = "ios")))]
+    #[test]
+    fn test_invoke_hook_sandboxed_memory_kill_fails_plugin_immediately() {
+        let mut registry = PluginRegistry::new();
+        let mut manifest = test_manifest();
+        manifest.max_memory_mb = 2;
+        let id = registry.install(manifest, None).expect("install");
+        registry.activate(&id).expect("activate");
+        registry
+            .register_hook("on_message_received", id)
+            .expect("register_hook");
+
+        let mut sandbox = PluginSandbox::new().expect("sandbox");
+        sandbox
+            .load_module(id, MEMORY_HOG_WAT.as_bytes())
+            .expect("wat compiles");
+
+        let results = registry.invoke_hook_sandboxed(
+            "on_message_received",
+            serde_json::json!({"text": "hello"}),
+            &mut sandbox,
+        );
+        // The invocation is recorded with no output...
+        assert_eq!(results.len(), 1);
+        assert!(results[0].output.is_none());
+        // ...and the plugin is stopped at once with the spec's message.
+        match &registry.get(&id).expect("plugin exists").status {
+            PluginStatus::Failed(reason) => {
+                assert!(reason.contains("memory limit exceeded"), "{reason}");
+                assert!(reason.contains("Test Plugin"), "{reason}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        // A stopped plugin receives nothing further.
+        let again = registry.invoke_hook_sandboxed(
+            "on_message_received",
+            serde_json::json!({"text": "again"}),
+            &mut sandbox,
+        );
+        assert!(again.is_empty());
+    }
+
+    /// parse_manifest applies and bounds `max_memory_mb`.
+    #[test]
+    fn test_parse_manifest_max_memory_mb() {
+        let base = r#"{"name":"P","version":"1.0.0","author":"A","description":"D","permissions":[],"hooks":[]"#;
+        // Absent → spec default.
+        let m = parse_manifest(&format!("{base}}}")).expect("default parses");
+        assert_eq!(m.max_memory_mb, PluginResources::default().max_memory_mb);
+        // Explicit value within bounds is kept.
+        let m = parse_manifest(&format!("{base},\"max_memory_mb\":128}}")).expect("128 parses");
+        assert_eq!(m.max_memory_mb, 128);
+        // Zero, oversized, negative and non-integer values are refused.
+        for bad in ["0", "1025", "-1", "\"64\"", "1.5"] {
+            assert!(
+                parse_manifest(&format!("{base},\"max_memory_mb\":{bad}}}")).is_err(),
+                "max_memory_mb={bad} must be rejected"
+            );
+        }
     }
 }

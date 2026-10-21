@@ -110,39 +110,11 @@ impl OfflineBundle {
             bundle_id,
         )?;
 
-        // 3. Generate ephemeral X25519 key pair (fresh per bundle for forward secrecy).
-        let eph_secret = X25519Secret::random_from_rng(OsRng);
-        let eph_pub = X25519Public::from(&eph_secret);
-
-        // 4. Derive shared secret via X25519 ECDH with recipient's public key.
-        let recip_pub = X25519Public::from(*recipient_x25519_pub);
-        let shared = eph_secret.diffie_hellman(&recip_pub);
-
-        // 5. Derive AEAD key from shared secret via HKDF-SHA-256.
-        let aead_key = hkdf_expand(shared.as_bytes(), b"OfflineBundleKey");
-
-        // 6. Encrypt inner bundle with ChaCha20-Poly1305.
-        let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let cipher = ChaCha20Poly1305::new_from_slice(&aead_key)
-            .map_err(|_| OfflineError::EncryptionError("key length error"))?;
-        let nonce = Nonce::from(nonce_bytes);
-        let ciphertext = cipher
-            .encrypt(&nonce, inner.as_slice())
-            .map_err(|_| OfflineError::EncryptionError("AEAD encrypt failed"))?;
-
-        // 7. Assemble the encrypted wrapper.
-        let mut out = Vec::with_capacity(MIN_ENCRYPTED_BUNDLE_LEN + ciphertext.len());
-        out.extend_from_slice(&ENCRYPTED_BUNDLE_MAGIC);
-        out.push(ENCRYPTED_BUNDLE_VERSION);
-        out.extend_from_slice(eph_pub.as_bytes());
-        out.extend_from_slice(&nonce_bytes);
-        let ct_len = ciphertext.len() as u32;
-        out.extend_from_slice(&ct_len.to_be_bytes());
-        out.extend_from_slice(&ciphertext);
+        // 3. Seal it in the ECIES-style envelope for the recipient.
+        let encrypted_bytes = seal_for_recipient(&inner, recipient_x25519_pub)?;
 
         Ok(Self {
-            encrypted_bytes: out,
+            encrypted_bytes,
             bundle_id,
         })
     }
@@ -239,6 +211,56 @@ impl OfflineBundle {
 }
 
 // ---------------------------------------------------------------------------
+// Envelope sealing
+// ---------------------------------------------------------------------------
+
+/// Seal an already-built inner bundle for `recipient_x25519_pub`.
+///
+/// Produces the encrypted wrapper that `open_as_recipient` consumes:
+/// magic ‖ version ‖ ephemeral X25519 public key ‖ nonce ‖ ciphertext length
+/// ‖ ChaCha20-Poly1305 ciphertext.  Split out of `create_for_recipient` so
+/// tests can seal a deliberately malformed inner bundle and prove the
+/// recipient-side parser survives it — anyone holding the recipient's
+/// *public* key can produce such an envelope, so the inner header is
+/// attacker-controlled data.
+pub(crate) fn seal_for_recipient(
+    inner: &[u8],
+    recipient_x25519_pub: &[u8; 32],
+) -> Result<Vec<u8>, OfflineError> {
+    // 1. Generate ephemeral X25519 key pair (fresh per bundle for forward secrecy).
+    let eph_secret = X25519Secret::random_from_rng(OsRng);
+    let eph_pub = X25519Public::from(&eph_secret);
+
+    // 2. Derive shared secret via X25519 ECDH with recipient's public key.
+    let recip_pub = X25519Public::from(*recipient_x25519_pub);
+    let shared = eph_secret.diffie_hellman(&recip_pub);
+
+    // 3. Derive AEAD key from shared secret via HKDF-SHA-256.
+    let aead_key = hkdf_expand(shared.as_bytes(), b"OfflineBundleKey");
+
+    // 4. Encrypt the inner bundle with ChaCha20-Poly1305 under a fresh nonce.
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let cipher = ChaCha20Poly1305::new_from_slice(&aead_key)
+        .map_err(|_| OfflineError::EncryptionError("key length error"))?;
+    let nonce = Nonce::from(nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(&nonce, inner)
+        .map_err(|_| OfflineError::EncryptionError("AEAD encrypt failed"))?;
+
+    // 5. Assemble the encrypted wrapper.
+    let mut out = Vec::with_capacity(MIN_ENCRYPTED_BUNDLE_LEN + ciphertext.len());
+    out.extend_from_slice(&ENCRYPTED_BUNDLE_MAGIC);
+    out.push(ENCRYPTED_BUNDLE_VERSION);
+    out.extend_from_slice(eph_pub.as_bytes());
+    out.extend_from_slice(&nonce_bytes);
+    let ct_len = ciphertext.len() as u32;
+    out.extend_from_slice(&ct_len.to_be_bytes());
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // HKDF helper
 // ---------------------------------------------------------------------------
 
@@ -262,6 +284,76 @@ mod tests {
         let secret = X25519Secret::random_from_rng(OsRng);
         let public = X25519Public::from(&secret);
         (secret, public)
+    }
+
+    /// Byte offset of `packet_count` inside the inner header.
+    const PACKET_COUNT_OFFSET: usize = 4 + 1 + 1 + 32 + 1 + 32 + 16 + 8 + 8;
+
+    /// A correctly sealed envelope whose *inner* header claims `u32::MAX`
+    /// packets.  Anyone with the recipient's public key can build this; the
+    /// AEAD passes, and the inner parser must reject it instead of aborting
+    /// on a ~96 GiB pre-allocation.
+    #[test]
+    fn open_rejects_inner_packet_count_u32_max() {
+        let (recip_secret, recip_pub) = make_x25519_pair();
+        let mut inner = crate::transport::offline::build_bundle(
+            &[b"one".to_vec()],
+            RoutingMode::PointToPoint,
+            [0x01u8; 32],
+            Some([0x02u8; 32]),
+            [0x03u8; 16],
+        )
+        .unwrap();
+        inner[PACKET_COUNT_OFFSET..PACKET_COUNT_OFFSET + 4]
+            .copy_from_slice(&u32::MAX.to_be_bytes());
+        let sealed = seal_for_recipient(&inner, recip_pub.as_bytes()).unwrap();
+
+        let result = OfflineBundle::open_as_recipient(&sealed, &recip_secret.to_bytes());
+        assert!(
+            matches!(
+                result,
+                Err(OfflineError::TooManyPackets {
+                    declared: u32::MAX,
+                    ..
+                })
+            ),
+            "expected TooManyPackets, got {:?}",
+            result.err()
+        );
+    }
+
+    /// Replay the committed fuzz seed corpus through `open_as_recipient`
+    /// using the fuzz target's layout (first 32 bytes = recipient secret,
+    /// rest = bundle bytes).  Nothing may panic; the packet-count seed must
+    /// decrypt and then stop at the structural gate.
+    #[test]
+    fn offline_bundle_corpus_replay() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fuzz/corpus/fuzz_offline_bundle_decode");
+        crate::testing::corpus::assert_corpus_dir_exists(&dir);
+        let entries = crate::testing::corpus::load_corpus_entries(&dir).expect("read corpus");
+        assert!(!entries.is_empty(), "corpus must have seeds");
+        let mut gate_hits = 0;
+        for (path, bytes) in entries {
+            let Some((secret_bytes, bundle_bytes)) = bytes.split_at_checked(32) else {
+                // Shorter than a secret key: the fuzz target returns early too.
+                continue;
+            };
+            let mut secret = [0u8; 32];
+            secret.copy_from_slice(secret_bytes);
+            let result = OfflineBundle::open_as_recipient(bundle_bytes, &secret);
+            // Committed seeds are all negative cases; none may open.
+            assert!(result.is_err(), "unexpected open: {path:?}");
+            if matches!(result, Err(OfflineError::TooManyPackets { .. })) {
+                gate_hits += 1;
+            }
+        }
+        // seed_02 is sealed for the deterministic secret it carries and must
+        // reach the packet-count gate rather than fail the AEAD.
+        assert_eq!(
+            gate_hits, 1,
+            "the packet-count seed must reach the parser gate"
+        );
     }
 
     #[test]
