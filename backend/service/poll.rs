@@ -17,15 +17,40 @@
 // - `FileDirection`, `CHUNKS_PER_TICK`, `FILE_CHUNK_SIZE` for file transfer
 //   throttling — the poll loop sends at most CHUNKS_PER_TICK 64KiB chunks
 //   per transfer per tick to stay responsive.
-// - `write_tcp_frame`, `try_read_frame`, `extract_frame_sender` are the
-//   length-prefixed TCP frame helpers shared across all TCP paths.
+// - `write_tcp_frame`, `try_read_frame` are the length-prefixed TCP frame
+//   helpers shared across all TCP paths; `try_random_fill` draws handshake
+//   nonces.
+// - `PendingLink` plus the `LINK_AUTH_*` / `MAX_PENDING_LINKS` bounds govern
+//   accepted sockets that have not yet proved their identity (§5.1).
+// - `link_auth` is the pure handshake state machine every TCP link must
+//   complete before its frames reach any handler.
 // - `TrustLevel` and `RoutingEntry` for routing table updates.
 use crate::identity::peer_id::PeerId;
 use crate::routing::table::DeviceAddress;
 use crate::routing::table::RoutingEntry;
-use crate::service::runtime::{extract_frame_sender, try_read_frame, write_tcp_frame};
-use crate::service::runtime::{FileDirection, MeshRuntime, CHUNKS_PER_TICK, FILE_CHUNK_SIZE};
+use crate::service::runtime::{try_random_fill, try_read_frame, write_tcp_frame};
+use crate::service::runtime::{
+    FileDirection, MeshRuntime, PendingLink, CHUNKS_PER_TICK, FILE_CHUNK_SIZE,
+    LINK_AUTH_READ_TIMEOUT, LINK_AUTH_TIMEOUT, MAX_PENDING_LINKS,
+};
+use crate::transport::link_auth::{
+    claimed_sender_matches, is_link_handshake_frame, parse_hello, InitiatorLink, LinkAuthError,
+    LinkSigner, ResponderLink, LINK_NONCE_LEN, MAX_LINK_AUTH_FRAME_BYTES,
+};
 use crate::trust::levels::TrustLevel;
+
+/// Outcome of feeding one complete frame to a pending inbound link.
+///
+/// The link itself stays with the caller (borrowed mutably), so this enum
+/// only reports what to do with it next.
+enum PendingLinkStep {
+    /// Handshake not finished yet; keep waiting on this socket.
+    Waiting,
+    /// Handshake complete: the link is bound to this proven peer id.
+    Authenticated(PeerId),
+    /// The socket must be closed: probe answered, frame rejected, or I/O error.
+    Closed,
+}
 
 impl MeshRuntime {
     // -----------------------------------------------------------------------
@@ -842,7 +867,8 @@ impl MeshRuntime {
     /// (the listener is non-blocking).  Each accepted stream is set to
     /// non-blocking mode immediately so that subsequent `read()` calls in the
     /// poll loop never stall.  The streams are placed in the "pending" queue
-    /// where they await identification (their first frame tells us the peer ID).
+    /// where they must complete the link handshake before being keyed on a
+    /// peer id (§5.1).
     pub fn clearnet_accept_new_connections(&self) {
         let new_streams: Vec<std::net::TcpStream> = {
             let guard = self
@@ -865,21 +891,13 @@ impl MeshRuntime {
             }
             accepted
         };
-        if !new_streams.is_empty() {
-            let mut pending = self
-                .clearnet_pending_incoming
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for stream in new_streams {
-                pending.push((stream, Vec::new()));
-            }
-        }
+        self.enqueue_pending_links(new_streams);
     }
 
     /// Drain inbound streams accepted by the Tor hidden-service transport.
     ///
     /// Inserts them into the same pending-incoming queue as clearnet
-    /// connections so the normal identification path handles them.
+    /// connections so the same link handshake gates both.
     pub fn tor_drain_inbound(&self) {
         let new_streams: Vec<std::net::TcpStream> = {
             let guard = self.tor_transport.lock().unwrap_or_else(|e| e.into_inner());
@@ -888,34 +906,214 @@ impl MeshRuntime {
                 None => Vec::new(),
             }
         };
-        if !new_streams.is_empty() {
-            let mut pending = self
-                .clearnet_pending_incoming
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for stream in new_streams {
-                pending.push((stream, Vec::new()));
+        self.enqueue_pending_links(new_streams);
+    }
+
+    /// Queue freshly accepted sockets for the link handshake (§5.1).
+    ///
+    /// Enforces `MAX_PENDING_LINKS`: once the queue is full, further sockets
+    /// are closed on arrival.  An attacker opening idle connections can thus
+    /// hold at most a fixed number of descriptors and never displaces a
+    /// socket that is already mid-handshake.
+    pub fn enqueue_pending_links(&self, streams: Vec<std::net::TcpStream>) {
+        if streams.is_empty() {
+            return;
+        }
+        let mut pending = self
+            .clearnet_pending_incoming
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for stream in streams {
+            if pending.len() >= MAX_PENDING_LINKS {
+                // Dropping the stream closes it; nothing was read from it.
+                self.diagnostic_log("link", "pending_cap_reached");
+                continue;
+            }
+            pending.push(PendingLink::new(stream));
+        }
+    }
+
+    /// Snapshot the local identity as a link-handshake signer.
+    ///
+    /// Taken once per handshake step so the identity lock is never held
+    /// across socket I/O.
+    fn link_signer(&self) -> Result<LinkSigner, LinkAuthError> {
+        let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+        let id = guard.as_ref().ok_or(LinkAuthError::NoLocalIdentity)?;
+        Ok(LinkSigner::new(
+            id.ed25519_pub,
+            id.ed25519_signing.to_bytes(),
+        ))
+    }
+
+    /// Advance one pending inbound link by one complete frame.
+    ///
+    /// Frame sequence on an accepted socket:
+    ///   - `mi_discover` (LAN probe, §4.9.5): answered inline, socket closed.
+    ///   - `link_hello`: answered with our signed `link_auth`; the responder
+    ///     state is kept so the peer's reply can be checked against it.
+    ///   - `link_auth`: verified against that state; on success the link is
+    ///     bound to the proven peer id.
+    ///
+    /// Anything else, in any order, closes the socket.  An unauthenticated
+    /// peer gets exactly one protocol and no second chances; nothing it sent
+    /// is ever dispatched to a frame handler.
+    fn advance_pending_link(&self, link: &mut PendingLink, frame: &[u8]) -> PendingLinkStep {
+        let value: serde_json::Value = match serde_json::from_slice(frame) {
+            Ok(v) => v,
+            Err(_) => {
+                self.diagnostic_log("link", "handshake_frame_malformed");
+                return PendingLinkStep::Closed;
+            }
+        };
+
+        // Step 1: no challenge issued yet, so this must be a probe or a hello.
+        let Some(challenge) = link.challenge.as_ref() else {
+            if value.get("type").and_then(|t| t.as_str()) == Some("mi_discover") {
+                self.handle_lan_discover_request(frame, &mut link.stream);
+                // The probe socket is never kept alive.
+                return PendingLinkStep::Closed;
+            }
+            let hello = match parse_hello(&value) {
+                Ok(hello) => hello,
+                Err(_) => {
+                    self.diagnostic_log("link", "hello_rejected");
+                    return PendingLinkStep::Closed;
+                }
+            };
+            // Without an unlocked identity we cannot prove who we are, and a
+            // link we cannot sign for must not be opened.
+            let signer = match self.link_signer() {
+                Ok(signer) => signer,
+                Err(_) => return PendingLinkStep::Closed,
+            };
+            let mut nonce = [0u8; LINK_NONCE_LEN];
+            if !try_random_fill(&mut nonce) {
+                return PendingLinkStep::Closed;
+            }
+            let (responder, reply) = ResponderLink::answer(signer, hello, nonce);
+            let reply_bytes = match serde_json::to_vec(&reply) {
+                Ok(bytes) => bytes,
+                Err(_) => return PendingLinkStep::Closed,
+            };
+            if write_tcp_frame(&mut link.stream, &reply_bytes).is_err() {
+                return PendingLinkStep::Closed;
+            }
+            link.challenge = Some(responder);
+            return PendingLinkStep::Waiting;
+        };
+
+        // Step 2: a challenge is outstanding, so this must be the signed auth.
+        match challenge.accept_auth(&value) {
+            Ok(peer) => PendingLinkStep::Authenticated(peer),
+            Err(_) => {
+                self.diagnostic_log("link", "auth_rejected");
+                PendingLinkStep::Closed
             }
         }
     }
 
-    /// Read data from pending (unidentified) inbound connections.
+    /// Run the initiator side of the link handshake on a freshly connected
+    /// socket, proving our identity and verifying the peer's (§5.1).
     ///
-    /// Once a complete frame arrives, extract the sender peer_id and promote
-    /// the connection to the identified map.  LAN discovery probes are
-    /// handled inline and the probe socket is immediately dropped.
+    /// This is the one blocking exchange on an outbound socket; it is bounded
+    /// by `LINK_AUTH_READ_TIMEOUT`.  On success the stream is left in
+    /// blocking mode with no read timeout and the caller decides its mode.
+    /// On any error the caller must drop the stream: nothing may be keyed on
+    /// a socket whose far end did not prove it holds `expected_peer_hex`.
+    pub fn authenticate_outbound_link(
+        &self,
+        stream: &mut std::net::TcpStream,
+        expected_peer_hex: &str,
+    ) -> Result<PeerId, LinkAuthError> {
+        use std::io::Read;
+
+        let expected = PeerId::from_hex(expected_peer_hex)
+            .map_err(|_| LinkAuthError::MalformedField("peer"))?;
+        let signer = self.link_signer()?;
+        let mut nonce = [0u8; LINK_NONCE_LEN];
+        if !try_random_fill(&mut nonce) {
+            return Err(LinkAuthError::RandomFailure);
+        }
+        let link = InitiatorLink::new(signer, nonce, Some(expected));
+        let io = |error: std::io::Error| LinkAuthError::Io(error.kind());
+
+        stream.set_nonblocking(false).map_err(io)?;
+        stream
+            .set_read_timeout(Some(LINK_AUTH_READ_TIMEOUT))
+            .map_err(io)?;
+        let hello =
+            serde_json::to_vec(&link.hello_frame()).map_err(|_| LinkAuthError::MalformedFrame)?;
+        write_tcp_frame(stream, &hello).map_err(io)?;
+
+        // Read exactly one framed reply, refusing to buffer more than a
+        // handshake frame's worth from a peer that has not yet proved itself.
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        let reply = loop {
+            if let Some(frame) = try_read_frame(&mut buf) {
+                break frame;
+            }
+            if buf.len() > MAX_LINK_AUTH_FRAME_BYTES + 4 {
+                return Err(LinkAuthError::MalformedFrame);
+            }
+            let n = stream.read(&mut tmp).map_err(io)?;
+            if n == 0 {
+                return Err(LinkAuthError::Io(std::io::ErrorKind::UnexpectedEof));
+            }
+            buf.extend_from_slice(&tmp[..n]);
+        };
+        let value: serde_json::Value =
+            serde_json::from_slice(&reply).map_err(|_| LinkAuthError::MalformedFrame)?;
+        let (peer, proof) = link.accept_response(&value)?;
+        let proof_bytes = serde_json::to_vec(&proof).map_err(|_| LinkAuthError::MalformedFrame)?;
+        write_tcp_frame(stream, &proof_bytes).map_err(io)?;
+        stream.set_read_timeout(None).map_err(io)?;
+        Ok(peer)
+    }
+
+    /// Whether a frame received on the link keyed `peer_hex` may be dispatched.
     ///
-    /// In Critical threat mode (isolation, §3.4), connections from unknown
-    /// peers are silently dropped — the socket is closed without reply.
-    /// This provides plausible deniability — an adversary cannot distinguish
-    /// between "no node is running" and "node is in isolation mode".
+    /// Handshake frames on an already-authenticated link are protocol noise
+    /// and are dropped.  A frame whose `sender` / `from` names anyone other
+    /// than the proven link peer is a spoofing attempt and is dropped before
+    /// it can reach a handler that would trust that field (§2.0).
+    fn frame_bound_to_link(&self, peer_hex: &str, frame: &serde_json::Value) -> bool {
+        let Ok(link_peer) = PeerId::from_hex(peer_hex) else {
+            return false;
+        };
+        if is_link_handshake_frame(frame) {
+            self.diagnostic_log("link", "handshake_frame_on_open_link");
+            return false;
+        }
+        if !claimed_sender_matches(frame, &link_peer) {
+            self.diagnostic_log("link", "sender_mismatch");
+            return false;
+        }
+        true
+    }
+
+    /// Advance the link handshake on pending (unauthenticated) inbound connections.
+    ///
+    /// Reads whatever has arrived, feeds complete frames to
+    /// `advance_pending_link`, and promotes sockets whose peer completed the
+    /// handshake to `clearnet_connections` keyed on the *proven* peer id.
+    /// Sockets older than `LINK_AUTH_TIMEOUT`, or buffering more than one
+    /// handshake frame without completing one, are closed.
+    ///
+    /// In Critical threat mode (isolation, §3.4), authenticated peers that
+    /// are not contacts are silently dropped — the socket is closed without
+    /// reply.  Because the identity is proven first, a stranger cannot pass
+    /// this gate by claiming a contact's id.  This provides plausible
+    /// deniability — an adversary cannot distinguish between "no node is
+    /// running" and "node is in isolation mode".
     pub fn clearnet_process_pending_incoming(&self) {
         use std::io::Read;
 
         // Take ownership of the pending queue atomically, releasing the lock
         // immediately.  This allows new connections to be accepted during the
-        // (potentially slow) identification loop below.
-        let pending_conns: Vec<(std::net::TcpStream, Vec<u8>)> = {
+        // handshake loop below.
+        let pending_links: Vec<PendingLink> = {
             let mut guard = self
                 .clearnet_pending_incoming
                 .lock()
@@ -923,50 +1121,52 @@ impl MeshRuntime {
             std::mem::take(&mut *guard)
         };
 
-        let mut still_pending: Vec<(std::net::TcpStream, Vec<u8>)> = Vec::new();
-        let mut identified: Vec<(String, std::net::TcpStream, Vec<u8>)> = Vec::new();
-        let mut ready_frames: Vec<Vec<u8>> = Vec::new();
+        let mut still_pending: Vec<PendingLink> = Vec::new();
+        let mut authenticated: Vec<(PeerId, std::net::TcpStream, Vec<u8>)> = Vec::new();
 
-        for (mut stream, mut buf) in pending_conns {
+        for mut link in pending_links {
+            // Age out sockets that never finished; dropping closes them.
+            if link.accepted_at.elapsed() > LINK_AUTH_TIMEOUT {
+                self.diagnostic_log("link", "auth_timeout");
+                continue;
+            }
+
             // Non-blocking read until WouldBlock or EOF.
             let mut tmp = [0u8; 4096];
             let closed = loop {
-                match stream.read(&mut tmp) {
+                match link.stream.read(&mut tmp) {
                     Ok(0) => break true,
-                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    Ok(n) => link.buf.extend_from_slice(&tmp[..n]),
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break false,
                     Err(_) => break true,
                 }
             };
             if closed {
-                continue; // Peer disconnected before sending any data.
+                continue; // Peer disconnected mid-handshake.
             }
 
-            if let Some(frame) = try_read_frame(&mut buf) {
-                // LAN discovery probes have no "sender" field — handle and close.
-                let is_discover = serde_json::from_slice::<serde_json::Value>(&frame)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("type")
-                            .and_then(|t| t.as_str())
-                            .map(|s| s == "mi_discover")
-                    })
-                    .unwrap_or(false);
-                if is_discover {
-                    self.handle_lan_discover_request(&frame, &mut stream);
-                    // Drop `stream` here — the probe connection is never kept alive.
-                    continue;
+            match try_read_frame(&mut link.buf) {
+                None => {
+                    // No complete frame yet: an unauthenticated peer may not
+                    // make us hold more than one handshake frame of bytes.
+                    if link.buf.len() > MAX_LINK_AUTH_FRAME_BYTES + 4 {
+                        self.diagnostic_log("link", "handshake_frame_too_large");
+                        continue;
+                    }
+                    still_pending.push(link);
                 }
-                if let Some(sender_hex) = extract_frame_sender(&frame) {
-                    ready_frames.push(frame);
-                    identified.push((sender_hex, stream, buf));
-                    continue;
-                }
+                Some(frame) => match self.advance_pending_link(&mut link, &frame) {
+                    PendingLinkStep::Waiting => still_pending.push(link),
+                    PendingLinkStep::Authenticated(peer) => {
+                        // Bytes after the auth frame are application frames.
+                        authenticated.push((peer, link.stream, link.buf));
+                    }
+                    PendingLinkStep::Closed => {}
+                },
             }
-            still_pending.push((stream, buf));
         }
 
-        // Re-queue connections that still haven't sent a full identifying frame.
+        // Re-queue connections still inside the handshake.
         self.clearnet_pending_incoming
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -977,43 +1177,34 @@ impl MeshRuntime {
             self.threat_context == crate::network::threat_context::ThreatContext::Critical;
 
         let mut newly_identified: Vec<String> = Vec::new();
-        for (peer_id_hex, stream, buf) in identified {
+        for (peer, stream, buf) in authenticated {
             if in_critical_mode {
-                let peer_bytes = match hex::decode(&peer_id_hex) {
-                    Ok(b) if b.len() == 32 => {
-                        let mut a = [0u8; 32];
-                        a.copy_from_slice(&b);
-                        a
-                    }
-                    _ => continue, // Malformed ID — always drop.
-                };
                 let known = self
                     .contacts
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .get(&PeerId(peer_bytes))
+                    .get(&peer)
                     .is_some();
                 if !known {
                     drop(stream); // Close socket — no reply.
                     continue;
                 }
             }
+            // The key is the proven id, canonical lowercase hex.  A peer that
+            // re-authenticates replaces its own earlier socket (reconnect);
+            // nobody else can, because nobody else can sign for this id.
+            let peer_id_hex = peer.to_hex();
             self.clearnet_connections
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(peer_id_hex.clone(), stream);
+            // Bytes received after the auth frame are application frames and
+            // are dispatched by `clearnet_process_identified` this same tick.
             self.clearnet_recv_buffers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(peer_id_hex.clone(), buf);
             newly_identified.push(peer_id_hex);
-        }
-
-        // Process the first frames from newly identified connections immediately.
-        for frame in ready_frames {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&frame) {
-                self.process_inbound_frame(&v);
-            }
         }
 
         let now_secs = std::time::SystemTime::now()
@@ -1195,7 +1386,17 @@ impl MeshRuntime {
                     None => break,
                     Some(bytes) => {
                         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                            self.process_inbound_frame(&v);
+                            // Open the link-layer envelope first (§5.2): a
+                            // `wg_ct` frame is decrypted with the connection
+                            // peer's session, and a plaintext non-handshake
+                            // frame from a peer with a session is dropped.
+                            if let Some(inner) = self.unwrap_inbound_wg_frame(&peer_hex, v) {
+                                // Only frames consistent with the proven link
+                                // identity reach a handler (§5.1, §2.0).
+                                if self.frame_bound_to_link(&peer_hex, &inner) {
+                                    self.process_inbound_frame(&inner);
+                                }
+                            }
                         }
                     }
                 }
@@ -1265,9 +1466,14 @@ impl MeshRuntime {
                         &addr,
                         std::time::Duration::from_secs(3),
                     ) {
-                        let ok = write_tcp_frame(&mut stream, &frame).is_ok();
+                        // Prove identities both ways before the first
+                        // application frame crosses the socket (§5.1).
+                        let ok = self
+                            .authenticate_outbound_link(&mut stream, &peer_hex)
+                            .is_ok()
+                            && write_tcp_frame(&mut stream, &frame).is_ok()
+                            && stream.set_nonblocking(true).is_ok();
                         if ok {
-                            let _ = stream.set_nonblocking(true);
                             self.clearnet_connections
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
@@ -1316,7 +1522,13 @@ impl MeshRuntime {
                     if let Some(ref tor) = *guard {
                         match tor.connect(&peer_hex, &onion_addr, port) {
                             Ok(mut stream) => {
-                                let ok = write_tcp_frame(&mut stream, &frame).is_ok();
+                                // Same mutual proof as clearnet: a hidden
+                                // service address is a hint, not an identity.
+                                let ok = self
+                                    .authenticate_outbound_link(&mut stream, &peer_hex)
+                                    .is_ok()
+                                    && write_tcp_frame(&mut stream, &frame).is_ok()
+                                    && stream.set_nonblocking(true).is_ok();
                                 if ok {
                                     self.clearnet_connections
                                         .lock()
@@ -1379,5 +1591,292 @@ impl MeshRuntime {
                 self.ingest_tun_packet(&frame[14..]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod link_auth_tests {
+    use super::*;
+    use crate::identity::self_identity::SelfIdentity;
+    use std::io::Read;
+    use std::net::{TcpListener, TcpStream};
+    use tempfile::TempDir;
+
+    /// A runtime with a fresh unlocked identity and all transports off.
+    fn test_runtime(name: &str) -> (TempDir, MeshRuntime) {
+        let dir = TempDir::new().unwrap();
+        let mut runtime = MeshRuntime::new(dir.path().to_string_lossy().into_owned());
+        {
+            let mut flags = runtime
+                .transport_flags
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            flags.clearnet = false;
+            flags.mesh_discovery = false;
+        }
+        runtime.create_identity(Some(name.to_string())).unwrap();
+        (dir, runtime)
+    }
+
+    /// The runtime's own peer id.
+    fn our_peer_id(runtime: &MeshRuntime) -> PeerId {
+        runtime
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .unwrap()
+            .peer_id()
+    }
+
+    /// A signer for a standalone test identity.
+    fn signer_for(id: &SelfIdentity) -> LinkSigner {
+        LinkSigner::new(id.ed25519_pub, id.ed25519_signing.to_bytes())
+    }
+
+    /// Run the responder's poll steps until `done` holds or ~3 s elapse.
+    fn pump(runtime: &MeshRuntime, done: impl Fn() -> bool) {
+        for _ in 0..300 {
+            runtime.clearnet_process_pending_incoming();
+            runtime.clearnet_process_identified();
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Peer ids of all `TypingIndicator` events pushed so far.
+    fn typing_senders(runtime: &MeshRuntime) -> Vec<String> {
+        runtime
+            .event_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|event| event["type"] == "TypingIndicator")
+            .map(|event| event["data"]["peerId"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// Whether an authenticated connection is keyed on `peer`.
+    fn connected(runtime: &MeshRuntime, peer: &PeerId) -> bool {
+        runtime
+            .clearnet_connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&peer.to_hex())
+    }
+
+    /// A typing-indicator frame claiming to come from `sender`.
+    fn typing_frame(sender: &PeerId) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "type":   "typing_indicator",
+            "sender": sender.to_hex(),
+            "roomId": "room",
+            "active": true,
+        }))
+        .unwrap()
+    }
+
+    /// Read one framed message from `stream`, blocking up to 3 s.
+    fn read_frame_blocking(stream: &mut TcpStream) -> Option<Vec<u8>> {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            if let Some(frame) = try_read_frame(&mut buf) {
+                return Some(frame);
+            }
+            match stream.read(&mut tmp) {
+                Ok(0) | Err(_) => return None,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            }
+        }
+    }
+
+    /// Whether the far end closed `stream` (EOF or reset) within 3 s.
+    fn closed_by_peer(stream: &mut TcpStream) -> bool {
+        read_frame_blocking(stream).is_none()
+    }
+
+    /// A loopback listener plus a connected client socket.
+    fn loopback_pair() -> (TcpListener, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        (listener, client)
+    }
+
+    /// Accept the pending client and hand the socket to the runtime's
+    /// pending-link queue, as the poll loop's accept step would.
+    fn accept_into(runtime: &MeshRuntime, listener: &TcpListener) {
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        runtime.enqueue_pending_links(vec![server]);
+    }
+
+    /// Drive the honest initiator side by hand over `client` as `me`,
+    /// expecting to reach `server_id`.  Returns the proven server id.
+    fn client_handshake(client: &mut TcpStream, me: &SelfIdentity, server_id: &PeerId) -> PeerId {
+        let init = InitiatorLink::new(signer_for(me), [0x5Au8; 32], Some(*server_id));
+        write_tcp_frame(client, &serde_json::to_vec(&init.hello_frame()).unwrap()).unwrap();
+        let reply = read_frame_blocking(client).expect("server challenge");
+        let value: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+        let (proven, proof) = init.accept_response(&value).unwrap();
+        write_tcp_frame(client, &serde_json::to_vec(&proof).unwrap()).unwrap();
+        proven
+    }
+
+    /// On a link authenticated as Alice, a frame naming Mallory as its
+    /// sender is dropped before any handler sees it, while Alice's own
+    /// frame on the same link is dispatched.
+    #[test]
+    fn forged_sender_on_authenticated_link_is_dropped() {
+        let (_dir, runtime) = test_runtime("Bob");
+        let (listener, mut client) = loopback_pair();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let alice = PeerId([0xA1u8; 32]);
+        let mallory = PeerId([0xB2u8; 32]);
+        // Simulate a link that already completed authentication as Alice.
+        runtime
+            .clearnet_connections
+            .lock()
+            .unwrap()
+            .insert(alice.to_hex(), server);
+
+        write_tcp_frame(&mut client, &typing_frame(&mallory)).unwrap();
+        write_tcp_frame(&mut client, &typing_frame(&alice)).unwrap();
+        pump(&runtime, || !typing_senders(&runtime).is_empty());
+
+        assert_eq!(typing_senders(&runtime), vec![alice.to_hex()]);
+    }
+
+    /// An inbound socket is keyed on a peer id only after the peer proves
+    /// its key; the frames it sends afterwards are then dispatched.
+    #[test]
+    fn inbound_link_requires_completed_handshake() {
+        let (_dir, runtime) = test_runtime("Server");
+        let server_id = our_peer_id(&runtime);
+        let bob = SelfIdentity::generate(Some("Bob".to_string()));
+        let bob_id = bob.peer_id();
+        let (listener, mut client) = loopback_pair();
+        accept_into(&runtime, &listener);
+
+        let client_thread = std::thread::spawn(move || {
+            let proven = client_handshake(&mut client, &bob, &server_id);
+            write_tcp_frame(&mut client, &typing_frame(&bob_id)).unwrap();
+            (proven, client)
+        });
+        pump(&runtime, || !typing_senders(&runtime).is_empty());
+        let (proven, _client) = client_thread.join().unwrap();
+
+        assert_eq!(proven, server_id, "client verified the server's identity");
+        assert!(connected(&runtime, &bob_id));
+        assert!(runtime.clearnet_pending_incoming.lock().unwrap().is_empty());
+        assert_eq!(typing_senders(&runtime), vec![bob_id.to_hex()]);
+    }
+
+    /// A socket that skips the handshake, or answers the challenge with a
+    /// different key than its hello, is closed and never keyed on any id.
+    #[test]
+    fn inbound_link_rejects_unauthenticated_and_forged_peers() {
+        let (_dir, runtime) = test_runtime("Server");
+        let bob = SelfIdentity::generate(Some("Bob".to_string()));
+        let mallory = SelfIdentity::generate(Some("Mallory".to_string()));
+
+        // Case 1: an application frame before any handshake.
+        let (listener, mut client) = loopback_pair();
+        accept_into(&runtime, &listener);
+        write_tcp_frame(&mut client, &typing_frame(&bob.peer_id())).unwrap();
+        pump(&runtime, || {
+            runtime.clearnet_pending_incoming.lock().unwrap().is_empty()
+        });
+        assert!(closed_by_peer(&mut client));
+        assert!(runtime.clearnet_connections.lock().unwrap().is_empty());
+        assert!(typing_senders(&runtime).is_empty());
+
+        // Case 2: Bob's hello, but Mallory signs the auth.
+        let (listener, mut client) = loopback_pair();
+        accept_into(&runtime, &listener);
+        let bob_init = InitiatorLink::new(signer_for(&bob), [0x5Au8; 32], None);
+        let reply_frame = {
+            write_tcp_frame(
+                &mut client,
+                &serde_json::to_vec(&bob_init.hello_frame()).unwrap(),
+            )
+            .unwrap();
+            let waiter = std::thread::spawn(move || (read_frame_blocking(&mut client), client));
+            pump(&runtime, || {
+                runtime
+                    .clearnet_pending_incoming
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|link| link.challenge.is_some())
+            });
+            let (reply, returned) = waiter.join().unwrap();
+            client = returned;
+            reply.expect("server challenge")
+        };
+        // The server answered Bob's hello.  Mallory, who does not hold Bob's
+        // key, sends an auth that is well-formed for Bob's id and nonce but
+        // carries a signature she made up.
+        let challenge: serde_json::Value = serde_json::from_slice(&reply_frame).unwrap();
+        assert_eq!(challenge["type"], "link_auth", "server issued a challenge");
+        let forged_auth = serde_json::json!({
+            "type":           "link_auth",
+            "sender":         bob.peer_id().to_hex(),
+            "ed25519_public": hex::encode(bob.ed25519_pub),
+            "nonce":          hex::encode([0x5Au8; 32]),
+            "sig":            hex::encode([0x99u8; 64]),
+        });
+        write_tcp_frame(&mut client, &serde_json::to_vec(&forged_auth).unwrap()).unwrap();
+        pump(&runtime, || {
+            runtime.clearnet_pending_incoming.lock().unwrap().is_empty()
+        });
+        assert!(closed_by_peer(&mut client));
+        assert!(!connected(&runtime, &bob.peer_id()));
+        assert!(!connected(&runtime, &mallory.peer_id()));
+    }
+
+    /// The outbound side proves itself to the responder and refuses a
+    /// responder that is not the peer it dialled.
+    #[test]
+    fn outbound_link_authenticates_against_expected_peer() {
+        let (_dir_a, server) = test_runtime("Server");
+        let (_dir_b, client_rt) = test_runtime("Client");
+        let server_id = our_peer_id(&server);
+        let client_id = our_peer_id(&client_rt);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Declared outside the scope so the second dial thread may borrow it.
+        let wrong = PeerId([0x77u8; 32]);
+
+        std::thread::scope(|scope| {
+            // Honest dial: both sides end up bound to each other.
+            let dial = scope.spawn(|| {
+                let mut stream = TcpStream::connect(addr).unwrap();
+                let proven = client_rt.authenticate_outbound_link(&mut stream, &server_id.to_hex());
+                (proven, stream)
+            });
+            accept_into(&server, &listener);
+            pump(&server, || connected(&server, &client_id));
+            let (proven, _stream) = dial.join().unwrap();
+            assert_eq!(proven, Ok(server_id));
+            assert!(connected(&server, &client_id));
+
+            // Dial expecting someone else: the client refuses the answer.
+            let dial = scope.spawn(|| {
+                let mut stream = TcpStream::connect(addr).unwrap();
+                client_rt.authenticate_outbound_link(&mut stream, &wrong.to_hex())
+            });
+            accept_into(&server, &listener);
+            pump(&server, || {
+                server.clearnet_pending_incoming.lock().unwrap().is_empty()
+            });
+            assert_eq!(dial.join().unwrap(), Err(LinkAuthError::UnexpectedPeer));
+        });
     }
 }

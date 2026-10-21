@@ -145,3 +145,10 @@ status = "active"
 owner_module = "backend/crypto/ring_sig.rs"
 threat = "malformed or malleable MI-AOS-R255-1 ring signature bytes (bad length, non-canonical scalars, hostile ring points) panicking the verifier or verifying without a valid chain"
 required_by_spec = true
+
+[[target]]
+name = "fuzz_wireguard_handshake"
+status = "active"
+owner_module = "backend/transport/wireguard.rs"
+threat = "malformed, foreign-suite, forged or replayed link handshake / PSK-agreement / tunnel-key-binding bytes causing panic, suite downgrade, or an unauthenticated session install"
+required_by_spec = true

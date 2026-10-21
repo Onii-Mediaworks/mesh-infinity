@@ -432,98 +432,107 @@ impl MeshRuntime {
     /// Returns `true` on success, `false` if the frame is malformed or the
     /// required keys cannot be retrieved.
     pub fn process_wg_init_frame(&self, envelope: &serde_json::Value) -> bool {
-        use crate::crypto::channel_key::derive_channel_key;
-        use crate::transport::wireguard::{respond_to_handshake, HandshakeInit};
-
         // Sender peer ID (64 hex chars = 32 bytes).
         let sender_hex = match envelope.get("sender").and_then(|v| v.as_str()) {
             Some(s) if s.len() == 64 => s.to_string(),
             _ => return false,
         };
-
-        // Raw init message: 80 bytes (32 eph_pub + 48 enc_static).
         let init_hex = match envelope.get("init_hex").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return false,
         };
-        let init_bytes = match hex::decode(init_hex) {
-            Ok(b) if b.len() == 80 => b,
-            _ => return false,
-        };
-
-        // Decode the initiator's peer ID.
-        let initiator_bytes: [u8; 32] = match hex::decode(&sender_hex) {
-            Ok(b) if b.len() == 32 => {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            }
-            _ => return false,
-        };
-        let initiator_id = PeerId(initiator_bytes);
-
-        // Retrieve our X25519 static secret and the initiator's X25519 pub.
-        let (our_secret_bytes, our_peer_id, their_x25519) = {
-            let id_guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-            let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
-            match (id_guard.as_ref(), contacts.get(&initiator_id)) {
-                (Some(id), Some(contact)) => (
-                    id.x25519_secret.to_bytes(),
-                    id.peer_id(),
-                    x25519_dalek::PublicKey::from(contact.x25519_public),
-                ),
-                _ => return false, // identity not unlocked or peer unknown
-            }
-        };
-
-        // Derive a per-channel pre-shared key (PSK) from the static DH shared
-        // secret (§5.2).  The PSK is mixed into the WireGuard handshake to bind
-        // the tunnel to the existing identity relationship — an attacker who
-        // knows neither party's X25519 secret cannot forge a valid handshake,
-        // even if they can intercept the ephemeral key exchange.
-        let our_secret = x25519_dalek::StaticSecret::from(our_secret_bytes);
-        let psk = match derive_channel_key(&our_secret, &their_x25519, &our_peer_id, &initiator_id)
-        {
-            Ok(k) => k,
+        // The synchronous path does all parsing and verification.
+        let response_hex = match self.wg_respond_to_handshake(&sender_hex, init_hex) {
+            Ok(hex) => hex,
             Err(_) => return false,
         };
-
-        // Reconstruct the HandshakeInit message from wire bytes.
-        let init_msg = HandshakeInit {
-            eph_i_pub: {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&init_bytes[..32]);
-                a
-            },
-            enc_static: {
-                let mut a = [0u8; 48];
-                a.copy_from_slice(&init_bytes[32..]);
-                a
-            },
+        let our_hex = {
+            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(id) => id.peer_id().to_hex(),
+                None => return false,
+            }
         };
 
-        // Run the responder-side handshake to derive session keys.
-        let (session, response) =
-            match respond_to_handshake(&init_msg, &our_secret, &psk, our_peer_id, initiator_id) {
-                Ok(r) => r,
-                Err(_) => return false,
-            };
-
-        // Store the established session keyed by the initiator's peer ID.
-        self.wireguard_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(initiator_id, session);
-
         // Send the handshake response back so the initiator can complete.
-        let our_hex = our_peer_id.to_hex();
         let response_frame = serde_json::json!({
             "type":         "wg_response",
             "sender":       our_hex,
-            "response_hex": hex::encode(response.eph_r_pub),
+            "response_hex": response_hex,
         });
         self.send_raw_frame(&sender_hex, &response_frame);
         true
+    }
+
+    /// Current handshake timestamp: nanoseconds since the Unix epoch.
+    ///
+    /// The responder requires every Init from a given initiator to carry a
+    /// strictly increasing timestamp (§5.2 replay rule), so the resolution
+    /// must exceed the fastest legitimate re-handshake cadence; nanoseconds
+    /// match WireGuard's TAI64N granularity.
+    fn wg_handshake_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
+    }
+
+    /// The endpoint policy every new link session gets (§5.2, "Endpoint
+    /// pinning").  The per-connection mode (LoSec/Direct) is not tracked on
+    /// the runtime yet, so the policy is derived from the threat context
+    /// alone with the connection treated as Standard; Elevated and Critical
+    /// pin, Normal roams with a forced re-handshake.
+    fn wg_endpoint_policy(&self) -> crate::transport::wireguard::EndpointPolicy {
+        crate::transport::wireguard::EndpointPolicy::for_context(
+            self.threat_context,
+            crate::routing::losec::ConnectionMode::Standard,
+            crate::transport::wireguard::DEFAULT_KEEPALIVE_SECS,
+        )
+    }
+
+    /// Unwrap an inbound frame from `peer_hex` through its link session.
+    ///
+    /// Once a session exists for the peer, only two kinds of frame are
+    /// accepted: `{"wg_ct": hex}` envelopes, which are decrypted and parsed,
+    /// and plaintext handshake frames (`wg_init` / `wg_response`), which
+    /// are self-authenticating and needed for re-handshakes.  Any other
+    /// plaintext frame from a peer with a session is dropped: a peer that
+    /// completed a handshake must not be able to bypass it.  Without a
+    /// session, a `wg_ct` envelope cannot be opened and is dropped, and
+    /// plaintext passes through (the pre-handshake baseline).
+    ///
+    /// Returns the frame to dispatch, or `None` to drop it.
+    pub fn unwrap_inbound_wg_frame(
+        &self,
+        peer_hex: &str,
+        frame: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        let peer_id = hex::decode(peer_hex)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .map(PeerId)?;
+        let wg_ct = frame.get("wg_ct").and_then(|v| v.as_str()).map(str::to_string);
+        let sessions = self
+            .wireguard_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match (sessions.get(&peer_id), wg_ct) {
+            // Encrypted envelope with a live session: decrypt and parse.
+            (Some(session), Some(ct_hex)) => {
+                let ct = hex::decode(ct_hex).ok()?;
+                let plain = session.decrypt(&ct).ok()?;
+                serde_json::from_slice(&plain).ok()
+            }
+            // Encrypted envelope, no session: undecryptable, drop.
+            (None, Some(_)) => None,
+            // Plaintext with a live session: only handshake frames pass.
+            (Some(_), None) => {
+                let frame_type = frame.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                matches!(frame_type, "wg_init" | "wg_response").then_some(frame)
+            }
+            // Plaintext, no session: pre-handshake baseline.
+            (None, None) => Some(frame),
+        }
     }
 
     /// Handle an inbound WireGuard handshake response frame (§5.2).
@@ -534,72 +543,16 @@ impl MeshRuntime {
     pub fn process_wg_response_frame(&self, envelope: &serde_json::Value) -> bool {
         // Sender peer ID (responder).
         let sender_hex = match envelope.get("sender").and_then(|v| v.as_str()) {
-            Some(s) if s.len() == 64 => s.to_string(),
+            Some(s) if s.len() == 64 => s,
             _ => return false,
         };
-
-        // 32-byte ephemeral public key from the responder.
         let response_hex = match envelope.get("response_hex").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return false,
         };
-        let eph_r_pub: [u8; 32] = match hex::decode(response_hex) {
-            Ok(b) if b.len() == 32 => {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            }
-            _ => return false,
-        };
-
-        // Decode the responder peer ID.
-        let sender_bytes: [u8; 32] = match hex::decode(&sender_hex) {
-            Ok(b) if b.len() == 32 => {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            }
-            _ => return false,
-        };
-        let responder_id = PeerId(sender_bytes);
-
-        // Retrieve our peer ID from the identity.
-        let our_peer_id = {
-            let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref() {
-                Some(id) => id.peer_id(),
-                None => return false,
-            }
-        };
-
-        // Consume the pending initiator handshake from the map.  If absent,
-        // the response is either spurious (no matching initiation) or a replay
-        // of a previously consumed response — discard silently in both cases.
-        // Using remove() ensures each handshake can only be completed once.
-        let pending = {
-            let mut map = self
-                .pending_wg_handshakes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            match map.remove(&responder_id) {
-                Some(p) => p,
-                None => return false,
-            }
-        };
-
-        // Complete the handshake and derive the bidirectional session keys.
-        let response = crate::transport::wireguard::HandshakeResponse { eph_r_pub };
-        let session = match pending.complete(&response, our_peer_id, responder_id) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-
-        // Store the established WireGuard session.
-        self.wireguard_sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(responder_id, session);
-        true
+        // The synchronous path verifies the responder's confirmation before
+        // installing anything.
+        self.wg_complete_handshake(sender_hex, response_hex).is_ok()
     }
 
     // -----------------------------------------------------------------------
@@ -615,8 +568,7 @@ impl MeshRuntime {
     /// Returns `Ok(init_hex)` where `init_hex` is 80 hex bytes
     /// (32-byte eph_pub + 48-byte enc_static), or `Err(String)` on failure.
     pub fn wg_initiate_handshake(&self, peer_id_hex: &str) -> Result<String, String> {
-        use crate::crypto::channel_key::derive_channel_key;
-        use crate::transport::wireguard::PendingInitiatorHandshake;
+        use crate::transport::wireguard::{PendingInitiatorHandshake, TunnelPsk};
 
         // Parse the destination peer ID.
         let peer_bytes: [u8; 32] = hex::decode(peer_id_hex)
@@ -631,7 +583,7 @@ impl MeshRuntime {
         let target_peer_id = PeerId(peer_bytes);
 
         // Retrieve our X25519 static key and the peer's X25519 public key.
-        let (our_secret_bytes, our_pub_id, their_x25519_pub) = {
+        let (our_secret_bytes, their_x25519_pub) = {
             let id_guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             let id = id_guard.as_ref().ok_or("identity not unlocked")?;
             let contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
@@ -641,26 +593,27 @@ impl MeshRuntime {
                 .clone();
             let their_pub = x25519_dalek::PublicKey::from(contact.x25519_public);
             let our_secret_bytes = id.x25519_secret.to_bytes();
-            (our_secret_bytes, id.peer_id(), their_pub)
+            (our_secret_bytes, their_pub)
         };
 
-        // Derive per-channel PSK.
-        let our_secret = x25519_dalek::StaticSecret::from(our_secret_bytes);
-        let psk = derive_channel_key(&our_secret, &their_x25519_pub, &our_pub_id, &target_peer_id)
-            .map_err(|_| "PSK derivation failed")?;
+        // No-PSK tunnel (§5.2).  The per-epoch trusted-tunnel PSK comes from
+        // the hybrid agreement in `transport::tunnel_keys`; until that
+        // agreement runs over the link, the tunnel stays a no-PSK tunnel and
+        // trusted-tier features are withheld.  The static `channel_key` is
+        // never installed as a PSK.
+        let psk = TunnelPsk::None;
 
         // Build the pending handshake and init message.
         let (pending, init_msg) = PendingInitiatorHandshake::new(
-            x25519_dalek::StaticSecret::from(our_secret.to_bytes()),
+            x25519_dalek::StaticSecret::from(our_secret_bytes),
             their_x25519_pub,
             psk,
-        );
+            Self::wg_handshake_timestamp(),
+        )
+        .map_err(|e| e.to_string())?;
 
-        // Serialise: eph_i_pub (32) + enc_static (48) = 80 bytes hex.
-        let mut init_bytes = Vec::with_capacity(80);
-        init_bytes.extend_from_slice(&init_msg.eph_i_pub);
-        init_bytes.extend_from_slice(&init_msg.enc_static);
-        let init_hex = hex::encode(&init_bytes);
+        // Serialise the fixed wire layout (header + fields) as hex.
+        let init_hex = hex::encode(init_msg.to_bytes());
 
         // Store the pending state so the response handler can finish the session.
         self.pending_wg_handshakes
@@ -684,8 +637,9 @@ impl MeshRuntime {
         peer_id_hex: &str,
         init_hex: &str,
     ) -> Result<String, String> {
-        use crate::crypto::channel_key::derive_channel_key;
-        use crate::transport::wireguard::{respond_to_handshake, HandshakeInit};
+        use crate::transport::wireguard::{
+            respond_to_handshake, HandshakeInit, StaticKeySource, TunnelPsk,
+        };
 
         // Parse the initiator's peer ID.
         let peer_bytes: [u8; 32] = hex::decode(peer_id_hex)
@@ -699,19 +653,11 @@ impl MeshRuntime {
             .ok_or("invalid peer_id_hex")?;
         let initiator_peer_id = PeerId(peer_bytes);
 
-        // Decode the 80-byte init message.
-        let init_bytes: Vec<u8> = hex::decode(init_hex)
-            .ok()
-            .filter(|b| b.len() == 80)
-            .ok_or("invalid init_hex (expected 80 bytes)")?;
-        let mut eph_i_pub = [0u8; 32];
-        let mut enc_static = [0u8; 48];
-        eph_i_pub.copy_from_slice(&init_bytes[..32]);
-        enc_static.copy_from_slice(&init_bytes[32..]);
-        let init_msg = HandshakeInit {
-            eph_i_pub,
-            enc_static,
-        };
+        // Decode and parse the init message; the parser enforces the fixed
+        // length and the `MI-LINK-1` header, so a peer declaring another
+        // suite or version is rejected here with a typed error.
+        let init_bytes: Vec<u8> = hex::decode(init_hex).map_err(|_| "invalid init_hex")?;
+        let init_msg = HandshakeInit::from_bytes(&init_bytes).map_err(|e| e.to_string())?;
 
         // Retrieve our X25519 secret and the initiator's X25519 pub.
         let (our_secret_bytes, our_peer_id, their_x25519_pub) = {
@@ -727,25 +673,43 @@ impl MeshRuntime {
         };
 
         let our_secret = x25519_dalek::StaticSecret::from(our_secret_bytes);
-        let psk = derive_channel_key(
-            &our_secret,
-            &their_x25519_pub,
-            &our_peer_id,
-            &initiator_peer_id,
-        )
-        .map_err(|_| "PSK derivation failed")?;
+        // No-PSK tunnel until the §5.2 hybrid PSK agreement has run; see
+        // `wg_initiate_handshake`.
+        let psk = TunnelPsk::None;
 
-        let (session, response) =
-            respond_to_handshake(&init_msg, &our_secret, &psk, our_peer_id, initiator_peer_id)
-                .map_err(|e| e.to_string())?;
-
-        // Store the established session.
-        self.wireguard_sessions
+        // Respond: the initiator's static key is checked against the
+        // contact's known key and its key confirmation is verified before
+        // any session is derived; a replayed Init (timestamp not newer than
+        // the last accepted) is rejected.
+        let last_ts = self
+            .wireguard_sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(initiator_peer_id, session);
+            .last_init_timestamp(&initiator_peer_id);
+        let (mut session, response, timestamp) = respond_to_handshake(
+            &init_msg,
+            &our_secret,
+            &their_x25519_pub,
+            &psk,
+            our_peer_id,
+            initiator_peer_id,
+            last_ts,
+        )
+        .map_err(|e| e.to_string())?;
+        // The identity X25519 key served as the static key: a bootstrap
+        // tunnel that must be re-keyed once a role-scoped binding exists.
+        session.set_key_source(StaticKeySource::IdentityBootstrap);
+        session.set_endpoint_policy(self.wg_endpoint_policy());
 
-        Ok(hex::encode(response.eph_r_pub))
+        // Store the confirmed session and the accepted timestamp.
+        let mut sessions = self
+            .wireguard_sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        sessions.record_init_timestamp(initiator_peer_id, timestamp);
+        sessions.insert(initiator_peer_id, session);
+
+        Ok(hex::encode(response.to_bytes()))
     }
 
     /// Complete an initiator-side WireGuard handshake after receiving the
@@ -761,7 +725,7 @@ impl MeshRuntime {
         peer_id_hex: &str,
         response_hex: &str,
     ) -> Result<(), String> {
-        use crate::transport::wireguard::HandshakeResponse;
+        use crate::transport::wireguard::{HandshakeResponse, StaticKeySource};
 
         // Parse responder peer ID.
         let peer_bytes: [u8; 32] = hex::decode(peer_id_hex)
@@ -775,19 +739,9 @@ impl MeshRuntime {
             .ok_or("invalid peer_id_hex")?;
         let responder_peer_id = PeerId(peer_bytes);
 
-        // Parse the 32-byte response.
-        let resp_bytes: [u8; 32] = hex::decode(response_hex)
-            .ok()
-            .filter(|b| b.len() == 32)
-            .map(|b| {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            })
-            .ok_or("response_hex must be 32 bytes")?;
-        let response = HandshakeResponse {
-            eph_r_pub: resp_bytes,
-        };
+        // Decode and parse the response (fixed length, `MI-LINK-1` header).
+        let resp_bytes: Vec<u8> = hex::decode(response_hex).map_err(|_| "invalid response_hex")?;
+        let response = HandshakeResponse::from_bytes(&resp_bytes).map_err(|e| e.to_string())?;
 
         // Retrieve our peer ID.
         let our_peer_id = {
@@ -798,22 +752,28 @@ impl MeshRuntime {
                 .ok_or("identity not unlocked")?
         };
 
-        // Consume the pending handshake state.
-        let pending = {
+        // Complete against the pending state *without* consuming it: a
+        // forged or tampered response fails the responder's key
+        // confirmation and must leave the pending handshake in place for
+        // the genuine reply.  Only a verified response removes it.
+        let mut session = {
             let mut map = self
                 .pending_wg_handshakes
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            map.remove(&responder_peer_id)
-                .ok_or("no pending handshake for this peer")?
+            let pending = map
+                .get(&responder_peer_id)
+                .ok_or("no pending handshake for this peer")?;
+            let session = pending
+                .complete(&response, our_peer_id, responder_peer_id)
+                .map_err(|e| e.to_string())?;
+            map.remove(&responder_peer_id);
+            session
         };
+        session.set_key_source(StaticKeySource::IdentityBootstrap);
+        session.set_endpoint_policy(self.wg_endpoint_policy());
 
-        // Complete the handshake and derive bidirectional session keys.
-        let session = pending
-            .complete(&response, our_peer_id, responder_peer_id)
-            .map_err(|e| e.to_string())?;
-
-        // Store the established session.
+        // Store the confirmed session.
         self.wireguard_sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())

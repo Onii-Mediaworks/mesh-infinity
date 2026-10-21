@@ -58,6 +58,8 @@ pub mod i2p;
 pub mod kcp;
 pub mod layer2;
 pub mod libp2p_transport;
+/// Authenticated link identification for framed TCP links (§5.1, §5.2).
+pub mod link_auth;
 pub mod manager;
 pub mod mixnet;
 pub mod nfc;
@@ -72,6 +74,8 @@ pub mod solver;
 pub mod tailscale;
 pub mod telephone;
 pub mod tor;
+/// Tunnel key lifecycle and trusted-tunnel PSK agreement (§5.2).
+pub mod tunnel_keys;
 pub mod ultrasonic;
 pub mod usb_serial;
 pub mod wifi_direct;

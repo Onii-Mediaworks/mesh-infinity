@@ -93,8 +93,12 @@ pub enum MixRole {
     Gateway { katzenpost_mode: bool },
 }
 
-#[derive(Clone)]
+/// One routing-key epoch.  The private key is wiped when the generation is
+/// dropped (rotation replaces `current_key`, `retire_previous_key` drops the
+/// overlap key), so retired Sphinx keys do not linger in freed memory.
+#[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 struct RoutingKey {
+    #[zeroize(skip)]
     epoch: u64,
     private_key: [u8; 32],
 }
@@ -572,6 +576,24 @@ pub enum MixnetError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A retired or rotated routing key must be wiped when dropped: the
+    /// type has to implement `ZeroizeOnDrop`, otherwise `rotate_routing_key`
+    /// and `retire_previous_key` would leave Sphinx private keys in freed
+    /// memory for a forensic adversary.  The bound is checked at compile
+    /// time; the body exercises both drop paths so the guarantee is tied
+    /// to the code that relies on it.
+    #[test]
+    fn routing_keys_are_zeroized_on_drop() {
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<RoutingKey>();
+        let mut node = MixnetNode::new_with_epoch(MixRole::MixNode, 1, [0x11; 32]);
+        node.rotate_routing_key(2, [0x22; 32]).unwrap();
+        node.rotate_routing_key(3, [0x33; 32]).unwrap(); // drops epoch 1
+        node.retire_previous_key(); // drops epoch 2
+        assert_eq!(node.current_key.epoch, 3);
+        assert!(node.previous_key.is_none());
+    }
 
     fn seeded_rng() -> ChaCha20Rng {
         ChaCha20Rng::seed_from_u64(0xDEAD_BEEF_CAFE_1337)

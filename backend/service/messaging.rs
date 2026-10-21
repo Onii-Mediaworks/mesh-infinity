@@ -17,6 +17,7 @@
 
 use crate::crypto::double_ratchet::{DoubleRatchetSession, RatchetHeader};
 use crate::crypto::message_encrypt::{decrypt_message, MessageContext};
+use crate::identity::mask::derive_relationship_signing_key;
 use crate::identity::peer_id::PeerId;
 use crate::messaging::room::Room;
 use crate::service::runtime::{bootstrap_ratchet_session, MeshRuntime};
@@ -794,6 +795,21 @@ impl MeshRuntime {
         let msg_id = field_str!("msg_id");
         let ts = envelope.get("ts").and_then(|v| v.as_u64()).unwrap_or(0);
         let ciphertext_hex = field_str!("ciphertext");
+        // The sender's relationship-specific mask public key for us (§7.2
+        // Step 3).  Optional on the wire: once pinned on the contact record
+        // the stored key is authoritative and a frame may omit it.  Present
+        // but malformed is a bad frame.
+        let frame_rel_pub: Option<[u8; 32]> = match envelope.get("rel_pub") {
+            None => None,
+            Some(v) => match v.as_str().and_then(|h| hex::decode(h).ok()) {
+                Some(b) if b.len() == 32 => {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    Some(a)
+                }
+                _ => return false,
+            },
+        };
 
         // SECURITY (HIGH-4): Check the deduplication cache BEFORE any
         // expensive cryptographic work.  If the message ID has already been
@@ -912,12 +928,30 @@ impl MeshRuntime {
             Err(_) => return false,
         };
 
-        // Sender's Ed25519 verifying key for the Step 3 signature check.
-        let sender_verifying_key =
-            match ed25519_dalek::VerifyingKey::from_bytes(&contact.ed25519_public) {
-                Ok(k) => k,
-                Err(_) => return false,
-            };
+        // Step 3 verifying key (§7.2, §3.1.6): the sender's relationship-
+        // specific mask key for us — never the stable identity key in
+        // `contact.ed25519_public`.  A pinned key is authoritative and a
+        // frame carrying a different key is rejected outright.  Before any
+        // key is pinned the frame's key is used, and it is pinned only after
+        // the ratchet (Step 2) has authenticated the message below, so a
+        // forged first frame can never pin a key: the forger cannot pass
+        // Step 2, and the contact's stable key is bound into that session
+        // by PQXDH.
+        let rel_pub = match (contact.relationship_ed25519_public, frame_rel_pub) {
+            (Some(pinned), Some(carried)) if pinned != carried => return false,
+            (Some(pinned), _) => pinned,
+            (None, Some(carried)) => carried,
+            (None, None) => return false,
+        };
+        // A relationship key equal to the stable identity key is the exact
+        // misuse §3.1.6 forbids; refuse it even if the signature would verify.
+        if rel_pub == contact.ed25519_public {
+            return false;
+        }
+        let sender_verifying_key = match ed25519_dalek::VerifyingKey::from_bytes(&rel_pub) {
+            Ok(k) => k,
+            Err(_) => return false,
+        };
 
         // Derive the message key, authenticate the payload, and only then
         // commit the ratchet step (and install the candidate session).  The
@@ -992,6 +1026,28 @@ impl MeshRuntime {
             }
             text
         };
+
+        // First authenticated message from this contact: pin the relationship
+        // key the frame carried.  Every later message must present the same
+        // key (checked above), which ties the whole conversation — and the
+        // message request that may have opened it — to one relationship key.
+        // `get_mut` re-checks under the lock so a concurrent first frame
+        // cannot pin a second key after this one.
+        if contact.relationship_ed25519_public.is_none() {
+            let pinned = {
+                let mut contacts = self.contacts.lock().unwrap_or_else(|e| e.into_inner());
+                match contacts.get_mut(&sender_peer_id) {
+                    Some(record) if record.relationship_ed25519_public.is_none() => {
+                        record.relationship_ed25519_public = Some(rel_pub);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if pinned {
+                self.save_contacts();
+            }
+        }
 
         // The sender demonstrably shares a session with us, so any X3DH /
         // PQXDH init material we were still attaching to our outgoing
@@ -1488,6 +1544,15 @@ impl MeshRuntime {
                 None => continue,
             };
 
+            // §7.2 Step 3 / §3.1.6: the outer signature comes from our
+            // relationship-specific mask key for THIS peer, derived from the
+            // stable mask key — never the stable key itself.  Its public half
+            // travels in the frame so the peer can pin it on first
+            // authenticated contact (`process_inbound_frame`); after that the
+            // peer checks every frame against the pinned copy.
+            let our_rel_key = derive_relationship_signing_key(&our_ed25519, &our_peer_id, peer_id);
+            let our_rel_pub = our_rel_key.verifying_key().to_bytes();
+
             // Ensure a ratchet session exists for this peer.
             if !self
                 .ratchet_sessions
@@ -1596,7 +1661,7 @@ impl MeshRuntime {
                 &ratchet_msg_key,
                 &cipher_key,
                 &session_nonce,
-                &our_ed25519,
+                &our_rel_key,
                 &their_x25519_pub,
                 MessageContext::Direct,
             ) {
@@ -1614,6 +1679,7 @@ impl MeshRuntime {
                 "room":       room_id_hex,
                 "msg_id":     msg_id_hex,
                 "ts":         ts,
+                "rel_pub":    hex::encode(our_rel_pub),
                 "enc_header": hex::encode(&enc_header),
                 "ciphertext": hex::encode(&ciphertext),
             });
@@ -4126,6 +4192,8 @@ mod tests {
     use crate::crypto::message_encrypt::encrypt_message;
     use crate::crypto::x3dh::{x3dh_initiate, PreauthBundle, X3dhInitHeader};
     use crate::identity::self_identity::SelfIdentity;
+    use ed25519_dalek::SigningKey;
+    use rand_core::OsRng;
     use x25519_dalek::PublicKey as X25519Public;
 
     /// Room id shared by every direct-message test frame.
@@ -4162,13 +4230,45 @@ mod tests {
         ));
     }
 
-    /// The runtime's X25519 identity public key (what a contact record holds).
-    fn runtime_x25519_pub(runtime: &MeshRuntime) -> X25519Public {
+    /// What a sender must know about the runtime to address it: its X25519
+    /// identity public key (what a contact record holds) and its peer id
+    /// (what the sender's relationship key is derived toward).
+    struct TestRecipient {
+        x25519_pub: X25519Public,
+        peer_id: PeerId,
+    }
+
+    /// The runtime as a sender sees it.
+    fn runtime_recipient(runtime: &MeshRuntime) -> TestRecipient {
         let guard = runtime
             .identity
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        guard.as_ref().unwrap().x25519_pub
+        let id = guard.as_ref().unwrap();
+        TestRecipient {
+            x25519_pub: id.x25519_pub,
+            peer_id: id.peer_id(),
+        }
+    }
+
+    /// `sender`'s relationship key toward `recipient` (§7.2 Step 3), as
+    /// `send_text_message` derives it.
+    fn sender_rel_key(sender: &SelfIdentity, recipient: &TestRecipient) -> SigningKey {
+        derive_relationship_signing_key(
+            &sender.ed25519_signing,
+            &sender.peer_id(),
+            &recipient.peer_id,
+        )
+    }
+
+    /// The pinned relationship key the runtime holds for `peer`, if any.
+    fn pinned_rel_key(runtime: &MeshRuntime, peer: &SelfIdentity) -> Option<[u8; 32]> {
+        runtime
+            .contacts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&peer.peer_id())
+            .and_then(|c| c.relationship_ed25519_public)
     }
 
     /// The runtime's preauth bundle as an initiator would fetch it, with the
@@ -4215,17 +4315,53 @@ mod tests {
 
     /// Build a direct-message frame from `sender` to the runtime exactly as
     /// `send_text_message` does: encrypted ratchet header, four-layer
-    /// ciphertext over `{"hdr", "text"}`, optional X3DH init fields.
+    /// ciphertext over `{"hdr", "text"}` with the Step 3 signature by the
+    /// sender's relationship key, `rel_pub`, optional X3DH init fields.
     fn direct_frame(
         sender: &SelfIdentity,
-        recipient_x25519_pub: &X25519Public,
+        recipient: &TestRecipient,
         session: &mut DoubleRatchetSession,
         init: Option<&X3dhInitHeader>,
         msg_id: &str,
         text: &str,
     ) -> serde_json::Value {
+        let rel = sender_rel_key(sender, recipient);
+        let rel_pub = rel.verifying_key().to_bytes();
+        direct_frame_signed_by(
+            sender,
+            recipient,
+            session,
+            init,
+            msg_id,
+            text,
+            Step3Signer {
+                key: &rel,
+                advertised_pub: rel_pub,
+            },
+        )
+    }
+
+    /// The key a test frame's Step 3 signature is made with, and the key the
+    /// frame advertises as `rel_pub`.  Equal for a genuine frame; an
+    /// adversarial test varies one of them.
+    struct Step3Signer<'a> {
+        key: &'a SigningKey,
+        advertised_pub: [u8; 32],
+    }
+
+    /// `direct_frame` with the Step 3 signer chosen by the caller, so a test
+    /// can present an out-of-role key.
+    fn direct_frame_signed_by(
+        sender: &SelfIdentity,
+        recipient: &TestRecipient,
+        session: &mut DoubleRatchetSession,
+        init: Option<&X3dhInitHeader>,
+        msg_id: &str,
+        text: &str,
+        signer: Step3Signer<'_>,
+    ) -> serde_json::Value {
         let (ratchet_header, msg_key) = session.next_send_msg_key().unwrap();
-        let dh_shared = sender.x25519_secret.diffie_hellman(recipient_x25519_pub);
+        let dh_shared = sender.x25519_secret.diffie_hellman(&recipient.x25519_pub);
         let hdr_key =
             DoubleRatchetSession::derive_header_key_from_dh(dh_shared.as_bytes()).unwrap();
         let enc_header =
@@ -4245,8 +4381,8 @@ mod tests {
             &ratchet_msg_key,
             &cipher_key,
             &session_nonce,
-            &sender.ed25519_signing,
-            recipient_x25519_pub,
+            signer.key,
+            &recipient.x25519_pub,
             MessageContext::Direct,
         )
         .unwrap();
@@ -4255,6 +4391,7 @@ mod tests {
             "room":       TEST_ROOM_HEX,
             "msg_id":     msg_id,
             "ts":         100,
+            "rel_pub":    hex::encode(signer.advertised_pub),
             "enc_header": hex::encode(&enc_header),
             "ciphertext": hex::encode(&ciphertext),
         });
@@ -4309,7 +4446,7 @@ mod tests {
         let (_dir, runtime) = test_runtime();
         let alice = SelfIdentity::generate(Some("Alice".to_string()));
         add_contact(&runtime, &alice);
-        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let bob = runtime_recipient(&runtime);
 
         // A third party runs a well-formed X3DH against Bob's public bundle
         // with its own identity key and names Alice as the sender.
@@ -4318,7 +4455,7 @@ mod tests {
             initiate_session(&runtime, &other.x25519_secret, other.x25519_pub.as_bytes());
         let mut bogus = direct_frame(
             &other,
-            &bob_x25519,
+            &bob,
             &mut other_session,
             Some(&other_init),
             "bogus-1",
@@ -4341,7 +4478,7 @@ mod tests {
             initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
         let genuine = direct_frame(
             &alice,
-            &bob_x25519,
+            &bob,
             &mut alice_session,
             Some(&alice_init),
             "alice-1",
@@ -4364,7 +4501,7 @@ mod tests {
         let (_dir, runtime) = test_runtime();
         let alice = SelfIdentity::generate(Some("Alice".to_string()));
         add_contact(&runtime, &alice);
-        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let bob = runtime_recipient(&runtime);
 
         // Forger: own DH secret, Alice's public identity key in the header.
         let forger = SelfIdentity::generate(None);
@@ -4372,7 +4509,7 @@ mod tests {
             initiate_session(&runtime, &forger.x25519_secret, alice.x25519_pub.as_bytes());
         let mut forged = direct_frame(
             &forger,
-            &bob_x25519,
+            &bob,
             &mut forger_session,
             Some(&forged_init),
             "forged-1",
@@ -4394,7 +4531,7 @@ mod tests {
             initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
         let genuine = direct_frame(
             &alice,
-            &bob_x25519,
+            &bob,
             &mut alice_session,
             Some(&alice_init),
             "alice-1",
@@ -4413,14 +4550,14 @@ mod tests {
         let (_dir, runtime) = test_runtime();
         let alice = SelfIdentity::generate(Some("Alice".to_string()));
         add_contact(&runtime, &alice);
-        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let bob = runtime_recipient(&runtime);
         let (mut alice_session, alice_init) =
             initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
 
         // Two genuine messages.
         let m1 = direct_frame(
             &alice,
-            &bob_x25519,
+            &bob,
             &mut alice_session,
             Some(&alice_init),
             "m1",
@@ -4428,7 +4565,7 @@ mod tests {
         );
         let m2 = direct_frame(
             &alice,
-            &bob_x25519,
+            &bob,
             &mut alice_session,
             Some(&alice_init),
             "m2",
@@ -4450,7 +4587,7 @@ mod tests {
         assert_eq!(stored_count(&runtime), 2, "replay was stored");
 
         // The next genuine message still decrypts.
-        let m3 = direct_frame(&alice, &bob_x25519, &mut alice_session, None, "m3", "three");
+        let m3 = direct_frame(&alice, &bob, &mut alice_session, None, "m3", "three");
         assert!(
             runtime.process_inbound_frame(&m3),
             "session broken after replay"
@@ -4468,14 +4605,14 @@ mod tests {
         let (_dir, runtime) = test_runtime();
         let alice = SelfIdentity::generate(Some("Alice".to_string()));
         add_contact(&runtime, &alice);
-        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let bob = runtime_recipient(&runtime);
         let (mut alice_session, alice_init) =
             initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
 
         // Chain 1: Alice's first message establishes Bob's session.
         let m1 = direct_frame(
             &alice,
-            &bob_x25519,
+            &bob,
             &mut alice_session,
             Some(&alice_init),
             "m1",
@@ -4499,7 +4636,7 @@ mod tests {
         assert_eq!(alice_session.decrypt(&bob_hdr, &bob_ct).unwrap(), b"reply");
 
         // Chain 2: Alice's next message carries a new ratchet key; Bob steps.
-        let m2 = direct_frame(&alice, &bob_x25519, &mut alice_session, None, "m2", "two");
+        let m2 = direct_frame(&alice, &bob, &mut alice_session, None, "m2", "two");
         assert!(runtime.process_inbound_frame(&m2));
         let before = session_fingerprint(&runtime, &alice);
 
@@ -4517,7 +4654,7 @@ mod tests {
         );
 
         // Both directions still work.
-        let m3 = direct_frame(&alice, &bob_x25519, &mut alice_session, None, "m3", "three");
+        let m3 = direct_frame(&alice, &bob, &mut alice_session, None, "m3", "three");
         assert!(
             runtime.process_inbound_frame(&m3),
             "session broken after stale replay"
@@ -4548,12 +4685,12 @@ mod tests {
         let (_dir, runtime) = test_runtime();
         let alice = SelfIdentity::generate(Some("Alice".to_string()));
         add_contact(&runtime, &alice);
-        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let bob = runtime_recipient(&runtime);
         let (mut alice_session, alice_init) =
             initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
         let m1 = direct_frame(
             &alice,
-            &bob_x25519,
+            &bob,
             &mut alice_session,
             Some(&alice_init),
             "m1",
@@ -4594,7 +4731,7 @@ mod tests {
         let (_dir, runtime) = test_runtime();
         let alice = SelfIdentity::generate(Some("Alice".to_string()));
         add_contact(&runtime, &alice);
-        let bob_x25519 = runtime_x25519_pub(&runtime);
+        let bob = runtime_recipient(&runtime);
         let alice_hex = alice.peer_id().to_hex();
 
         // Alice's genuine first message, built exactly as send_text_message does.
@@ -4602,7 +4739,7 @@ mod tests {
             initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
         let genuine = direct_frame(
             &alice,
-            &bob_x25519,
+            &bob,
             &mut alice_session,
             Some(&alice_init),
             "alice-blocked-1",
@@ -4634,6 +4771,135 @@ mod tests {
     // -----------------------------------------------------------------------
     // Ring key commit tests (§3.5.2 "authenticated membership commit")
     // -----------------------------------------------------------------------
+
+    /// §3.1.6 / §7.2 Step 3: a frame whose outer signature was made with
+    /// the sender's stable identity key is rejected and installs no session,
+    /// both when the frame labels that key as the relationship key
+    /// (same-key guard) and when it advertises the genuine relationship key
+    /// (signature fails under it).  Nothing is pinned by either attempt.
+    #[test]
+    fn test_direct_message_signed_by_stable_identity_key_is_rejected() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob = runtime_recipient(&runtime);
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let genuine_rel_pub = sender_rel_key(&alice, &bob).verifying_key().to_bytes();
+
+        // Identity key signs and is advertised as the relationship key.
+        let frame = direct_frame_signed_by(
+            &alice,
+            &bob,
+            &mut alice_session,
+            Some(&alice_init),
+            "stable-as-rel",
+            "hi",
+            Step3Signer {
+                key: &alice.ed25519_signing,
+                advertised_pub: alice.ed25519_pub,
+            },
+        );
+        assert!(
+            !runtime.process_inbound_frame(&frame),
+            "stable key accepted"
+        );
+
+        // Identity key signs; genuine relationship key advertised.
+        let frame = direct_frame_signed_by(
+            &alice,
+            &bob,
+            &mut alice_session,
+            Some(&alice_init),
+            "stable-signs",
+            "hi",
+            Step3Signer {
+                key: &alice.ed25519_signing,
+                advertised_pub: genuine_rel_pub,
+            },
+        );
+        assert!(
+            !runtime.process_inbound_frame(&frame),
+            "stable key accepted"
+        );
+        assert!(
+            !has_session(&runtime, &alice),
+            "session installed from rejected frame"
+        );
+        assert_eq!(
+            pinned_rel_key(&runtime, &alice),
+            None,
+            "key pinned from rejected frame"
+        );
+        assert_eq!(stored_count(&runtime), 0);
+
+        // Control: the genuine relationship-key frame is accepted and pins.
+        let frame = direct_frame(
+            &alice,
+            &bob,
+            &mut alice_session,
+            Some(&alice_init),
+            "genuine",
+            "hi",
+        );
+        assert!(runtime.process_inbound_frame(&frame));
+        assert_eq!(pinned_rel_key(&runtime, &alice), Some(genuine_rel_pub));
+    }
+
+    /// Once a relationship key is pinned, a frame advertising and signed by
+    /// a different key — even one that would otherwise verify — is rejected
+    /// and the pin is unchanged; a frame that omits `rel_pub` verifies
+    /// against the pinned key.
+    #[test]
+    fn test_pinned_relationship_key_rejects_substitution() {
+        let (_dir, runtime) = test_runtime();
+        let alice = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &alice);
+        let bob = runtime_recipient(&runtime);
+        let (mut alice_session, alice_init) =
+            initiate_session(&runtime, &alice.x25519_secret, alice.x25519_pub.as_bytes());
+        let genuine_rel_pub = sender_rel_key(&alice, &bob).verifying_key().to_bytes();
+
+        // First genuine message pins the key.
+        let m1 = direct_frame(
+            &alice,
+            &bob,
+            &mut alice_session,
+            Some(&alice_init),
+            "m1",
+            "one",
+        );
+        assert!(runtime.process_inbound_frame(&m1));
+        assert_eq!(pinned_rel_key(&runtime, &alice), Some(genuine_rel_pub));
+
+        // A fresh key that is internally consistent but not the pinned one.
+        let other = SigningKey::generate(&mut OsRng);
+        let m2 = direct_frame_signed_by(
+            &alice,
+            &bob,
+            &mut alice_session,
+            None,
+            "m2",
+            "two",
+            Step3Signer {
+                key: &other,
+                advertised_pub: other.verifying_key().to_bytes(),
+            },
+        );
+        assert!(
+            !runtime.process_inbound_frame(&m2),
+            "substituted key accepted"
+        );
+        assert_eq!(pinned_rel_key(&runtime, &alice), Some(genuine_rel_pub));
+        assert_eq!(stored_count(&runtime), 1);
+
+        // Omitting rel_pub: the pinned key verifies the genuine signature.
+        // (The ratchet position consumed by m2 is skipped on Bob's side.)
+        let mut m3 = direct_frame(&alice, &bob, &mut alice_session, None, "m3", "three");
+        m3.as_object_mut().unwrap().remove("rel_pub");
+        assert!(runtime.process_inbound_frame(&m3), "pinned key not used");
+        assert_eq!(stored_count(&runtime), 2);
+    }
 
     /// Build a group control frame from `sender` exactly as
     /// `seal_group_control_frame` does on the sending side: payload sealed

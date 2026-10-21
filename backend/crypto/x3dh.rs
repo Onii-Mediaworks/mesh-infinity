@@ -679,11 +679,12 @@ fn decrypt_ik_pub(
 /// ML-KEM-768 encapsulation key type alias.
 // Type alias for protocol readability.
 // Type alias for protocol readability.
-type MlKem768Ek = <ml_kem::kem::Kem<ml_kem::MlKem768Params> as KemCore>::EncapsulationKey;
+// Shared with `transport::tunnel_keys`, which reuses the MI-PQXDH-1 KEM.
+pub(crate) type MlKem768Ek = <ml_kem::kem::Kem<ml_kem::MlKem768Params> as KemCore>::EncapsulationKey;
 /// ML-KEM-768 decapsulation key type alias.
 // Type alias for protocol readability.
-// Type alias for protocol readability.
-type MlKem768Dk = <ml_kem::kem::Kem<ml_kem::MlKem768Params> as KemCore>::DecapsulationKey;
+// Shared with `transport::tunnel_keys`, which reuses the MI-PQXDH-1 KEM.
+pub(crate) type MlKem768Dk = <ml_kem::kem::Kem<ml_kem::MlKem768Params> as KemCore>::DecapsulationKey;
 
 /// ML-KEM-768 encapsulation key byte size.
 // KEM_EK_SIZE — protocol constant.
