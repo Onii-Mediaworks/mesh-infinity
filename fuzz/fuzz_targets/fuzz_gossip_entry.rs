@@ -44,15 +44,16 @@ fuzz_target!(|data: &[u8]| {
         *b = cur.take_u8();
     }
 
-    // Fuzz-controlled sequence and timestamp.
+    // Fuzz-controlled sequence.
     let seq = u64::from_le_bytes([
         cur.take_u8(), cur.take_u8(), cur.take_u8(), cur.take_u8(),
         cur.take_u8(), cur.take_u8(), cur.take_u8(), cur.take_u8(),
     ]);
-    let last_seen = u64::from_le_bytes([
-        cur.take_u8(), cur.take_u8(), cur.take_u8(), cur.take_u8(),
-        cur.take_u8(), cur.take_u8(), cur.take_u8(), cur.take_u8(),
-    ]);
+    // Fuzz-controlled wire-format version byte (§4.2). Only
+    // MAP_ENTRY_FORMAT_VERSION may pass validate_entry; every other value must
+    // come back as a typed UnsupportedEntryVersion error, never a panic.
+    // (The v1 layout's last_seen timestamp no longer exists — CMR-005.)
+    let version = cur.take_u8();
 
     // Fuzz-controlled signature bytes.
     let sig_len = cur.take_bounded_usize(128);
@@ -78,6 +79,7 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let entry = NetworkMapEntry {
+        version,
         peer_id,
         public_keys: vec![PublicKeyRecord {
             ed25519_public: ed_pub,
@@ -86,7 +88,6 @@ fuzz_target!(|data: &[u8]| {
             kem_encapsulation_key: None,
             preauth_sig: None,
         }],
-        last_seen,
         transport_hints,
         public_profile: None,
         services: vec![],

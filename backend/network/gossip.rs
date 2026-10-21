@@ -28,8 +28,17 @@
 //! - **Replay attacks:** replaying an old entry creates a detectable fork
 //!   (two entries with the same prev_hash)
 //! - **Forgery:** entries without a valid signature are rejected
-//! - **Future-dating:** entries with timestamps >1 hour in the future
-//!   are rejected outright
+//! - **Time games:** a map entry carries no peer-reported time (§4.2,
+//!   CMR-005); staleness is judged solely on the local `received_at`
+//!   clock, so an entry cannot extend its own lifetime by claiming a time
+//!
+//! # Staleness pruning and the first exchange (§4.2)
+//!
+//! `received_at` is persisted with each entry and is not reset on load.
+//! Pruning stays suspended until this process has completed one successful
+//! map exchange — here, the first remote entry whose signature verifies and
+//! which the map processes — so a node returning from a long offline period
+//! keeps its map until it can re-observe peers.
 //!
 //! # Rate Limiting (§4.2)
 //!
@@ -78,6 +87,14 @@ const RATE_LIMIT_UNTRUSTED: u32 = 500;
 const RATE_LIMIT_TRUSTED: u32 = 5_000;
 const RATE_LIMIT_INNER_CIRCLE: u32 = 10_000;
 
+/// Maximum number of distinct gossip sources the rate tracker remembers at
+/// once. Sources are the *delivering* peers (connection identities), never
+/// the entry owners, so this bounds memory against an attacker that opens
+/// many connections under fresh identities. When the table is full, gossip
+/// from a not-yet-tracked source is dropped until the hourly cleanup frees
+/// a slot — a deliberate fail-closed choice.
+const MAX_TRACKED_SOURCES: usize = 10_000;
+
 /// Map size thresholds for source diversity (§4.1).
 const DIVERSITY_THRESHOLD_MEDIUM: usize = 100;
 const DIVERSITY_THRESHOLD_LARGE: usize = 1_000;
@@ -125,11 +142,15 @@ pub struct SelfMapEntry {
 
 /// Tracks how many entries each peer has gossiped recently.
 ///
-/// Used to enforce the per-peer rate limits (§4.2).
-/// A peer that exceeds their limit has further entries silently dropped.
+/// Used to enforce the per-peer rate limits (§4.2). The key is the peer
+/// that *delivered* the entry over an identified connection — not the
+/// entry's owner. Keying on the owner would hand every forged, self-signed
+/// entry (fresh keypair, fresh peer_id) its own budget and make the limit
+/// meaningless. A peer that exceeds their limit has further entries
+/// silently dropped.
 #[derive(Default)]
 pub struct GossipRateTracker {
-    /// Map of source_peer_id → (count_this_hour, hour_start_timestamp).
+    /// Map of delivering source_peer_id → (count_this_hour, hour_start_timestamp).
     counters: HashMap<PeerId, (u32, u64)>,
 }
 
@@ -137,7 +158,9 @@ impl GossipRateTracker {
     /// Check if a peer is allowed to gossip more entries.
     ///
     /// Returns true if the peer hasn't exceeded their rate limit for
-    /// the current hour. Updates the counter if allowed.
+    /// the current hour. Updates the counter if allowed. Returns false
+    /// without tracking when the source table is already at
+    /// `MAX_TRACKED_SOURCES` and this source is new (fail closed).
     pub fn check_and_increment(
         &mut self,
         source: &PeerId,
@@ -149,6 +172,12 @@ impl GossipRateTracker {
             t if t.is_trusted_tier() => RATE_LIMIT_TRUSTED,
             _ => RATE_LIMIT_UNTRUSTED,
         };
+
+        // Bound the table: an attacker cycling through fresh connection
+        // identities must not grow this map without limit.
+        if !self.counters.contains_key(source) && self.counters.len() >= MAX_TRACKED_SOURCES {
+            return false;
+        }
 
         let (count, hour_start) = self.counters.entry(*source).or_insert((0, now));
 
@@ -338,6 +367,13 @@ impl GossipEngine {
 
     /// Process an incoming map entry from a gossip peer.
     ///
+    /// `source_peer` / `source_trust` identify the peer that **delivered**
+    /// the entry over its connection and our trust in that peer. Callers
+    /// must never pass the entry's own `peer_id` here: both the rate limit
+    /// and the source-diversity quorum (§4.1) are keyed on this value, and an
+    /// owner-keyed call would let one attacker mint unlimited budgets while
+    /// making the quorum impossible to reach for honest entries.
+    ///
     /// Validates the entry, checks rate limits, and merges into the local
     /// map.  Source diversity quorum is enforced by `NetworkMap::insert_gossiped`.
     ///
@@ -371,6 +407,14 @@ impl GossipEngine {
 
         // Delegate to the map — it handles source diversity staging internally.
         let accepted = self.map.insert_gossiped(entry, source_peer, now)?;
+        // A remote peer's signed entry verified and was processed by the map:
+        // that is one successful map exchange since start, which lifts the
+        // §4.2 suspension on staleness pruning. "Processed" includes a
+        // correctly-staged or already-known entry — the point is that we are
+        // demonstrably talking to the network again, not that the map grew.
+        // An attacker gains nothing by triggering this: pruning only removes
+        // untrusted entries that are already stale on our own clock.
+        self.map.mark_exchange_complete();
         Ok(accepted)
     }
 
@@ -405,20 +449,23 @@ impl Default for GossipEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::map::{NetworkMapEntry, PublicKeyRecord};
+    use crate::network::map::{
+        NetworkMapEntry, PublicKeyRecord, MAP_ENTRY_FORMAT_VERSION, STALENESS_SECS,
+    };
     use ed25519_dalek::SigningKey;
 
     /// Helper: create and sign a proper remote gossip entry.
     ///
     /// Uses a deterministic signing key derived from `seed_byte`.
     /// Returns `(entry, signing_key)` so callers can tamper if needed.
-    fn make_signed_entry(seed_byte: u8, seq: u64, last_seen: u64) -> (NetworkMapEntry, SigningKey) {
+    fn make_signed_entry(seed_byte: u8, seq: u64) -> (NetworkMapEntry, SigningKey) {
         let seed = [seed_byte; 32];
         let signing_key = SigningKey::from_bytes(&seed);
         let ed_pub = signing_key.verifying_key().to_bytes();
         let peer_id = PeerId::from_ed25519_pub(&ed_pub);
 
         let mut entry = NetworkMapEntry {
+            version: MAP_ENTRY_FORMAT_VERSION,
             peer_id,
             public_keys: vec![PublicKeyRecord {
                 ed25519_public: ed_pub,
@@ -427,7 +474,6 @@ mod tests {
                 kem_encapsulation_key: None,
                 preauth_sig: None,
             }],
-            last_seen,
             transport_hints: vec![],
             public_profile: None,
             services: vec![],
@@ -444,7 +490,7 @@ mod tests {
     fn test_gossip_engine_basic() {
         let mut engine = GossipEngine::new();
         let source = PeerId([0x01; 32]);
-        let (entry, _) = make_signed_entry(0x02, 1, 100);
+        let (entry, _) = make_signed_entry(0x02, 1);
 
         let accepted = engine
             .receive_entry(entry, &source, TrustLevel::Unknown, 100)
@@ -461,7 +507,7 @@ mod tests {
         let unsigned = NetworkMapEntry {
             peer_id: PeerId([0x02; 32]),
             public_keys: vec![],
-            last_seen: 100,
+            version: MAP_ENTRY_FORMAT_VERSION,
             transport_hints: vec![],
             public_profile: None,
             services: vec![],
@@ -480,7 +526,7 @@ mod tests {
         let mut engine = GossipEngine::new();
         let source = PeerId([0x01; 32]);
 
-        let (mut entry, _) = make_signed_entry(0x02, 1, 100);
+        let (mut entry, _) = make_signed_entry(0x02, 1);
         if let Some(b) = entry.signature.first_mut() {
             *b ^= 0xFF;
         }
@@ -558,13 +604,13 @@ mod tests {
         let mut engine = GossipEngine::new();
         let source = PeerId([0x01; 32]);
 
-        let (entry1, _) = make_signed_entry(0x02, 1, 100);
+        let (entry1, _) = make_signed_entry(0x02, 1);
         assert!(engine
             .receive_entry(entry1, &source, TrustLevel::Unknown, 100)
             .unwrap());
 
         // Same sequence for the same peer: not accepted (stale).
-        let (entry2, _) = make_signed_entry(0x02, 1, 200);
+        let (entry2, _) = make_signed_entry(0x02, 1);
         assert!(!engine
             .receive_entry(entry2, &source, TrustLevel::Unknown, 200)
             .unwrap());
@@ -575,16 +621,160 @@ mod tests {
         let mut engine = GossipEngine::new();
         let source = PeerId([0x01; 32]);
 
-        let (entry1, _) = make_signed_entry(0x02, 1, 100);
+        let (entry1, _) = make_signed_entry(0x02, 1);
         engine
             .receive_entry(entry1, &source, TrustLevel::Unknown, 100)
             .unwrap();
 
         // Higher sequence for the same peer: accepted.
-        let (entry2, _) = make_signed_entry(0x02, 2, 200);
+        let (entry2, _) = make_signed_entry(0x02, 2);
         assert!(engine
             .receive_entry(entry2, &source, TrustLevel::Unknown, 200)
             .unwrap());
+    }
+
+    // ------------------------------------------------------------------
+    // Source attribution (§4.1, §4.2): limits are keyed on the delivering
+    // peer, never on the entry owner
+    // ------------------------------------------------------------------
+
+    /// One delivering source minting fresh self-signed owners must still
+    /// exhaust a single 500/hour budget: the 501st entry is dropped.
+    #[test]
+    fn single_source_forging_many_owners_hits_one_rate_budget() {
+        let mut engine = GossipEngine::new();
+        let source = PeerId([0x01; 32]);
+        // Same owner with increasing sequence keeps the map at one entry so
+        // the source-diversity quorum (≥100 entries) never interferes; the
+        // budget is charged to `source` regardless of which owner is used.
+        for i in 0..RATE_LIMIT_UNTRUSTED as u64 {
+            let (e, _) = make_signed_entry(0x02, i + 1);
+            // MIN_UPDATE_INTERVAL_SECS is 1s per owner: advance the clock.
+            assert!(engine
+                .receive_entry(e, &source, TrustLevel::Unknown, 1_000 + i)
+                .unwrap());
+        }
+        // 501st from the same source, a brand-new owner: dropped by the
+        // rate limit even though it is perfectly valid.
+        let (fresh_owner, _) = make_signed_entry(0x03, 1);
+        let accepted = engine
+            .receive_entry(fresh_owner, &source, TrustLevel::Unknown, 2_000)
+            .unwrap();
+        assert!(
+            !accepted,
+            "501st entry from one source must be rate-limited"
+        );
+        assert_eq!(engine.map_size(), 1);
+    }
+
+    /// At map size ≥ 100, any number of entries from one delivering source
+    /// are staged and never promoted: one connection cannot satisfy the
+    /// independent-source quorum by forging owners.
+    #[test]
+    fn single_source_cannot_reach_quorum_with_forged_owners() {
+        let mut engine = GossipEngine::new();
+        // Seed 100 entries from a seeder while single-source is enough.
+        let seeder = PeerId([0x01; 32]);
+        for seed in 0x10u8..=0x73u8 {
+            let (e, _) = make_signed_entry(seed, 1);
+            engine
+                .receive_entry(e, &seeder, TrustLevel::Unknown, 1_000)
+                .unwrap();
+        }
+        assert_eq!(engine.map_size(), 100);
+
+        // One attacker connection pushes 140 distinct forged owners (seeds
+        // 0x80..=0xFF then 0x00..=0x0B; none collide with the seeded 0x10..=0x73).
+        let attacker = PeerId([0xA0; 32]);
+        for i in 0u8..140 {
+            let (e, _) = make_signed_entry(0x80u8.wrapping_add(i), 1);
+            let promoted = engine
+                .receive_entry(e, &attacker, TrustLevel::Unknown, 2_000 + u64::from(i))
+                .unwrap();
+            assert!(!promoted, "single-source entry must not be promoted");
+        }
+        assert_eq!(engine.map_size(), 100, "map must not grow from one source");
+    }
+
+    /// The rate tracker's source table is bounded; a new source beyond the
+    /// cap is refused (fail closed) while existing sources keep working.
+    #[test]
+    fn rate_tracker_source_table_is_bounded() {
+        let mut tracker = GossipRateTracker::default();
+        for i in 0..MAX_TRACKED_SOURCES as u32 {
+            let mut id = [0u8; 32];
+            id[..4].copy_from_slice(&i.to_be_bytes());
+            assert!(tracker.check_and_increment(&PeerId(id), TrustLevel::Unknown, 1_000));
+        }
+        let newcomer = PeerId([0xFF; 32]);
+        assert!(
+            !tracker.check_and_increment(&newcomer, TrustLevel::Unknown, 1_000),
+            "source beyond the cap must be refused"
+        );
+        // An already-tracked source is unaffected by the cap.
+        assert!(tracker.check_and_increment(&PeerId([0u8; 32]), TrustLevel::Unknown, 1_000));
+        // Cleanup after the window frees slots for new sources.
+        tracker.cleanup(1_000 + DEDUP_WINDOW_SECS + 1);
+        assert!(tracker.check_and_increment(
+            &newcomer,
+            TrustLevel::Unknown,
+            1_000 + DEDUP_WINDOW_SECS + 1
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Wire v2 (§4.2, CMR-005): no peer time; KEM key covered by signature
+    // ------------------------------------------------------------------
+
+    /// A relayed entry whose ML-KEM key was substituted in transit fails
+    /// signature verification at the engine and is never merged.
+    #[test]
+    fn relay_substituted_kem_key_is_rejected_by_engine() {
+        let mut engine = GossipEngine::new();
+        let source = PeerId([0x01; 32]);
+        let (mut entry, signing_key) = make_signed_entry(0x02, 1);
+        entry.public_keys[0].kem_encapsulation_key = Some(vec![0xAA; 1184]);
+        entry.sign(&signing_key);
+
+        let mut swapped = entry;
+        swapped.public_keys[0].kem_encapsulation_key = Some(vec![0xCC; 1184]);
+        assert!(engine
+            .receive_entry(swapped, &source, TrustLevel::Unknown, 100)
+            .is_err());
+        assert_eq!(engine.map_size(), 0);
+    }
+
+    /// The first verified remote entry lifts the §4.2 pruning suspension:
+    /// stale entries survive cleanup before it and are pruned after it.
+    #[test]
+    fn pruning_suspended_until_first_verified_exchange() {
+        let mut engine = GossipEngine::new();
+        let now = 10_000_000u64;
+        // A locally inserted, long-stale untrusted entry (e.g. loaded from
+        // the vault after a long offline period).
+        let (stale, _) = make_signed_entry(0x05, 1);
+        let stale_id = stale.peer_id;
+        engine.map.insert(stale, now - STALENESS_SECS - 1).unwrap();
+
+        engine.cleanup(now);
+        assert!(
+            engine.map.get(&stale_id).is_some(),
+            "no pruning before first exchange"
+        );
+
+        // First remote entry arrives and verifies: the exchange is complete.
+        let (fresh, _) = make_signed_entry(0x06, 1);
+        engine
+            .receive_entry(fresh, &PeerId([0x01; 32]), TrustLevel::Unknown, now)
+            .unwrap();
+        assert!(engine.map.exchange_complete());
+
+        engine.cleanup(now);
+        assert!(
+            engine.map.get(&stale_id).is_none(),
+            "stale entry pruned after exchange"
+        );
+        assert_eq!(engine.map_size(), 1);
     }
 
     // ------------------------------------------------------------------
@@ -606,7 +796,7 @@ mod tests {
     #[test]
     fn source_diversity_single_source_below_threshold() {
         let mut buf = SourceDiversityBuffer::default();
-        let (entry, _) = make_signed_entry(0x10, 1, 1000);
+        let (entry, _) = make_signed_entry(0x10, 1);
         let source = PeerId([0x01; 32]);
 
         // map_size = 50 → requires 1 source
@@ -618,7 +808,7 @@ mod tests {
     #[test]
     fn source_diversity_two_sources_required_at_medium_band() {
         let mut buf = SourceDiversityBuffer::default();
-        let (entry, _) = make_signed_entry(0x11, 1, 1000);
+        let (entry, _) = make_signed_entry(0x11, 1);
         let source_a = PeerId([0x01; 32]);
         let source_b = PeerId([0x02; 32]);
 
@@ -641,7 +831,7 @@ mod tests {
     #[test]
     fn source_diversity_three_sources_required_at_large_band() {
         let mut buf = SourceDiversityBuffer::default();
-        let (entry, _) = make_signed_entry(0x12, 1, 1000);
+        let (entry, _) = make_signed_entry(0x12, 1);
         let source_a = PeerId([0x01; 32]);
         let source_b = PeerId([0x02; 32]);
         let source_c = PeerId([0x03; 32]);
@@ -659,7 +849,7 @@ mod tests {
     #[test]
     fn source_diversity_same_source_not_double_counted() {
         let mut buf = SourceDiversityBuffer::default();
-        let (entry, _) = make_signed_entry(0x13, 1, 1000);
+        let (entry, _) = make_signed_entry(0x13, 1);
         let source = PeerId([0x01; 32]);
 
         // Both records are from the same peer — should not satisfy the
@@ -675,7 +865,7 @@ mod tests {
     #[test]
     fn source_diversity_buffer_cleanup_evicts_stale_entries() {
         let mut buf = SourceDiversityBuffer::default();
-        let (entry, _) = make_signed_entry(0x14, 1, 1000);
+        let (entry, _) = make_signed_entry(0x14, 1);
         let source = PeerId([0x01; 32]);
 
         // Add at time 1000 but don't complete the quorum.
@@ -701,7 +891,7 @@ mod tests {
         // All arrive from source_a while the map is < 100 (single-source OK).
         let seeder_source = PeerId([0x01; 32]);
         for seed in 0x10u8..=0x73u8 {
-            let (e, _) = make_signed_entry(seed, 1, 1000);
+            let (e, _) = make_signed_entry(seed, 1);
             engine
                 .receive_entry(e, &seeder_source, TrustLevel::Unknown, 1000)
                 .unwrap();
@@ -709,7 +899,7 @@ mod tests {
         assert_eq!(engine.map_size(), 100);
 
         // Now map has 100 entries → 2 independent sources required.
-        let (entry, _) = make_signed_entry(0x80, 1, 2000);
+        let (entry, _) = make_signed_entry(0x80, 1);
         let source_a = PeerId([0xA0; 32]);
         let accepted_a = engine
             .receive_entry(entry.clone(), &source_a, TrustLevel::Unknown, 2000)
