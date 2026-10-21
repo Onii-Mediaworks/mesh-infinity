@@ -17,6 +17,9 @@ use crate::routing::announcement::AnnouncementProcessor;
 use crate::routing::table::{DeviceAddress, RoutingEntry};
 use crate::service::runtime::{MeshRuntime, SettingsVault};
 
+/// Vault collection holding the §22.54 protocol server settings.
+const PROTOCOL_SERVERS_COLLECTION: &str = "protocol_servers";
+
 impl MeshRuntime {
     // -----------------------------------------------------------------------
     // Load
@@ -166,6 +169,20 @@ impl MeshRuntime {
 
         // ---- Settings ----
         // Transport flags, node mode, threat context, notification config, modules.
+        // ---- Protocol server settings (§22.54) ----
+        // A vault from before the configuration screens existed has no
+        // record and keeps the §20 defaults set in `MeshRuntime::new`.
+        if let Ok(coll) = vm.collection(PROTOCOL_SERVERS_COLLECTION) {
+            if let Ok(Some(cfg)) =
+                coll.load::<crate::services::server_config::ProtocolServerConfig>()
+            {
+                *self
+                    .protocol_server_config
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = cfg;
+            }
+        }
+
         // NOTE: this block must remain after the last vm.collection() call above.
         // vm borrows self.vault; apply_settings_vault takes &mut self.  The
         // borrow checker (NLL) is happy as long as vm's last use is the
@@ -318,6 +335,66 @@ impl MeshRuntime {
             .bandwidth_profile
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = s.bandwidth_profile.min(2);
+        // Onboarding completion (§22.42): restored verbatim so a resumed
+        // launch can tell a finished setup from an interrupted one.
+        *self
+            .onboarding_complete
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = s.onboarding_complete;
+    }
+
+    /// Persist the protocol server settings (§22.54) to their own vault
+    /// collection.  Mirrors `save_settings`: a no-op before unlock, and a
+    /// logged (never fatal) failure if the vault write fails.
+    pub fn save_protocol_server_config(&self) {
+        let Some(vm) = self.vault.as_ref() else {
+            return;
+        };
+        let Ok(coll) = vm.collection(PROTOCOL_SERVERS_COLLECTION) else {
+            return;
+        };
+        let cfg = self
+            .protocol_server_config
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Err(e) = coll.save(&cfg) {
+            eprintln!("[vault] ERROR: failed to persist protocol server settings: {e}");
+        }
+    }
+
+    /// Whether the §22.42 onboarding flow has reached its Done step.
+    ///
+    /// Before the identity is unlocked this is always `false`, because the
+    /// flag lives in the encrypted settings vault; the Flutter startup gate
+    /// therefore checks it only after the unlock gate has passed.
+    pub fn is_onboarding_complete(&self) -> bool {
+        *self
+            .onboarding_complete
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record that onboarding reached Done (§22.42.7) and persist it.
+    ///
+    /// The flag is written through to `settings.vault` immediately so the
+    /// in-memory value and the persisted value never diverge.  It fails when
+    /// no vault is open (no identity yet, or identity locked), because a flag
+    /// that cannot be persisted would let the next launch resume onboarding
+    /// anyway — the UI must not move to the shell on that failure.
+    pub fn set_onboarding_complete(&self) -> Result<(), String> {
+        // The settings vault only exists once an identity is unlocked.
+        if self.vault.is_none() {
+            return Err("Cannot finish onboarding: identity is not unlocked".to_string());
+        }
+        *self
+            .onboarding_complete
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = true;
+        // Write through: `save_settings` serialises every settings field,
+        // including the flag just set.
+        self.save_settings();
+        Ok(())
     }
 
     /// Rebuild the routing table with direct entries for all known contacts.
@@ -613,6 +690,12 @@ impl MeshRuntime {
                 .bandwidth_profile
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
+            // Onboarding completion (§22.42) rides along with every settings
+            // save so it can never be lost by an unrelated settings change.
+            onboarding_complete: *self
+                .onboarding_complete
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
         };
 
         if let Err(e) = coll.save(&s) {
@@ -739,5 +822,61 @@ impl MeshRuntime {
             .dedup_msg_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = restored;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::service::runtime::MeshRuntime;
+    use tempfile::TempDir;
+
+    /// A runtime rooted at `dir` with every network transport switched off,
+    /// so identity creation and unlock never touch sockets.
+    fn quiet_runtime(dir: &TempDir) -> MeshRuntime {
+        let runtime = MeshRuntime::new(dir.path().to_string_lossy().into_owned());
+        {
+            let mut flags = runtime
+                .transport_flags
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            flags.clearnet = false;
+            flags.mesh_discovery = false;
+        }
+        runtime
+    }
+
+    /// §22.42: the flag starts unset, is set by the Done step, and survives
+    /// a process restart through the settings vault — the exact property the
+    /// Flutter startup gate relies on to resume an interrupted onboarding.
+    #[test]
+    fn onboarding_complete_round_trips_through_settings_vault() {
+        let dir = TempDir::new().unwrap();
+        let mut first = quiet_runtime(&dir);
+        first.create_identity(Some("Ann".to_string())).unwrap();
+        // A freshly created identity has not finished onboarding.
+        assert!(!first.is_onboarding_complete());
+        first.set_onboarding_complete().unwrap();
+        assert!(first.is_onboarding_complete());
+        // Simulate a process restart: a new runtime over the same data dir.
+        drop(first);
+        let mut second = quiet_runtime(&dir);
+        // Before unlock the vault is closed, so the flag reads as unset.
+        assert!(!second.is_onboarding_complete());
+        second.unlock_identity(None).unwrap();
+        assert!(
+            second.is_onboarding_complete(),
+            "flag must be restored from settings.vault on unlock"
+        );
+    }
+
+    /// Without an unlocked identity there is no vault to persist into, so the
+    /// call must fail rather than report success for a flag that would be
+    /// forgotten on the next launch.
+    #[test]
+    fn onboarding_complete_cannot_be_set_without_vault() {
+        let dir = TempDir::new().unwrap();
+        let runtime = quiet_runtime(&dir);
+        assert!(runtime.set_onboarding_complete().is_err());
+        assert!(!runtime.is_onboarding_complete());
     }
 }

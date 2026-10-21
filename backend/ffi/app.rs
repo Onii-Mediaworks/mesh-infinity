@@ -862,3 +862,48 @@ pub unsafe extern "C" fn mi_lock_identity(ctx: *mut MeshContext) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+
+// Onboarding completion (§22.42)
+// ---------------------------------------------------------------------------
+
+/// Whether the onboarding flow reached its Done step: 1 = yes, 0 = no
+/// (including "identity still locked"), -1 = null context.
+///
+/// # Safety
+/// `ctx` must be a non-null pointer from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_is_onboarding_complete(ctx: *mut MeshContext) -> i32 {
+    // Guard: null ctx has no settings.
+    if ctx.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees non-null.
+    let ctx = unsafe { &*ctx };
+    // Delegate to the service layer; the flag is only meaningful after unlock.
+    i32::from(ctx.is_onboarding_complete())
+}
+
+/// Persist the `onboarding_complete` flag (§22.42.7 Done step).
+///
+/// Returns 0 on success, -1 when the flag could not be persisted (no unlocked
+/// identity); the UI must stay on the Done step in that case.
+///
+/// # Safety
+/// `ctx` must be a non-null pointer from `mesh_init`.
+#[no_mangle]
+pub unsafe extern "C" fn mi_set_onboarding_complete(ctx: *mut MeshContext) -> i32 {
+    // Guard: null ctx has no settings.
+    if ctx.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees non-null.
+    let ctx = unsafe { &*ctx };
+    // Delegate; surface the error text so Flutter can show it.
+    match ctx.set_onboarding_complete() {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}

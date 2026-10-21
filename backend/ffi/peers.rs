@@ -1086,3 +1086,77 @@ pub unsafe extern "C" fn mi_trust_verify_json(
     // Delegate to service layer.
     ctx.set_response(&ctx.trust_verify(pid_hex))
 }
+
+// Block list (§22.8.2 "Block contact")
+// ---------------------------------------------------------------------------
+
+/// Shared body of `mi_block_peer` / `mi_unblock_peer`: parse the peer ID and
+/// delegate to the service-layer block list.
+///
+/// # Safety
+/// `ctx` must be non-null.  `peer_id` must be valid NUL-terminated UTF-8.
+unsafe fn set_peer_blocked_ffi(
+    ctx: *mut MeshContext,
+    peer_id: *const c_char,
+    blocked: bool,
+) -> i32 {
+    // Guard: null ctx has no contacts.
+    if ctx.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees non-null.
+    let ctx = unsafe { &*ctx };
+    // Parse the peer-ID hex string.
+    let Some(pid_hex) = (unsafe { c_str_to_str(peer_id) }) else {
+        ctx.set_error("Peer ID must be valid UTF-8");
+        return -1;
+    };
+    // Delegate to the service layer; surface its error text to Flutter.
+    match ctx.set_peer_blocked(pid_hex, blocked) {
+        Ok(()) => 0,
+        Err(e) => {
+            ctx.set_error(&e);
+            -1
+        }
+    }
+}
+
+/// Block a contact: their inbound messages and message requests are dropped.
+///
+/// Returns 0 on success, -1 if the peer is unknown or the ID is malformed.
+///
+/// # Safety
+/// `ctx` must be non-null.  `peer_id` must be valid NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_block_peer(ctx: *mut MeshContext, peer_id: *const c_char) -> i32 {
+    unsafe { set_peer_blocked_ffi(ctx, peer_id, true) }
+}
+
+/// Unblock a previously blocked contact.
+///
+/// Returns 0 on success, -1 if the peer is unknown or the ID is malformed.
+///
+/// # Safety
+/// `ctx` must be non-null.  `peer_id` must be valid NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_unblock_peer(ctx: *mut MeshContext, peer_id: *const c_char) -> i32 {
+    unsafe { set_peer_blocked_ffi(ctx, peer_id, false) }
+}
+
+/// Whether a contact is blocked: 1 = blocked, 0 = not blocked or unknown,
+/// -1 = null context.
+///
+/// # Safety
+/// `ctx` must be non-null.  `peer_id` must be valid NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn mi_is_peer_blocked(ctx: *mut MeshContext, peer_id: *const c_char) -> i32 {
+    // Guard: null ctx has no contacts.
+    if ctx.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees non-null.
+    let ctx = unsafe { &*ctx };
+    // A malformed or missing ID is simply "not blocked".
+    let pid_hex = unsafe { c_str_to_str(peer_id) }.unwrap_or("");
+    i32::from(ctx.is_peer_blocked(pid_hex))
+}

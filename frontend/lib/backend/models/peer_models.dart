@@ -82,14 +82,20 @@ enum TrustLevel {
 
   /// Full human-readable label for display in profile cards and detail screens.
   String get label => const [
-    'Unknown', 'Public', 'Vouched', 'Referenced', 'Ally',
-    'Acquaintance', 'Trusted', 'Highly Trusted', 'Inner Circle',
+    'Unknown',
+    'Public',
+    'Vouched',
+    'Referenced',
+    'Ally',
+    'Acquaintance',
+    'Trusted',
+    'Highly Trusted',
+    'Inner Circle',
   ][index];
 
   /// Abbreviated label for compact display (e.g. badge dots).
-  String get shortLabel => const [
-    '?', 'P', 'V', 'R', 'A', 'Aq', 'T', 'HT', 'IC',
-  ][index];
+  String get shortLabel =>
+      const ['?', 'P', 'V', 'R', 'A', 'Aq', 'T', 'HT', 'IC'][index];
 
   /// The display colour for this trust level in the ambient theme.
   ///
@@ -136,6 +142,7 @@ class PeerModel {
     this.canBeStoreForward = false,
     this.canEndorsePeers = false,
     this.latencyMs,
+    this.blocked = false,
   });
 
   /// Hex-encoded cryptographic peer ID (derived from Ed25519 public key).
@@ -172,6 +179,11 @@ class PeerModel {
   /// or no keepalive ACK has been received yet).
   final int? latencyMs;
 
+  /// Whether the user has blocked this contact (§22.8.2 "Block contact").
+  /// The backend drops the peer's inbound messages while this is true; the
+  /// contact record stays so the block can be undone from the same menu.
+  final bool blocked;
+
   /// True when the peer currently has an active transport session.
   bool get isOnline => status == 'online';
 
@@ -192,6 +204,8 @@ class PeerModel {
     // latencyMs is nullable — null means "not yet measured".
     // We do NOT use ?? 0 here because 0ms would be a misleading valid value.
     latencyMs: json['latencyMs'] as int?,
+    // Presence events omit this key; only mi_get_peer_list carries it.
+    blocked: json['blocked'] as bool? ?? false,
   );
 
   /// Return a copy with selected fields replaced.
@@ -208,6 +222,7 @@ class PeerModel {
     bool? canBeStoreForward,
     bool? canEndorsePeers,
     int? latencyMs,
+    bool? blocked,
   }) => PeerModel(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -218,5 +233,6 @@ class PeerModel {
     canBeStoreForward: canBeStoreForward ?? this.canBeStoreForward,
     canEndorsePeers: canEndorsePeers ?? this.canEndorsePeers,
     latencyMs: latencyMs ?? this.latencyMs,
+    blocked: blocked ?? this.blocked,
   );
 }

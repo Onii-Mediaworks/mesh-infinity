@@ -192,13 +192,276 @@ class ContactDetailScreen extends StatelessWidget {
     );
   }
 
-  /// Shows a modal menu for infrequent actions (block, remove).
-  void _showMoreMenu(BuildContext context, PeerModel peer) {
+  /// Shows a modal menu for infrequent actions (block, remove) and runs the
+  /// chosen one with this screen's context once the sheet has closed.
+  ///
+  /// The sheet only reports a choice; the confirmation dialogs are opened
+  /// from here because the sheet's own context is gone once it pops, and
+  /// §22.8.2 wants each of these actions behind a confirmation.
+  Future<void> _showMoreMenu(BuildContext context, PeerModel peer) async {
     // showModalBottomSheet is the M3 way for action sheets.
     // It gets showDragHandle: true from BottomSheetThemeData in MeshTheme.
-    showModalBottomSheet<void>(
+    final action = await showModalBottomSheet<_MoreAction>(
       context: context,
       builder: (ctx) => _MoreMenuSheet(peer: peer),
+    );
+    // Dismissed without a choice, or the screen went away meanwhile.
+    if (action == null || !context.mounted) return;
+    switch (action) {
+      case _MoreAction.block:
+        _confirm_block(context, peer);
+      case _MoreAction.unblock:
+        _unblock(context, peer);
+      case _MoreAction.remove:
+        _confirm_remove(context, peer);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level trust and block actions
+// ---------------------------------------------------------------------------
+//
+// These take the *screen's* BuildContext, never a sheet's or dialog's, so
+// the Provider lookups and the final Navigator.pop() land on a live route.
+
+/// The contact's name for dialog copy; §22.31 wants "[name]", and a contact
+/// without a display name still needs a readable noun.
+String _display_name(PeerModel peer) =>
+    peer.name.isNotEmpty ? peer.name : 'this contact';
+
+/// Which §22.31 side of the Acquaintance/Trusted boundary a level is on.
+/// Level 6 and above share the private profile; below does not.
+bool _is_trusted_tier(TrustLevel level) =>
+    level.value >= TrustLevel.trusted.value;
+
+/// Send the signed trust attestation for [level] to the backend.
+///
+/// The local peer ID signs the record; without one (identity not loaded)
+/// nothing is sent and the user is told why.
+void _attest_trust(BuildContext context, PeerModel peer, TrustLevel level) {
+  final local_id = context.read<SettingsState>().settings?.localPeerId ?? '';
+  if (local_id.isEmpty) {
+    // Should not happen in normal use — identity is created during
+    // onboarding — but a missing signer must never attest silently.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Cannot set trust: local identity not available. '
+          'Complete onboarding first.',
+        ),
+      ),
+    );
+    return;
+  }
+  // attestTrust() sends a Rust FFI call that signs and stores the new
+  // trust level in the local trust database.
+  context.read<PeersState>().attestTrust(
+    localPeerId: local_id,
+    targetPeerId: peer.id,
+    trustLevel: level.value,
+  );
+}
+
+/// Apply a trust change chosen in the trust sheet (§22.8.2, §22.31).
+///
+/// Changes that stay on one side of the Acquaintance/Trusted boundary are
+/// applied at once.  Any change that crosses it — in either direction — goes
+/// through the §22.31 confirmation first, because crossing upward commits to
+/// sharing the private profile once reciprocated, and crossing downward
+/// cannot take back what was already shared.  Re-selecting the current
+/// level is a no-op.
+void _apply_trust(BuildContext context, PeerModel peer, TrustLevel level) {
+  if (level == peer.trustLevel) return;
+  final crosses = _is_trusted_tier(peer.trustLevel) != _is_trusted_tier(level);
+  if (!crosses) {
+    _attest_trust(context, peer, level);
+    return;
+  }
+  if (_is_trusted_tier(level)) {
+    _confirm_promote(context, peer, level);
+  } else {
+    _confirm_demote(context, peer, level);
+  }
+}
+
+/// §22.31 promote confirmation — the only promote text in the spec.
+///
+/// The body states what crosses over and when: the private profile goes out
+/// on reciprocation, not on this tap, and cannot be recalled afterwards.
+void _confirm_promote(BuildContext context, PeerModel peer, TrustLevel level) {
+  final name = _display_name(peer);
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      icon: const Icon(Icons.lock_outlined, color: MeshTheme.brand),
+      title: Text('Share your identity with $name?'),
+      content: Text(
+        'Trusting $name opens a private channel between you. Your private '
+        'profile — your real name and any contact info you\'ve added — is '
+        'sent only once $name trusts you back. After that it can\'t be '
+        'recalled: you can remove trust later, but they keep what was '
+        'already shared.',
+      ),
+      actions: [
+        // Cancel — nothing is sent.
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        // Confirm — close the dialog, then attest with the screen context.
+        FilledButton(
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            _attest_trust(context, peer, level);
+          },
+          child: Text('Trust $name'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// §22.31 demote confirmation — the only demote text in the spec.
+///
+/// Cancel is the default-focused action and the destructive button uses the
+/// amber security token, as §22.31 specifies.
+void _confirm_demote(BuildContext context, PeerModel peer, TrustLevel level) {
+  final name = _display_name(peer);
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Remove trust from $name?'),
+      content: Text(
+        'This closes the private channel. $name keeps any profile info '
+        'already shared — that can\'t be undone — but won\'t receive future '
+        'private updates.',
+      ),
+      actions: [
+        // Cancel — default focus so Enter/Return keeps trust (§22.31).
+        TextButton(
+          autofocus: true,
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        // Confirm — amber, not red: a demotion is reversible in part.
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: MeshColors.of(ctx).sec_amber,
+          ),
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            _attest_trust(context, peer, level);
+          },
+          child: const Text('Remove trust'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Shows a confirmation dialog before removing the contact (§22.8.2).
+///
+/// Removing a contact sets their trust level to 0 (unknown) which
+/// effectively revokes access without deleting message history.  Shared by
+/// the more-actions card and the AppBar more-vert menu.
+void _confirm_remove(BuildContext context, PeerModel peer) {
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Remove Contact?'),
+      content: Text(
+        'This will revoke trust and remove ${_display_name(peer)} '
+        'from your contact list.',
+      ),
+      actions: [
+        // Cancel — dismiss without action.
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        // Confirm remove — set trust to 0 (unknown) via PeersState.
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: Theme.of(ctx).colorScheme.error,
+          ),
+          onPressed: () {
+            // Trust level 0 = unknown — effectively removes the contact.
+            _attest_trust(context, peer, TrustLevel.unknown);
+            // Close the dialog, then pop this screen since the contact
+            // no longer exists in the list.
+            Navigator.of(ctx).pop();
+            Navigator.of(context).pop();
+          },
+          child: const Text('Remove'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Shows a confirmation dialog before blocking the contact (§22.8.2).
+///
+/// Blocking keeps the contact record (so it can be undone from the same
+/// menu) but the backend drops every message and message request from them.
+void _confirm_block(BuildContext context, PeerModel peer) {
+  final name = _display_name(peer);
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Block $name?'),
+      content: Text(
+        '$name won\'t be able to message you. They aren\'t told, and you '
+        'can unblock them from this screen at any time.',
+      ),
+      actions: [
+        // Cancel — dismiss without action.
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        // Confirm — error colour: the contact loses the ability to reach us.
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: Theme.of(ctx).colorScheme.error,
+          ),
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            _set_blocked(context, peer, blocked: true);
+          },
+          child: const Text('Block'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Unblock without a confirmation: it restores the contact's ability to
+/// reach us and is itself undoable through "Block contact".
+void _unblock(BuildContext context, PeerModel peer) =>
+    _set_blocked(context, peer, blocked: false);
+
+/// Write the block state through PeersState and report a backend refusal.
+Future<void> _set_blocked(
+  BuildContext context,
+  PeerModel peer, {
+  required bool blocked,
+}) async {
+  // Capture before the await — the screen may be gone afterwards.
+  final messenger = ScaffoldMessenger.of(context);
+  final ok = await context.read<PeersState>().setPeerBlocked(
+    peer.id,
+    blocked: blocked,
+  );
+  if (!ok) {
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          blocked
+              ? 'Couldn\'t block this contact.'
+              : 'Couldn\'t unblock this contact.',
+        ),
+      ),
     );
   }
 }
@@ -269,6 +532,15 @@ class _HeaderCard extends StatelessWidget {
               peer.name.isNotEmpty ? peer.name : 'Unknown',
               style: textTheme.titleLarge,
             ),
+            // Blocked state (§22.8.2) — the one place the user can see that
+            // this contact's messages are being dropped.
+            if (peer.blocked) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Blocked',
+                style: textTheme.labelMedium?.copyWith(color: cs.error),
+              ),
+            ],
             const SizedBox(height: 6),
 
             // Full trust badge: icon + label pill (§22.4.2).
@@ -279,7 +551,9 @@ class _HeaderCard extends StatelessWidget {
             Text(
               peer.isOnline ? 'Online' : peer.status,
               style: textTheme.bodySmall?.copyWith(
-                color: peer.isOnline ? MeshColors.of(context).sec_green : cs.onSurfaceVariant,
+                color: peer.isOnline
+                    ? MeshColors.of(context).sec_green
+                    : cs.onSurfaceVariant,
               ),
             ),
           ],
@@ -479,12 +753,17 @@ class _TrustCard extends StatelessWidget {
     );
   }
 
-  /// Shows a bottom sheet listing all nine trust levels for selection.
-  void _showTrustSheet(BuildContext context, PeerModel peer) {
-    showModalBottomSheet<void>(
+  /// Shows a bottom sheet listing all nine trust levels for selection, then
+  /// applies the choice (with the §22.31 confirmation when the change
+  /// crosses the trusted boundary) using this card's live context.
+  Future<void> _showTrustSheet(BuildContext context, PeerModel peer) async {
+    final level = await showModalBottomSheet<TrustLevel>(
       context: context,
       builder: (ctx) => _TrustSheet(peer: peer),
     );
+    // Dismissed without a choice, or the screen went away meanwhile.
+    if (level == null || !context.mounted) return;
+    _apply_trust(context, peer, level);
   }
 }
 
@@ -560,59 +839,10 @@ class _MoreActionsCard extends StatelessWidget {
                 'Remove Contact',
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
-              onTap: () => _confirmRemove(context, peer),
+              onTap: () => _confirm_remove(context, peer),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  /// Shows a confirmation dialog before removing the contact.
-  ///
-  /// Removing a contact sets their trust level to 0 (unknown) which
-  /// effectively revokes access without deleting message history.
-  void _confirmRemove(BuildContext context, PeerModel peer) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Remove Contact?'),
-        content: Text(
-          'This will revoke trust and remove '
-          '${peer.name.isNotEmpty ? peer.name : "this contact"} '
-          'from your contact list.',
-        ),
-        actions: [
-          // Cancel — dismiss without action.
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          // Confirm remove — set trust to 0 (unknown) via PeersState.
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(ctx).colorScheme.error,
-            ),
-            onPressed: () {
-              // Get the local peer ID needed to sign the trust attestation.
-              final localId =
-                  context.read<SettingsState>().settings?.localPeerId ?? '';
-              // attestTrust() sends a signed trust record to Rust which
-              // updates the trust database and notifies the backend.
-              context.read<PeersState>().attestTrust(
-                localPeerId: localId,
-                targetPeerId: peer.id,
-                // Trust level 0 = unknown — effectively removes the contact.
-                trustLevel: 0,
-              );
-              // Close the dialog, then pop this screen since the contact
-              // no longer exists in the list.
-              Navigator.of(ctx).pop();
-              Navigator.of(context).pop();
-            },
-            child: const Text('Remove'),
-          ),
-        ],
       ),
     );
   }
@@ -683,6 +913,29 @@ class _MoreMenuSheet extends StatelessWidget {
                 );
               },
             ),
+            // Block / Unblock — the label follows the current state so the
+            // same row undoes what it did (§22.8.2 "Block contact").
+            ListTile(
+              leading: Icon(
+                peer.blocked
+                    ? Icons.check_circle_outline
+                    : Icons.block_outlined,
+                color: peer.blocked
+                    ? null
+                    : Theme.of(context).colorScheme.error,
+              ),
+              title: Text(
+                peer.blocked ? 'Unblock contact' : 'Block contact',
+                style: peer.blocked
+                    ? null
+                    : TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+              // The sheet only reports the choice; the screen confirms it.
+              onTap: () => Navigator.of(
+                context,
+              ).pop(peer.blocked ? _MoreAction.unblock : _MoreAction.block),
+            ),
+            // Remove — confirmed by the screen (§22.8.2, error colour).
             ListTile(
               leading: Icon(
                 Icons.delete_outline,
@@ -692,10 +945,7 @@ class _MoreMenuSheet extends StatelessWidget {
                 'Remove contact',
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
-              onTap: () {
-                Navigator.of(context).pop();
-                // TODO: remove confirmation dialog (§22.8.2).
-              },
+              onTap: () => Navigator.of(context).pop(_MoreAction.remove),
             ),
           ],
         ),
@@ -704,13 +954,17 @@ class _MoreMenuSheet extends StatelessWidget {
   }
 }
 
+/// What the more-vert sheet reports back to the screen.
+enum _MoreAction { block, unblock, remove }
+
 // ---------------------------------------------------------------------------
 // _TrustSheet — bottom sheet for setting trust level
 // ---------------------------------------------------------------------------
 
 /// Lists all nine trust levels as selectable tiles.  The currently active
-/// level is highlighted.  Selecting a level calls attestTrust() in Rust
-/// which updates the signed trust record for this contact.
+/// level is highlighted.  Selecting a level closes the sheet with that level
+/// as its result; _TrustCard then applies it, asking for the §22.31
+/// confirmation when the change crosses the trusted boundary.
 class _TrustSheet extends StatelessWidget {
   const _TrustSheet({required this.peer});
 
@@ -718,10 +972,6 @@ class _TrustSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Read local peer ID once before building the list tiles.
-    final localPeerId =
-        context.read<SettingsState>().settings?.localPeerId ?? '';
-
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -746,35 +996,10 @@ class _TrustSheet extends StatelessWidget {
                 title: Text(level.label),
                 // Highlight the row matching the peer's current trust level.
                 selected: peer.trustLevel == level,
-                onTap: () {
-                  // Dismiss the sheet before performing the async operation
-                  // to avoid a stale context after the navigation.
-                  Navigator.pop(context);
-
-                  if (localPeerId.isEmpty) {
-                    // Guard: cannot attest without a local identity.
-                    // This should not happen during normal use — identity is
-                    // created during onboarding.
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'Cannot set trust: local identity not available. '
-                          'Complete onboarding first.',
-                        ),
-                      ),
-                    );
-                    return;
-                  }
-
-                  // attestTrust() sends a Rust FFI call that signs and stores
-                  // the new trust level in the local trust database.
-                  context.read<PeersState>().attestTrust(
-                    localPeerId: localPeerId,
-                    targetPeerId: peer.id,
-                    // level.value is the integer 0–8 stored in Rust.
-                    trustLevel: level.value,
-                  );
-                },
+                // Close the sheet with the chosen level; nothing is sent
+                // from here.  _TrustCard decides whether a confirmation is
+                // needed (§22.31) and performs the attestation.
+                onTap: () => Navigator.pop(context, level),
               ),
           ],
         ),

@@ -14,42 +14,43 @@
 //
 // THE 7-STEP ONBOARDING FLOW (§22.42, §22.23, §22.27)
 // -------------------------------------------------------
-// Step 0 — Welcome (_Step.welcome)
+// Step 0 — Welcome (OnboardingStep.welcome)
 //   App name, brand logo, tagline.  Offers "Create new identity" and
 //   "Import from backup."  This is the entry gate — the user hasn't touched
 //   any cryptographic material yet.
 //
-// Step 1 — Create or Import (_Step.importBackup for import path)
+// Step 1 — Create or Import (OnboardingStep.importBackup for import path)
 //   "Create new identity" generates a fresh keypair via bridge.createIdentity()
 //   and proceeds to step 2.  "Import" shows the import UI (passphrase + JSON).
 //
-// Step 2 — Your Identity (_Step.identity)
+// Step 2 — Your Identity (OnboardingStep.identity)
 //   Sets the private identity name (the primary mask).  This is what trusted
 //   contacts will see.  The backend receives the name as part of setPrivateProfile().
 //   Do not use the word "mask" on this screen (§22.42.3 note).
 //
-// Step 3 — Public Presence (_Step.publicProfile)
+// Step 3 — Public Presence (OnboardingStep.publicProfile)
 //   Optionally set a public display name.  Entirely skippable — privacy-first.
 //   If left blank, setPublicProfile() is called with displayName: null,
 //   isPublic: false (§9.1 default).
 //
-// Step 4 — Ambient Disclosures (_Step.disclosures)
+// Step 4 — Ambient Disclosures (OnboardingStep.disclosures)
 //   Mandatory.  Presents the §22.23 ambient state disclosures in clear,
 //   non-scary language.  The "I understand" button is DISABLED until the user
 //   scrolls to the bottom of the list — this prevents click-through without
 //   reading, which is the entire point of mandatory disclosure.  This step
 //   CANNOT be skipped.
 //
-// Step 5 — PIN Setup (_Step.pinSetup)
+// Step 5 — PIN Setup (OnboardingStep.pinSetup)
 //   Strongly encouraged (§22.27.2) but skippable with an explicit warning.
 //   Shows the benefit of a PIN ("prevents anyone who unlocks your phone from
 //   reading your messages").  Offers inline PIN entry (not a push to PinScreen,
 //   which is a separate full-screen flow) so the user stays in the onboarding
 //   context.  A skip path shows an inline warning before allowing bypass.
 //
-// Step 6 — Done (_Step.done)
-//   "You're set up. Your node is now part of the mesh."  Calls widget.onComplete()
-//   which dismisses onboarding and shows AppShell.
+// Step 6 — Done (OnboardingStep.done)
+//   "You're set up. Your node is now part of the mesh."  _finish_onboarding()
+//   persists the backend `onboarding_complete` flag and only then calls
+//   widget.onComplete(), which dismisses onboarding and shows AppShell.
 //
 // WHAT IS A KEYPAIR?
 // -------------------
@@ -61,15 +62,30 @@
 //
 // WIZARD PATTERN
 // ---------------
-// Each step is a private _build* method.  A simple integer index (_stepIndex)
-// drives which step is currently shown.  AnimatedSwitcher provides a 250ms
-// cross-fade between steps.  No PageView is needed because the back button is
-// disabled on some steps (Step 0, Step 4, Step 5) to prevent bypass.
+// Each step is a private _build* method.  The OnboardingStep enum value
+// _step drives which step is currently shown.  AnimatedSwitcher provides a
+// 250ms cross-fade between steps.  No PageView is needed: a PopScope maps the
+// system Back gesture onto _go_back(), which steps backwards inside the flow
+// instead of leaving the app (§22.42 "progress is conveyed by the back
+// stack").
 //
-// Back navigation is disabled on:
-//   - Step 0 (Welcome) — nothing to go back to.
-//   - Step 4 (Disclosures) — must not be bypassable by going back-then-forward.
-//   - Step 5 (PIN Setup) — must not be bypassable by going back-then-forward.
+// Back navigation:
+//   - Welcome — lets the system pop (there is nothing before it).
+//   - Import → Welcome; Public presence → Identity; Disclosures → Public
+//     presence; PIN → Disclosures (after closing an open PIN sub-form).
+//   - Identity and Done stay put: once an identity exists, Welcome's
+//     "Create new identity" must not be reachable, and Done has nothing
+//     left to undo.
+//   Going back never skips the disclosures gate: the only way forward from
+//   Public presence is through the disclosures step again.
+//
+// RESUME (§22.42)
+// ----------------
+// The backend persists an `onboarding_complete` flag only when the Done step
+// runs _finish_onboarding().  app.dart passes initial_step: identity when an
+// unlocked identity exists without that flag, so a first run that was killed
+// mid-setup lands back on "Your identity" (name pre-filled from the stored
+// profile) and still has to pass the disclosures and the PIN offer.
 //
 // FFI CALL GAPS DOCUMENTED BELOW:
 //   - bridge.setThreatContext() does NOT exist as a named bridge method for
@@ -88,15 +104,15 @@ import '../backend/backend_bridge.dart';
 import '../widgets/mask_avatar.dart';
 
 // ---------------------------------------------------------------------------
-// _Step — the wizard's named step sequence
+// OnboardingStep — the wizard's named step sequence
 // ---------------------------------------------------------------------------
 
-/// Names each screen in the onboarding wizard.  Private (underscore prefix)
-/// means it cannot be referenced outside this file.
+/// Names each screen in the onboarding wizard (§22.42 step list).
 ///
-/// The sequence is strictly linear.  Back navigation between some steps is
-/// disabled (see file-level comment).
-enum _Step {
+/// Public so app.dart can resume an interrupted run at [identity] and tests
+/// can pump a single step.  The sequence is strictly linear; see the
+/// file-level comment for how Back moves inside it.
+enum OnboardingStep {
   // Step 0 — App name, tagline, Create / Import choice.
   welcome,
   // Step 1 — Passphrase + backup JSON for import path (only reached via Import).
@@ -119,13 +135,23 @@ enum _Step {
 
 /// Full-screen wizard shown on first launch.
 ///
-/// [onComplete] is called exactly once at the end of the flow.  The parent
-/// (app.dart) uses it to replace this screen with AppShell.
+/// [onComplete] is called exactly once at the end of the flow, after the
+/// backend has persisted the `onboarding_complete` flag.  The parent
+/// (app.dart) uses it to re-read startup state and show AppShell.
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({super.key, required this.onComplete});
+  const OnboardingScreen({
+    super.key,
+    required this.onComplete,
+    this.initial_step = OnboardingStep.welcome,
+  });
 
-  /// Invoked when the user taps "Get Started" at the end of step 6.
+  /// Invoked once the Done step has persisted the onboarding flag.
   final VoidCallback onComplete;
+
+  /// Step to open on.  [OnboardingStep.welcome] on a first run;
+  /// [OnboardingStep.identity] when app.dart resumes an interrupted run
+  /// (§22.42: identity present, `onboarding_complete` unset).
+  final OnboardingStep initial_step;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -141,7 +167,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   // -------------------------------------------------------------------------
 
   /// The current wizard step.  Drives which _buildStep* method renders.
-  _Step _step = _Step.welcome;
+  /// Seeded from widget.initial_step in initState.
+  OnboardingStep _step = OnboardingStep.welcome;
 
   // -------------------------------------------------------------------------
   // General async state
@@ -188,24 +215,53 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   late final ScrollController _disclosuresScrollCtrl = ScrollController()
     ..addListener(_onDisclosuresScroll);
 
-  /// True once the user has scrolled to the bottom of the disclosures list.
-  /// Only when true does the "I understand" button become active.
+  /// True once the user has seen the whole disclosures list: either they
+  /// scrolled to its bottom, or it fit without scrolling.  Only when true
+  /// does the "I understand" button become active.
   bool _disclosuresRead = false;
 
+  /// Whether the disclosures list is taller than its box, i.e. whether
+  /// scrolling is possible at all.  Drives the "Scroll to read all" hint, so
+  /// the hint never asks for a scroll that cannot happen.
+  bool _disclosures_scrollable = false;
+
   /// Called by the ScrollController whenever the scroll position changes.
-  ///
-  /// We consider "bottom reached" when the user is within 32 pixels of the
-  /// maximum scroll extent.  A small tolerance (32px) accounts for rounding
-  /// in the scroll physics and prevents the button from never enabling on
-  /// devices where content fits exactly.
   void _onDisclosuresScroll() {
-    if (_disclosuresRead) return; // already unlocked, no need to keep checking
-    final pos = _disclosuresScrollCtrl.position;
-    // Compare current offset to the maximum scrollable distance.
-    // extentAfter is how many pixels remain below the current viewport edge.
-    if (pos.extentAfter <= 32.0) {
-      setState(() => _disclosuresRead = true);
+    // The controller may be attached to no viewport during step transitions.
+    if (!_disclosuresScrollCtrl.hasClients) return;
+    _apply_disclosure_metrics(_disclosuresScrollCtrl.position);
+  }
+
+  /// Called with fresh scroll metrics after every layout of the disclosures
+  /// list (first layout, window resize, text-scale change) via a
+  /// [ScrollMetricsNotification], which fires even when no scroll happens.
+  bool _on_disclosure_metrics(ScrollMetricsNotification notification) {
+    _apply_disclosure_metrics(notification.metrics);
+    // Let the notification keep bubbling; nothing above cares, but there is
+    // no reason to swallow it.
+    return false;
+  }
+
+  /// Single rule for the disclosures gate, fed by both the scroll listener
+  /// and the metrics notification.
+  ///
+  /// The list counts as read when it fits its box (`maxScrollExtent <= 0`:
+  /// there is nothing to scroll to, so a scroll gate would be a dead end on
+  /// tablets, landscape or small text scales) or when the user is within
+  /// 32 px of the bottom (tolerance for scroll-physics rounding).  Once read,
+  /// it stays read — a later resize that makes the list scroll again must
+  /// not re-lock the button.
+  void _apply_disclosure_metrics(ScrollMetrics metrics) {
+    final scrollable = metrics.maxScrollExtent > 0;
+    final read = _disclosuresRead || !scrollable || metrics.extentAfter <= 32.0;
+    // Only rebuild when something the UI shows actually changed.
+    if (scrollable == _disclosures_scrollable && read == _disclosuresRead) {
+      return;
     }
+    setState(() {
+      _disclosures_scrollable = scrollable;
+      _disclosuresRead = read;
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -242,6 +298,21 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   // -------------------------------------------------------------------------
 
   @override
+  void initState() {
+    super.initState();
+    _step = widget.initial_step;
+    // Resumed run (§22.42): the identity already exists, so pre-fill its
+    // stored name rather than asking the user to type it again.  A missing
+    // or anonymous profile leaves the field empty, exactly like a first run.
+    if (_step == OnboardingStep.identity) {
+      final stored = context.read<BackendBridge>().fetchLocalIdentity()?.name;
+      if (stored != null && stored.isNotEmpty) {
+        _nameController.text = stored;
+      }
+    }
+  }
+
+  @override
   void dispose() {
     // Always dispose TextEditingControllers to free native text-editing resources.
     _phraseController.dispose();
@@ -261,11 +332,61 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   /// Move forward one step.  The calling _buildStep* method is responsible for
   /// validating its own inputs before calling this.
-  void _goTo(_Step target) {
+  void _goTo(OnboardingStep target) {
     setState(() {
       _step = target;
       _error = null; // Clear any lingering error when changing steps.
     });
+  }
+
+  /// Handle the system Back gesture: step backwards inside the flow.
+  ///
+  /// See the file-level "Back navigation" note for the map.  Steps that have
+  /// nothing safe to go back to (identity exists; done) ignore the gesture
+  /// rather than leaving onboarding — leaving would strand a half-set-up
+  /// identity behind the shell, which is the §22.42 resume rule's whole point.
+  void _go_back() {
+    switch (_step) {
+      case OnboardingStep.welcome:
+      case OnboardingStep.identity:
+      case OnboardingStep.done:
+        // Welcome is handled by PopScope.canPop; identity and done stay put.
+        return;
+      case OnboardingStep.importBackup:
+        _goTo(OnboardingStep.welcome);
+      case OnboardingStep.publicProfile:
+        _goTo(OnboardingStep.identity);
+      case OnboardingStep.disclosures:
+        _goTo(OnboardingStep.publicProfile);
+      case OnboardingStep.pinSetup:
+        // An open PIN form or skip warning closes first; a second Back
+        // then returns to the disclosures.
+        if (_showPinForm || _showSkipWarning) {
+          setState(() {
+            _showPinForm = false;
+            _showSkipWarning = false;
+            _pinMismatch = false;
+          });
+        } else {
+          _goTo(OnboardingStep.disclosures);
+        }
+    }
+  }
+
+  /// Finish onboarding (§22.42.7): persist the `onboarding_complete` flag,
+  /// then hand control back to app.dart.
+  ///
+  /// The order is deliberate.  The flag is what tells the next launch that
+  /// setup finished; if it cannot be persisted the app must stay on this
+  /// step and say so, because moving to the shell would make the flag and
+  /// the shell transition diverge — the next launch would resume onboarding.
+  void _finish_onboarding() {
+    final bridge = context.read<BackendBridge>();
+    if (!bridge.setOnboardingComplete()) {
+      setState(() => _error = "Couldn't finish setup. Try again.");
+      return;
+    }
+    widget.onComplete();
   }
 
   // -------------------------------------------------------------------------
@@ -275,7 +396,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// Create a fresh cryptographic identity via the Rust backend.
   ///
   /// Called when the user taps "Create new identity" on the Welcome screen.
-  /// On success advances to _Step.identity.  On failure shows an error banner.
+  /// On success advances to OnboardingStep.identity.  On failure shows an error banner.
   ///
   /// The name is intentionally NOT passed here — the name is collected in the
   /// identity step and written later via setPrivateProfile().  Passing null
@@ -300,7 +421,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (ok) {
       setState(() {
         _busy = false;
-        _step = _Step.identity;
+        _step = OnboardingStep.identity;
       });
     } else {
       setState(() {
@@ -313,7 +434,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// Import a backup using the passphrase + JSON from the import text field.
   ///
   /// The field format is: line 1 = passphrase, lines 2+ = backup JSON blob.
-  /// On success advances to _Step.identity.
+  /// On success advances to OnboardingStep.identity.
   Future<void> _doImport() async {
     final text = _phraseController.text.trim();
     if (text.isEmpty) {
@@ -352,7 +473,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (ok) {
       setState(() {
         _busy = false;
-        _step = _Step.identity;
+        _step = OnboardingStep.identity;
       });
     } else {
       setState(() {
@@ -395,12 +516,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       return;
     }
 
-    _goTo(_Step.disclosures);
+    _goTo(OnboardingStep.disclosures);
   }
 
   /// Set the PIN via bridge.setPin() after confirming the two fields match.
   ///
-  /// On success hides the PIN form and advances to _Step.done.
+  /// On success hides the PIN form and advances to OnboardingStep.done.
   void _confirmPin() {
     final pin = _pinController.text;
     final confirm = _pinConfirmController.text;
@@ -435,7 +556,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     });
 
     // PIN set successfully — proceed to Done.
-    _goTo(_Step.done);
+    _goTo(OnboardingStep.done);
   }
 
   // -------------------------------------------------------------------------
@@ -444,29 +565,41 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // PopScope owns the system Back gesture (hardware button, predictive
+    // back, Escape via the §22.36 input map).  Only the Welcome step lets
+    // the pop through — there the app may exit; every other step stays
+    // inside the flow and moves backwards via _go_back().
+    //
     // Scaffold provides the background surface.  No AppBar — onboarding is
     // an immersive full-screen experience.
-    return Scaffold(
-      body: SafeArea(
-        // SafeArea keeps content away from the notch, status bar, and home
-        // indicator on modern phones.
-        child: Center(
-          child: SingleChildScrollView(
-            // SingleChildScrollView allows content to scroll when the soft
-            // keyboard pushes the layout off-screen on small devices.
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-            child: ConstrainedBox(
-              // Cap width at 420px so the form doesn't stretch to an
-              // unreadable line length on tablets and large desktops.
-              constraints: const BoxConstraints(maxWidth: 420),
-              child: AnimatedSwitcher(
-                // AnimatedSwitcher cross-fades between its children when the
-                // key changes.  Each step widget has a ValueKey(_step) so
-                // Flutter detects the change and plays the transition.
-                duration: const Duration(milliseconds: 250),
-                transitionBuilder: (child, anim) =>
-                    FadeTransition(opacity: anim, child: child),
-                child: _buildCurrentStep(),
+    return PopScope(
+      canPop: _step == OnboardingStep.welcome,
+      onPopInvokedWithResult: (did_pop, _) {
+        // did_pop is true only when canPop allowed the route to close.
+        if (!did_pop) _go_back();
+      },
+      child: Scaffold(
+        body: SafeArea(
+          // SafeArea keeps content away from the notch, status bar, and home
+          // indicator on modern phones.
+          child: Center(
+            child: SingleChildScrollView(
+              // SingleChildScrollView allows content to scroll when the soft
+              // keyboard pushes the layout off-screen on small devices.
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+              child: ConstrainedBox(
+                // Cap width at 420px so the form doesn't stretch to an
+                // unreadable line length on tablets and large desktops.
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: AnimatedSwitcher(
+                  // AnimatedSwitcher cross-fades between its children when the
+                  // key changes.  Each step widget has a ValueKey(_step) so
+                  // Flutter detects the change and plays the transition.
+                  duration: const Duration(milliseconds: 250),
+                  transitionBuilder: (child, anim) =>
+                      FadeTransition(opacity: anim, child: child),
+                  child: _buildCurrentStep(),
+                ),
               ),
             ),
           ),
@@ -478,13 +611,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// Routes to the correct step builder based on [_step].
   Widget _buildCurrentStep() {
     return switch (_step) {
-      _Step.welcome => _buildWelcome(),
-      _Step.importBackup => _buildImportBackup(),
-      _Step.identity => _buildIdentity(),
-      _Step.publicProfile => _buildPublicProfile(),
-      _Step.disclosures => _buildDisclosures(),
-      _Step.pinSetup => _buildPinSetup(),
-      _Step.done => _buildDone(),
+      OnboardingStep.welcome => _buildWelcome(),
+      OnboardingStep.importBackup => _buildImportBackup(),
+      OnboardingStep.identity => _buildIdentity(),
+      OnboardingStep.publicProfile => _buildPublicProfile(),
+      OnboardingStep.disclosures => _buildDisclosures(),
+      OnboardingStep.pinSetup => _buildPinSetup(),
+      OnboardingStep.done => _buildDone(),
     };
   }
 
@@ -502,7 +635,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// in the wizard and there is no previous screen to go back to.
   Widget _buildWelcome() {
     return Column(
-      key: const ValueKey(_Step.welcome),
+      key: const ValueKey(OnboardingStep.welcome),
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 48),
@@ -568,7 +701,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           width: double.infinity,
           height: 52,
           child: OutlinedButton.icon(
-            onPressed: _busy ? null : () => _goTo(_Step.importBackup),
+            onPressed: _busy ? null : () => _goTo(OnboardingStep.importBackup),
             icon: const Icon(Icons.download_rounded),
             label: const Text('Import from backup'),
           ),
@@ -593,7 +726,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// The "Back" button returns to Welcome so the user can choose Create instead.
   Widget _buildImportBackup() {
     return Column(
-      key: const ValueKey(_Step.importBackup),
+      key: const ValueKey(OnboardingStep.importBackup),
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 24),
@@ -655,7 +788,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
         // Back to Welcome.
         TextButton(
-          onPressed: _busy ? null : () => _goTo(_Step.welcome),
+          onPressed: _busy ? null : () => _goTo(OnboardingStep.welcome),
           child: const Text('Back'),
         ),
 
@@ -685,7 +818,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     // ValueListenableBuilder so the button re-renders on every keystroke
     // without calling setState() on the full State object.
     return Column(
-      key: const ValueKey(_Step.identity),
+      key: const ValueKey(OnboardingStep.identity),
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 24),
@@ -781,7 +914,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           child: FilledButton(
             onPressed: _nameController.text.trim().isEmpty
                 ? null
-                : () => _goTo(_Step.publicProfile),
+                : () => _goTo(OnboardingStep.publicProfile),
             child: const Text('Next'),
           ),
         ),
@@ -808,7 +941,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// visual ("Skip" is a TextButton, "Next" is a FilledButton).
   Widget _buildPublicProfile() {
     return Column(
-      key: const ValueKey(_Step.publicProfile),
+      key: const ValueKey(OnboardingStep.publicProfile),
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 24),
@@ -873,25 +1006,35 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// disclosures must be communicated to the user before they can send any
   /// message.
   ///
-  /// The "I understand" button is intentionally DISABLED until the user scrolls
-  /// to the bottom of the disclosure list.  This is not a legal trick — it is
-  /// a UX mechanism to prevent the very common behaviour of tapping "OK" on a
-  /// wall of text without reading any of it.  Each disclosure is short,
-  /// non-scary, and written in plain language (§22.27 "must not use fear-based
-  /// language").
+  /// The "I understand" button is intentionally DISABLED until the user has
+  /// seen the whole disclosure list — by scrolling to its bottom, or at once
+  /// when the list fits its box and there is nothing to scroll.  This is not
+  /// a legal trick — it is a UX mechanism to prevent the very common
+  /// behaviour of tapping "OK" on a wall of text without reading any of it.
+  /// Each disclosure is short, non-scary, and written in plain language
+  /// (§22.27 "must not use fear-based language").
   ///
-  /// The back button is DISABLED on this step.  Allowing back navigation would
-  /// allow the user to re-enter this step from a later step and bypass it by
-  /// arriving via a different path.  Holding this step firm is the correct
-  /// approach.
+  /// Back from this step returns to Public presence; the only way forward
+  /// from there is through this step again, so the gate cannot be bypassed.
   Widget _buildDisclosures() {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
     // Per-theme status colours for disclosure icons.
     final colors = MeshColors.of(context);
+    // Cap the list box at the window: roughly the height left after the
+    // header, hint and button, never below 240 so a phone still gets a
+    // usable box.  The list shrink-wraps inside the cap, so a tall window
+    // shows every row without scrolling and the gate unlocks immediately
+    // (see _apply_disclosure_metrics), while a short one keeps the
+    // scroll-to-read behaviour obvious.  MediaQuery.sizeOf registers a
+    // dependency, so a resize rebuilds this step and re-lays out the list.
+    final box_max_height = (MediaQuery.sizeOf(context).height - 360).clamp(
+      240.0,
+      double.infinity,
+    );
 
     return Column(
-      key: const ValueKey(_Step.disclosures),
+      key: const ValueKey(OnboardingStep.disclosures),
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 24),
@@ -918,87 +1061,101 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         // fill the whole screen (which would make the button invisible until
         // the user scrolls the outer view) — instead, the inner list is
         // scrollable within a contained area, making the "scroll to read"
-        // behaviour obvious.
+        // behaviour obvious.  Below the cap the list shrink-wraps, so the
+        // box is exactly as tall as its content when that content fits.
+        //
+        // The NotificationListener receives a ScrollMetricsNotification after
+        // every layout of the list, even when nothing scrolls, which is how
+        // the gate learns that the content already fits.
         // ---------------------------------------------------------------------------
         Container(
-          height: 300,
+          constraints: BoxConstraints(maxHeight: box_max_height),
           decoration: BoxDecoration(
             color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Scrollbar(
-            // The Scrollbar widget overlays a visible drag handle on the right
-            // edge of the scroll container, making it obvious the list scrolls.
-            controller: _disclosuresScrollCtrl,
-            thumbVisibility: true,
-            child: ListView(
-              // This is the scroll controller we listen to for "reached bottom".
+          child: NotificationListener<ScrollMetricsNotification>(
+            onNotification: _on_disclosure_metrics,
+            child: Scrollbar(
+              // The Scrollbar widget overlays a visible drag handle on the right
+              // edge of the scroll container, making it obvious the list scrolls.
               controller: _disclosuresScrollCtrl,
-              padding: const EdgeInsets.all(16),
-              children: [
-                const _DisclosureItem(
-                  icon: Icons.lock_outline_rounded,
-                  iconColor: MeshTheme.brand,
-                  title: 'Your messages are end-to-end encrypted.',
-                  body:
-                      'Nobody — not even us — can read your messages. '
-                      'Your identity key is generated on this device and '
-                      'never leaves it.',
-                ),
-                const SizedBox(height: 16),
-                _DisclosureItem(
-                  icon: Icons.hub_outlined,
-                  iconColor: colors.sec_green,
-                  title: 'Your device helps route others\' messages.',
-                  body:
-                      'Your device may relay encrypted messages for other '
-                      'users on the mesh. You cannot read them, and '
-                      'neither can anyone else. You can disable this in '
-                      'Settings if needed.',
-                ),
-                const SizedBox(height: 16),
-                _DisclosureItem(
-                  icon: Icons.visibility_off_outlined,
-                  iconColor: colors.sec_amber,
-                  title: 'Extra data keeps everyone\'s traffic private.',
-                  body:
-                      'The app sends a small amount of cover traffic to '
-                      'prevent traffic analysis. This uses some battery '
-                      'and data.',
-                ),
-                const SizedBox(height: 16),
-                const _DisclosureItem(
-                  icon: Icons.storage_outlined,
-                  iconColor: MeshTheme.brand,
-                  title: 'Messages wait on trusted nodes for offline contacts.',
-                  body:
-                      'If a contact is offline, their messages are '
-                      'temporarily stored on trusted mesh nodes until '
-                      'they reconnect.',
-                ),
-                const SizedBox(height: 16),
-                _DisclosureItem(
-                  icon: Icons.dns_outlined,
-                  iconColor: colors.sec_green,
-                  title: 'There are no central servers.',
-                  body:
-                      'Mesh Infinity has no central servers. Your messages '
-                      'travel through the network itself. You control who '
-                      'can contact you and what they can see.',
-                ),
-                // Extra padding at the bottom so the last item doesn't sit
-                // right at the scroll edge — users need to clearly reach it.
-                const SizedBox(height: 8),
-              ],
+              thumbVisibility: true,
+              child: ListView(
+                // This is the scroll controller we listen to for "reached bottom".
+                controller: _disclosuresScrollCtrl,
+                // Size to content up to the cap (see box_max_height).
+                shrinkWrap: true,
+                padding: const EdgeInsets.all(16),
+                children: [
+                  const _DisclosureItem(
+                    icon: Icons.lock_outline_rounded,
+                    iconColor: MeshTheme.brand,
+                    title: 'Your messages are end-to-end encrypted.',
+                    body:
+                        'Nobody — not even us — can read your messages. '
+                        'Your identity key is generated on this device and '
+                        'never leaves it.',
+                  ),
+                  const SizedBox(height: 16),
+                  _DisclosureItem(
+                    icon: Icons.hub_outlined,
+                    iconColor: colors.sec_green,
+                    title: 'Your device helps route others\' messages.',
+                    body:
+                        'Your device may relay encrypted messages for other '
+                        'users on the mesh. You cannot read them, and '
+                        'neither can anyone else. You can disable this in '
+                        'Settings if needed.',
+                  ),
+                  const SizedBox(height: 16),
+                  _DisclosureItem(
+                    icon: Icons.visibility_off_outlined,
+                    iconColor: colors.sec_amber,
+                    title: 'Extra data keeps everyone\'s traffic private.',
+                    body:
+                        'The app sends a small amount of cover traffic to '
+                        'prevent traffic analysis. This uses some battery '
+                        'and data.',
+                  ),
+                  const SizedBox(height: 16),
+                  const _DisclosureItem(
+                    icon: Icons.storage_outlined,
+                    iconColor: MeshTheme.brand,
+                    title:
+                        'Messages wait on trusted nodes for offline contacts.',
+                    body:
+                        'If a contact is offline, their messages are '
+                        'temporarily stored on trusted mesh nodes until '
+                        'they reconnect.',
+                  ),
+                  const SizedBox(height: 16),
+                  _DisclosureItem(
+                    icon: Icons.dns_outlined,
+                    iconColor: colors.sec_green,
+                    title: 'There are no central servers.',
+                    body:
+                        'Mesh Infinity has no central servers. Your messages '
+                        'travel through the network itself. You control who '
+                        'can contact you and what they can see.',
+                  ),
+                  // Extra padding at the bottom so the last item doesn't sit
+                  // right at the scroll edge — users need to clearly reach it.
+                  const SizedBox(height: 8),
+                ],
+              ),
             ),
           ),
         ),
 
         const SizedBox(height: 12),
 
-        // Hint text tells users what to do — shown until button activates.
+        // Hint text tells users what to do — shown only while there is
+        // something left to scroll to.  When the list fits, or once it has
+        // been read, asking the user to scroll would be asking for the
+        // impossible, so the hint fades out.
         AnimatedOpacity(
-          opacity: _disclosuresRead ? 0.0 : 1.0,
+          opacity: _disclosures_scrollable && !_disclosuresRead ? 1.0 : 0.0,
           duration: const Duration(milliseconds: 200),
           child: Text(
             'Scroll to read all',
@@ -1008,19 +1165,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
         const SizedBox(height: 12),
 
-        // "I understand" button — disabled until scroll reaches the bottom.
+        // "I understand" button — disabled until the whole list was seen.
         //
         // This is the core of the scroll-gate pattern.  The button is
-        // non-interactive (_disclosuresRead == false) when the user has not
-        // yet scrolled through the list.  Once they reach the bottom, the
-        // button becomes tappable.  This is the minimal friction that prevents
-        // a "click through without reading" pattern while not being hostile
-        // (the user just has to scroll, not tick boxes or pass a quiz).
+        // non-interactive (_disclosuresRead == false) while part of the list
+        // is still below the fold.  Once the user reaches the bottom — or at
+        // once when there is no fold — the button becomes tappable.  This is
+        // the minimal friction that prevents a "click through without
+        // reading" pattern while not being hostile (the user just has to
+        // scroll, not tick boxes or pass a quiz).
         SizedBox(
           width: double.infinity,
           height: 52,
           child: FilledButton(
-            onPressed: _disclosuresRead ? () => _goTo(_Step.pinSetup) : null,
+            onPressed: _disclosuresRead
+                ? () => _goTo(OnboardingStep.pinSetup)
+                : null,
             child: const Text('I understand'),
           ),
         ),
@@ -1037,9 +1197,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// Builds the PIN Setup screen (§22.42.5, §22.27.2).
   ///
   /// PIN setup is "strongly encouraged" but skippable with acknowledgment.
-  /// This step CANNOT be reached by pressing Back from a later step — the
-  /// back button is suppressed here to prevent bypass of the disclosure step
-  /// (step 4) by going back from done (step 6) and re-entering from PIN.
+  /// Back from this step closes an open sub-form first, then returns to the
+  /// disclosures; Done never comes back here, so the PIN choice is final
+  /// once Done is reached (a PIN can still be changed in Settings).
   ///
   /// Three sub-states exist within this step:
   ///   1. Default: icon + explanation + "Set a PIN" / "Skip for now" buttons.
@@ -1053,7 +1213,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final tt = Theme.of(context).textTheme;
 
     return Column(
-      key: const ValueKey(_Step.pinSetup),
+      key: const ValueKey(OnboardingStep.pinSetup),
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 32),
@@ -1320,7 +1480,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Expanded(
                 child: TextButton(
                   style: TextButton.styleFrom(foregroundColor: cs.error),
-                  onPressed: () => _goTo(_Step.done),
+                  onPressed: () => _goTo(OnboardingStep.done),
                   child: const Text('Continue without PIN'),
                 ),
               ),
@@ -1338,8 +1498,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// Builds the Done screen (final step of §22.42).
   ///
   /// Confirms that setup is complete and the node is now participating in the
-  /// mesh.  "Get Started" calls widget.onComplete(), which dismisses the
-  /// onboarding screen and shows AppShell.
+  /// mesh.  "Get Started" runs _finish_onboarding(): the backend flag is
+  /// persisted first, then widget.onComplete() dismisses the onboarding
+  /// screen and shows AppShell.  If persisting fails the step stays, with
+  /// the error shown above the button (§22.42.7).
   Widget _buildDone() {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
@@ -1347,7 +1509,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final colors = MeshColors.of(context);
 
     return Column(
-      key: const ValueKey(_Step.done),
+      key: const ValueKey(OnboardingStep.done),
       mainAxisSize: MainAxisSize.min,
       children: [
         const SizedBox(height: 48),
@@ -1360,11 +1522,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             color: colors.sec_green.withValues(alpha: 0.12),
             shape: BoxShape.circle,
           ),
-          child: Icon(
-            Icons.check_rounded,
-            size: 40,
-            color: colors.sec_green,
-          ),
+          child: Icon(Icons.check_rounded, size: 40, color: colors.sec_green),
         ),
 
         const SizedBox(height: 24),
@@ -1386,12 +1544,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
         const SizedBox(height: 48),
 
-        // Final CTA — calls the parent callback to remove onboarding.
+        // Shown when the backend could not persist the onboarding flag; the
+        // user can simply try again.
+        if (_error != null) ...[
+          _ErrorBanner(message: _error!),
+          const SizedBox(height: 16),
+        ],
+
+        // Final CTA — persists the flag, then hands control to app.dart.
         SizedBox(
           width: double.infinity,
           height: 52,
           child: FilledButton.icon(
-            onPressed: widget.onComplete,
+            onPressed: _finish_onboarding,
             icon: const Icon(Icons.arrow_forward_rounded),
             label: const Text('Get Started'),
           ),

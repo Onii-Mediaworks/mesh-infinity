@@ -37,7 +37,7 @@ import '../../backend/backend_bridge.dart';
 import '../../core/widgets/empty_state.dart';
 // EmptyState — shared zero-data placeholder shown when no gardens are found.
 import '../../app/app_theme.dart';
-// MeshTheme — brand and secondary colours used by _NetworkTypeBadge.
+// MeshTheme — brand colour used by the garden avatar tile.
 import '../../core/widgets/focus_ring.dart';
 import '../../core/widgets/load_gate.dart';
 // FocusRing — shell focus ring around the Join button (§22.36 rule 3).

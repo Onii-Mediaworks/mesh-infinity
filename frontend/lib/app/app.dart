@@ -58,6 +58,48 @@ import '../features/zerotier/zerotier_state.dart';
 import '../platform/android_keystore_bridge.dart';
 import '../platform/android_startup_sync.dart';
 
+/// The screen the app opens with, chosen by [resolve_startup_screen].
+enum StartupScreen {
+  /// No identity on disk: run onboarding from the Welcome step.
+  onboarding,
+
+  /// Identity present and unlocked, but onboarding never reached Done:
+  /// resume onboarding at the identity step (§22.42).
+  resume,
+
+  /// Identity present but locked, and a PIN is configured: PinScreen.
+  pin,
+
+  /// Identity present but locked with no PIN: wait for the OS keystore.
+  locked,
+
+  /// Identity present, unlocked and onboarded: the main shell.
+  shell,
+}
+
+/// Pick the startup screen from the four facts the backend reports.
+///
+/// Pure so the gate order is testable without a native library.  The order
+/// matters: the unlock gates come before the onboarding flag because the flag
+/// lives in the encrypted settings vault and reads false until unlock — a
+/// locked identity must reach PinScreen, not a resumed onboarding that would
+/// then fail every backend write.
+StartupScreen resolve_startup_screen({
+  required bool has_identity,
+  required bool unlocked,
+  required bool pin_enabled,
+  required bool onboarding_complete,
+}) {
+  // Nothing on disk: first run.
+  if (!has_identity) return StartupScreen.onboarding;
+  // Locked: unlock first, then re-evaluate.
+  if (!unlocked) return pin_enabled ? StartupScreen.pin : StartupScreen.locked;
+  // Unlocked but setup was interrupted after identity creation (§22.42):
+  // the mandatory disclosures and PIN offer were never shown.
+  if (!onboarding_complete) return StartupScreen.resume;
+  return StartupScreen.shell;
+}
+
 /// Root application widget.
 ///
 /// Receives a [BackendBridge] instance constructed in main.dart and wires it
@@ -104,9 +146,10 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
   /// reported unavailable (shown as a warning on _LockedStartupScreen).
   bool? _androidKeystoreAvailable;
 
-  /// Set to true after the user completes onboarding (creates an identity).
-  /// Causes _buildHome() to skip the onboarding gate on the next rebuild even
-  /// before the backend's own identity files are fully flushed to disk.
+  /// Whether the backend's persisted `onboarding_complete` flag is set
+  /// (§22.42).  Read from the settings vault, so it is only meaningful once
+  /// the identity is unlocked.  An unlocked identity without it means setup
+  /// was interrupted and onboarding resumes at the identity step.
   bool _onboardingComplete = false;
 
   // ---------------------------------------------------------------------------
@@ -216,6 +259,11 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
     // before onboarding), not because the backend is absent.
     final security = widget.bridge.fetchSecurityConfig();
     _pinEnabled = security?['pinEnabled'] == true;
+
+    // Reads the persisted onboarding flag (§22.42).  False until the Done
+    // step has run setOnboardingComplete() — and false while locked, which
+    // is why resolve_startup_screen() checks the unlock gates first.
+    _onboardingComplete = widget.bridge.isOnboardingComplete();
   }
 
   // ---------------------------------------------------------------------------
@@ -313,7 +361,9 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
             // ShellInputScope installs the one §22.36 key/button → intent
             // table above the Navigator, so pushed routes, sheets and
             // dialogs all share it with the shell (see input_map.dart).
-            final body = ShellInputScope(child: child ?? const SizedBox.shrink());
+            final body = ShellInputScope(
+              child: child ?? const SizedBox.shrink(),
+            );
             final nodeLabel = kDebugMode
                 ? Platform.environment['MESH_NODE_LABEL']?.trim()
                 : null;
@@ -360,56 +410,67 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
   // _buildHome
   //
   // Chooses which screen to show based on startup state (steps 1–4 from the
-  // startup sequence above).  The gates are checked in priority order:
+  // startup sequence above).  The gate order lives in
+  // resolve_startup_screen():
   //
-  //   1. No identity + not completed onboarding → OnboardingScreen
+  //   1. No identity → OnboardingScreen from Welcome
   //   2. Identity exists but is locked + PIN configured → PinScreen
   //   3. Identity exists but is locked + no PIN → _LockedStartupScreen (retry)
-  //   4. Identity is present and unlocked → main shell
+  //   4. Identity unlocked but onboarding_complete unset → OnboardingScreen
+  //      resumed at the identity step (§22.42: an interrupted first run must
+  //      still show the mandatory disclosures and the PIN offer)
+  //   5. Identity unlocked and onboarded → main shell
   //
-  // The onboarding completion gate checks _onboardingComplete (an optimistic
-  // local flag) in addition to _hasIdentity because there is a brief window
-  // after onboarding where the backend may not yet have flushed the new
-  // identity to disk — we want to proceed to the shell immediately.
+  // The Done step persists the flag through the backend before calling
+  // onComplete, so re-reading startup state afterwards lands on the shell
+  // without any optimistic local flag.
   // ---------------------------------------------------------------------------
   Widget _buildHome() {
-    if (!_hasIdentity && !_onboardingComplete) {
-      return OnboardingScreen(
-        onComplete: () => setState(() {
-          // Mark onboarding done locally so we don't flash back to it while
-          // _refreshStartupState() reads the newly persisted identity.
-          _onboardingComplete = true;
-          _refreshStartupState();
-        }),
-      );
-    }
+    final screen = resolve_startup_screen(
+      has_identity: _hasIdentity,
+      unlocked: _identityUnlocked,
+      pin_enabled: _pinEnabled,
+      onboarding_complete: _onboardingComplete,
+    );
+    switch (screen) {
+      case StartupScreen.onboarding:
+      case StartupScreen.resume:
+        return OnboardingScreen(
+          // A resumed run skips Welcome/Import: the identity already exists,
+          // so creating or importing another one is exactly what must not
+          // happen.  The identity step pre-fills the stored name.
+          initial_step: screen == StartupScreen.resume
+              ? OnboardingStep.identity
+              : OnboardingStep.welcome,
+          // The flag is already persisted when this fires; re-reading the
+          // startup state is what moves the app to the shell.
+          onComplete: () => setState(_refreshStartupState),
+        );
 
-    if (_hasIdentity && !_identityUnlocked) {
-      // Identity key is on disk but still encrypted.  How we handle this
-      // depends on whether a PIN was configured.
-      if (_pinEnabled) {
+      case StartupScreen.pin:
         // The user set a PIN — show the PIN entry screen.
         return PinScreen(
           mode: PinScreenMode.unlock,
           onUnlocked: _handleUnlockComplete,
         );
-      }
 
-      // No PIN — probably waiting for Android keystore or some other async
-      // unlock mechanism.  Show a screen with diagnostic info and a Retry button.
-      return _LockedStartupScreen(
-        androidKeystoreAvailable: _androidKeystoreAvailable,
-        onRetry: () => setState(_refreshStartupState),
-      );
+      case StartupScreen.locked:
+        // No PIN — probably waiting for Android keystore or some other async
+        // unlock mechanism.  Show diagnostic info and a Retry button.
+        return _LockedStartupScreen(
+          androidKeystoreAvailable: _androidKeystoreAvailable,
+          onRetry: () => setState(_refreshStartupState),
+        );
+
+      case StartupScreen.shell:
+        // Identity is present, unlocked and onboarded — render the shell.
+        //
+        // SnowfallLayer wraps the entire shell.  It self-deactivates outside
+        // the winter window (Dec 1 – Jan 15) — zero overhead on other dates.
+        // CallOverlay sits inside SnowfallLayer and renders floating call UI
+        // above all other content when a call is active.
+        return const SnowfallLayer(child: CallOverlay(child: AppShell()));
     }
-
-    // Identity is present and unlocked — render the full application shell.
-    //
-    // SnowfallLayer wraps the entire shell.  It self-deactivates outside
-    // the winter window (Dec 1 – Jan 15) — zero overhead on other dates.
-    // CallOverlay sits inside SnowfallLayer and renders floating call UI
-    // above all other content when a call is active.
-    return const SnowfallLayer(child: CallOverlay(child: AppShell()));
   }
 }
 
