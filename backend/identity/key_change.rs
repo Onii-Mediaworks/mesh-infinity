@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::signing::{self, DOMAIN_KEY_CHANGE};
 use crate::error::MeshError;
 use crate::identity::peer_id::PeerId;
+use subtle::ConstantTimeEq;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -461,33 +462,11 @@ pub fn verify_passphrase_hash(
     // The Argon2id parameters must match what was used during creation.
     let candidate_hash = hash_key_change_passphrase(candidate, salt)?;
 
-    // Use constant-time comparison to prevent timing side-channels.
-    // An attacker observing response times should not learn whether
-    // individual bytes of the hash matched.
-    Ok(constant_time_eq(&candidate_hash, stored_hash))
-}
-
-/// Constant-time byte comparison to prevent timing side-channels.
-///
-/// Compares two byte slices in a way that takes the same amount of
-/// time regardless of how many bytes match. Critical for comparing
-/// hashes where timing leaks could reveal partial matches.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    // Different lengths are immediately unequal, but we still compare
-    // to avoid leaking information about the length difference.
-    if a.len() != b.len() {
-        return false;
-    }
-
-    // XOR all bytes and accumulate — a difference in any byte sets
-    // bits in the accumulator. The final result is 0 only if all match.
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-
-    // Zero diff means all bytes matched; non-zero means at least one differed.
-    diff == 0
+    // Constant-time comparison (`subtle`, the crate the rest of the crypto
+    // layer uses) so response time never reveals how many hash bytes
+    // matched.  `ct_eq` on slices yields false for a length mismatch
+    // without short-circuiting on content.
+    Ok(bool::from(candidate_hash[..].ct_eq(stored_hash)))
 }
 
 // ---------------------------------------------------------------------------
@@ -926,25 +905,6 @@ mod tests {
             hash_a, hash_b,
             "different salts must produce different hashes"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // Constant-time comparison
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_constant_time_eq() {
-        // Equal slices must return true.
-        assert!(constant_time_eq(&[1, 2, 3], &[1, 2, 3]));
-
-        // Different slices must return false.
-        assert!(!constant_time_eq(&[1, 2, 3], &[1, 2, 4]));
-
-        // Different lengths must return false.
-        assert!(!constant_time_eq(&[1, 2], &[1, 2, 3]));
-
-        // Empty slices are equal.
-        assert!(constant_time_eq(&[], &[]));
     }
 
     // -----------------------------------------------------------------------

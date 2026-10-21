@@ -36,6 +36,63 @@ use super::peer_id::PeerId;
 // Defined by the spec; must not change without a version bump.
 const REL_MASK_DOMAIN: &[u8] = b"meshinfinity-rel-mask-v1";
 
+/// Derive the relationship-specific Ed25519 signing key that `base` uses
+/// toward `their_peer_id` (§7.2 Step 3 derivation; §3.1.6 relationship role).
+///
+/// ```text
+/// rel_key = HKDF-SHA256(
+///     salt = base_secret,
+///     ikm  = "meshinfinity-rel-mask-v1" || min(my_pid, their_pid) || max(my_pid, their_pid),
+///     len  = 32
+/// )
+/// ```
+///
+/// Deterministic per (base key, peer) pair, so the §7.2 Step 3 outer
+/// signature and the §7.2 Step 1 untrusted-message signature toward one
+/// peer both come from this one key, and a key change of `base` (§4.6)
+/// re-derives it.  One-way: compromising a relationship key reveals nothing
+/// about `base` or about any other relationship.  This is the single
+/// derivation for every mask — the self's public mask in the messaging
+/// service calls it directly, every other mask through
+/// `Mask::relationship_signing_key`.
+///
+/// The result is never the stable key itself: a relationship key equal to
+/// `base` would be the exact misuse §3.1.6 forbids, and HKDF output cannot
+/// collide with its own salt except by negligible chance.
+pub fn derive_relationship_signing_key(
+    base: &SigningKey,
+    my_peer_id: &PeerId,
+    their_peer_id: &PeerId,
+) -> SigningKey {
+    // Lexicographic sort so both parties derive the same ikm regardless of
+    // who initiated; the base key is what makes the two results differ.
+    let (min_pid, max_pid) = if my_peer_id.0 < their_peer_id.0 {
+        (&my_peer_id.0[..], &their_peer_id.0[..])
+    } else {
+        (&their_peer_id.0[..], &my_peer_id.0[..])
+    };
+
+    // ikm = domain || min(pid) || max(pid), exactly as §7.2 writes it.
+    let mut ikm = Vec::with_capacity(REL_MASK_DOMAIN.len() + 64);
+    // Append the domain label first so the derivation is bound to its use.
+    ikm.extend_from_slice(REL_MASK_DOMAIN);
+    // Then the ordered peer-id pair.
+    ikm.extend_from_slice(min_pid);
+    ikm.extend_from_slice(max_pid);
+
+    // The stable mask secret is the HKDF salt (one-way), the pair is the ikm.
+    let hk = Hkdf::<Sha256>::new(Some(&base.to_bytes()), &ikm);
+    let mut derived = [0u8; 32];
+    // Infallible: HKDF-SHA256 expand with 32-byte output never exceeds the
+    // 255 × hash_len ceiling. This is a compile-time-verifiable constant.
+    hk.expand(b"meshinfinity-rel-key-v1", &mut derived).expect(
+        "HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len",
+    );
+
+    // The derived 32 bytes are the Ed25519 seed of the relationship key.
+    SigningKey::from_bytes(&derived)
+}
+
 /// A mask — a contextual identity presentation.
 // Mask — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
@@ -250,50 +307,16 @@ impl Mask {
         PeerId::from_ed25519_pub(&self.ed25519_pub)
     }
 
-    /// Derive a relationship-specific signing key for a specific peer.
+    /// Derive this mask's relationship-specific signing key toward one peer.
     ///
-    /// This key is used for Step 3 outer signing (§7.2) — the signature
-    /// is inside Step 4 encryption, so only the recipient sees it.
-    /// Compromising one relationship key reveals nothing about other
-    /// relationships or the base mask key.
+    /// Thin wrapper over `derive_relationship_signing_key` with this mask's
+    /// own key and peer id; see that function for the derivation and the
+    /// §3.1.6 role of the result.
     pub fn relationship_signing_key(&self, their_peer_id: &PeerId) -> SigningKey {
-        // Identify the peer for this operation.
+        // Identify ourselves for the ordered (min, max) peer-id pair.
         let my_pid = self.peer_id();
-
-        // Lexicographic sort for deterministic derivation
-        let (min_pid, max_pid) = if my_pid.0 < their_peer_id.0 {
-            (&my_pid.0[..], &their_peer_id.0[..])
-        } else {
-            (&their_peer_id.0[..], &my_pid.0[..])
-        };
-
-        // HKDF derivation
-        let mut ikm = Vec::with_capacity(REL_MASK_DOMAIN.len() + 64);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        ikm.extend_from_slice(REL_MASK_DOMAIN);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        ikm.extend_from_slice(min_pid);
-        // Append the data segment to the accumulating buffer.
-        // Append bytes to the accumulator.
-        // Append bytes to the accumulator.
-        ikm.extend_from_slice(max_pid);
-
-        // Set up the HKDF context for domain-separated key derivation.
-        let hk = Hkdf::<Sha256>::new(Some(&self.signing_key.to_bytes()), &ikm);
-        let mut derived = [0u8; 32];
-        // Infallible: HKDF-SHA256 expand with 32-byte output never exceeds the
-        // 255 × hash_len ceiling. This is a compile-time-verifiable constant.
-        // HKDF expand to the target key length.
-        // HKDF expand to the target key length.
-        hk.expand(b"meshinfinity-rel-key-v1", &mut derived)
-            .expect("HKDF-SHA256 expand to 32 bytes is infallible — output length never exceeds 255 × hash_len");
-
-        // Invoke the associated function.
-        SigningKey::from_bytes(&derived)
+        // Delegate: one derivation for every mask, including the self's.
+        derive_relationship_signing_key(&self.signing_key, &my_pid, their_peer_id)
     }
 
     /// Get serializable metadata for this mask (non-secret fields).

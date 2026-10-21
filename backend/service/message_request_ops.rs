@@ -5,6 +5,17 @@
 //! and X25519 public keys in a signed `message_request` frame.  We verify the
 //! signature, rate-limit, and queue the request for the user to accept or decline.
 //!
+//! This is the §7.2 Step 1 "untrusted messages" branch.  The signature is
+//! produced by the sender's **relationship-specific mask key for us**
+//! (`identity::mask::derive_relationship_signing_key`), carried in
+//! `sender_rel_ed25519`, under `signing::DOMAIN_MESSAGE_REQUEST`.  Per §3.1.6
+//! the stable identity key in `sender_ed25519` never signs a request: a
+//! stable-key signature would be portable proof of authorship, while the
+//! relationship-key signature is non-deniable toward us only (§7.3) — enough
+//! to show a request to a moderator, useless to anyone else.  On accept the
+//! relationship key is pinned to the new `ContactRecord`, so the conversation
+//! that follows must be Step 3-signed by the same key as the request.
+//!
 //! ## Wire format (`message_request` frame)
 //!
 //! ```json
@@ -12,23 +23,26 @@
 //!   "type":           "message_request",
 //!   "sender_ed25519": "<64-char hex — sender's Ed25519 public key>",
 //!   "sender_x25519":  "<64-char hex — sender's X25519 public key>",
+//!   "sender_rel_ed25519": "<64-char hex — sender's relationship mask key for us>",
 //!   "display_name":   "<optional UTF-8 string, max 64 chars>",
 //!   "text":           "<plaintext message, max 2000 chars>",
 //!   "msg_id":         "<32-char hex — random nonce; also the request ID>",
 //!   "ts":             <u64 unix seconds>,
-//!   "sig":            "<128-char hex — Ed25519 sig over canonical bytes>"
+//!   "sig":            "<128-char hex — relationship-key sig over canonical bytes>"
 //! }
 //! ```
 //!
 //! ## Signature canonical form
 //!
-//! The `sig` field covers the following bytes, in order, with no separator:
-//!   `"message_request"` (UTF-8 literal) || `sender_ed25519` (raw 32 bytes)
+//! The `sig` field is `signing::sign(rel_secret, DOMAIN_MESSAGE_REQUEST, c)`
+//! where `c` (see `request_canonical_bytes`) is, in order, with no separator:
+//!   `sender_ed25519` (raw 32 bytes) || `sender_rel_ed25519` (raw 32 bytes)
 //!   || `msg_id` (raw 16 bytes) || `ts` (big-endian u64) || `text` (UTF-8)
 //!
-//! This binds the frame type, sender identity, unique nonce, timestamp, and
-//! message text into a single authenticated blob, preventing any field from
-//! being substituted without invalidating the signature.
+//! The domain separator replaces the former `"message_request"` literal and
+//! binds the frame type; the canonical bytes bind the claimed stable
+//! identity, the relationship key, the unique nonce, the timestamp and the
+//! text, so no field can be substituted without invalidating the signature.
 //!
 //! ## Rate limits
 //!
@@ -50,14 +64,54 @@
 //! `decline_message_request` silently removes the queue entry.  The sender
 //! receives no notification — this is intentional.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
+use crate::crypto::signing::{self, DOMAIN_MESSAGE_REQUEST};
 use crate::identity::peer_id::PeerId;
 use crate::messaging::room::Room;
 use crate::pairing::contact::ContactRecord;
 use crate::pairing::methods::PairingMethod;
 use crate::service::runtime::MeshRuntime;
 use crate::trust::levels::TrustLevel;
+
+/// The bytes a message request's relationship-key signature covers (see the
+/// module doc, "Signature canonical form").
+///
+/// One function for the verifier and for any sender, so the two can never
+/// drift: `sender_ed25519 || sender_rel_ed25519 || msg_id || ts_be || text`.
+/// The frame type is bound by `DOMAIN_MESSAGE_REQUEST` in `signing::sign`,
+/// not by these bytes.
+pub fn request_canonical_bytes(
+    sender_ed25519: &[u8; 32],
+    sender_rel_ed25519: &[u8; 32],
+    msg_id: &[u8],
+    ts: u64,
+    text: &str,
+) -> Vec<u8> {
+    // Exact-size buffer: two keys, the id, the 8-byte timestamp, the text.
+    let mut canonical = Vec::with_capacity(32 + 32 + msg_id.len() + 8 + text.len());
+    // The stable identity the sender claims — bound so it cannot be swapped
+    // for another identity under the same relationship signature.
+    canonical.extend_from_slice(sender_ed25519);
+    // The relationship key that signs — bound so the verifier key cannot be
+    // substituted either.
+    canonical.extend_from_slice(sender_rel_ed25519);
+    // Unique nonce, big-endian timestamp, then the text itself.
+    canonical.extend_from_slice(msg_id);
+    canonical.extend_from_slice(&ts.to_be_bytes());
+    canonical.extend_from_slice(text.as_bytes());
+    canonical
+}
+
+/// Decode a 64-hex-char field into 32 key bytes; `None` for anything else.
+fn key_from_hex(hex_str: &str) -> Option<[u8; 32]> {
+    // Length check first so a long bogus string never reaches the decoder.
+    if hex_str.len() != 64 {
+        return None;
+    }
+    let bytes = hex::decode(hex_str).ok()?;
+    // `try_into` fails only on a length mismatch, which the decode of 64 hex
+    // chars rules out; keep the check rather than unwrap on wire input.
+    bytes.as_slice().try_into().ok()
+}
 
 impl MeshRuntime {
     // -----------------------------------------------------------------------
@@ -66,42 +120,55 @@ impl MeshRuntime {
 
     /// Handle an inbound `message_request` frame from an unpaired sender.
     ///
-    /// Verifies the Ed25519 signature, applies rate limits, and queues the
-    /// request for user action.  Emits a `MessageRequest` event so Flutter
-    /// can update the badge immediately.
+    /// Verifies the relationship-key signature (§7.2 Step 1, untrusted
+    /// branch), applies rate limits, and queues the request for user action.
+    /// Emits a `MessageRequest` event so Flutter can update the badge
+    /// immediately.
     ///
     /// Returns `true` if the frame was accepted (even if ultimately rate-limited,
     /// to avoid leaking presence), `false` only on cryptographic failure.
     pub fn process_message_request_frame(&self, envelope: &serde_json::Value) -> bool {
         // ---- Extract required fields ----------------------------------------
 
-        // Sender's Ed25519 public key — 32 bytes / 64 hex chars.
+        // Sender's stable Ed25519 public key — 32 bytes / 64 hex chars.  It
+        // identifies the sender (peer id) and is bound into the signed bytes,
+        // but it is NOT the verifier (§3.1.6).
         let ed_hex = match envelope.get("sender_ed25519").and_then(|v| v.as_str()) {
-            Some(h) if h.len() == 64 => h,
-            _ => return false,
+            Some(h) => h,
+            None => return false,
         };
-        let ed_bytes: [u8; 32] = match hex::decode(ed_hex) {
-            Ok(b) if b.len() == 32 => {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            }
-            _ => return false,
+        let ed_bytes = match key_from_hex(ed_hex) {
+            Some(k) => k,
+            None => return false,
         };
 
         // Sender's X25519 public key — 32 bytes / 64 hex chars.
         let x_hex = match envelope.get("sender_x25519").and_then(|v| v.as_str()) {
-            Some(h) if h.len() == 64 => h,
-            _ => return false,
+            Some(h) => h,
+            None => return false,
         };
-        let _x_bytes: [u8; 32] = match hex::decode(x_hex) {
-            Ok(b) if b.len() == 32 => {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
-            }
-            _ => return false,
+        if key_from_hex(x_hex).is_none() {
+            return false;
+        }
+
+        // Sender's relationship-specific mask public key for us — the key
+        // that signs this request and, after accept, every Step 3 outer
+        // signature in the conversation.
+        let rel_hex = match envelope.get("sender_rel_ed25519").and_then(|v| v.as_str()) {
+            Some(h) => h,
+            None => return false,
         };
+        let rel_bytes = match key_from_hex(rel_hex) {
+            Some(k) => k,
+            None => return false,
+        };
+        // A "relationship key" equal to the stable identity key is the exact
+        // misuse §3.1.6 forbids — a sender that signs requests with its
+        // identity key and labels it as the relationship key.  Refuse before
+        // any signature work, whether it is malice or a broken client.
+        if rel_bytes == ed_bytes {
+            return false;
+        }
 
         // Unique message nonce — 16 bytes / 32 hex chars.
         let msg_id = match envelope.get("msg_id").and_then(|v| v.as_str()) {
@@ -148,45 +215,47 @@ impl MeshRuntime {
             return true;
         }
 
-        // ---- Ed25519 signature verification ---------------------------------
-        // Build the canonical byte string: frame-type literal || ed_pub (32) ||
-        // msg_id bytes (raw) || ts (big-endian u64) || text (UTF-8).
-        let verifying_key = match VerifyingKey::from_bytes(&ed_bytes) {
-            Ok(k) => k,
-            Err(_) => return false,
-        };
-        let signature = Signature::from_bytes(&sig_bytes);
+        // ---- Relationship-key signature verification (§7.2 Step 1) ----------
+        // The verifier is the relationship key the frame carries, under
+        // DOMAIN_MESSAGE_REQUEST.  Nothing in the frame is trusted yet, so
+        // what this proves is exactly what §7.3 says it proves: the holder
+        // of this relationship key sent this request to us.  The binding to
+        // the stable identity in `sender_ed25519` is established later by
+        // the PQXDH session (Step 2) once the request is accepted, and the
+        // pinned relationship key ties that session back to this request.
         let msg_id_bytes = match hex::decode(msg_id) {
             Ok(b) if b.len() == 16 => b,
             // Non-16-byte msg_id: fall back to raw UTF-8 bytes of the id string.
             Ok(b) => b,
             Err(_) => msg_id.as_bytes().to_vec(),
         };
-        let mut canonical: Vec<u8> = b"message_request".to_vec();
-        canonical.extend_from_slice(&ed_bytes);
-        canonical.extend_from_slice(&msg_id_bytes);
-        canonical.extend_from_slice(&ts.to_be_bytes());
-        canonical.extend_from_slice(text.as_bytes());
-
-        if verifying_key.verify(&canonical, &signature).is_err() {
+        let canonical = request_canonical_bytes(&ed_bytes, &rel_bytes, &msg_id_bytes, ts, &text);
+        if !signing::verify(&rel_bytes, DOMAIN_MESSAGE_REQUEST, &canonical, &sig_bytes) {
             // Cryptographic failure — drop silently (never error back to sender).
             return false;
         }
 
-        // ---- Derive peer ID and check if already paired ---------------------
+        // ---- Derive peer ID and check if already paired or blocked ----------
         // If the sender has since been paired (e.g. a race condition between
         // pairing on another device and this frame arriving), skip the request
-        // queue and let the normal message delivery path handle it.
+        // queue and let the normal message delivery path handle it.  A blocked
+        // contact (§22.8.2) is a known contact too, and is dropped here for the
+        // same reason with the same silent reply: the request never reaches
+        // the user's queue and the sender learns nothing.
         let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
-        let already_paired = self
+        let known_contact = self
             .contacts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&peer_id)
-            .is_some();
-        if already_paired {
-            // Silently discard — paired peers use normal encrypted message flow.
-            return true;
+            .map(|c| c.blocked);
+        match known_contact {
+            // Blocked — silently discard (no queue entry, no event).
+            Some(true) => return true,
+            // Paired — silently discard; paired peers use the encrypted flow.
+            Some(false) => return true,
+            // Unknown sender — this is a real message request; continue.
+            None => {}
         }
 
         // ---- Rate limiting --------------------------------------------------
@@ -245,6 +314,7 @@ impl MeshRuntime {
             // Internal fields used by accept_message_request — not sent to Dart.
             "_ed25519":       ed_hex,
             "_x25519":        x_hex,
+            "_rel_ed25519":   rel_hex,
             "_text":          text,
             "_ts":            ts,
             "_msg_id":        msg_id,
@@ -339,6 +409,12 @@ impl MeshRuntime {
             .get("_x25519")
             .and_then(|v| v.as_str())
             .ok_or("request missing _x25519")?;
+        // The relationship key that signed the request (§7.2 Step 1); pinned
+        // on the new contact so the conversation must continue under it.
+        let rel_hex = request
+            .get("_rel_ed25519")
+            .and_then(|v| v.as_str())
+            .ok_or("request missing _rel_ed25519")?;
         let text = request
             .get("_text")
             .and_then(|v| v.as_str())
@@ -375,6 +451,7 @@ impl MeshRuntime {
                 a
             })
             .ok_or("invalid _x25519")?;
+        let rel_bytes = key_from_hex(rel_hex).ok_or("invalid _rel_ed25519")?;
 
         let peer_id = PeerId::from_ed25519_pub(&ed_bytes);
         let sender_hex = hex::encode(peer_id.0);
@@ -398,6 +475,11 @@ impl MeshRuntime {
         if !display_name_stored.is_empty() {
             contact.display_name = Some(display_name_stored.clone());
         }
+        // Pin the relationship key the request was signed with: every later
+        // direct message from this peer must carry a Step 3 signature by the
+        // same key (`process_inbound_frame`), which ties the accepted request
+        // and the conversation together under one relationship key.
+        contact.relationship_ed25519_public = Some(rel_bytes);
 
         // Persist the new contact.
         self.contacts
@@ -563,4 +645,226 @@ fn format_unix_as_iso8601(ts: u64) -> String {
     let ss = time_of_day % 60;
 
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
+}
+
+#[cfg(test)]
+mod block_gate_tests {
+    use super::request_canonical_bytes;
+    use crate::crypto::signing::{self, DOMAIN_MESSAGE_REQUEST};
+    use crate::identity::mask::derive_relationship_signing_key;
+    use crate::identity::peer_id::PeerId;
+    use crate::identity::self_identity::SelfIdentity;
+    use crate::pairing::contact::ContactRecord;
+    use crate::pairing::methods::PairingMethod;
+    use crate::service::runtime::MeshRuntime;
+    use ed25519_dalek::SigningKey;
+
+    /// Current Unix time in seconds, as the verifier's freshness window sees it.
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Build a `message_request` frame from `sender` to `recipient` whose
+    /// `sig` was produced by `signer` under `domain`, and which advertises
+    /// `rel_pub` as the relationship key.  The correct frame uses the
+    /// derived relationship key for all three; the adversarial tests vary
+    /// one at a time.
+    fn request_frame(
+        sender: &SelfIdentity,
+        signer: &SigningKey,
+        rel_pub: [u8; 32],
+        domain: &[u8],
+        msg_id: &str,
+        text: &str,
+    ) -> serde_json::Value {
+        let ts = now_secs();
+        // Non-16-byte msg_id falls back to its raw UTF-8 bytes (see verifier).
+        let canonical =
+            request_canonical_bytes(&sender.ed25519_pub, &rel_pub, msg_id.as_bytes(), ts, text);
+        let sig = signing::sign(&signer.to_bytes(), domain, &canonical);
+        serde_json::json!({
+            "type":               "message_request",
+            "sender_ed25519":     hex::encode(sender.ed25519_pub),
+            "sender_x25519":      hex::encode(sender.x25519_pub.as_bytes()),
+            "sender_rel_ed25519": hex::encode(rel_pub),
+            "msg_id":             msg_id,
+            "ts":                 ts,
+            "text":               text,
+            "sig":                hex::encode(sig),
+        })
+    }
+
+    /// The sender's relationship key toward `recipient` (§7.2 Step 3
+    /// derivation), as a correct client derives it.
+    fn rel_key(sender: &SelfIdentity, recipient: &PeerId) -> SigningKey {
+        derive_relationship_signing_key(&sender.ed25519_signing, &sender.peer_id(), recipient)
+    }
+
+    /// Build a correctly signed `message_request` frame from `sender` to
+    /// `recipient`: relationship key, correct domain, matching advertised key.
+    fn signed_request(
+        sender: &SelfIdentity,
+        recipient: &PeerId,
+        msg_id: &str,
+        text: &str,
+    ) -> serde_json::Value {
+        let rel = rel_key(sender, recipient);
+        let rel_pub = rel.verifying_key().to_bytes();
+        request_frame(sender, &rel, rel_pub, DOMAIN_MESSAGE_REQUEST, msg_id, text)
+    }
+
+    /// A recipient peer id for frames addressed to a runtime that has no
+    /// identity of its own in these tests; the verifier never recomputes
+    /// the sender's relationship key, so any fixed id serves.
+    fn recipient_id() -> PeerId {
+        PeerId([0x42; 32])
+    }
+
+    /// Number of queued message requests.
+    fn queued(runtime: &MeshRuntime) -> usize {
+        runtime
+            .pending_message_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    /// §22.8.2 block gate: a blocked contact's message request is accepted on
+    /// the wire (no information leaks back) but never reaches the queue, and
+    /// an unknown sender's identical request still does.
+    #[test]
+    fn blocked_contact_message_request_is_not_queued() {
+        let runtime = MeshRuntime::new("target/test-block-message-request".to_string());
+        let blocked = SelfIdentity::generate(Some("Mallory".to_string()));
+        let stranger = SelfIdentity::generate(Some("Stranger".to_string()));
+
+        // Register Mallory as a contact, then block her.
+        runtime
+            .contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upsert(ContactRecord::new(
+                blocked.peer_id(),
+                blocked.ed25519_pub,
+                blocked.x25519_pub.to_bytes(),
+                PairingMethod::QrCode,
+                0,
+            ));
+        runtime
+            .set_peer_blocked(&blocked.peer_id().to_hex(), true)
+            .unwrap();
+
+        // Blocked: swallowed silently, queue untouched.
+        let frame = signed_request(&blocked, &recipient_id(), "req-blocked", "let me in");
+        assert!(runtime.process_message_request_frame(&frame));
+        assert_eq!(queued(&runtime), 0, "blocked contact's request was queued");
+
+        // Unknown sender: the same shape of request is queued normally.
+        let frame = signed_request(&stranger, &recipient_id(), "req-stranger", "hi there");
+        assert!(runtime.process_message_request_frame(&frame));
+        assert_eq!(queued(&runtime), 1, "stranger's request was not queued");
+    }
+
+    /// §3.1.6 / §7.2 Step 1: a request signed by the sender's stable
+    /// identity key is rejected whether the frame labels that key as the
+    /// relationship key (same-key guard) or advertises the genuine
+    /// relationship key while signing with the identity key (signature
+    /// fails under the advertised verifier).  Neither reaches the queue.
+    #[test]
+    fn message_request_signed_by_stable_identity_key_is_rejected() {
+        let runtime = MeshRuntime::new("target/test-request-stable-key".to_string());
+        let stranger = SelfIdentity::generate(Some("Stranger".to_string()));
+        let rel = rel_key(&stranger, &recipient_id());
+        let rel_pub = rel.verifying_key().to_bytes();
+
+        // Identity key signs and is advertised as the relationship key.
+        let frame = request_frame(
+            &stranger,
+            &stranger.ed25519_signing,
+            stranger.ed25519_pub,
+            DOMAIN_MESSAGE_REQUEST,
+            "req-id-as-rel",
+            "hi",
+        );
+        assert!(!runtime.process_message_request_frame(&frame));
+
+        // Identity key signs; genuine relationship key advertised.
+        let frame = request_frame(
+            &stranger,
+            &stranger.ed25519_signing,
+            rel_pub,
+            DOMAIN_MESSAGE_REQUEST,
+            "req-id-signs",
+            "hi",
+        );
+        assert!(!runtime.process_message_request_frame(&frame));
+        assert_eq!(queued(&runtime), 0, "stable-key request was queued");
+
+        // Control: the relationship key under the right domain is accepted.
+        let frame = signed_request(&stranger, &recipient_id(), "req-ok", "hi");
+        assert!(runtime.process_message_request_frame(&frame));
+        assert_eq!(queued(&runtime), 1);
+    }
+
+    /// Domain separation: a relationship-key signature under any other
+    /// domain, or with no domain at all (the raw Step 3 form), is not a
+    /// message-request signature.
+    #[test]
+    fn message_request_under_wrong_domain_is_rejected() {
+        let runtime = MeshRuntime::new("target/test-request-wrong-domain".to_string());
+        let stranger = SelfIdentity::generate(Some("Stranger".to_string()));
+        let rel = rel_key(&stranger, &recipient_id());
+        let rel_pub = rel.verifying_key().to_bytes();
+
+        for domain in [
+            signing::DOMAIN_TUNNEL_PSK,
+            signing::DOMAIN_KEY_CHANGE,
+            b"".as_slice(),
+        ] {
+            let frame = request_frame(&stranger, &rel, rel_pub, domain, "req-domain", "hi");
+            assert!(
+                !runtime.process_message_request_frame(&frame),
+                "accepted under foreign domain {:?}",
+                String::from_utf8_lossy(domain)
+            );
+        }
+        assert_eq!(queued(&runtime), 0);
+    }
+
+    /// A frame that omits `sender_rel_ed25519` has no verifier and is
+    /// rejected; the stable key is never used as a fallback.
+    #[test]
+    fn message_request_without_relationship_key_is_rejected() {
+        let runtime = MeshRuntime::new("target/test-request-no-rel-key".to_string());
+        let stranger = SelfIdentity::generate(Some("Stranger".to_string()));
+        let mut frame = signed_request(&stranger, &recipient_id(), "req-no-rel", "hi");
+        frame.as_object_mut().unwrap().remove("sender_rel_ed25519");
+        assert!(!runtime.process_message_request_frame(&frame));
+        assert_eq!(queued(&runtime), 0);
+    }
+
+    /// Accepting a request pins the relationship key that signed it on the
+    /// new contact record, so the conversation must continue under it.
+    #[test]
+    fn accepting_message_request_pins_relationship_key() {
+        let runtime = MeshRuntime::new("target/test-request-pins-rel-key".to_string());
+        let stranger = SelfIdentity::generate(Some("Stranger".to_string()));
+        let rel_pub = rel_key(&stranger, &recipient_id())
+            .verifying_key()
+            .to_bytes();
+        let frame = signed_request(&stranger, &recipient_id(), "req-pin", "hi");
+        assert!(runtime.process_message_request_frame(&frame));
+        runtime.accept_message_request("req-pin").unwrap();
+
+        let contacts = runtime.contacts.lock().unwrap_or_else(|e| e.into_inner());
+        let contact = contacts.get(&stranger.peer_id()).expect("contact created");
+        assert_eq!(contact.relationship_ed25519_public, Some(rel_pub));
+        assert_ne!(
+            contact.relationship_ed25519_public,
+            Some(contact.ed25519_public)
+        );
+    }
 }

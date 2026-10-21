@@ -64,6 +64,20 @@ pub struct ContactRecord {
     #[serde(default)]
     pub mesh_x25519_public: Option<[u8; 32]>,
 
+    /// The peer's relationship-specific mask public key toward us (§7.2
+    /// Step 3 derivation; §3.1.6 relationship role).
+    ///
+    /// Verifies the Step 3 outer signature on every direct message from this
+    /// peer and the Step 1 signature on the message request that may have
+    /// opened the relationship.  Pinned from the peer's first
+    /// ratchet-authenticated message, or from an accepted message request,
+    /// and required to match on every later message; `None` until then.
+    /// It is never the stable `ed25519_public`.  A key change of the peer's
+    /// stable identity (§4.6) re-derives the relationship key, so whatever
+    /// applies a key change to this record must reset this to `None`.
+    #[serde(default)]
+    pub relationship_ed25519_public: Option<[u8; 32]>,
+
     /// Display name (human-readable, optional).
     /// Set by the peer during pairing, verified by signature.
     pub display_name: Option<String>,
@@ -207,6 +221,8 @@ impl ContactRecord {
             ed25519_public,
             x25519_public,
             mesh_x25519_public: None,
+            // Pinned on first authenticated contact, never at construction.
+            relationship_ed25519_public: None,
             display_name: None,
             local_nickname: None,
             pairing_method: method,

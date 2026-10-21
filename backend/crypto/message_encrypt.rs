@@ -6,6 +6,9 @@
 //! Step 1 — Inner authentication:
 //!   mac = HMAC-SHA256(ratchet_msg_key, plaintext)   // deniable
 //!   authenticated = plaintext || mac
+//!   (the untrusted-channel variant — a message request with no session —
+//!    is an Ed25519 signature by the relationship mask key under
+//!    `signing::DOMAIN_MESSAGE_REQUEST`; see `service::message_request_ops`)
 //!
 //! Step 2 — Trust-channel encryption (trusted peers only):
 //!   trust_encrypted = ChaCha20Poly1305(session_key, nonce, authenticated)
@@ -14,6 +17,10 @@
 //! Step 3 — Outer signing (relationship-specific mask key):
 //!   outer_sig = Ed25519_Sign(rel_mask_key, payload)
 //!   double_signed = payload || outer_sig
+//!   (§3.1.6: the relationship key is derived per (mask, peer) by
+//!    `identity::mask::derive_relationship_signing_key`; the stable mask
+//!    identity key never signs here — that would be portable proof of
+//!    authorship, which §3.5 forbids)
 //!
 //! Step 4 — Recipient encryption:
 //!   ephemeral DH → derive message_key + nonce (with context_type domain separation)
@@ -298,8 +305,14 @@ pub fn step2_decrypt(
 
 /// Step 3: Sign payload with the sender's relationship-specific mask key.
 /// This signature is inside Step 4 encryption — only the recipient sees it.
-pub fn step3_sign(payload: &[u8], signing_key: &SigningKey) -> Vec<u8> {
-    let sig = signing_key.sign(payload);
+///
+/// `rel_key` MUST be the relationship key for this recipient (§3.1.6
+/// relationship role), never the stable mask identity key.  The function
+/// cannot tell the two apart by bytes; the caller's key-handle choice is
+/// what enforces the role, and the service layer refuses a relationship
+/// key that equals the stable key.
+pub fn step3_sign(payload: &[u8], rel_key: &SigningKey) -> Vec<u8> {
+    let sig = rel_key.sign(payload);
     // Prepare the data buffer for the next processing stage.
     let mut signed = Vec::with_capacity(payload.len() + SIG_SIZE);
     // Append the data segment to the accumulating buffer.
@@ -513,8 +526,9 @@ pub fn encrypt_message(
     ratchet_msg_key: &[u8; 32],
     session_cipher_key: &[u8; 32],
     session_nonce: &[u8; 12],
-    // Ed25519 digital signature.
-    sender_mask_key: &SigningKey,
+    // The sender's relationship-specific mask key for this recipient
+    // (§3.1.6 relationship role) — never the stable identity key.
+    sender_rel_key: &SigningKey,
     // Elliptic curve Diffie-Hellman key agreement.
     recipient_x25519_pub: &X25519Public,
     context: MessageContext,
@@ -526,7 +540,7 @@ pub fn encrypt_message(
     let trust_encrypted = step2_encrypt(&authenticated, session_cipher_key, session_nonce)?;
 
     // Step 3: Outer signing (relationship-specific mask key)
-    let double_signed = step3_sign(&trust_encrypted, sender_mask_key);
+    let double_signed = step3_sign(&trust_encrypted, sender_rel_key);
 
     // Step 4: Recipient encryption (ephemeral DH)
     step4_encrypt(&double_signed, recipient_x25519_pub, context)
@@ -537,8 +551,9 @@ pub fn decrypt_message(
     encrypted: &[u8],
     // Elliptic curve Diffie-Hellman key agreement.
     recipient_x25519_secret: &X25519Secret,
-    // Ed25519 digital signature.
-    sender_verifying_key: &VerifyingKey,
+    // The sender's relationship-specific mask public key toward us
+    // (`ContactRecord::relationship_ed25519_public`), not the stable key.
+    sender_rel_verifying_key: &VerifyingKey,
     session_cipher_key: &[u8; 32],
     session_nonce: &[u8; 12],
     ratchet_msg_key: &[u8; 32],
@@ -547,8 +562,8 @@ pub fn decrypt_message(
     // Step 4: Recipient decryption
     let double_signed = step4_decrypt(encrypted, recipient_x25519_secret, context)?;
 
-    // Step 3: Verify sender signature
-    let trust_encrypted = step3_verify(&double_signed, sender_verifying_key)?;
+    // Step 3: Verify the relationship-key signature
+    let trust_encrypted = step3_verify(&double_signed, sender_rel_verifying_key)?;
 
     // Step 2: Trust-channel decryption
     let authenticated = step2_decrypt(&trust_encrypted, session_cipher_key, session_nonce)?;
@@ -617,6 +632,34 @@ mod tests {
         let (_, wrong_verifying, _, _) = test_keys();
         let signed = step3_sign(b"payload", &signing);
         assert!(step3_verify(&signed, &wrong_verifying).is_err());
+    }
+
+    /// §3.1.6 key-role separation at Step 3: a payload signed with the
+    /// stable mask identity key must be rejected by a recipient verifying
+    /// against the relationship key derived from that same identity, and
+    /// the relationship key must differ from the identity key.
+    #[test]
+    fn test_step3_rejects_stable_identity_key_signature() {
+        use crate::identity::mask::derive_relationship_signing_key;
+        use crate::identity::peer_id::PeerId;
+        let identity = SigningKey::generate(&mut OsRng);
+        let my_pid = PeerId::from_ed25519_pub(&identity.verifying_key().to_bytes());
+        let their_pid = PeerId([0x5a; 32]);
+        let rel = derive_relationship_signing_key(&identity, &my_pid, &their_pid);
+        assert_ne!(
+            rel.to_bytes(),
+            identity.to_bytes(),
+            "relationship key collapsed onto the identity key"
+        );
+
+        // Out-of-role signature: stable key over the payload.
+        let signed_by_identity = step3_sign(b"payload", &identity);
+        assert!(step3_verify(&signed_by_identity, &rel.verifying_key()).is_err());
+
+        // In-role signature verifies, and only under the relationship key.
+        let signed_by_rel = step3_sign(b"payload", &rel);
+        assert!(step3_verify(&signed_by_rel, &rel.verifying_key()).is_ok());
+        assert!(step3_verify(&signed_by_rel, &identity.verifying_key()).is_err());
     }
 
     #[test]
