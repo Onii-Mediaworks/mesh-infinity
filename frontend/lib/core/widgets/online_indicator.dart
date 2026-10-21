@@ -39,6 +39,8 @@ class OnlineIndicator extends StatelessWidget {
     // This is done here rather than hardcoding white/black because the app
     // supports both light and dark modes.
     final bgColor = Theme.of(context).scaffoldBackgroundColor;
+    // Per-theme status colours; the online green is contrast-tuned per theme.
+    final colors = MeshColors.of(context);
     return Stack(
       children: [
         // The avatar being decorated — e.g. a CircleAvatar.
@@ -53,9 +55,9 @@ class OnlineIndicator extends StatelessWidget {
             width: 10,
             height: 10,
             decoration: BoxDecoration(
-              // MeshTheme.secGreen is the app's canonical "online" colour
+              // MeshColors.sec_green is the app's canonical "online" colour
               // (a bright green).  Grey signals the peer is offline.
-              color: isOnline ? MeshTheme.secGreen : Colors.grey,
+              color: isOnline ? colors.sec_green : Colors.grey,
               shape: BoxShape.circle,
               // 2px border in the scaffold background colour creates a visible
               // ring that visually separates the dot from the avatar underneath,

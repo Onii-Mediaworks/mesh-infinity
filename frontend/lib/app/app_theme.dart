@@ -2,27 +2,32 @@ import 'package:flutter/material.dart';
 
 /// Centralised light / dark themes and shared design tokens for Mesh Infinity.
 ///
-/// Design token table (from UI/UX proposal iterations 8–9):
-///   brand       #2C6EE2   Primary actions, active nav indicators
-///   brandDark   #1A4FB5   Pressed states
-///   bgDark      #0F1117   Dark page background
-///   surfaceDark #1C1F2A   Dark cards, panels
-///   secGreen    #22C55E   Online, success, healthy
-///   secAmber    #F59E0B   Warning, degraded
-///   secRed      #EF4444   Error, offline, danger
-///   secPurple   #7C3AED   Anonymous / max security
-///   ambient     #4A5280   Tier-2 ambient badge dot
+/// Every colour the UI draws lives in this file (SPEC §22.1.1). Screens read
+/// colour *roles*, never hex values, so a palette change is a one-file edit.
+///
+/// Fixed brand/background tokens (same in both themes):
+///   brand        #2C6EE2   Primary actions, active nav indicators, seed colour
+///   brandDark    #1A4FB5   Pressed states
+///   bgDark       #0F1117   Dark page background
+///   surfaceDark  #1C1F2A   Dark cards, panels
+///   bgLight      #F7F8FA   Light page background
+///   surfaceLight #FFFFFF   Light cards, panels
+///   ambient      #4A5280   Tier-2 ambient badge dot
+///
+/// Security-status and trust-level colours are *per theme* (CMR-001). They are
+/// published through the [MeshColors] theme extension, so widgets resolve them
+/// with `MeshColors.of(context)` and automatically get the variant that meets
+/// WCAG 2.1 AA (§22.34) against the ground it is drawn on. The dark variants
+/// are the historical values; the light variants keep the same hue but are
+/// darkened until they reach 4.5:1 on both light grounds. The test in
+/// `test/theme_contrast_test.dart` enforces this for every token.
 ///
 /// Material 3 is used on all platforms — no platform-specific branching in UI.
 ///
 /// Usage:
-///   ThemeData light = MeshTheme.light();
-///   ThemeData dark  = MeshTheme.dark();
 ///   MaterialApp(theme: MeshTheme.light(), darkTheme: MeshTheme.dark(), ...)
-///
-/// Static color constants (e.g. [brand], [secGreen]) are available directly as
-/// `MeshTheme.brand` for use in widgets that need to reference theme colors
-/// without a [BuildContext].
+///   final colors = MeshColors.of(context);
+///   Icon(Icons.circle, color: colors.sec_green);
 class MeshTheme {
   // Primary brand colour — used across light and dark themes as the seed for
   // Material 3's tonal palette generation.  All shades of the primary,
@@ -35,24 +40,27 @@ class MeshTheme {
   static const Color brandDark = Color(0xFF1A4FB5);
 
   // ---------------------------------------------------------------------------
-  // Semantic status colours
+  // Ground colours (§22.1.1 kBg* / kSurface*)
   //
-  // These are FIXED colours — they do not shift with the Material 3 tonal
-  // palette because their meaning must remain unambiguous regardless of theme.
-  // Changing them would break the universal "green = online" mental model.
+  // These are the surfaces every foreground token is contrast-tested against.
+  // They are public so the contrast test and the shell can reference the same
+  // values instead of repeating hex literals.
   // ---------------------------------------------------------------------------
 
-  /// Peer online, transfer succeeded, health check passed.
-  static const Color secGreen = Color(0xFF22C55E);
+  /// Light scaffold background — off-white rather than pure white to reduce
+  /// glare and let elevation-0 cards still read as lifted.
+  static const Color bgLight = Color(0xFFF7F8FA);
 
-  /// Warning, degraded transport, partial failure.
-  static const Color secAmber = Color(0xFFF59E0B);
+  /// Light card / panel surface.
+  static const Color surfaceLight = Color(0xFFFFFFFF);
 
-  /// Error, offline, security violation, danger state.
-  static const Color secRed = Color(0xFFEF4444);
+  /// Dark scaffold background — deep navy, not pure black, so the surface
+  /// layer above it still has somewhere to go.
+  static const Color bgDark = Color(0xFF0F1117);
 
-  /// Anonymous / max-security mode indicator (§6.9.6 LoSec, §3.9 erase modes).
-  static const Color secPurple = Color(0xFF7C3AED);
+  /// Dark card / panel surface — one step lighter than [bgDark] so cards
+  /// appear elevated without shadows.
+  static const Color surfaceDark = Color(0xFF1C1F2A);
 
   // ---------------------------------------------------------------------------
   // Badge colours
@@ -61,28 +69,6 @@ class MeshTheme {
   /// Tier-2 ambient badge dot colour — shown on the nav rail/drawer when
   /// a background notification tier is active but below direct-message priority.
   static const Color ambientBadge = Color(0xFF4A5280);
-
-  // ---------------------------------------------------------------------------
-  // Trust level colours (indices 0–8)
-  //
-  // These mirror the TrustLevel.color extension in peer_models.dart.
-  // They are duplicated here so that code that only has a raw trust integer
-  // (not a TrustLevel enum value) can look up the colour without importing
-  // the peer model.  The two tables MUST stay in sync.
-  //
-  // Index 0 = TrustLevel.unknown (grey), 8 = TrustLevel.innerCircle (amber).
-  // Amber at the top feels counter-intuitive but matches the brand palette —
-  // "inner circle" is warm and personal, not cold and clinical.
-  // ---------------------------------------------------------------------------
-  static const Color trust0 = Color(0xFF9CA3AF); // unknown
-  static const Color trust1 = Color(0xFF6B7280); // public
-  static const Color trust2 = Color(0xFF60A5FA); // vouched
-  static const Color trust3 = Color(0xFF3B82F6); // referenced
-  static const Color trust4 = Color(0xFF22D3EE); // ally
-  static const Color trust5 = Color(0xFF6EE7B7); // acquaintance
-  static const Color trust6 = Color(0xFF34D399); // trusted
-  static const Color trust7 = Color(0xFF059669); // highly trusted
-  static const Color trust8 = Color(0xFFF59E0B); // inner circle
 
   // ---------------------------------------------------------------------------
   // light()
@@ -113,9 +99,18 @@ class MeshTheme {
       colorScheme: scheme,
       useMaterial3: true,
 
+      // Per-theme semantic colours (security status, trust levels, disabled).
+      // Widgets read them via MeshColors.of(context); see the class docs.
+      extensions: const [MeshColors.light],
+
+      // Material's stock disabled colour is onSurface at 38% alpha, which is
+      // roughly 2.3:1 on a light ground and fails §22.34's 3:1 bar for UI
+      // elements. CMR-003 replaces it with an opaque token that passes.
+      disabledColor: MeshColors.light.disabled,
+
       // Slightly tinted white instead of pure white — reduces glare and gives
       // surface-colored cards a visible lift even at elevation: 0.
-      scaffoldBackgroundColor: const Color(0xFFF7F8FA),
+      scaffoldBackgroundColor: bgLight,
 
       // AppBar — flat (elevation: 0) by default; gains a 1dp shadow only when
       // content scrolls underneath it (scrolledUnderElevation: 1).
@@ -212,6 +207,27 @@ class MeshTheme {
         labelType: NavigationRailLabelType.all,
         groupAlignment: -1,
       ),
+
+      // Disabled controls (CMR-003): every button family, switches and
+      // checkboxes draw their disabled foreground with the opaque token
+      // rather than Material's translucent default.
+      filledButtonTheme: FilledButtonThemeData(
+        style: _disabled_button_style(MeshColors.light.disabled),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: _disabled_button_style(MeshColors.light.disabled),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: _disabled_button_style(MeshColors.light.disabled),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: _disabled_button_style(MeshColors.light.disabled),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: _disabled_button_style(MeshColors.light.disabled),
+      ),
+      switchTheme: _disabled_switch_theme(MeshColors.light.disabled),
+      checkboxTheme: _disabled_checkbox_theme(MeshColors.light.disabled),
     );
   }
 
@@ -248,9 +264,16 @@ class MeshTheme {
     return base.copyWith(
       colorScheme: scheme,
 
+      // Per-theme semantic colours; the dark variants are the historical
+      // palette, which already clears 4.5:1 on both dark grounds.
+      extensions: const [MeshColors.dark],
+
+      // Opaque disabled token (CMR-003); see light() for the rationale.
+      disabledColor: MeshColors.dark.disabled,
+
       // Deep navy page background — darker than the surface colour so there
       // is a visible hierarchy: page → surface (cards, panels) → elements.
-      scaffoldBackgroundColor: const Color(0xFF0F1117),
+      scaffoldBackgroundColor: bgDark,
 
       // AppBar uses the surface colour (#1C1F2A) rather than the scaffold
       // background (#0F1117) so it blends with the card layer rather than
@@ -259,7 +282,7 @@ class MeshTheme {
         centerTitle: false,
         elevation: 0,
         scrolledUnderElevation: 1,
-        backgroundColor: const Color(0xFF1C1F2A),
+        backgroundColor: surfaceDark,
         foregroundColor: scheme.onSurface,
         titleTextStyle: TextStyle(
           fontSize: 16,
@@ -279,7 +302,7 @@ class MeshTheme {
       // against — a solid colour gives better control over contrast.
       cardTheme: CardThemeData(
         elevation: 0,
-        color: const Color(0xFF1C1F2A),
+        color: surfaceDark,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         margin: EdgeInsets.zero,
       ),
@@ -305,7 +328,7 @@ class MeshTheme {
       // without it Flutter would use the Material 3 surface tonal layer which
       // does not match our custom dark surface.
       drawerTheme: const DrawerThemeData(
-        backgroundColor: Color(0xFF1C1F2A),
+        backgroundColor: surfaceDark,
         width: 280,
       ),
 
@@ -343,6 +366,211 @@ class MeshTheme {
         labelType: NavigationRailLabelType.all,
         groupAlignment: -1,
       ),
+
+      // Disabled controls (CMR-003) — same component set as light().
+      filledButtonTheme: FilledButtonThemeData(
+        style: _disabled_button_style(MeshColors.dark.disabled),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: _disabled_button_style(MeshColors.dark.disabled),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: _disabled_button_style(MeshColors.dark.disabled),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: _disabled_button_style(MeshColors.dark.disabled),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: _disabled_button_style(MeshColors.dark.disabled),
+      ),
+      switchTheme: _disabled_switch_theme(MeshColors.dark.disabled),
+      checkboxTheme: _disabled_checkbox_theme(MeshColors.dark.disabled),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Disabled-state helpers (CMR-003)
+  //
+  // Each helper only touches the disabled state and leaves every other state
+  // null, so Material 3's own defaults (and the ColorScheme) still drive the
+  // enabled, hovered, pressed and focused looks.
+  // ---------------------------------------------------------------------------
+
+  /// A [ButtonStyle] whose foreground is [disabled] when the button is
+  /// disabled and otherwise undefined (null → component default).
+  static ButtonStyle _disabled_button_style(Color disabled) {
+    return ButtonStyle(
+      foregroundColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled) ? disabled : null,
+      ),
+      iconColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled) ? disabled : null,
+      ),
+    );
+  }
+
+  /// Switch theme that paints a disabled thumb with the opaque token; the
+  /// track is left to Material so the on/off position still reads.
+  static SwitchThemeData _disabled_switch_theme(Color disabled) {
+    return SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled) ? disabled : null,
+      ),
+    );
+  }
+
+  /// Checkbox theme that uses the opaque token for a disabled box outline
+  /// and fill, so an unavailable option is still visible as a box.
+  static CheckboxThemeData _disabled_checkbox_theme(Color disabled) {
+    return CheckboxThemeData(
+      side: WidgetStateBorderSide.resolveWith(
+        (states) => states.contains(WidgetState.disabled)
+            ? BorderSide(color: disabled, width: 2)
+            : null,
+      ),
+      fillColor: WidgetStateProperty.resolveWith(
+        (states) => states.contains(WidgetState.disabled) &&
+                states.contains(WidgetState.selected)
+            ? disabled
+            : null,
+      ),
+    );
+  }
+}
+
+/// Per-theme semantic colour tokens (SPEC §22.1.1, CMR-001/002/003).
+///
+/// Registered on both [ThemeData]s as a [ThemeExtension], so a widget asks
+/// `MeshColors.of(context)` and gets the variant that passes WCAG 2.1 AA
+/// against the current theme's grounds. The same role has the same hue in
+/// both themes; only lightness differs.
+///
+/// Fixed semantic meaning — do not reassign roles:
+///   sec_green   All clear / verified / online
+///   sec_amber   LoSec mode / warning / degraded
+///   sec_red     Direct mode / critical / error / offline
+///   sec_purple  Compromised peer / critical threat context
+///   trust[n]    Trust level n (0 Unknown … 8 InnerCircle), see §8 / §22.31
+///   disabled    Foreground of a disabled control (≥3:1 on every ground)
+@immutable
+class MeshColors extends ThemeExtension<MeshColors> {
+  /// All-clear / verified / online.
+  final Color sec_green;
+
+  /// LoSec mode, warnings, degraded transport.
+  final Color sec_amber;
+
+  /// Direct mode, critical state, errors, offline.
+  final Color sec_red;
+
+  /// Compromised peer, critical threat context.
+  final Color sec_purple;
+
+  /// Trust-level colours indexed 0 (Unknown) … 8 (InnerCircle).
+  final List<Color> trust;
+
+  /// Foreground for disabled controls (CMR-003).
+  final Color disabled;
+
+  const MeshColors({
+    required this.sec_green,
+    required this.sec_amber,
+    required this.sec_red,
+    required this.sec_purple,
+    required this.trust,
+    required this.disabled,
+  });
+
+  /// Light-theme variants: each hue darkened until it reaches ≥4.5:1 on both
+  /// [MeshTheme.bgLight] and [MeshTheme.surfaceLight] (CMR-001).
+  static const MeshColors light = MeshColors(
+    sec_green: Color(0xFF16823E),
+    sec_amber: Color(0xFF9D6507),
+    sec_red: Color(0xFFCE3A3A),
+    sec_purple: Color(0xFF7C3AED),
+    trust: [
+      Color(0xFF6D727A), // 0 Unknown — gray
+      Color(0xFF4B5563), // 1 Public — dark gray
+      Color(0xFF4374AF), // 2 Vouched — light blue
+      Color(0xFF326DCF), // 3 Referenced — blue
+      Color(0xFF147A8A), // 4 Ally — cyan
+      Color(0xFF3B7D63), // 5 Acquaintance — light green
+      Color(0xFF1F7F5C), // 6 Trusted — green
+      Color(0xFF04815A), // 7 HighlyTrusted — dark green
+      Color(0xFF8C6B05), // 8 InnerCircle — gold (CMR-002)
+    ],
+    disabled: Color(0xFF858A94),
+  );
+
+  /// Dark-theme variants: the historical palette, with brand-blue, purple,
+  /// Public, Referenced, HighlyTrusted and red nudged lighter so every token
+  /// reaches ≥4.5:1 on both [MeshTheme.bgDark] and [MeshTheme.surfaceDark].
+  static const MeshColors dark = MeshColors(
+    sec_green: Color(0xFF22C55E),
+    sec_amber: Color(0xFFF59E0B),
+    sec_red: Color(0xFFF04B4B),
+    sec_purple: Color(0xFF9E6DF2),
+    trust: [
+      Color(0xFF9CA3AF), // 0 Unknown — gray
+      Color(0xFF838994), // 1 Public — dark gray
+      Color(0xFF60A5FA), // 2 Vouched — light blue
+      Color(0xFF3F84F6), // 3 Referenced — blue
+      Color(0xFF22D3EE), // 4 Ally — cyan
+      Color(0xFF6EE7B7), // 5 Acquaintance — light green
+      Color(0xFF34D399), // 6 Trusted — green
+      Color(0xFF0F9A6F), // 7 HighlyTrusted — dark green
+      Color(0xFFEAB308), // 8 InnerCircle — gold (CMR-002)
+    ],
+    disabled: Color(0xFF6B7280),
+  );
+
+  /// Resolve the tokens for the ambient theme. Falls back to the dark set if
+  /// a test pumps a bare [ThemeData] without the extension, so widgets never
+  /// null-crash over a missing theme registration.
+  static MeshColors of(BuildContext context) {
+    return Theme.of(context).extension<MeshColors>() ?? dark;
+  }
+
+  /// Colour for a raw trust integer. Out-of-range values clamp to the ends so
+  /// a newer backend adding a level 9 can't index past the table.
+  Color trust_color(int level) {
+    return trust[level.clamp(0, trust.length - 1)];
+  }
+
+  @override
+  MeshColors copyWith({
+    Color? sec_green,
+    Color? sec_amber,
+    Color? sec_red,
+    Color? sec_purple,
+    List<Color>? trust,
+    Color? disabled,
+  }) {
+    return MeshColors(
+      sec_green: sec_green ?? this.sec_green,
+      sec_amber: sec_amber ?? this.sec_amber,
+      sec_red: sec_red ?? this.sec_red,
+      sec_purple: sec_purple ?? this.sec_purple,
+      trust: trust ?? this.trust,
+      disabled: disabled ?? this.disabled,
+    );
+  }
+
+  /// Interpolates every token so a light↔dark theme switch cross-fades the
+  /// status colours alongside the rest of the ThemeData.
+  @override
+  MeshColors lerp(ThemeExtension<MeshColors>? other, double t) {
+    if (other is! MeshColors) return this;
+    return MeshColors(
+      sec_green: Color.lerp(sec_green, other.sec_green, t) ?? sec_green,
+      sec_amber: Color.lerp(sec_amber, other.sec_amber, t) ?? sec_amber,
+      sec_red: Color.lerp(sec_red, other.sec_red, t) ?? sec_red,
+      sec_purple: Color.lerp(sec_purple, other.sec_purple, t) ?? sec_purple,
+      trust: [
+        for (var i = 0; i < trust.length; i++)
+          Color.lerp(trust[i], other.trust_color(i), t) ?? trust[i],
+      ],
+      disabled: Color.lerp(disabled, other.disabled, t) ?? disabled,
     );
   }
 }

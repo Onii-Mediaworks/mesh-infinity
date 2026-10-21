@@ -60,8 +60,8 @@ class TrustBadge extends StatelessWidget {
           height: 20,
           decoration: BoxDecoration(
             // 15% opacity tint — visible but not distracting in a list row.
-            color: level.color.withValues(alpha: 0.15),
-            border: Border.all(color: level.color, width: 1.5),
+            color: level.color_in(context).withValues(alpha: 0.15),
+            border: Border.all(color: level.color_in(context), width: 1.5),
             shape: BoxShape.circle,
           ),
           child: Center(
@@ -70,7 +70,7 @@ class TrustBadge extends StatelessWidget {
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
-                color: level.color,
+                color: level.color_in(context),
               ),
             ),
           ),
@@ -88,20 +88,20 @@ class TrustBadge extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
           decoration: BoxDecoration(
-            color: level.color.withValues(alpha: 0.12),
+            color: level.color_in(context).withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: level.color.withValues(alpha: 0.4)),
+            border: Border.all(color: level.color_in(context).withValues(alpha: 0.4)),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(level.icon, size: 12, color: level.color),
+              Icon(level.icon, size: 12, color: level.color_in(context)),
               const SizedBox(width: 3),
               Text(
                 level.shortLabel,
                 style: TextStyle(
                   fontSize: 11,
-                  color: level.color,
+                  color: level.color_in(context),
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -123,22 +123,22 @@ class TrustBadge extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
-          color: level.color.withValues(alpha: 0.12),
+          color: level.color_in(context).withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: level.color.withValues(alpha: 0.4)),
+          border: Border.all(color: level.color_in(context).withValues(alpha: 0.4)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             // 14px icon — slightly larger than the short-label variant (12px)
             // to match the detail screen's label text size.
-            Icon(level.icon, size: 14, color: level.color),
+            Icon(level.icon, size: 14, color: level.color_in(context)),
             const SizedBox(width: 4),
             Text(
               level.label,
               style: TextStyle(
                 fontSize: 12,
-                color: level.color,
+                color: level.color_in(context),
                 fontWeight: FontWeight.w600,
               ),
             ),

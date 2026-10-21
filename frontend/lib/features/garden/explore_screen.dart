@@ -300,7 +300,7 @@ class _NetworkTypeBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = _color();
+    final color = _color(MeshColors.of(context));
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
@@ -316,13 +316,14 @@ class _NetworkTypeBadge extends StatelessWidget {
     );
   }
 
-  /// Returns the badge background/text colour for the given networkType.
-  Color _color() => switch (type) {
-    'joined'  => MeshTheme.secGreen,
+  /// Returns the badge background/text colour for the given networkType,
+  /// resolved from the ambient theme's [colors].
+  Color _color(MeshColors colors) => switch (type) {
+    'joined'  => colors.sec_green,
     'public'  => MeshTheme.brand,
-    'open'    => MeshTheme.secGreen,
-    'closed'  => MeshTheme.secAmber,
-    'private' => MeshTheme.secPurple,
+    'open'    => colors.sec_green,
+    'closed'  => colors.sec_amber,
+    'private' => colors.sec_purple,
     _         => MeshTheme.brand, // Unknown type — fall back to brand.
   };
 

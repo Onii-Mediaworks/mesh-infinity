@@ -24,6 +24,7 @@
 // =============================================================================
 
 import 'package:flutter/material.dart';
+import '../../app/app_theme.dart';
 
 /// Nine-level trust scale as defined in §22.4.2.
 ///
@@ -90,22 +91,14 @@ enum TrustLevel {
     '?', 'P', 'V', 'R', 'A', 'Aq', 'T', 'HT', 'IC',
   ][index];
 
-  /// The display colour for this trust level.
+  /// The display colour for this trust level in the ambient theme.
   ///
   /// Colours progress from grey (unknown) through blue/cyan (low trust) to
-  /// green (trusted) and amber (inner circle).  These are duplicated in
-  /// MeshTheme for code paths that do not have a TrustLevel value available.
-  Color get color => const [
-    Color(0xFF9CA3AF), // 0 unknown  — neutral grey
-    Color(0xFF6B7280), // 1 public   — darker grey
-    Color(0xFF60A5FA), // 2 vouched  — light blue
-    Color(0xFF3B82F6), // 3 referenced — medium blue
-    Color(0xFF22D3EE), // 4 ally     — cyan
-    Color(0xFF6EE7B7), // 5 acquaintance — light green
-    Color(0xFF34D399), // 6 trusted  — medium green
-    Color(0xFF059669), // 7 highly trusted — dark green
-    Color(0xFFF59E0B), // 8 inner circle — amber (warm, personal)
-  ][index];
+  /// green (trusted) and gold (inner circle).  The per-theme values live in
+  /// the [MeshColors] extension so each one meets WCAG AA on its theme's
+  /// grounds; this method only resolves the entry for this level's index.
+  Color color_in(BuildContext context) =>
+      MeshColors.of(context).trust_color(index);
 
   /// The icon representing this trust level in the UI (e.g. trust badges).
   ///

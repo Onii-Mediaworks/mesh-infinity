@@ -15342,23 +15342,43 @@ const Color kBgLight       = Color(0xFFF7F8FA);  // light scaffold
 const Color kSurfaceDark   = Color(0xFF1C1F2A);  // card/tile dark
 const Color kSurfaceLight  = Color(0xFFFFFFFF);  // card/tile light
 
-// Security indicators
-const Color kSecAmber      = Color(0xFFF59E0B);  // LoSec mode
-const Color kSecRed        = Color(0xFFEF4444);  // Direct mode / critical
-const Color kSecPurple     = Color(0xFF7C3AED);  // Compromised peer
-const Color kSecGreen      = Color(0xFF22C55E);  // All clear / verified
+// Security indicators — per theme (CMR-001). Same hue in both themes; the
+// light variant is darkened until it reaches ≥4.5:1 on both light grounds.
+//                              on light (kBgLight/kSurfaceLight)   on dark (kBgDark/kSurfaceDark)
+const Color kSecAmberLight  = Color(0xFF9D6507);  const Color kSecAmberDark  = Color(0xFFF59E0B);  // LoSec mode
+const Color kSecRedLight    = Color(0xFFCE3A3A);  const Color kSecRedDark    = Color(0xFFF04B4B);  // Direct mode / critical
+const Color kSecPurpleLight = Color(0xFF7C3AED);  const Color kSecPurpleDark = Color(0xFF9E6DF2);  // Compromised peer
+const Color kSecGreenLight  = Color(0xFF16823E);  const Color kSecGreenDark  = Color(0xFF22C55E);  // All clear / verified
 
-// Trust level colors (levels 0–8)
-const Color kTrust0        = Color(0xFF9CA3AF);  // Unknown — gray
-const Color kTrust1        = Color(0xFF6B7280);  // Public — dark gray
-const Color kTrust2        = Color(0xFF60A5FA);  // Vouched — light blue
-const Color kTrust3        = Color(0xFF3B82F6);  // Referenced — blue
-const Color kTrust4        = Color(0xFF22D3EE);  // Ally — cyan
-const Color kTrust5        = Color(0xFF6EE7B7);  // Acquaintance — light green
-const Color kTrust6        = Color(0xFF34D399);  // Trusted — green
-const Color kTrust7        = Color(0xFF059669);  // HighlyTrusted — dark green
-const Color kTrust8        = Color(0xFFF59E0B);  // InnerCircle — gold
+// Trust level colors (levels 0–8) — per theme (CMR-001)
+const Color kTrust0Light = Color(0xFF6D727A);  const Color kTrust0Dark = Color(0xFF9CA3AF);  // Unknown — gray
+const Color kTrust1Light = Color(0xFF4B5563);  const Color kTrust1Dark = Color(0xFF838994);  // Public — dark gray
+const Color kTrust2Light = Color(0xFF4374AF);  const Color kTrust2Dark = Color(0xFF60A5FA);  // Vouched — light blue
+const Color kTrust3Light = Color(0xFF326DCF);  const Color kTrust3Dark = Color(0xFF3F84F6);  // Referenced — blue
+const Color kTrust4Light = Color(0xFF147A8A);  const Color kTrust4Dark = Color(0xFF22D3EE);  // Ally — cyan
+const Color kTrust5Light = Color(0xFF3B7D63);  const Color kTrust5Dark = Color(0xFF6EE7B7);  // Acquaintance — light green
+const Color kTrust6Light = Color(0xFF1F7F5C);  const Color kTrust6Dark = Color(0xFF34D399);  // Trusted — green
+const Color kTrust7Light = Color(0xFF04815A);  const Color kTrust7Dark = Color(0xFF0F9A6F);  // HighlyTrusted — dark green
+const Color kTrust8Light = Color(0xFF8C6B05);  const Color kTrust8Dark = Color(0xFFEAB308);  // InnerCircle — gold (distinct from kSecAmber, CMR-002)
+
+// Disabled control foreground — per theme (CMR-003). Opaque, ≥3:1 on both
+// grounds of its theme and below 4.5:1 so it still reads as inactive. Replaces
+// Material's default 38%-alpha disabled colour, which is ~2.3:1 on light.
+const Color kDisabledLight = Color(0xFF858A94);
+const Color kDisabledDark  = Color(0xFF6B7280);
 ```
+
+**Contrast rule.** Every security, trust and disabled token above MUST meet §22.34
+against both grounds of its theme: ≥4.5:1 for the security and trust tokens (they
+are used as badge and caption text) and ≥3:1 for the disabled token. A unit test
+(`frontend/test/theme_contrast_test.dart`) computes the WCAG 2.1 ratio for every
+token and fails the build if a value drifts below the bar.
+
+**Resolution.** Screens never choose a variant themselves. The theme publishes the
+active set through a `ThemeExtension` (`MeshColors`), and widgets read
+`MeshColors.of(context).sec_green`, `.trust_color(level)`, `.disabled`, and so on.
+Hue identity is preserved across themes so a colour means the same thing in light
+and dark mode; only lightness differs.
 
 #### 22.1.2 Typography
 
@@ -15711,6 +15731,18 @@ class MeshTheme {
   }
 }
 ```
+
+**Disabled-state tokens (CMR-003).** Both `light()` and `dark()` MUST set
+`disabledColor` to the theme's `kDisabled*` token and apply it through the
+`FilledButton`, `ElevatedButton`, `OutlinedButton`, `TextButton`, `IconButton`,
+`Switch` and `Checkbox` component themes for the `WidgetState.disabled` state only,
+leaving every other state to Material 3 defaults. Material's stock 38 %-alpha
+disabled foreground is not permitted on either theme.
+
+**Semantic token extension (CMR-001).** Both themes MUST register a `MeshColors`
+`ThemeExtension` carrying the per-theme security, trust and disabled tokens from
+§22.1.1, and the static per-token constants on `MeshTheme` are removed so no screen
+can pick the wrong theme's variant.
 
 ---
 

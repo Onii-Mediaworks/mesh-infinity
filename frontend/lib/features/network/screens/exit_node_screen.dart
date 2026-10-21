@@ -296,6 +296,8 @@ class _ExitNodeTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Per-theme status colours (online green, connection state).
+    final colors = MeshColors.of(context);
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -318,13 +320,13 @@ class _ExitNodeTile extends StatelessWidget {
             _StatusChip(
               icon: peer.trustLevel.icon,
               label: peer.trustLevel.label,
-              color: peer.trustLevel.color,
+              color: peer.trustLevel.color_in(context),
             ),
             _StatusChip(
               icon: peer.isOnline ? Icons.circle : Icons.circle_outlined,
               label: peer.isOnline ? 'Online' : 'Offline',
               color: peer.isOnline
-                  ? MeshTheme.secGreen
+                  ? colors.sec_green
                   : theme.colorScheme.outline,
             ),
             if (peer.latencyMs != null)
@@ -337,7 +339,7 @@ class _ExitNodeTile extends StatelessWidget {
               _StatusChip(
                 icon: Icons.route_outlined,
                 label: _connectionLabel(connectionStatus),
-                color: _connectionColor(theme, connectionStatus),
+                color: _connectionColor(theme, colors, connectionStatus),
               ),
           ],
         ),
@@ -370,8 +372,12 @@ class _ExitNodeTile extends StatelessWidget {
         _ => 'Selected',
       };
 
-  static Color _connectionColor(ThemeData theme, String status) => switch (status) {
-        'connected' => MeshTheme.secGreen,
+  static Color _connectionColor(
+    ThemeData theme,
+    MeshColors colors,
+    String status,
+  ) => switch (status) {
+        'connected' => colors.sec_green,
         'connecting' => Colors.orange,
         'blocked' => theme.colorScheme.error,
         'disconnecting' => theme.colorScheme.outline,
@@ -436,7 +442,11 @@ class _TailscaleExitNodeTile extends StatelessWidget {
               _StatusChip(
                 icon: Icons.route_outlined,
                 label: _ExitNodeTile._connectionLabel(connectionStatus),
-                color: _ExitNodeTile._connectionColor(theme, connectionStatus),
+                color: _ExitNodeTile._connectionColor(
+                  theme,
+                  MeshColors.of(context),
+                  connectionStatus,
+                ),
               ),
           ],
         ),

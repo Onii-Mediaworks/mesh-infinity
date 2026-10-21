@@ -87,7 +87,7 @@ class _ServiceTile extends StatelessWidget {
   Widget build(BuildContext context) {
     // Status colour: green when the service is reachable, grey when off/unknown.
     final statusColor = service.enabled
-        ? MeshTheme.secGreen
+        ? MeshColors.of(context).sec_green
         : Theme.of(context).colorScheme.outline;
 
     // Status label: shown below the service name in small text.

@@ -887,6 +887,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget _buildDisclosures() {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
+    // Per-theme status colours for disclosure icons.
+    final colors = MeshColors.of(context);
 
     return Column(
       key: const ValueKey(_Step.disclosures),
@@ -944,9 +946,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       'never leaves it.',
                 ),
                 const SizedBox(height: 16),
-                const _DisclosureItem(
+                _DisclosureItem(
                   icon: Icons.hub_outlined,
-                  iconColor: MeshTheme.secGreen,
+                  iconColor: colors.sec_green,
                   title: 'Your device helps route others\' messages.',
                   body:
                       'Your device may relay encrypted messages for other '
@@ -955,9 +957,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       'Settings if needed.',
                 ),
                 const SizedBox(height: 16),
-                const _DisclosureItem(
+                _DisclosureItem(
                   icon: Icons.visibility_off_outlined,
-                  iconColor: MeshTheme.secAmber,
+                  iconColor: colors.sec_amber,
                   title: 'Extra data keeps everyone\'s traffic private.',
                   body:
                       'The app sends a small amount of cover traffic to '
@@ -975,9 +977,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       'they reconnect.',
                 ),
                 const SizedBox(height: 16),
-                const _DisclosureItem(
+                _DisclosureItem(
                   icon: Icons.dns_outlined,
-                  iconColor: MeshTheme.secGreen,
+                  iconColor: colors.sec_green,
                   title: 'There are no central servers.',
                   body:
                       'Mesh Infinity has no central servers. Your messages '
@@ -1341,6 +1343,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget _buildDone() {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
+    // Per-theme status colours (success check).
+    final colors = MeshColors.of(context);
 
     return Column(
       key: const ValueKey(_Step.done),
@@ -1353,13 +1357,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           width: 72,
           height: 72,
           decoration: BoxDecoration(
-            color: MeshTheme.secGreen.withValues(alpha: 0.12),
+            color: colors.sec_green.withValues(alpha: 0.12),
             shape: BoxShape.circle,
           ),
-          child: const Icon(
+          child: Icon(
             Icons.check_rounded,
             size: 40,
-            color: MeshTheme.secGreen,
+            color: colors.sec_green,
           ),
         ),
 

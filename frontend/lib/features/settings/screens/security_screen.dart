@@ -138,7 +138,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
               // Generates four radio tiles for levels 0–3, each using the
               // threat-level-specific colour and description string.
               children: List.generate(4, (i) {
-                final color = _threatColor(i);
+                final color = _threatColor(context, i);
                 return RadioListTile<int>(
                   secondary: Icon(Icons.shield_outlined, color: color),
                   title: Text(
@@ -284,13 +284,18 @@ class _SecurityScreenState extends State<SecurityScreen> {
 
   /// Accent colour for each threat level — green → amber → red → purple
   /// maps intuitively from "safe" to "danger" to "maximum caution".
-  Color _threatColor(int level) => switch (level) {
-    0 => MeshTheme.brand,       // Normal: brand blue — standard operating colour
-    1 => MeshTheme.secAmber,    // Elevated: amber — caution
-    2 => MeshTheme.secRed,      // High: red — serious threat
-    3 => MeshTheme.secPurple,   // Critical: purple — beyond normal threat scale
-    _ => Colors.grey,
-  };
+  /// Status colours are resolved from [context] so each theme gets its
+  /// contrast-tested variant.
+  Color _threatColor(BuildContext context, int level) {
+    final colors = MeshColors.of(context);
+    return switch (level) {
+      0 => MeshTheme.brand,    // Normal: brand blue — standard operating colour
+      1 => colors.sec_amber,   // Elevated: amber — caution
+      2 => colors.sec_red,     // High: red — serious threat
+      3 => colors.sec_purple,  // Critical: purple — beyond normal threat scale
+      _ => Colors.grey,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------

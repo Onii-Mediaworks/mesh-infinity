@@ -531,7 +531,7 @@ class _PinScreenState extends State<PinScreen>
 /// Renders 4–16 animated dots showing how many PIN digits have been entered.
 ///
 /// Filled dots = digits entered; empty (outlined) circles = remaining slots.
-/// When [wrong] is true, filled dots turn [MeshTheme.secRed] for visual feedback.
+/// When [wrong] is true, filled dots turn the theme's `sec_red` for visual feedback.
 class _PinDots extends StatelessWidget {
   const _PinDots({required this.entered, required this.wrong});
 
@@ -544,6 +544,8 @@ class _PinDots extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // Per-theme status colours; sec_red is the "wrong PIN" fill.
+    final colors = MeshColors.of(context);
 
     // Show at least 4 dots, expanding up to 16 as the user types.
     // This gives visual feedback that longer PINs are possible without
@@ -558,7 +560,7 @@ class _PinDots extends StatelessWidget {
 
         // Colour: red for wrong, brand primary for correct, outline for empty.
         final color = isFilled
-            ? (wrong ? MeshTheme.secRed : cs.primary)
+            ? (wrong ? colors.sec_red : cs.primary)
             : cs.outline.withValues(alpha: 0.3);
 
         return AnimatedContainer(

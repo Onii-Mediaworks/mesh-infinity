@@ -199,8 +199,8 @@ class _AvatarSection extends StatelessWidget {
                 width: 16,
                 height: 16,
                 decoration: BoxDecoration(
-                  // kSecGreen is consistent with OnlineIndicator widget.
-                  color: MeshTheme.secGreen,
+                  // sec_green is consistent with OnlineIndicator widget.
+                  color: MeshColors.of(context).sec_green,
                   shape: BoxShape.circle,
                   border: Border.all(color: cs.surface, width: 2),
                 ),

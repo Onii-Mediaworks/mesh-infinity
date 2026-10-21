@@ -243,7 +243,7 @@ class _HeaderCard extends StatelessWidget {
                   ),
                 ),
                 // Online indicator dot — positioned bottom-right of avatar.
-                // Uses kSecGreen for online, transparent when offline.
+                // Uses MeshColors.sec_green for online, transparent when offline.
                 if (peer.isOnline)
                   Positioned(
                     bottom: 2,
@@ -252,8 +252,8 @@ class _HeaderCard extends StatelessWidget {
                       width: 14,
                       height: 14,
                       decoration: BoxDecoration(
-                        // kSecGreen matches the OnlineIndicator widget colour.
-                        color: MeshTheme.secGreen,
+                        // sec_green matches the OnlineIndicator widget colour.
+                        color: MeshColors.of(context).sec_green,
                         shape: BoxShape.circle,
                         // White border separates dot from avatar background.
                         border: Border.all(color: cs.surface, width: 2),
@@ -279,7 +279,7 @@ class _HeaderCard extends StatelessWidget {
             Text(
               peer.isOnline ? 'Online' : peer.status,
               style: textTheme.bodySmall?.copyWith(
-                color: peer.isOnline ? MeshTheme.secGreen : cs.onSurfaceVariant,
+                color: peer.isOnline ? MeshColors.of(context).sec_green : cs.onSurfaceVariant,
               ),
             ),
           ],

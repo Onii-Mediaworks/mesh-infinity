@@ -369,23 +369,25 @@ class _NoServicesBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Warning amber, resolved per theme for contrast.
+    final amber = MeshColors.of(context).sec_amber;
 
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: MeshTheme.secAmber.withValues(alpha: 0.12),
+        color: amber.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.info_outline, color: MeshTheme.secAmber),
+          Icon(Icons.info_outline, color: amber),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               'No services are running. Enable a service below to start hosting.',
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: MeshTheme.secAmber,
+                color: amber,
               ),
             ),
           ),

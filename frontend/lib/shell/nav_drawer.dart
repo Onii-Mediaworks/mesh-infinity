@@ -683,10 +683,12 @@ class _DrawerItem extends StatelessWidget {
     // Takes priority over a count badge so that critical service health is
     // never obscured by a stale number.
     if (criticalDot != null) {
+      // Per-theme status colours for the health dot.
+      final colors = MeshColors.of(context);
       final color = switch (criticalDot!) {
-        _NetworkDotColor.green => MeshTheme.secGreen,
-        _NetworkDotColor.amber => MeshTheme.secAmber,
-        _NetworkDotColor.red   => MeshTheme.secRed,
+        _NetworkDotColor.green => colors.sec_green,
+        _NetworkDotColor.amber => colors.sec_amber,
+        _NetworkDotColor.red   => colors.sec_red,
       };
       return Center(
         child: Container(

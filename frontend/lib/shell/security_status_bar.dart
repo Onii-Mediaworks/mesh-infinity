@@ -267,7 +267,7 @@ class _SecurityBanner extends StatelessWidget {
     final condition = _activeCondition(security, settings, network);
     // Resolve all visual properties for this condition in one call.
     final (height, color, icon, message, dismissible) =
-        _props(security, settings, network, condition);
+        _props(context, security, settings, network, condition);
 
     return AnimatedContainer(
       height: height,
@@ -361,11 +361,15 @@ class _SecurityBanner extends StatelessWidget {
   /// Using a record avoids allocating a separate data class for what is
   /// effectively five return values used in a single build method.
   static (double, Color, IconData, String, bool) _props(
+    BuildContext context,
     SecurityState security,
     SettingsState settings,
     NetworkState network,
     SecurityCondition condition,
   ) {
+    // Per-theme status colours, resolved here so the banner meets contrast
+    // in both light and dark themes.
+    final colors = MeshColors.of(context);
     return switch (condition) {
       // Hidden state — zero height, no content.
       SecurityCondition.none => (
@@ -380,7 +384,7 @@ class _SecurityBanner extends StatelessWidget {
       // changes the device's internet-visible IP.
       SecurityCondition.exitExposure => (
           36.0,
-          MeshTheme.secRed,
+          colors.sec_red,
           Icons.warning_rounded,
           // Two message variants:
           //   vpnChangesInternetIp == true  → traffic exits through a different
@@ -402,9 +406,9 @@ class _SecurityBanner extends StatelessWidget {
           //   3 (Critical) → purple (maximum severity)
           //   other        → brand blue (should not occur; defensive fallback)
           switch (settings.settings?.threatContext ?? 0) {
-            1 => MeshTheme.secAmber,
-            2 => MeshTheme.secRed,
-            3 => MeshTheme.secPurple,
+            1 => colors.sec_amber,
+            2 => colors.sec_red,
+            3 => colors.sec_purple,
             _ => MeshTheme.brand,
           },
           Icons.shield_outlined,
@@ -420,7 +424,7 @@ class _SecurityBanner extends StatelessWidget {
       // LoSec — amber banner; dismissible per session.
       SecurityCondition.loSec => (
           32.0,
-          MeshTheme.secAmber,
+          colors.sec_amber,
           Icons.warning_amber_rounded,
           'LoSec mode active — faster path with reduced anonymity protections.',
           true, // Dismissible: user can acknowledge and hide this banner.

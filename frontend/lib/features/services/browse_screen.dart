@@ -184,7 +184,7 @@ class _ServiceTile extends StatelessWidget {
                     _FactChip(
                       icon: Icons.verified_user_outlined,
                       label: 'Trust $trustRequired+',
-                      color: MeshTheme.secAmber,
+                      color: MeshColors.of(context).sec_amber,
                     ),
                   if (address.trim().isNotEmpty)
                     _FactChip(

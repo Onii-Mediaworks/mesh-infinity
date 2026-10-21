@@ -111,8 +111,9 @@ class ProfileCard extends StatelessWidget {
   ///
   /// Green for private (highest trust, most personal profile).
   /// Brand blue for direct (paired but not yet intimate trust level).
-  Color get _profileTierColor {
-    if (contact.trustLevel.value >= 6) return MeshTheme.secGreen;
+  /// Resolved against [colors] so the green follows the active theme.
+  Color _profile_tier_color(MeshColors colors) {
+    if (contact.trustLevel.value >= 6) return colors.sec_green;
     return MeshTheme.brand;
   }
 
@@ -139,6 +140,8 @@ class ProfileCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    // Per-theme status colours (online green, idle amber, tier badge).
+    final colors = MeshColors.of(context);
     // Build the avatar data once and reuse in both layouts.
     final avatar = MaskAvatarData(
       name: _resolvedDisplayName,
@@ -214,7 +217,7 @@ class ProfileCard extends StatelessWidget {
                           if (_profileTierLabel != null)
                             _ProfileTierBadge(
                               label: _profileTierLabel!,
-                              color: _profileTierColor,
+                              color: _profile_tier_color(colors),
                             ),
                         ],
                       ),
@@ -226,7 +229,7 @@ class ProfileCard extends StatelessWidget {
                         Text(
                           'Online',
                           style: theme.textTheme.bodySmall?.copyWith(
-                            color: MeshTheme.secGreen,
+                            color: colors.sec_green,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -235,7 +238,7 @@ class ProfileCard extends StatelessWidget {
                         Text(
                           'Idle',
                           style: theme.textTheme.bodySmall?.copyWith(
-                            color: MeshTheme.secAmber,
+                            color: colors.sec_amber,
                           ),
                         ),
                       ],
@@ -289,13 +292,13 @@ class _TrustBadge extends StatelessWidget {
       children: [
         // Icon defined on the trust level model — allows the model to control
         // which icon represents each level without duplicating the mapping here.
-        Icon(level.icon, size: 13, color: level.color),
+        Icon(level.icon, size: 13, color: level.color_in(context)),
         const SizedBox(width: 3),
         Text(
           level.label,
           style: TextStyle(
             fontSize: 12,
-            color: level.color,
+            color: level.color_in(context),
             fontWeight: FontWeight.w600,
           ),
         ),

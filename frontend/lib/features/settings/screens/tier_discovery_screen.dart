@@ -104,7 +104,7 @@ class TierDiscoveryScreen extends StatelessWidget {
   ) {
     final tt = Theme.of(context).textTheme;
     final cs = Theme.of(context).colorScheme;
-    final tierColor = _tierColour(tier);
+    final tierColor = _tierColour(context, tier);
 
     showModalBottomSheet<void>(
       context: context,
@@ -198,7 +198,9 @@ class _TierCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
     final cs = Theme.of(context).colorScheme;
-    final tierColor = _tierColour(tier);
+    final tierColor = _tierColour(context, tier);
+    // Per-theme status colours (green for the "Active" badge).
+    final colors = MeshColors.of(context);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -231,12 +233,12 @@ class _TierCard extends StatelessWidget {
                       vertical: 3,
                     ),
                     decoration: BoxDecoration(
-                      color: MeshTheme.secGreen.withValues(alpha: 0.15),
+                      color: colors.sec_green.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: Text(
                       'Active',
-                      style: tt.labelSmall?.copyWith(color: MeshTheme.secGreen),
+                      style: tt.labelSmall?.copyWith(color: colors.sec_green),
                     ),
                   ),
               ],
@@ -317,14 +319,18 @@ IconData _tierIcon(MeshTier t) => const [
 ][t.index];
 
 /// Accent colour for the tier.  Each tier has a distinct colour so users
-/// can quickly identify which tier a feature belongs to.
-Color _tierColour(MeshTier t) => [
-  MeshTheme.brand, // Social     — brand blue
-  MeshTheme.secGreen, // Network    — green (VPN = go / active)
-  MeshTheme.secAmber, // Infinet    — amber (advanced, proceed with thought)
-  const Color(0xFF8B5CF6), // Services   — purple (power-user territory)
-  MeshTheme.secRed, // Power      — red (maximum capability / maximum care)
-][t.index];
+/// can quickly identify which tier a feature belongs to.  Resolved from
+/// [context] so each theme supplies its contrast-tested status colours.
+Color _tierColour(BuildContext context, MeshTier t) {
+  final colors = MeshColors.of(context);
+  return [
+    MeshTheme.brand, // Social     — brand blue
+    colors.sec_green, // Network    — green (VPN = go / active)
+    colors.sec_amber, // Infinet    — amber (advanced, proceed with thought)
+    colors.sec_purple, // Services   — purple (power-user territory)
+    colors.sec_red, // Power      — red (maximum capability / maximum care)
+  ][t.index];
+}
 
 /// One-sentence tagline for the tier.
 String _tierTagline(MeshTier t) => const [

@@ -57,6 +57,8 @@ class _PotentialExtremesScreenState extends State<PotentialExtremesScreen> {
     final settings = context.watch<SettingsState>();
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
+    // Per-theme status colours (amber warning banner, purple masks icon).
+    final colors = MeshColors.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Potential Extremes')),
@@ -69,18 +71,18 @@ class _PotentialExtremesScreenState extends State<PotentialExtremesScreen> {
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: MeshTheme.secAmber.withValues(alpha: 0.08),
+              color: colors.sec_amber.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                color: MeshTheme.secAmber.withValues(alpha: 0.3),
+                color: colors.sec_amber.withValues(alpha: 0.3),
               ),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(
+                Icon(
                   Icons.warning_amber_outlined,
-                  color: MeshTheme.secAmber,
+                  color: colors.sec_amber,
                   size: 20,
                 ),
                 const SizedBox(width: 12),
@@ -224,9 +226,9 @@ class _PotentialExtremesScreenState extends State<PotentialExtremesScreen> {
           // can create masks that cannot be linked back to their root identity.
           Card(
             child: ListTile(
-              leading: const Icon(
+              leading: Icon(
                 Icons.person_outline,
-                color: MeshTheme.secPurple,
+                color: colors.sec_purple,
               ),
               title: const Text('Anonymous masks'),
               subtitle: const Text(

@@ -15,19 +15,22 @@
 // VISUAL DESIGN
 // --------------
 // The chip uses the Mesh Infinity semantic color palette:
-//   Green  (#22C55E) — Authorized.  Traffic is flowing.
-//   Amber  (#F59E0B) — Awaiting authorization.  Admin has not yet approved.
-//   Red    (#EF4444) — Unauthorized.  Admin denied membership (or revoked it).
-//   Grey             — Unknown state.  Backend hasn't fetched status yet.
+//   Green  (sec_green) — Authorized.  Traffic is flowing.
+//   Amber  (sec_amber) — Awaiting authorization.  Admin has not yet approved.
+//   Red    (sec_red) — Unauthorized.  Admin denied membership (or revoked it).
+//   Grey   (trust 0)  — Unknown state.  Backend hasn't fetched status yet.
 //
-// These match the global MeshTheme semantic colors (secGreen, secAmber,
-// secRed) to maintain visual consistency with status indicators elsewhere in
+// These are the per-theme MeshColors semantic tokens (sec_green, sec_amber,
+// sec_red) so the chip meets contrast in both themes and stays consistent with
+// status indicators elsewhere in
 // the app (peer status, transport health, etc.).
 //
 // Spec ref: §5.23 ZeroTier — network membership states.
 
 import 'package:flutter/material.dart';
 
+import '../../../app/app_theme.dart';
+// MeshColors supplies the per-theme semantic status colours.
 import '../models/zeronet_network.dart';
 // ZeroNetAuthStatus is the enum we're visually representing.
 
@@ -56,9 +59,9 @@ class NetworkAuthChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Resolve color and label based on the status value.
-    // These are the Mesh Infinity semantic colors — matching the palette
-    // defined in MeshTheme (app_theme.dart) for consistency.
-    final (color, label, icon) = _resolve(status);
+    // The colours come from the MeshColors theme extension (app_theme.dart),
+    // so they follow the active light/dark theme.
+    final (color, label, icon) = _resolve(MeshColors.of(context), status);
 
     return Container(
       // Small padding keeps the chip compact inside a list tile.
@@ -98,32 +101,36 @@ class NetworkAuthChip extends StatelessWidget {
   /// Maps [ZeroNetAuthStatus] to a (color, label, icon) triple.
   ///
   /// Returns a record — Dart 3 destructuring keeps the call site clean.
-  static (Color, String, IconData) _resolve(ZeroNetAuthStatus status) {
+  /// [colors] is the ambient theme's [MeshColors] so the result is theme-aware.
+  static (Color, String, IconData) _resolve(
+    MeshColors colors,
+    ZeroNetAuthStatus status,
+  ) {
     return switch (status) {
       // Authorized: green circle-check — clear "all good" signal.
       ZeroNetAuthStatus.authorized => (
-        const Color(0xFF22C55E), // MeshTheme.secGreen
+        colors.sec_green,
         'Authorized',
         Icons.check_circle_outline,
       ),
 
       // Awaiting: amber clock — "waiting for human action".
       ZeroNetAuthStatus.awaitingAuthorization => (
-        const Color(0xFFF59E0B), // MeshTheme.secAmber
+        colors.sec_amber,
         'Pending',
         Icons.hourglass_empty_outlined,
       ),
 
       // Unauthorized: red block — explicit denial by admin.
       ZeroNetAuthStatus.unauthorized => (
-        const Color(0xFFEF4444), // MeshTheme.secRed
+        colors.sec_red,
         'Unauthorized',
         Icons.block_outlined,
       ),
 
       // Unknown: grey question mark — status not yet fetched.
       ZeroNetAuthStatus.unknown => (
-        const Color(0xFF9CA3AF), // neutral grey
+        colors.trust_color(0), // neutral grey (Unknown trust)
         'Unknown',
         Icons.help_outline,
       ),
