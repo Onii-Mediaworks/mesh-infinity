@@ -88,6 +88,17 @@ void main() {
       }
     });
 
+    test('$name focus ring reaches $ui_bar:1 on every ground (§22.36)', () {
+      for (final ground in grounds.entries) {
+        final ratio = _contrast(set.focus_ring, ground.value);
+        expect(
+          ratio,
+          greaterThanOrEqualTo(ui_bar),
+          reason: 'focus_ring on ${ground.key} is ${ratio.toStringAsFixed(2)}:1',
+        );
+      }
+    });
+
     test('$name disabled is dimmer than body text', () {
       // A disabled control must still read as disabled: it sits below the
       // text bar on the scaffold ground so it does not look like live text.

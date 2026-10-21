@@ -292,6 +292,7 @@
   - [22.33 Haptic Feedback Requirements](#2233-haptic-feedback-requirements)
   - [22.34 Accessibility Requirements](#2234-accessibility-requirements)
   - [22.35 Gesture System](#2235-gesture-system)
+  - [22.36 Controller and Keyboard Navigation](#2236-controller-and-keyboard-navigation)
 - [Part C — UI/UX Intersection](#part-c-uiux-intersection)
   - [22.41 Security Status Bar](#2241-security-status-bar)
   - [22.42 Onboarding Flow](#2242-onboarding-flow)
@@ -15366,11 +15367,16 @@ const Color kTrust8Light = Color(0xFF8C6B05);  const Color kTrust8Dark = Color(0
 // Material's default 38%-alpha disabled colour, which is ~2.3:1 on light.
 const Color kDisabledLight = Color(0xFF858A94);
 const Color kDisabledDark  = Color(0xFF6B7280);
+
+// Focus ring (§22.36 rule 3) — one ring for keyboard and controller focus,
+// drawn by the shell. Brand hue; ≥3:1 on both grounds of its theme.
+const Color kFocusRingLight = Color(0xFF1A4FB5);
+const Color kFocusRingDark  = Color(0xFF7FA8F0);
 ```
 
-**Contrast rule.** Every security, trust and disabled token above MUST meet §22.34
+**Contrast rule.** Every security, trust, disabled and focus-ring token above MUST meet §22.34
 against both grounds of its theme: ≥4.5:1 for the security and trust tokens (they
-are used as badge and caption text) and ≥3:1 for the disabled token. A unit test
+are used as badge and caption text) and ≥3:1 for the disabled and focus-ring tokens. A unit test
 (`frontend/test/theme_contrast_test.dart`) computes the WCAG 2.1 ratio for every
 token and fails the build if a value drifts below the bar.
 
@@ -15753,6 +15759,7 @@ UI decisions are **width-only, never platform-based**. Remove all `Platform.isIO
 - Tray icon: `TrayManager.isSupported()` — capability detection, not platform check
 - Camera/file picker: capability detection
 - APNs: notification tier — not layout
+- Gamepad connected / key-driven focus: shows or hides the §22.36 hint row — capability detection, never a layout fork
 
 **Breakpoints:**
 
@@ -24220,9 +24227,12 @@ Mesh Infinity must meet WCAG 2.1 AA. The following requirements are non-negotiab
 - When `true`: replace all animations with instant transitions. The `AnimationController` duration should be `Duration.zero`
 - Cover traffic pulsing indicators: replace with static icon when `disableAnimations` is `true`
 
+**Keyboard and controller operability (WCAG 2.1.1):**
+- Every function reachable by touch or pointer is reachable by keyboard alone and by gamepad alone. The rules are in §22.36.
+
 ### 22.35 Gesture System
 
-A consistent gesture vocabulary prevents accidental actions and builds muscle memory.
+A consistent gesture vocabulary prevents accidental actions and builds muscle memory. Gestures are shortcuts, never the only route: every gesture in this section has a named, focusable control that performs the same action (§22.36 rule 4).
 
 **Global gestures (active everywhere in AppShell):**
 
@@ -24283,6 +24293,57 @@ Swipe gestures are powerful but invisible. First-time users must be taught them.
 - Hints never block interaction — they are overlays that dismiss on any touch.
 - Respect `MediaQuery.disableAnimations`: show static tooltips instead of animated hands.
 - All hint text uses `labelMedium` on a semi-transparent dark pill (`Colors.black87`, `borderRadius: 999`).
+
+### 22.36 Controller and Keyboard Navigation
+
+Mesh Infinity runs on phones first, but also on handhelds, TV boxes, laptops without a pointer, and with switch-access or screen-reader keyboards. Every screen MUST be fully operable with a gamepad alone and with a keyboard alone. Touch and pointer remain the primary input on phones and desktops; nothing here may degrade them.
+
+**Rule 1 — One focus system.** Navigation uses Flutter's `FocusTraversalGroup`, `Shortcuts` and `Actions`. Gamepad buttons and keyboard keys map to the *same* intents in one shell-level table (`frontend/lib/shell/input_map.dart`), so a screen never handles raw key events itself. The canonical map:
+
+| Intent | Keyboard | Gamepad | Notes |
+|--------|----------|---------|-------|
+| Move focus | Arrow keys, Tab / Shift+Tab | D-pad, left stick | Tab follows reading order; arrows and D-pad move spatially |
+| Activate | Enter, Space | Confirm face button | Same as a tap on the focused control |
+| Back | Escape | Cancel face button | Dispatches through the §22.3 shell back handler, same as system back |
+| Context menu | Shift+F10, Menu key | Secondary face button (X/□) | Opens the focused item's long-press sheet (§22.35) |
+| Secondary action | — | Tertiary face button (Y/△) | Screen-declared; e.g. reply in a thread, mark-as-read in a channel |
+| Section / tab switch | Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+1..9 | Shoulder buttons (L1/R1) | Moves between `ShellState` sections and between tabs in a section |
+| Page scroll | Page Up / Page Down | Triggers (L2/R2) | Scrolls the focused list by one viewport |
+| Search | Ctrl+K, `/` when no field is focused | Start + Y | Opens the current section's search |
+| Main menu | Alt / F10 | Start | Opens the navigation drawer / rail menu |
+| Compose / send | Enter in composer sends; Shift+Enter newline | Confirm sends when composer focused | Matches §22.5 composer behaviour |
+
+The confirm/cancel pair follows the platform or user convention (A/B on Xbox-layout pads, ○/× swapped on Nintendo- and some Sony-layout pads). The mapping is resolved once, in the input map, from the pad's reported layout and a user setting (§22.10 Settings → Accessibility → "Confirm button"); hints always name the *physical* button. Material widgets answer Enter and D-pad centre natively but not gamepad face buttons, so the shell translates face buttons into the intents above before they reach widgets.
+
+**Rule 2 — Every screen starts with a visible selection.** On open, and again on the first D-pad or arrow press after a touch, focus lands on the screen's declared primary action or first list item. Each screen declares that target (`primary_focus` on its route). A screen that has nothing focusable (pure status) still accepts Back. Touch-mode focus loss (Android focuses nothing after a tap) must never leave the pad with no selection.
+
+**Rule 3 — One focus idiom.** A single focus ring token (`MeshColors.focus_ring`, ≥3:1 against every ground, included in the §22.1.1 contrast test) is drawn on every focused control by the shell, at 2 dp outside the control's bounds with the control's own radius. Screens do not draw their own rings. The ring is shown only when focus was moved by key or pad (`FocusManager.highlightMode == traditional`), not after a tap.
+
+**Rule 4 — No touch-only routes.** Every §22.35 gesture has a button-reachable equivalent:
+
+| Gesture | Button route |
+|---------|--------------|
+| Swipe-to-archive / mute (chat list) | Context menu → Archive / Mute |
+| Swipe-to-reply (thread) | Context menu → Reply, or secondary action button |
+| Long-press sheet | Context menu intent |
+| Double-tap react | Context menu → React (reaction row is focusable) |
+| Pinch-to-zoom image | Activate on the image opens the viewer; viewer has focusable zoom controls |
+| Two-finger swipe for detail pane (desktop) | Ctrl+] / R1 toggles the detail pane |
+| Swipe-right mark-as-read (Garden channel) | Context menu → Mark as read, or secondary action |
+
+Drag-to-reorder and other pointer-only manipulations must offer "Move up / Move down" in the context menu.
+
+**Rule 5 — Hint row.** On screens where pad-only actions exist (secondary action, section switch), an optional one-line hint row at the bottom edge may show the physical button names and labels. It shows only actions that really dispatch on that screen, and every hint is itself a tappable control that performs the action, so the row doubles as the touch route and is never decorative. The row is hidden when no gamepad is connected and no key-driven focus has occurred. It honours safe-area insets in every orientation.
+
+**Rule 6 — Text entry.** Activating a text field with a pad opens the platform IME. The IME's Done/Send key commits a single-line field; Back closes the IME first and returns focus to the field, then a second Back leaves the field. The composer (§22.5) follows the same pattern and keeps its send button focusable.
+
+**Rule 7 — Back is one handler.** Escape, the cancel face button and the system back gesture all reach the shell back handler of §22.3. Sideways moves (switching mask, switching channel inside one Garden) are not history; Back returns to the list level. A screen may not declare "no back"; at the shell root, Back on mobile follows platform convention (minimise), on desktop it is a no-op.
+
+**Rule 8 — Lists remember.** Returning to a list (conversation list, contacts, Garden channels) restores the previously focused row and scroll offset. Position state lives in `ShellState` (§22.3.2), not in the screen widget.
+
+**Rule 9 — Testing.** Each top-level screen has a widget test that drives it by key events only (no taps): open, move to the primary action, activate, Back. A traversal test asserts every interactive widget on each screen is reachable by `FocusTraversalPolicy` from the screen's primary focus. Device verification per §22.34 includes one gamepad run on Android and one keyboard-only run on desktop.
+
+**Non-goals.** No custom key remapping UI beyond the confirm-button setting. No pointer emulation (a virtual cursor driven by the stick). Platform accessibility services (TalkBack, VoiceOver, Narrator) keep their own navigation; the rules above must not intercept their key handling.
 
 ---
 

@@ -452,6 +452,7 @@ class MeshTheme {
 ///   sec_purple  Compromised peer / critical threat context
 ///   trust[n]    Trust level n (0 Unknown … 8 InnerCircle), see §8 / §22.31
 ///   disabled    Foreground of a disabled control (≥3:1 on every ground)
+///   focus_ring  Keyboard/controller focus ring (≥3:1 on every ground, §22.36)
 @immutable
 class MeshColors extends ThemeExtension<MeshColors> {
   /// All-clear / verified / online.
@@ -472,6 +473,9 @@ class MeshColors extends ThemeExtension<MeshColors> {
   /// Foreground for disabled controls (CMR-003).
   final Color disabled;
 
+  /// Keyboard / controller focus ring, drawn by the shell (§22.36 rule 3).
+  final Color focus_ring;
+
   const MeshColors({
     required this.sec_green,
     required this.sec_amber,
@@ -479,6 +483,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
     required this.sec_purple,
     required this.trust,
     required this.disabled,
+    required this.focus_ring,
   });
 
   /// Light-theme variants: each hue darkened until it reaches ≥4.5:1 on both
@@ -500,6 +505,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
       Color(0xFF8C6B05), // 8 InnerCircle — gold (CMR-002)
     ],
     disabled: Color(0xFF858A94),
+    focus_ring: Color(0xFF1A4FB5),
   );
 
   /// Dark-theme variants: the historical palette, with brand-blue, purple,
@@ -522,6 +528,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
       Color(0xFFEAB308), // 8 InnerCircle — gold (CMR-002)
     ],
     disabled: Color(0xFF6B7280),
+    focus_ring: Color(0xFF7FA8F0),
   );
 
   /// Resolve the tokens for the ambient theme. Falls back to the dark set if
@@ -545,6 +552,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
     Color? sec_purple,
     List<Color>? trust,
     Color? disabled,
+    Color? focus_ring,
   }) {
     return MeshColors(
       sec_green: sec_green ?? this.sec_green,
@@ -553,6 +561,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
       sec_purple: sec_purple ?? this.sec_purple,
       trust: trust ?? this.trust,
       disabled: disabled ?? this.disabled,
+      focus_ring: focus_ring ?? this.focus_ring,
     );
   }
 
@@ -571,6 +580,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
           Color.lerp(trust[i], other.trust_color(i), t) ?? trust[i],
       ],
       disabled: Color.lerp(disabled, other.disabled, t) ?? disabled,
+      focus_ring: Color.lerp(focus_ring, other.focus_ring, t) ?? focus_ring,
     );
   }
 }
