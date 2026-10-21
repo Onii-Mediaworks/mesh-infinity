@@ -10,6 +10,17 @@ use zeroize::Zeroize;
 
 #[cfg(unix)]
 use libc::{mlock, munlock, ENOMEM};
+// Windows has the same primitive under a different name (SPEC §15 memory
+// table: VirtualLock on key pages). ERROR_WORKING_SET_QUOTA is the Windows
+// analogue of ENOMEM: the process has used up its lockable working set.
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{GetLastError, ERROR_WORKING_SET_QUOTA};
+#[cfg(windows)]
+use windows_sys::Win32::System::Memory::{VirtualLock, VirtualUnlock};
+
+// Warn exactly once per process when pages cannot be locked, instead of one
+// stderr line per key allocation (which itself leaks when keys are handled).
+static LOCK_WARNED: Once = Once::new();
 
 // Global flag to track if panic handler is installed
 static PANIC_HANDLER_INIT: Once = Once::new();
@@ -40,8 +51,82 @@ fn init_panic_handler() {
 // Invariants are enforced at construction time.
 pub struct SecureMemory<T: Zeroize> {
     data: Box<T>,
-    #[cfg(unix)]
+    /// Whether the pages are currently pinned (mlock / VirtualLock).
     locked: bool,
+}
+
+/// Pin `size` bytes at `ptr` so they cannot be swapped out.
+///
+/// Returns `Ok(true)` when locked, `Ok(false)` when the platform refused for
+/// a resource reason (lockable quota exhausted) — the allocation still works
+/// but is swappable, which is reported once — and `Err` for any other failure.
+///
+/// # Safety
+/// `ptr` must point to at least `size` bytes of live memory owned by the
+/// caller for as long as the lock is held.
+unsafe fn lock_pages(ptr: *mut u8, size: usize) -> Result<bool, SecureMemoryError> {
+    #[cfg(unix)]
+    {
+        // mlock(2) only reads the address/length; it does not dereference.
+        if unsafe { mlock(ptr as *mut libc::c_void, size) } == 0 {
+            return Ok(true);
+        }
+        let errno = std::io::Error::last_os_error();
+        if errno.raw_os_error() == Some(ENOMEM) {
+            warn_unlocked_once();
+            return Ok(false);
+        }
+        Err(SecureMemoryError::LockFailed(errno))
+    }
+    #[cfg(windows)]
+    {
+        // VirtualLock returns non-zero on success.
+        if unsafe { VirtualLock(ptr as *mut core::ffi::c_void, size) } != 0 {
+            return Ok(true);
+        }
+        let code = unsafe { GetLastError() };
+        if code == ERROR_WORKING_SET_QUOTA {
+            warn_unlocked_once();
+            return Ok(false);
+        }
+        Err(SecureMemoryError::LockFailed(std::io::Error::from_raw_os_error(
+            code as i32,
+        )))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // No locking primitive on this target; zeroization still applies.
+        let _ = (ptr, size);
+        warn_unlocked_once();
+        Ok(false)
+    }
+}
+
+/// Release a lock taken by `lock_pages`. Failures are ignored: the memory
+/// is about to be zeroized and freed either way.
+///
+/// # Safety
+/// Same pointer and size as the matching `lock_pages` call.
+unsafe fn unlock_pages(ptr: *mut u8, size: usize) {
+    #[cfg(unix)]
+    unsafe {
+        munlock(ptr as *mut libc::c_void, size);
+    }
+    #[cfg(windows)]
+    unsafe {
+        VirtualUnlock(ptr as *mut core::ffi::c_void, size);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (ptr, size);
+    }
+}
+
+/// One-time notice that key pages are swappable on this process.
+fn warn_unlocked_once() {
+    LOCK_WARNED.call_once(|| {
+        tracing::warn!("secure memory could not be locked; key material may be swapped to disk");
+    });
 }
 
 // Securely erase key material to prevent forensic recovery.
@@ -52,52 +137,17 @@ impl<T: Zeroize> SecureMemory<T> {
     pub fn new(value: T) -> Result<Self, SecureMemoryError> {
         init_panic_handler();
 
-        // Prepare the data buffer for the next processing stage.
-        #[cfg(unix)]
+        // Box first so the address is stable for the lifetime of the lock.
         let mut data = Box::new(value);
-        #[cfg(not(unix))]
-        let data = Box::new(value);
+        let ptr = data.as_mut() as *mut T as *mut u8;
+        let size = std::mem::size_of::<T>();
 
-        #[cfg(unix)]
-        {
-            // Prepare the data buffer for the next processing stage.
-            let ptr = data.as_mut() as *mut T as *mut libc::c_void;
-            // Track the count for threshold and bounds checking.
-            let size = std::mem::size_of::<T>();
+        // SAFETY: `ptr` comes from a live, heap-allocated Box<T> via
+        // `as_mut()`, so it is non-null, aligned and valid for `size` bytes,
+        // and the Box is kept alive inside `Self` until `unlock_pages` runs.
+        let locked = unsafe { lock_pages(ptr, size) }?;
 
-            // Lock memory to prevent swapping.
-            // SAFETY: `ptr` is derived from a valid, heap-allocated Box<T> via
-            // `as_mut()`, so it is non-null, correctly aligned, and valid for
-            // `size` bytes.  mlock(2) only reads the address/length; it does
-            // not dereference the memory itself.
-            let result = unsafe { mlock(ptr, size) };
-
-            if result != 0 {
-                // Invoke the associated function.
-                let errno = std::io::Error::last_os_error();
-                // Handle the error case — propagate or log as appropriate.
-                if errno.raw_os_error() == Some(ENOMEM) {
-                    eprintln!(
-                        "Warning: Could not lock memory (ENOMEM). Keys may be swapped to disk."
-                    );
-                    // Return success with the computed result.
-                    return Ok(Self {
-                        data,
-                        locked: false,
-                    });
-                }
-                return Err(SecureMemoryError::LockFailed(errno));
-            }
-
-            Ok(Self { data, locked: true })
-        }
-
-        #[cfg(not(unix))]
-        {
-            // On non-Unix platforms, we can't mlock, but still provide zeroization
-            eprintln!("Warning: Memory locking not available on this platform");
-            Ok(Self { data })
-        }
+        Ok(Self { data, locked })
     }
 
     /// Public emergency wipe method - immediately zeroize and unlock
@@ -107,21 +157,12 @@ impl<T: Zeroize> SecureMemory<T> {
         // Zeroize sensitive key material.
         self.data.zeroize();
 
-        #[cfg(unix)]
         if self.locked {
-            // Prepare the data buffer for the next processing stage.
-            let ptr = self.data.as_mut() as *mut T as *mut libc::c_void;
-            // Track the count for threshold and bounds checking.
+            let ptr = self.data.as_mut() as *mut T as *mut u8;
             let size = std::mem::size_of::<T>();
-            // SAFETY: `ptr` is derived from the same Box<T> that was locked
-            // with mlock; the pointer and size are unchanged since the lock
-            // call, so munlock(2) receives valid arguments.
-            unsafe {
-                munlock(ptr, size);
-            }
-            // Update the locked to reflect the new state.
-            // Advance locked state.
-            // Advance locked state.
+            // SAFETY: same Box<T>, pointer and size as the lock in `new`.
+            unsafe { unlock_pages(ptr, size) };
+            // A wiped region is never re-locked; mark it so Drop skips it.
             self.locked = false;
         }
     }
@@ -160,19 +201,13 @@ impl<T: Zeroize> Drop for SecureMemory<T> {
         // Zeroize sensitive key material.
         self.data.zeroize();
 
-        // Unlock memory
-        #[cfg(unix)]
+        // Unlock memory. Drop runs once, so this pairs with exactly one
+        // `lock_pages` call unless `wipe` already released it.
         if self.locked {
-            // Prepare the data buffer for the next processing stage.
-            let ptr = self.data.as_mut() as *mut T as *mut libc::c_void;
-            // Track the count for threshold and bounds checking.
+            let ptr = self.data.as_mut() as *mut T as *mut u8;
             let size = std::mem::size_of::<T>();
-            // SAFETY: `ptr` and `size` match those used when mlock was called
-            // in `SecureMemory::new`; Drop is called exactly once, so this
-            // munlock(2) call is paired with exactly one prior mlock(2) call.
-            unsafe {
-                munlock(ptr, size);
-            }
+            // SAFETY: `ptr` and `size` match the lock taken in `new`.
+            unsafe { unlock_pages(ptr, size) };
         }
     }
 }

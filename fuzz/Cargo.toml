@@ -184,3 +184,12 @@ path = "fuzz_targets/fuzz_store_forward.rs"
 [[bin]]
 name = "fuzz_offline_bundle_decode"
 path = "fuzz_targets/fuzz_offline_bundle_decode.rs"
+
+# --- Target 15: Backup envelope header validation (§3.7.4) -----------------
+#
+# Parses arbitrary bytes as an EncryptedBackup envelope and runs the
+# pre-KDF structural gate (version, type, Argon2id floor/ceiling, salt and
+# nonce lengths). A tampered header must never panic or reach the KDF.
+[[bin]]
+name = "fuzz_backup_restore"
+path = "fuzz_targets/fuzz_backup_restore.rs"

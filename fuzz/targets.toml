@@ -115,3 +115,10 @@ status = "active"
 owner_module = "backend/transport/offline_bundle.rs"
 threat = "malformed encrypted offline bundles causing panic, unauthenticated plaintext release, or partial decode"
 required_by_spec = true
+
+[[target]]
+name = "fuzz_backup_restore"
+status = "active"
+owner_module = "backend/crypto/backup.rs"
+threat = "tampered backup envelope header driving oversized Argon2id parameters (allocation abort / CPU exhaustion) or panicking the parser before restore"
+required_by_spec = true
