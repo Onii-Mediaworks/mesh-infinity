@@ -25,7 +25,11 @@ impl<'a> ByteCursor<'a> {
     /// Consume one byte, or zero if the input is exhausted.
     pub fn take_u8(&mut self) -> u8 {
         let value = self.data.get(self.offset).copied().unwrap_or(0);
-        self.offset = self.offset.saturating_add(1);
+        // Never advance past the end: an exhausted cursor keeps yielding
+        // zeros, and `take_bytes` relies on `offset <= data.len()` to slice.
+        if self.offset < self.data.len() {
+            self.offset += 1;
+        }
         value
     }
 
@@ -49,7 +53,10 @@ impl<'a> ByteCursor<'a> {
         // Recompute remaining AFTER take_bounded_usize has advanced the offset.
         let remaining = self.data.len().saturating_sub(self.offset);
         let take = wanted.min(remaining);
-        let start = self.offset;
+        // Clamp defensively so a cursor past the end (older callers, or a
+        // future accessor that advances unconditionally) yields an empty
+        // slice instead of a range-start-out-of-bounds panic.
+        let start = self.offset.min(self.data.len());
         let end = start + take;
         self.offset = end;
         &self.data[start..end]
@@ -136,5 +143,36 @@ pub fn store_forward_case(data: &[u8]) -> StoreForwardCase {
         },
         tunnel_id,
         now,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ByteCursor;
+
+    /// Regression for the corpus-replay crash: draining the cursor with
+    /// `take_u8` and then asking for bytes must yield an empty slice, not
+    /// panic on a start index past the end.
+    #[test]
+    fn take_bytes_after_exhaustion_is_empty() {
+        let data = [7u8, 9];
+        let mut cursor = ByteCursor::new(&data);
+        // Drain past the end several times.
+        for _ in 0..5 {
+            let _ = cursor.take_u8();
+        }
+        assert!(cursor.take_bytes(16).is_empty());
+        assert!(cursor.take_bytes(0).is_empty());
+    }
+
+    /// Within bounds, `take_bytes` honours both the requested bound and the
+    /// remaining length.
+    #[test]
+    fn take_bytes_respects_bound_and_remaining() {
+        let data = [3u8, 1, 2, 3, 4];
+        let mut cursor = ByteCursor::new(&data);
+        // First byte (3) picks `wanted = 3 % (4 + 1) = 3`, leaving 4 bytes.
+        assert_eq!(cursor.take_bytes(4), &[1, 2, 3]);
+        assert!(cursor.take_bytes(4).is_empty());
     }
 }
