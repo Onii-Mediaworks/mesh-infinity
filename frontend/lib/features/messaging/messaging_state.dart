@@ -357,8 +357,11 @@ class MessagingState extends ChangeNotifier {
   ///
   /// After creation we reload the room list so the new room appears in
   /// ConversationListScreen without a manual refresh.
-  Future<String?> createRoom(String name) async {
-    final id = _bridge.createRoom(name);
+  ///
+  /// [peerId] binds the room to one contact as a direct conversation
+  /// (§22.5.3); without it the backend makes a standalone room.
+  Future<String?> createRoom(String name, {String? peerId}) async {
+    final id = _bridge.createRoom(name, peerId: peerId);
     if (id != null) await loadRooms();
     return id;
   }

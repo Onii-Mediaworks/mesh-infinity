@@ -97,7 +97,11 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
         ? peer.name
         : peer.id.substring(0, 12);
 
-    final id = await context.read<MessagingState>().createRoom(roomName);
+    // Pass the peer id so the backend binds the room to this contact as a
+    // direct conversation instead of an unaddressed standalone room.
+    final id = await context
+        .read<MessagingState>()
+        .createRoom(roomName, peerId: peer.id);
 
     // Guard: user could navigate away while the async call was in flight.
     if (!mounted) return;

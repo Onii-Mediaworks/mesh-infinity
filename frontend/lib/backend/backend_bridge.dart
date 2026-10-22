@@ -212,23 +212,34 @@ class BackendBridge {
   }
 
   /// Create a new room with the given display name.
+  ///
+  /// [peerId] (64 hex chars) makes it a direct conversation bound to that
+  /// contact; without it the backend creates a standalone room. The native
+  /// export takes three parameters, so the binding always passes a third
+  /// pointer — nullptr when there is no peer — never leaving it undefined.
   /// Returns the new room's ID string, or throws/returns null on failure.
-  String? createRoom(String name) {
+  String? createRoom(String name, {String? peerId}) {
     if (!isAvailable) return null;
     // Convert the Dart String to a null-terminated UTF-8 byte array in
     // native (non-GC) memory.  Rust expects C strings in this format.
     final namePtr = name.toNativeUtf8();
+    // A missing peer is an explicit null pointer; Rust maps it to None.
+    final peerPtr = peerId == null ? nullptr : peerId.toNativeUtf8();
     try {
-      final roomId = _readString(_bindings!.createRoom(_context, namePtr));
+      final roomId =
+          _readString(_bindings!.createRoom(_context, namePtr, peerPtr));
       if (roomId == null) {
         throw StateError(getLastError() ?? 'Failed to create room');
       }
       return roomId;
     } finally {
-      // IMPORTANT: we must always free the native string we allocated above.
+      // IMPORTANT: we must always free the native strings we allocated above.
       // calloc.free() releases the memory back to the system.
       // The `finally` block ensures this happens even if an exception is thrown.
       calloc.free(namePtr);
+      if (peerPtr != nullptr) {
+        calloc.free(peerPtr);
+      }
     }
   }
 
@@ -4051,9 +4062,19 @@ typedef FileTransfersJsonDart = Pointer<Utf8> Function(Pointer<Void>);
 typedef ActiveRoomIdNative = Pointer<Utf8> Function(Pointer<Void>);
 typedef ActiveRoomIdDart = Pointer<Utf8> Function(Pointer<Void>);
 
-// mi_create_room(ctx, name: *const c_char) -> *mut c_char (new room ID)
-typedef CreateRoomNative = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
-typedef CreateRoomDart = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>);
+// mi_create_room(ctx, name: *const c_char, peer_id: *const c_char | null)
+//   -> *mut c_char (new room ID). Three parameters on both sides: the Rust
+//   export reads peer_id, so the Dart signature must supply it.
+typedef CreateRoomNative = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
+typedef CreateRoomDart = Pointer<Utf8> Function(
+  Pointer<Void>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+);
 
 // mi_select_room(ctx, room_id: *const c_char) -> i32  (0=ok)
 typedef SelectRoomNative = Int32 Function(Pointer<Void>, Pointer<Utf8>);

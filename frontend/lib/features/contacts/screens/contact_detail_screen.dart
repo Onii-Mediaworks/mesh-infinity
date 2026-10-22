@@ -94,7 +94,7 @@ Future<void> _openConversation(BuildContext context, PeerModel peer) async {
 
   // createRoom() calls Rust via FFI to create a new room in the backend.
   // Returns the new room's ID on success, or null on failure.
-  final roomId = await messaging.createRoom(roomName);
+  final roomId = await messaging.createRoom(roomName, peerId: peer.id);
 
   // Guard: widget may be gone by the time the await resolves.
   if (roomId == null || !navigator.mounted) {
