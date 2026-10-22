@@ -187,8 +187,13 @@ impl RemoteKillswitchRequest {
         })
     }
 
-    /// Parse the fields of a `killswitch` command object.
-    fn from_json(cmd: &Value) -> Result<Self, AdminCommandError> {
+    /// Parse the fields of a §3.9.3 request from a JSON object.
+    ///
+    /// Shared by the `AdminCommand` packet payload and the `remote_wipe`
+    /// link frame: both carry exactly these four fields, so one parser
+    /// defines the wire format for every delivery path.  The surrounding
+    /// `type` key is the caller's concern and is not read here.
+    pub fn from_json(cmd: &Value) -> Result<Self, AdminCommandError> {
         let target_peer_id = PeerId(hex_field(cmd, "target_peer_id")?);
         let requester_id = PeerId(hex_field(cmd, "requester_id")?);
         let timestamp = cmd

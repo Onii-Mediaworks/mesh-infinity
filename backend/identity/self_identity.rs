@@ -32,7 +32,14 @@
 //! Identity payload format (inside identity.dat):
 //! ```text
 //! [4-byte LE json_len][json metadata bytes][32-byte ed25519 secret][32-byte x25519 secret]
+//! [32-byte tor root secret]
 //! ```
+//!
+//! The Tor root secret (§5.3) is an independent random sibling of the
+//! identity keys: it is stored with them, never derived from them.  Payloads
+//! written before it existed end after the x25519 secret; such an identity
+//! is given a fresh root on load and `identity.dat` is rewritten so the
+//! onion address it yields is stable from then on.
 
 use std::path::Path;
 
@@ -120,6 +127,13 @@ pub struct SelfIdentity {
     /// Identity master key (32 bytes) — used to derive per-collection vault keys.
     /// Zeroized on drop.
     pub master_key: Zeroizing<[u8; 32]>,
+    /// Tor root secret (§5.3): 32 random bytes with no derivation
+    /// relationship to any other key here.  Service onion keys are derived
+    /// from it by `transport::tor::derive_tor_service_key`.  Zeroized on drop.
+    pub tor_root_secret: Zeroizing<[u8; 32]>,
+    /// Rotation counter mixed into every Tor service key derivation (§5.3).
+    /// Incrementing it gives every hosted service a new onion address.
+    pub tor_rotation_counter: u64,
 }
 
 // SelfIdentity implementation — core protocol logic.
@@ -150,6 +164,8 @@ impl SelfIdentity {
             kem_encapsulation_key,
             display_name,
             master_key: Zeroizing::new(master_key_bytes),
+            tor_root_secret: generate_tor_root_secret(),
+            tor_rotation_counter: 0,
         }
     }
 
@@ -166,6 +182,7 @@ impl SelfIdentity {
     /// Serialize the identity payload for encrypted storage (§3.6.2).
     ///
     /// Format: `[4-byte LE json_len][json_bytes][ed25519_secret (32)][x25519_secret (32)]`
+    /// `[tor_root_secret (32)]`
     pub fn serialize_payload(&self) -> Zeroizing<Vec<u8>> {
         // Prepare the data buffer for the next processing stage.
         let metadata = IdentityMetadata {
@@ -174,6 +191,7 @@ impl SelfIdentity {
             ed25519_pub: hex::encode(self.ed25519_pub),
             // Extract the raw byte representation for wire encoding.
             x25519_pub: hex::encode(self.x25519_pub.as_bytes()),
+            tor_rotation_counter: self.tor_rotation_counter,
         };
         // Infallible: IdentityMetadata contains only Option<String> and String fields;
         // serde_json serialization of those types cannot fail at runtime.
@@ -190,7 +208,7 @@ impl SelfIdentity {
         let x25519_bytes = self.x25519_secret.to_bytes(); // actual secret, not public key
 
         // Serialize to the wire format for transmission or storage.
-        let mut payload = Zeroizing::new(Vec::with_capacity(4 + json.len() + 32 + 32));
+        let mut payload = Zeroizing::new(Vec::with_capacity(4 + json.len() + 32 + 32 + 32));
         // Append the data segment to the accumulating buffer.
         // Append bytes to the accumulator.
         // Append bytes to the accumulator.
@@ -207,12 +225,24 @@ impl SelfIdentity {
         // Append bytes to the accumulator.
         // Append bytes to the accumulator.
         payload.extend_from_slice(&x25519_bytes);
+        // The independent Tor root travels with the identity secrets (§5.3).
+        payload.extend_from_slice(&*self.tor_root_secret);
 
         payload
     }
 
     /// Deserialize an identity from a decrypted payload (inverse of serialize_payload).
+    ///
+    /// A payload written before the Tor root existed is accepted and given
+    /// a fresh root; callers that hold the file (`load_dat_file`) use
+    /// `from_payload_parts` to learn that and persist it.
     pub fn from_payload(payload: &[u8]) -> Option<Self> {
+        Self::from_payload_parts(payload).map(|(identity, _had_tor_root)| identity)
+    }
+
+    /// `from_payload`, also reporting whether the payload carried a Tor root
+    /// (`false` means a legacy payload whose root was just generated).
+    fn from_payload_parts(payload: &[u8]) -> Option<(Self, bool)> {
         // Validate the input length to prevent out-of-bounds access.
         if payload.len() < 4 + 32 + 32 {
             // No result available — signal absence to the caller.
@@ -253,11 +283,24 @@ impl SelfIdentity {
         let x25519_pub = X25519Public::from(&x25519_secret);
         let (preauth_x25519_secret, preauth_x25519_pub) = derive_preauth_keypair(&x25519_secret);
 
+        // Tor root secret (32 bytes), present in every payload written since
+        // §5.3 landed.  An older payload ends at the x25519 secret: give it a
+        // fresh independent root rather than deriving one from the keys above.
+        let tor_offset = x25519_offset + 32;
+        let (tor_root_secret, had_tor_root) = if payload.len() >= tor_offset + 32 {
+            let mut root = Zeroizing::new([0u8; 32]);
+            // Copy into the fixed-size buffer.
+            root.copy_from_slice(&payload[tor_offset..tor_offset + 32]);
+            (root, true)
+        } else {
+            (generate_tor_root_secret(), false)
+        };
+
         // ML-KEM keypair is derived from master_key — placeholder until caller sets it.
         // The caller (load_from_disk) must call set_master_key_and_derive() after loading.
         // Wrap the found value.
         // Wrap the found value.
-        Some(Self {
+        let identity = Self {
             ed25519_signing,
             x25519_secret,
             ed25519_pub,
@@ -268,7 +311,10 @@ impl SelfIdentity {
             kem_encapsulation_key: Vec::new(), // set by caller via derive_kem_after_load()
             display_name: metadata.display_name,
             master_key: Zeroizing::new([0u8; 32]), // caller must set after loading from disk
-        })
+            tor_root_secret,
+            tor_rotation_counter: metadata.tor_rotation_counter,
+        };
+        Some((identity, had_tor_root))
     }
 
     // -----------------------------------------------------------------------
@@ -285,32 +331,7 @@ impl SelfIdentity {
     pub fn encode_dat_file(&self) -> Result<Vec<u8>, IdentityError> {
         // Serialize the secret payload for encryption.
         let payload = self.serialize_payload();
-
-        let dat_key = derive_identity_dat_key(&self.master_key);
-        // Fresh nonce — must never be reused with the same key.
-        let mut nonce_bytes = [0u8; DAT_NONCE_LEN];
-        // OS-provided cryptographic random number generator.
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = XNonce::from_slice(&nonce_bytes);
-        // Initialize the AEAD cipher with the derived key material.
-        let cipher = XChaCha20Poly1305::new_from_slice(&*dat_key)
-            // Map the error to the local error type.
-            .map_err(|_| IdentityError::Crypto)?;
-        let ciphertext = cipher
-            // AEAD-encrypt the plaintext.
-            .encrypt(nonce, payload.as_ref())
-            // Map the error to the local error type.
-            .map_err(|_| IdentityError::Crypto)?;
-
-        // [version=0x01][24-byte nonce][ciphertext]
-        let mut dat_data = Vec::with_capacity(1 + DAT_NONCE_LEN + ciphertext.len());
-        // Append to the collection.
-        dat_data.push(DAT_VERSION);
-        // Append bytes to the accumulator.
-        dat_data.extend_from_slice(&nonce_bytes);
-        // Append bytes to the accumulator.
-        dat_data.extend_from_slice(&ciphertext);
-        Ok(dat_data)
+        encode_dat_payload(&payload, &self.master_key)
     }
 
     /// Decode `identity.dat` with an already-recovered master key.
@@ -321,6 +342,15 @@ impl SelfIdentity {
         dat_data: &[u8],
         master_key: Zeroizing<[u8; 32]>,
     ) -> Result<Self, IdentityError> {
+        Self::decode_dat_file(dat_data, master_key).map(|(identity, _had_tor_root)| identity)
+    }
+
+    /// `from_dat_file`, also reporting whether the payload carried a Tor
+    /// root (`false` means the file predates §5.3 and should be rewritten).
+    fn decode_dat_file(
+        dat_data: &[u8],
+        master_key: Zeroizing<[u8; 32]>,
+    ) -> Result<(Self, bool), IdentityError> {
         // Validate the input length to prevent out-of-bounds access.
         if dat_data.len() < 1 + DAT_NONCE_LEN {
             return Err(IdentityError::Format);
@@ -345,23 +375,44 @@ impl SelfIdentity {
                 .map_err(|_| IdentityError::Crypto)?,
         );
 
-        let mut identity = Self::from_payload(&payload).ok_or(IdentityError::Format)?;
+        let (mut identity, had_tor_root) =
+            Self::from_payload_parts(&payload).ok_or(IdentityError::Format)?;
         identity.master_key = master_key;
         // Derive ML-KEM keypair from the now-loaded master key (§3.4.1).
         let (dk, ek) = derive_kem_keypair(&identity.master_key);
         identity.kem_decapsulation_key = dk;
         identity.kem_encapsulation_key = ek;
-        Ok(identity)
+        Ok((identity, had_tor_root))
     }
 
     /// Read and decode `<data_dir>/identity.dat` with a recovered master key.
+    ///
+    /// A file written before the Tor root existed is migrated here: the
+    /// freshly generated root is persisted at once so the onion address
+    /// derived from it survives the next restart.  A failed rewrite is
+    /// logged and the unlock still succeeds — the identity is intact, only
+    /// this session's onion address would not be stable.
     pub fn load_dat_file(
         data_dir: &Path,
         master_key: Zeroizing<[u8; 32]>,
     ) -> Result<Self, IdentityError> {
         // Resolve the filesystem path for the target resource.
-        let dat_data = std::fs::read(data_dir.join("identity.dat")).map_err(IdentityError::Io)?;
-        Self::from_dat_file(&dat_data, master_key)
+        let dat_path = data_dir.join("identity.dat");
+        let dat_data = std::fs::read(&dat_path).map_err(IdentityError::Io)?;
+        let (identity, had_tor_root) = Self::decode_dat_file(&dat_data, master_key)?;
+        if !had_tor_root {
+            // Rewrite only identity.dat: the key file and its wrapping are
+            // untouched, so this is safe under both plain and PIN modes.
+            match identity.encode_dat_file() {
+                Ok(bytes) => {
+                    if let Err(e) = write_atomic(&dat_path, &bytes) {
+                        eprintln!("[identity] WARNING: Tor root migration not written: {e}");
+                    }
+                }
+                Err(e) => eprintln!("[identity] WARNING: Tor root migration not encoded: {e}"),
+            }
+        }
+        Ok(identity)
     }
 
     /// Persist this identity to disk.
@@ -796,6 +847,51 @@ pub fn derive_kem_keypair(master_key: &[u8; 32]) -> (Vec<u8>, Vec<u8>) {
     (dk.as_bytes().to_vec(), ek.as_bytes().to_vec())
 }
 
+/// Encrypt an identity payload into the `identity.dat` layout:
+/// `[0x01][24-byte XNonce][XChaCha20-Poly1305(payload)]`.
+///
+/// Split from `SelfIdentity::encode_dat_file` so the migration test can
+/// write a pre-§5.3 payload (no Tor root) with exactly the production
+/// cipher and framing.
+fn encode_dat_payload(payload: &[u8], master_key: &[u8; 32]) -> Result<Vec<u8>, IdentityError> {
+    let dat_key = derive_identity_dat_key(master_key);
+    // Fresh nonce — must never be reused with the same key.
+    let mut nonce_bytes = [0u8; DAT_NONCE_LEN];
+    // OS-provided cryptographic random number generator.
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = XNonce::from_slice(&nonce_bytes);
+    // Initialize the AEAD cipher with the derived key material.
+    let cipher = XChaCha20Poly1305::new_from_slice(&*dat_key)
+        // Map the error to the local error type.
+        .map_err(|_| IdentityError::Crypto)?;
+    let ciphertext = cipher
+        // AEAD-encrypt the plaintext.
+        .encrypt(nonce, payload)
+        // Map the error to the local error type.
+        .map_err(|_| IdentityError::Crypto)?;
+
+    // [version=0x01][24-byte nonce][ciphertext]
+    let mut dat_data = Vec::with_capacity(1 + DAT_NONCE_LEN + ciphertext.len());
+    // Append to the collection.
+    dat_data.push(DAT_VERSION);
+    // Append bytes to the accumulator.
+    dat_data.extend_from_slice(&nonce_bytes);
+    // Append bytes to the accumulator.
+    dat_data.extend_from_slice(&ciphertext);
+    Ok(dat_data)
+}
+
+/// A fresh Tor root secret (§5.3): 32 bytes straight from the OS RNG.
+///
+/// Deliberately not an HKDF of anything — the whole point of the root is
+/// that no other key leads to it and it leads to no other key.
+fn generate_tor_root_secret() -> Zeroizing<[u8; 32]> {
+    let mut root = Zeroizing::new([0u8; 32]);
+    // OS-provided cryptographic random number generator.
+    OsRng.fill_bytes(&mut *root);
+    root
+}
+
 fn derive_identity_dat_key(master_key: &[u8; 32]) -> Zeroizing<[u8; 32]> {
     // Set up the HKDF context for domain-separated key derivation.
     let hk = Hkdf::<Sha256>::new(None, master_key);
@@ -887,6 +983,10 @@ struct IdentityMetadata {
     display_name: Option<String>,
     ed25519_pub: String,
     x25519_pub: String,
+    /// Tor service-key rotation counter (§5.3); absent in older payloads,
+    /// which were written before any rotation could have happened.
+    #[serde(default)]
+    tor_rotation_counter: u64,
 }
 
 // Trait implementation for protocol conformance.
@@ -1038,6 +1138,73 @@ mod tests {
             *loaded.master_key, original_master,
             "master_key must be exactly restored to the pre-save value"
         );
+    }
+
+    /// The Tor root is random, independent of the master key, and comes
+    /// back byte-for-byte after a save/load cycle (§5.3): the onion address
+    /// derived from it must not change across restarts.
+    #[test]
+    fn test_tor_root_is_independent_and_survives_restart() {
+        let dir = TempDir::new().unwrap();
+        let id = SelfIdentity::generate(None);
+        let root = *id.tor_root_secret;
+        assert_ne!(root, [0u8; 32], "tor root must be generated");
+        assert_ne!(root, *id.master_key, "tor root must not be the master key");
+        // Two identities never share a root.
+        assert_ne!(root, *SelfIdentity::generate(None).tor_root_secret);
+
+        id.save_to_disk(dir.path(), None).expect("save failed");
+        let loaded = SelfIdentity::load_from_disk(dir.path(), None).expect("load failed");
+        assert_eq!(*loaded.tor_root_secret, root, "root must survive restart");
+        assert_eq!(loaded.tor_rotation_counter, 0);
+        // A second load yields the same root again: nothing regenerated it.
+        let again = SelfIdentity::load_from_disk(dir.path(), None).expect("reload failed");
+        assert_eq!(*again.tor_root_secret, root);
+    }
+
+    /// An `identity.dat` written before the Tor root existed loads, gains a
+    /// fresh root, and is rewritten so that root is the one every later
+    /// unlock sees.  The identity keys themselves are untouched.
+    #[test]
+    fn test_legacy_payload_without_tor_root_is_migrated_once() {
+        let dir = TempDir::new().unwrap();
+        let id = SelfIdentity::generate(Some("Old".into()));
+        // The pre-§5.3 layout ends at the x25519 secret: drop the trailing root.
+        let full = id.serialize_payload();
+        let legacy = &full[..full.len() - 32];
+        let dat = encode_dat_payload(legacy, &id.master_key).expect("encode");
+        let key = encode_plain_key_file(&id.master_key);
+        write_identity_files(dir.path(), &key, &dat).expect("write");
+
+        let first = SelfIdentity::load_from_disk(dir.path(), None).expect("legacy load");
+        assert_eq!(first.peer_id(), id.peer_id(), "keys must be unchanged");
+        assert_eq!(first.display_name, Some("Old".into()));
+        let migrated_root = *first.tor_root_secret;
+        assert_ne!(migrated_root, [0u8; 32], "legacy identity gets a root");
+        assert_ne!(migrated_root, *id.master_key, "root is independent");
+
+        // The rewrite happened: a second load returns the same root, and the
+        // file on disk is no longer the legacy bytes.
+        let second = SelfIdentity::load_from_disk(dir.path(), None).expect("migrated load");
+        assert_eq!(*second.tor_root_secret, migrated_root, "root persists");
+        assert_ne!(std::fs::read(dir.path().join("identity.dat")).unwrap(), dat);
+    }
+
+    /// `from_payload` tolerates the legacy length and rejects anything shorter.
+    #[test]
+    fn test_from_payload_legacy_length_accepted_short_rejected() {
+        let id = SelfIdentity::generate(None);
+        let full = id.serialize_payload();
+        let legacy = &full[..full.len() - 32];
+        let restored = SelfIdentity::from_payload(legacy).expect("legacy payload decodes");
+        assert_eq!(restored.peer_id(), id.peer_id());
+        assert_ne!(*restored.tor_root_secret, [0u8; 32]);
+        // One byte short of the legacy minimum is a format error, not a panic.
+        let short = &legacy[..legacy.len() - 1];
+        assert!(SelfIdentity::from_payload(short).is_none());
+        // The full payload restores the stored root exactly.
+        let exact = SelfIdentity::from_payload(&full).expect("full payload decodes");
+        assert_eq!(*exact.tor_root_secret, *id.tor_root_secret);
     }
 
     /// After load_from_disk, ML-KEM keys must be populated (non-empty).

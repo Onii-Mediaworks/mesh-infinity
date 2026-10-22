@@ -956,8 +956,8 @@ impl MeshRuntime {
     /// `reset_identity_runtime_state`.
     fn wipe_local_identity_files(&self) {
         crate::identity::killswitch::standard_erase(std::path::Path::new(&self.data_dir));
-        // The counter files are not in the killswitch list; remove them so
-        // a later identity starts clean.
+        // The erase sweep already removed the counter files; clearing them
+        // again is a no-op that still holds if the sweep was partial.
         let _ = self.clear_pin_attempt_files();
         self.clear_mesh_identity_runtime_state();
     }

@@ -227,10 +227,11 @@ impl MeshRuntime {
 
     /// Bootstrap the Tor hidden service and set `tor = true` in flags.
     ///
-    /// Derives the onion address from the identity master key
-    /// (HKDF-SHA256 domain `"meshinfinity-tor-service-v1"`), then calls
-    /// `TorTransport::bootstrap`.  On success, inbound hidden-service
-    /// connections are drained by `advance_clearnet_transport` on every poll.
+    /// Hands the identity's independent Tor root and rotation counter
+    /// (§5.3 — the master key is never a Tor input) to
+    /// `TorTransport::bootstrap`, which derives the mesh endpoint's onion
+    /// address.  On success, inbound hidden-service connections are drained
+    /// by `advance_clearnet_transport` on every poll.
     ///
     /// Idempotent — returns `Ok(())` if Tor is already running.
     pub fn tor_enable(&self) -> Result<(), String> {
@@ -251,10 +252,14 @@ impl MeshRuntime {
             return Ok(());
         }
 
-        let (master_key, peer_id_hex) = {
+        // Copy the Tor root out of the identity so the bootstrap thread does
+        // not hold the identity lock for the whole Tor handshake.
+        let (tor_root_secret, rotation_counter, peer_id_hex) = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             let id = guard.as_ref().ok_or("identity not unlocked")?;
-            (*id.master_key, id.peer_id().to_hex())
+            // The copy is zeroised when the bootstrap thread drops it.
+            let root = zeroize::Zeroizing::new(*id.tor_root_secret);
+            (root, id.tor_rotation_counter, id.peer_id().to_hex())
         };
         let state_dir = std::path::PathBuf::from(&self.data_dir);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -268,7 +273,8 @@ impl MeshRuntime {
             .name("mesh-tor-bootstrap".to_string())
             .spawn(move || {
                 let result = crate::transport::tor::TorTransport::bootstrap(
-                    &master_key,
+                    &tor_root_secret,
+                    rotation_counter,
                     &peer_id_hex,
                     &state_dir,
                     DEFAULT_HS_PORT,

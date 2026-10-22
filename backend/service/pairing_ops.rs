@@ -1562,6 +1562,23 @@ impl MeshRuntime {
                     self.authorise_remote_killswitch(pkt, &request, now)
                 }
             });
+        self.finish_remote_killswitch(&source_hex, outcome)
+    }
+
+    /// Carry out an authorised remote killswitch, or report why it was
+    /// refused.
+    ///
+    /// Shared tail of every delivery path (`AdminCommand` packets and
+    /// `remote_wipe` link frames): the only thing that erases the device is
+    /// an `Ok` from the §3.9.3 verifier, and every `Err` becomes one local
+    /// `AdminCommandRejected` event.  `source_hex` is the unauthenticated
+    /// origin the rejection is reported under.  Returns `true` only if the
+    /// device was erased.
+    pub(crate) fn finish_remote_killswitch(
+        &self,
+        source_hex: &str,
+        outcome: Result<String, AdminCommandError>,
+    ) -> bool {
         match outcome {
             Ok(requester_hex) => match self.execute_remote_killswitch(&requester_hex) {
                 Ok(()) => {
@@ -1591,14 +1608,14 @@ impl MeshRuntime {
         }
     }
 
-    /// Decide whether a remote killswitch request may fire on this device.
+    /// Decide whether a remote killswitch packet may fire on this device.
     ///
-    /// The authority is the Ed25519 key the *local contact store* holds for
-    /// the requester, and only if the user placed that contact at
-    /// InnerCircle and enabled remote wipe.  `MeshPacket::source` is checked
-    /// for consistency with the signed requester id but grants nothing: a
-    /// forged source with no valid signature is rejected the same as any
-    /// other stranger.  Returns the requester's peer id hex on success.
+    /// `MeshPacket::source` is checked for consistency with the signed
+    /// requester id but grants nothing: a forged source with no valid
+    /// signature is rejected the same as any other stranger.  Everything
+    /// that actually authorises the erase lives in
+    /// `authorise_killswitch_request`.  Returns the requester's peer id hex
+    /// on success.
     fn authorise_remote_killswitch(
         &self,
         pkt: &MeshPacket,
@@ -1608,6 +1625,25 @@ impl MeshRuntime {
         if pkt.source != request.requester_id.0 {
             return Err(AdminCommandError::SourceMismatch);
         }
+        self.authorise_killswitch_request(request, now)
+    }
+
+    /// The §3.9.3 verifier shared by every delivery path.
+    ///
+    /// The authority is the Ed25519 key the *local contact store* holds for
+    /// the requester, and only if the user placed that contact at
+    /// InnerCircle and enabled remote wipe.  In order, the request must:
+    /// name this device as `target_peer_id` (one signature wipes one
+    /// device), come from a known InnerCircle contact, arrive while remote
+    /// wipe is enabled, sit inside the freshness window, verify under the
+    /// stored key, and not have been presented before.  The replay cache is
+    /// shared across paths, so a request captured from one carrier cannot
+    /// be re-presented on another.  Returns the requester's peer id hex.
+    pub(crate) fn authorise_killswitch_request(
+        &self,
+        request: &RemoteKillswitchRequest,
+        now: u64,
+    ) -> Result<String, AdminCommandError> {
         let our_id = {
             let guard = self.identity.lock().unwrap_or_else(|e| e.into_inner());
             guard.as_ref().map(|id| id.peer_id())

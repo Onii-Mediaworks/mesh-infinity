@@ -20,17 +20,25 @@
 //!
 //! ## Keypair / onion address (§5.3)
 //!
-//! The spec requires a deterministic onion address derived from the mesh
-//! identity.  We derive an ed25519 keypair from the identity master key:
+//! The Tor root keypair is an independent sibling of the mesh identity:
+//! `tor_root_secret` is 32 random bytes generated with the self identity
+//! (`SelfIdentity::tor_root_secret`) and stored beside it, never derived
+//! from the identity master key.  The root is never used directly; each
+//! hosted service gets its own keypair:
 //!
 //! ```text
-//! ikm  = identity.master_key (32 bytes)
-//! info = "meshinfinity-tor-service-v1"
-//! okm  = 32 bytes  →  ed25519 signing key → onion pubkey → .onion address
+//! service_tor_key = HKDF-SHA256(
+//!     ikm  = tor_root_secret,
+//!     salt = tor_root_public,
+//!     info = "meshinfinity-tor-service-v1" || service_id || BE64(rotation_counter),
+//! )  →  ed25519 signing key → onion pubkey → .onion address
 //! ```
 //!
-//! The resulting `.onion` address is stable across restarts.  It is included
-//! in the node's network map `transport_hints` so peers can connect via Tor.
+//! Compromising the mesh keypair therefore says nothing about any onion
+//! address, and no onion address leads back to the mesh peer ID.  The mesh
+//! endpoint is one service (`MESH_ENDPOINT_SERVICE_ID`); its `.onion` is
+//! stable across restarts while the root and rotation counter are, and it
+//! is included in the node's network map `transport_hints`.
 //!
 //! For the hidden service, arti's built-in keystore persists the keypair in the
 //! state directory and the address remains constant across restarts.  We seed
@@ -135,20 +143,52 @@ pub fn onion_address_v3(pubkey: &[u8; 32]) -> String {
     format!("{b32}.onion")
 }
 
-/// Derive the Tor service ed25519 signing key from the identity master key.
+/// HKDF info prefix for service key derivation (§5.3).
+const TOR_SERVICE_INFO: &[u8] = b"meshinfinity-tor-service-v1";
+
+/// `service_id` of the node's own mesh endpoint hidden service.
 ///
-/// HKDF-SHA256 with fixed info for domain separation (§5.3).
-pub fn derive_tor_signing_key(master_key: &[u8; 32]) -> ed25519_dalek::SigningKey {
-    let hk = Hkdf::<Sha256>::new(None, master_key);
+/// Other hosted services (§12) derive their own keys under their own ids,
+/// so their onion addresses are unlinkable to this one.
+pub const MESH_ENDPOINT_SERVICE_ID: &[u8] = b"mesh-endpoint";
+
+/// Derive one service's ed25519 signing key from the Tor root (§5.3).
+///
+/// `ikm` is the root secret, `salt` the root's public key (so the root
+/// seed alone, without its public half, is not the HKDF input), and `info`
+/// is the fixed prefix followed by the service id and the big-endian
+/// rotation counter.  Bumping the counter yields an unrelated key, which is
+/// how a service's onion address is rotated without touching the root.
+pub fn derive_tor_service_key(
+    tor_root_secret: &[u8; 32],
+    service_id: &[u8],
+    rotation_counter: u64,
+) -> ed25519_dalek::SigningKey {
+    // The root's public key is the HKDF salt; the root itself never signs.
+    let tor_root_public = ed25519_dalek::SigningKey::from_bytes(tor_root_secret)
+        .verifying_key()
+        .to_bytes();
+    let hk = Hkdf::<Sha256>::new(Some(tor_root_public.as_slice()), tor_root_secret);
+    // info = prefix || service_id || BE64(rotation_counter), fixed-width
+    // counter so no service id can collide with another id plus counter.
+    let mut info = Vec::with_capacity(TOR_SERVICE_INFO.len() + service_id.len() + 8);
+    info.extend_from_slice(TOR_SERVICE_INFO);
+    info.extend_from_slice(service_id);
+    info.extend_from_slice(&rotation_counter.to_be_bytes());
     let mut okm = [0u8; 32];
-    hk.expand(b"meshinfinity-tor-service-v1", &mut okm)
-        .expect("HKDF output length is valid");
+    // Infallible: HKDF-SHA256 expand fails only above 255 × 32 output
+    // bytes; 32 bytes never reaches that guard.
+    hk.expand(&info, &mut okm).expect("HKDF-SHA256 expand to 32 bytes is infallible");
     ed25519_dalek::SigningKey::from_bytes(&okm)
 }
 
-/// Derive our stable Tor v3 `.onion` address from the identity master key.
-pub fn derive_onion_address(master_key: &[u8; 32]) -> String {
-    let signing_key = derive_tor_signing_key(master_key);
+/// The Tor v3 `.onion` address of one service under the Tor root (§5.3).
+pub fn derive_onion_address(
+    tor_root_secret: &[u8; 32],
+    service_id: &[u8],
+    rotation_counter: u64,
+) -> String {
+    let signing_key = derive_tor_service_key(tor_root_secret, service_id, rotation_counter);
     let pubkey = signing_key.verifying_key().to_bytes();
     onion_address_v3(&pubkey)
 }
@@ -165,7 +205,8 @@ pub struct TorTransport {
     runtime: Runtime,
     /// Bootstrapped arti Tor client.
     client: Arc<arti_client::TorClient<tor_rtcompat::PreferredRuntime>>,
-    /// Our stable Tor v3 `.onion` address (derived from identity).
+    /// Our mesh endpoint's Tor v3 `.onion` address (derived from the Tor
+    /// root, §5.3 — never from the identity).
     pub onion_address: String,
     /// Per-peer circuit stats for rotation (isolation tokens + counters).
     circuit_stats: Mutex<HashMap<String, CircuitStats>>,
@@ -181,23 +222,26 @@ impl TorTransport {
     /// Bootstrap a Tor client, launch the hidden service, and return a ready
     /// `TorTransport`.
     ///
-    /// `master_key`  — identity master key used to derive the onion address.
-    /// `peer_id_hex` — hex peer ID used to name the hidden service in arti's keystore.
-    /// `state_dir`   — directory for arti's Tor state and descriptor cache.
-    /// `listen_port` — the TCP port advertised in the hidden service descriptor.
+    /// `tor_root_secret`  — the independent Tor root (§5.3), never the identity key.
+    /// `rotation_counter` — the mesh endpoint's current service-key rotation.
+    /// `peer_id_hex`      — hex peer ID used to name the hidden service in arti's keystore.
+    /// `state_dir`        — directory for arti's Tor state and descriptor cache.
+    /// `listen_port`      — the TCP port advertised in the hidden service descriptor.
     ///
     /// Blocks the calling thread for the duration of Tor bootstrapping (typically
     /// a few seconds on a normal internet connection).
     pub fn bootstrap(
-        master_key: &[u8; 32],
+        tor_root_secret: &[u8; 32],
+        rotation_counter: u64,
         peer_id_hex: &str,
         state_dir: &std::path::Path,
         listen_port: u16,
     ) -> anyhow::Result<Self> {
         let runtime = Runtime::new().context("create tokio runtime for Tor")?;
 
-        // Derive stable onion address from identity master key.
-        let onion_address = derive_onion_address(master_key);
+        // The mesh endpoint's onion address under the Tor root (§5.3).
+        let service_id = MESH_ENDPOINT_SERVICE_ID;
+        let onion_address = derive_onion_address(tor_root_secret, service_id, rotation_counter);
 
         // Configure arti storage in our state directory.
         let mut config_builder = arti_client::TorClientConfig::builder();
@@ -472,5 +516,114 @@ impl TorTransport {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(peer_id_hex);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Tests
+// ────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::self_identity::SelfIdentity;
+    use tempfile::TempDir;
+
+    /// What the pre-§5.3 code derived the onion key from: HKDF of the
+    /// identity master key with no salt and the bare info prefix.
+    fn legacy_identity_derived_key(master_key: &[u8; 32]) -> [u8; 32] {
+        let hk = Hkdf::<Sha256>::new(None, master_key);
+        let mut okm = [0u8; 32];
+        hk.expand(TOR_SERVICE_INFO, &mut okm).unwrap();
+        okm
+    }
+
+    /// Whether `addr` is a well-formed v3 address: 56 base32 characters
+    /// followed by `.onion` (the §4.5 transport-hint grammar).
+    fn is_v3_onion(addr: &str) -> bool {
+        let Some(body) = addr.strip_suffix(".onion") else {
+            return false;
+        };
+        body.len() == 56 && body.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+    }
+
+    /// The service key is no longer the identity-derived value: neither
+    /// the real derivation from the Tor root nor the old formula applied to
+    /// the root reproduces what the master key used to yield, and the
+    /// master key is not an input at all.
+    #[test]
+    fn service_key_is_not_the_identity_derived_value() {
+        let identity = SelfIdentity::generate(None);
+        let legacy = legacy_identity_derived_key(&identity.master_key);
+        let service = derive_tor_service_key(
+            &identity.tor_root_secret,
+            MESH_ENDPOINT_SERVICE_ID,
+            identity.tor_rotation_counter,
+        );
+        assert_ne!(service.to_bytes(), legacy, "key is master-key derived");
+        assert_ne!(
+            service.to_bytes(),
+            *identity.tor_root_secret,
+            "root is never used directly"
+        );
+        // Even misusing the master key as the root does not recover the old
+        // key: the derivation itself (salt, info layout) changed.
+        let misuse = derive_tor_service_key(&identity.master_key, MESH_ENDPOINT_SERVICE_ID, 0);
+        assert_ne!(misuse.to_bytes(), legacy);
+        // Two identities' roots give unrelated addresses; one root is stable.
+        let other = SelfIdentity::generate(None);
+        let addr = derive_onion_address(&identity.tor_root_secret, MESH_ENDPOINT_SERVICE_ID, 0);
+        assert_ne!(
+            addr,
+            derive_onion_address(&other.tor_root_secret, MESH_ENDPOINT_SERVICE_ID, 0)
+        );
+        assert_eq!(
+            addr,
+            derive_onion_address(&identity.tor_root_secret, MESH_ENDPOINT_SERVICE_ID, 0)
+        );
+        assert!(is_v3_onion(&addr), "not a v3 onion address: {addr}");
+    }
+
+    /// Services under one root, and rotations of one service, have
+    /// independent addresses (§5.3), and the fixed-width counter keeps a
+    /// service id from aliasing another id plus counter bytes.
+    #[test]
+    fn services_and_rotations_get_independent_addresses() {
+        let root = [0x5Au8; 32];
+        let endpoint = derive_onion_address(&root, MESH_ENDPOINT_SERVICE_ID, 0);
+        let file_share = derive_onion_address(&root, b"file-share", 0);
+        let rotated = derive_onion_address(&root, MESH_ENDPOINT_SERVICE_ID, 1);
+        assert_ne!(endpoint, file_share);
+        assert_ne!(endpoint, rotated);
+        assert_ne!(file_share, rotated);
+        // `mesh-endpoint` with counter 1 is not `mesh-endpoint\0..\x01` with counter 0.
+        let mut aliased = MESH_ENDPOINT_SERVICE_ID.to_vec();
+        aliased.extend_from_slice(&1u64.to_be_bytes());
+        assert_ne!(rotated, derive_onion_address(&root, &aliased, 0));
+        assert!(is_v3_onion(&endpoint));
+        assert!(is_v3_onion(&file_share));
+        assert!(is_v3_onion(&rotated));
+    }
+
+    /// The onion address an identity advertises survives a restart: the
+    /// root reloaded from `identity.dat` derives the same address.
+    #[test]
+    fn onion_address_survives_identity_restart() {
+        let dir = TempDir::new().unwrap();
+        let identity = SelfIdentity::generate(Some("Node".into()));
+        let before = derive_onion_address(
+            &identity.tor_root_secret,
+            MESH_ENDPOINT_SERVICE_ID,
+            identity.tor_rotation_counter,
+        );
+        identity.save_to_disk(dir.path(), None).expect("save");
+        drop(identity);
+        let reloaded = SelfIdentity::load_from_disk(dir.path(), None).expect("load");
+        let after = derive_onion_address(
+            &reloaded.tor_root_secret,
+            MESH_ENDPOINT_SERVICE_ID,
+            reloaded.tor_rotation_counter,
+        );
+        assert_eq!(before, after, "onion address must survive restart");
     }
 }

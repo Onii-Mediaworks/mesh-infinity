@@ -3867,102 +3867,51 @@ impl crate::service::runtime::MeshRuntime {
     // Remote killswitch (§3.9, §8.3)
     // -----------------------------------------------------------------------
 
-    /// Processes a `remote_wipe` frame received over the mesh.
+    /// Processes a `remote_wipe` frame received over an authenticated link.
     ///
-    /// Security requirements (§8.3):
-    /// 1. Sender must be a known contact at InnerCircle (Level 8).
-    /// 2. `remote_wipe_enabled` runtime flag must be `true`.
-    /// 3. Frame must carry a valid Ed25519 signature over the canonical
-    ///    killswitch payload, preventing replay of arbitrary JSON objects
-    ///    as wipe commands.
+    /// The frame body is the §3.9.3 `RemoteKillswitchRequest` record —
+    /// `target_peer_id`, `requester_id`, `timestamp`, `signature` — exactly
+    /// as an `AdminCommand` packet carries it, and it is judged by the same
+    /// verifier (`authorise_killswitch_request`): the signature must bind
+    /// *this* device as the target, be fresh, verify under the key the local
+    /// contact store holds for an InnerCircle requester, and never have been
+    /// presented before on any path.  A captured frame therefore cannot be
+    /// bounced to a second device that trusts the same signer, nor replayed
+    /// to this one.
     ///
-    /// On success: erases all on-disk identity data via the standard killswitch
-    /// path (§3.9.1), pushes a `RemoteWiped` event so the UI can notify the
-    /// user, and returns `true`.  All failures are silent (§16.1 error policy).
+    /// `sender` is the peer the link layer proved is on the other end of the
+    /// socket (`frame_bound_to_link`); it must equal the signed requester,
+    /// the same consistency rule the packet path applies to its envelope
+    /// source.  It grants nothing on its own.
+    ///
+    /// On success the shared executor erases the device (§3.9.1) and pushes
+    /// `RemoteKillswitchExecuted`; every rejection is reported locally as
+    /// `AdminCommandRejected` and never answered on the network (§16.1).
     fn process_remote_wipe_frame(&self, envelope: &serde_json::Value) -> bool {
-        // --- 1. Sender identity resolution ---
-        let sender_hex = match envelope.get("sender").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return false,
-        };
-        let sender_id_bytes: [u8; 32] = match hex::decode(sender_hex) {
-            Ok(b) if b.len() == 32 => {
-                let mut a = [0u8; 32];
-                a.copy_from_slice(&b);
-                a
+        use crate::mesh::admin_command::{AdminCommandError, RemoteKillswitchRequest};
+
+        // The link-authenticated sender, kept as text for the rejection event.
+        let sender_hex = envelope
+            .get("sender")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        // Wall clock for the freshness window.  A clock failure reads as
+        // epoch zero, which makes every real request look far in the future
+        // and so rejects it — failing closed rather than open.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let outcome = RemoteKillswitchRequest::from_json(envelope).and_then(|request| {
+            // The proven link peer must be the party that signed the request.
+            match PeerId::from_hex(sender_hex) {
+                Ok(sender) if sender == request.requester_id => {}
+                _ => return Err(AdminCommandError::SourceMismatch),
             }
-            _ => return false,
-        };
-        let sender_peer_id = crate::identity::peer_id::PeerId(sender_id_bytes);
-
-        // --- 2. Trust gate: sender must be InnerCircle (Level 8, §8.3) ---
-        let contact = match self
-            .contacts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&sender_peer_id)
-            .cloned()
-        {
-            Some(c) => c,
-            None => return false, // Unknown sender — silent drop.
-        };
-        if contact.trust_level < crate::trust::levels::TrustLevel::InnerCircle {
-            // Insufficient trust — silent drop, no feedback to sender.
-            return false;
-        }
-
-        // --- 3. Remote-wipe feature gate (user must have opted in) ---
-        let enabled = *self
-            .remote_wipe_enabled
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if !enabled {
-            return false;
-        }
-
-        // --- 4. Signature verification over canonical killswitch payload ---
-        // Payload: `<domain> || sender_id_bytes || "remote_wipe"`.
-        // The nonce field (if present) is mixed in to prevent cross-device replay.
-        let nonce = envelope.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
-        let sig_hex = match envelope.get("sig").and_then(|v| v.as_str()) {
-            Some(s) => s,
-            None => return false,
-        };
-        let sig_bytes = match hex::decode(sig_hex) {
-            Ok(b) => b,
-            Err(_) => return false,
-        };
-        // Canonical message: sender peer-id bytes || ASCII "remote_wipe" || nonce bytes.
-        let mut canonical_msg = Vec::with_capacity(32 + 11 + nonce.len());
-        canonical_msg.extend_from_slice(&sender_id_bytes);
-        canonical_msg.extend_from_slice(b"remote_wipe");
-        canonical_msg.extend_from_slice(nonce.as_bytes());
-        if !crate::crypto::signing::verify(
-            &contact.ed25519_public,
-            crate::crypto::signing::DOMAIN_KILLSWITCH,
-            &canonical_msg,
-            &sig_bytes,
-        ) {
-            // Bad signature — silent drop.
-            return false;
-        }
-
-        // --- 5. Execute: erase all on-disk identity data (§3.9.1) ---
-        // `standard_erase` overwrites and unlinks vault files.  In-memory state
-        // becomes stale but harmless; the OS reclaims process memory on exit.
-        // Per-spec: process termination is the recommended post-erase action for
-        // high-assurance scenarios (§3.9 security note).
-        let data_dir = std::path::Path::new(&self.data_dir);
-        crate::identity::killswitch::standard_erase(data_dir);
-
-        // Push a RemoteWiped event so the UI can display a notification and
-        // guide the user through recovery before the process exits.
-        self.push_event(
-            "RemoteWiped",
-            serde_json::json!({ "senderPeerId": sender_hex }),
-        );
-
-        true
+            self.authorise_killswitch_request(&request, now)
+        });
+        self.finish_remote_killswitch(sender_hex, outcome)
     }
 }
 
@@ -5119,5 +5068,326 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner());
         let group = groups.iter().find(|g| g.group_id == group_id).unwrap();
         assert!(group.sorted_ring().is_none());
+    }
+}
+
+/// Remote killswitch over the `remote_wipe` link frame (§3.9.3).
+///
+/// The frame must be judged exactly like an `AdminCommand` packet: one
+/// signature wipes one named device, once, inside the freshness window.
+/// Every negative case asserts that nothing on disk or in memory changed.
+#[cfg(test)]
+mod remote_wipe_tests {
+    use super::*;
+    use crate::crypto::signing::{self, DOMAIN_KILLSWITCH};
+    use crate::identity::self_identity::SelfIdentity;
+    use crate::mesh::admin_command::{
+        AdminCommandError, RemoteKillswitchRequest, KILLSWITCH_MAX_AGE_SECS,
+    };
+    use crate::pairing::contact::ContactRecord;
+    use crate::pairing::methods::PairingMethod;
+    use crate::trust::levels::TrustLevel;
+    use tempfile::TempDir;
+
+    /// A runtime with a fresh identity written to disk and transports off.
+    fn test_runtime() -> (TempDir, MeshRuntime) {
+        let dir = TempDir::new().unwrap();
+        let mut runtime = MeshRuntime::new(dir.path().to_string_lossy().into_owned());
+        {
+            let mut flags = runtime
+                .transport_flags
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            flags.clearnet = false;
+            flags.mesh_discovery = false;
+        }
+        runtime.create_identity(Some("Target".to_string())).unwrap();
+        (dir, runtime)
+    }
+
+    /// The runtime's own peer id.
+    fn our_peer_id(runtime: &MeshRuntime) -> PeerId {
+        runtime
+            .identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .unwrap()
+            .peer_id()
+    }
+
+    /// Register `peer` as a contact at `trust`, with its real identity key.
+    fn add_contact(runtime: &MeshRuntime, peer: &SelfIdentity, trust: TrustLevel) {
+        let mut contact = ContactRecord::new(
+            peer.peer_id(),
+            peer.ed25519_pub,
+            peer.x25519_pub.to_bytes(),
+            PairingMethod::QrCode,
+            1,
+        );
+        contact.set_trust_level(trust);
+        runtime
+            .contacts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upsert(contact);
+    }
+
+    /// Current unix seconds.
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// A §3.9.3 request from `requester` naming `target`, signed at `timestamp`.
+    fn signed_for(
+        target: &PeerId,
+        requester: &SelfIdentity,
+        timestamp: u64,
+    ) -> RemoteKillswitchRequest {
+        RemoteKillswitchRequest::sign(
+            target,
+            &requester.ed25519_pub,
+            &requester.ed25519_signing.to_bytes(),
+            timestamp,
+        )
+    }
+
+    /// Wrap a request as the `remote_wipe` frame the link layer would hand
+    /// over, with the link-proven `sender` set to `sender`.
+    fn wipe_frame(request: &RemoteKillswitchRequest, sender: &PeerId) -> serde_json::Value {
+        let mut frame = request.to_json();
+        frame["type"] = serde_json::json!("remote_wipe");
+        frame["sender"] = serde_json::json!(sender.to_hex());
+        frame
+    }
+
+    /// Nothing was erased: the identity is loaded, its files are on disk,
+    /// and the contact store still has `contacts` entries.
+    fn assert_intact(dir: &TempDir, runtime: &MeshRuntime, contacts: usize) {
+        assert!(
+            runtime
+                .identity
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some(),
+            "identity must still be loaded"
+        );
+        assert!(
+            dir.path().join("identity.dat").exists(),
+            "identity.dat must still be on disk"
+        );
+        assert!(
+            dir.path().join("identity.key").exists(),
+            "identity.key must still be on disk"
+        );
+        assert_eq!(
+            runtime
+                .contacts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .count(),
+            contacts,
+            "contact store must be untouched"
+        );
+    }
+
+    /// Rejection reasons pushed to the UI, in order.
+    fn rejection_reasons(runtime: &MeshRuntime) -> Vec<String> {
+        runtime
+            .event_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|event| event["type"] == "AdminCommandRejected")
+            .map(|event| event["data"]["reason"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
+    /// Whether a `RemoteKillswitchExecuted` event was pushed.
+    fn executed(runtime: &MeshRuntime) -> bool {
+        runtime
+            .event_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|event| event["type"] == "RemoteKillswitchExecuted")
+    }
+
+    /// The genuine path: a fresh request signed by an InnerCircle contact,
+    /// naming this device, erases it through the shared executor.
+    #[test]
+    fn signed_frame_for_this_device_erases() {
+        let (dir, runtime) = test_runtime();
+        let requester = SelfIdentity::generate(Some("Inner".to_string()));
+        add_contact(&runtime, &requester, TrustLevel::InnerCircle);
+        *runtime.remote_wipe_enabled.lock().unwrap() = true;
+
+        let request = signed_for(&our_peer_id(&runtime), &requester, now());
+        let frame = wipe_frame(&request, &requester.peer_id());
+        assert!(runtime.process_inbound_frame(&frame));
+
+        assert!(runtime.identity.lock().unwrap().is_none());
+        assert!(!dir.path().join("identity.dat").exists());
+        assert!(!dir.path().join("identity.key").exists());
+        assert_eq!(runtime.contacts.lock().unwrap().count(), 0);
+        assert!(executed(&runtime));
+        assert!(rejection_reasons(&runtime).is_empty());
+    }
+
+    /// The finding's attack: a frame Alice signed for her own lost device
+    /// reaches Bob, who also holds Alice at InnerCircle.  Bob is not the
+    /// target, so Bob erases nothing.
+    #[test]
+    fn frame_signed_for_another_device_is_dropped() {
+        let (dir, runtime) = test_runtime();
+        let requester = SelfIdentity::generate(Some("Alice".to_string()));
+        add_contact(&runtime, &requester, TrustLevel::InnerCircle);
+        *runtime.remote_wipe_enabled.lock().unwrap() = true;
+
+        let lost_device = PeerId([0x42u8; 32]);
+        let request = signed_for(&lost_device, &requester, now());
+        let frame = wipe_frame(&request, &requester.peer_id());
+        assert!(!runtime.process_inbound_frame(&frame));
+
+        assert_intact(&dir, &runtime, 1);
+        assert!(!executed(&runtime));
+        assert_eq!(
+            rejection_reasons(&runtime),
+            vec![AdminCommandError::WrongTarget.to_string()]
+        );
+    }
+
+    /// A request older than the freshness window is refused even though
+    /// it names this device and its signature is genuine.
+    #[test]
+    fn stale_frame_is_dropped() {
+        let (dir, runtime) = test_runtime();
+        let requester = SelfIdentity::generate(Some("Inner".to_string()));
+        add_contact(&runtime, &requester, TrustLevel::InnerCircle);
+        *runtime.remote_wipe_enabled.lock().unwrap() = true;
+
+        let stale = signed_for(
+            &our_peer_id(&runtime),
+            &requester,
+            now() - KILLSWITCH_MAX_AGE_SECS - 60,
+        );
+        let frame = wipe_frame(&stale, &requester.peer_id());
+        assert!(!runtime.process_inbound_frame(&frame));
+
+        assert_intact(&dir, &runtime, 1);
+        assert!(!executed(&runtime));
+        assert_eq!(
+            rejection_reasons(&runtime),
+            vec![AdminCommandError::StaleTimestamp.to_string()]
+        );
+    }
+
+    /// A signature already presented on any path — here first as an
+    /// `AdminCommand` would present it — is refused when it arrives again
+    /// as a frame: the replay cache is shared.
+    #[test]
+    fn replayed_frame_is_dropped() {
+        let (dir, runtime) = test_runtime();
+        let requester = SelfIdentity::generate(Some("Inner".to_string()));
+        add_contact(&runtime, &requester, TrustLevel::InnerCircle);
+        *runtime.remote_wipe_enabled.lock().unwrap() = true;
+
+        let request = signed_for(&our_peer_id(&runtime), &requester, now());
+        assert_eq!(
+            runtime.authorise_killswitch_request(&request, now()),
+            Ok(requester.peer_id().to_hex())
+        );
+        let frame = wipe_frame(&request, &requester.peer_id());
+        assert!(!runtime.process_inbound_frame(&frame));
+
+        assert_intact(&dir, &runtime, 1);
+        assert!(!executed(&runtime));
+        assert_eq!(
+            rejection_reasons(&runtime),
+            vec![AdminCommandError::Replayed.to_string()]
+        );
+    }
+
+    /// The retired wire format — `sender`, `nonce`, `sig` over
+    /// `sender || "remote_wipe" || nonce` — carried no target and no
+    /// timestamp.  Such a frame, even genuinely signed by an InnerCircle
+    /// contact, is a malformed request and erases nothing.
+    #[test]
+    fn legacy_unbound_frame_is_dropped() {
+        let (dir, runtime) = test_runtime();
+        let requester = SelfIdentity::generate(Some("Inner".to_string()));
+        add_contact(&runtime, &requester, TrustLevel::InnerCircle);
+        *runtime.remote_wipe_enabled.lock().unwrap() = true;
+
+        let sender_hex = requester.peer_id().to_hex();
+        let mut legacy_msg = Vec::with_capacity(32 + 11);
+        legacy_msg.extend_from_slice(&requester.peer_id().0);
+        legacy_msg.extend_from_slice(b"remote_wipe");
+        let sig = signing::sign(
+            &requester.ed25519_signing.to_bytes(),
+            DOMAIN_KILLSWITCH,
+            &legacy_msg,
+        );
+        let frame = serde_json::json!({
+            "type":   "remote_wipe",
+            "sender": sender_hex,
+            "nonce":  "",
+            "sig":    hex::encode(sig),
+        });
+        assert!(!runtime.process_inbound_frame(&frame));
+
+        assert_intact(&dir, &runtime, 1);
+        assert!(!executed(&runtime));
+        assert_eq!(
+            rejection_reasons(&runtime),
+            vec![AdminCommandError::MissingField("target_peer_id").to_string()]
+        );
+    }
+
+    /// Every gate is checked from local state before anything is erased:
+    /// contact membership, InnerCircle trust, the opt-in flag, and the
+    /// link-proven sender matching the signed requester.
+    #[test]
+    fn frame_requires_every_local_gate() {
+        let (dir, runtime) = test_runtime();
+        let requester = SelfIdentity::generate(Some("Inner".to_string()));
+        let request = signed_for(&our_peer_id(&runtime), &requester, now());
+        let deliver = |sender: &PeerId, contacts: usize| {
+            let frame = wipe_frame(&request, sender);
+            assert!(!runtime.process_inbound_frame(&frame));
+            assert_intact(&dir, &runtime, contacts);
+        };
+
+        // Stranger: not a contact at all.
+        deliver(&requester.peer_id(), 0);
+        // Contact below InnerCircle.
+        add_contact(&runtime, &requester, TrustLevel::Ally);
+        deliver(&requester.peer_id(), 1);
+        // InnerCircle but the user never enabled remote wipe.
+        add_contact(&runtime, &requester, TrustLevel::InnerCircle);
+        deliver(&requester.peer_id(), 1);
+        *runtime.remote_wipe_enabled.lock().unwrap() = true;
+        // The socket's proven peer is not the signer.
+        deliver(&PeerId([0x99u8; 32]), 1);
+        // No sender at all.
+        let mut no_sender = wipe_frame(&request, &requester.peer_id());
+        no_sender.as_object_mut().unwrap().remove("sender");
+        assert!(!runtime.process_inbound_frame(&no_sender));
+        assert_intact(&dir, &runtime, 1);
+
+        assert!(!executed(&runtime));
+        assert_eq!(
+            rejection_reasons(&runtime),
+            vec![
+                AdminCommandError::UnknownRequester.to_string(),
+                AdminCommandError::InsufficientTrust.to_string(),
+                AdminCommandError::RemoteWipeDisabled.to_string(),
+                AdminCommandError::SourceMismatch.to_string(),
+                AdminCommandError::SourceMismatch.to_string(),
+            ]
+        );
     }
 }
