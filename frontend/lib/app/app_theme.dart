@@ -6,13 +6,20 @@ import 'package:flutter/material.dart';
 /// colour *roles*, never hex values, so a palette change is a one-file edit.
 ///
 /// Fixed brand/background tokens (same in both themes):
-///   brand        #2C6EE2   Primary actions, active nav indicators, seed colour
+///   brand        #2C6EE2   ColorScheme seed; fills only (buttons, pills, avatars)
 ///   brandDark    #1A4FB5   Pressed states
 ///   bgDark       #0F1117   Dark page background
 ///   surfaceDark  #1C1F2A   Dark cards, panels
 ///   bgLight      #F7F8FA   Light page background
 ///   surfaceLight #FFFFFF   Light cards, panels
-///   ambient      #4A5280   Tier-2 ambient badge dot
+///   ambient      #4A5280   Tier-2 ambient badge dot (decorative, see below)
+///
+/// Brand blue as a *foreground* (icons, link text, captions, selected-state
+/// glyphs) is per theme too (CMR-019): [brand] itself measures 4.46:1 on
+/// [bgLight], a hair under the §22.34 text bar, so call sites read
+/// `MeshColors.of(context).brand_fg` (or `ColorScheme.primary`) and never
+/// paint [brand] directly. [brand] stays the seed and the fill colour for
+/// buttons, pills and avatars, where the foreground on it is white.
 ///
 /// Security-status and trust-level colours are *per theme* (CMR-001). They are
 /// published through the [MeshColors] theme extension, so widgets resolve them
@@ -33,6 +40,11 @@ class MeshTheme {
   // Material 3's tonal palette generation.  All shades of the primary,
   // secondary, and tertiary roles are derived from this by Flutter's
   // ColorScheme.fromSeed() algorithm.
+  //
+  // Seed and fill only (§22.1.1 "Brand as foreground"): as a foreground it
+  // misses the 4.5:1 text bar on the light scaffold, so icons and text use
+  // [MeshColors.brand_fg] instead.  Backgrounds tinted with
+  // `brand.withValues(alpha: ...)` are fine — the tint is not the foreground.
   static const Color brand = Color(0xFF2C6EE2);
 
   /// Darker variant of the brand color — used for pressed/active states where
@@ -68,6 +80,14 @@ class MeshTheme {
 
   /// Tier-2 ambient badge dot colour — shown on the nav rail/drawer when
   /// a background notification tier is active but below direct-message priority.
+  ///
+  /// Decorative indicator (§22.1.1 "Decorative indicators", CMR-019): this
+  /// measures ~2.3:1 on [bgDark] and is exempt from the §22.34 3:1 UI-element
+  /// bar *only because* it never carries information alone — it is always
+  /// drawn beside the section label and, when a count exists, the Tier-1
+  /// count pill (§22.34 "never colour alone").  It is deliberately left out
+  /// of `test/theme_contrast_test.dart`; a new indicator may share this
+  /// exemption only if the same pairing holds.
   static const Color ambientBadge = Color(0xFF4A5280);
 
   // ---------------------------------------------------------------------------
@@ -498,6 +518,7 @@ class MeshTheme {
 ///   trust[n]    Trust level n (0 Unknown … 8 InnerCircle), see §8 / §22.31
 ///   disabled    Foreground of a disabled control (≥3:1 on every ground)
 ///   focus_ring  Keyboard/controller focus ring (≥3:1 on every ground, §22.36)
+///   brand_fg    Brand blue as icon/text foreground (≥4.5:1 on every ground)
 @immutable
 class MeshColors extends ThemeExtension<MeshColors> {
   /// All-clear / verified / online.
@@ -521,6 +542,11 @@ class MeshColors extends ThemeExtension<MeshColors> {
   /// Keyboard / controller focus ring, drawn by the shell (§22.36 rule 3).
   final Color focus_ring;
 
+  /// Brand blue as a foreground — icons, link text, captions and selected
+  /// glyphs (CMR-019).  Same hue as [MeshTheme.brand], lightness adjusted per
+  /// theme so it clears the §22.34 4.5:1 text bar on both grounds.
+  final Color brand_fg;
+
   const MeshColors({
     required this.sec_green,
     required this.sec_amber,
@@ -529,6 +555,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
     required this.trust,
     required this.disabled,
     required this.focus_ring,
+    required this.brand_fg,
   });
 
   /// Light-theme variants: each hue darkened until it reaches ≥4.5:1 on both
@@ -551,6 +578,8 @@ class MeshColors extends ThemeExtension<MeshColors> {
     ],
     disabled: Color(0xFF858A94),
     focus_ring: Color(0xFF1A4FB5),
+    // 4.6:1 on bgLight / surfaceLight (kBrandFgLight).
+    brand_fg: Color(0xFF2B6CDD),
   );
 
   /// Dark-theme variants: the historical palette, with brand-blue, purple,
@@ -574,6 +603,8 @@ class MeshColors extends ThemeExtension<MeshColors> {
     ],
     disabled: Color(0xFF6B7280),
     focus_ring: Color(0xFF7FA8F0),
+    // 5.2:1 on bgDark / surfaceDark (kBrandFgDark).
+    brand_fg: Color(0xFF4E85E7),
   );
 
   /// Resolve the tokens for the ambient theme. Falls back to the dark set if
@@ -598,6 +629,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
     List<Color>? trust,
     Color? disabled,
     Color? focus_ring,
+    Color? brand_fg,
   }) {
     return MeshColors(
       sec_green: sec_green ?? this.sec_green,
@@ -607,6 +639,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
       trust: trust ?? this.trust,
       disabled: disabled ?? this.disabled,
       focus_ring: focus_ring ?? this.focus_ring,
+      brand_fg: brand_fg ?? this.brand_fg,
     );
   }
 
@@ -626,6 +659,7 @@ class MeshColors extends ThemeExtension<MeshColors> {
       ],
       disabled: Color.lerp(disabled, other.disabled, t) ?? disabled,
       focus_ring: Color.lerp(focus_ring, other.focus_ring, t) ?? focus_ring,
+      brand_fg: Color.lerp(brand_fg, other.brand_fg, t) ?? brand_fg,
     );
   }
 }

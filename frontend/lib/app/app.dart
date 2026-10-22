@@ -43,6 +43,7 @@ import '../shell/badge_state.dart';
 import '../shell/security_status_bar.dart';
 import '../shell/app_shell.dart';
 import '../onboarding/onboarding_screen.dart';
+import '../features/contacts/screens/pair_contact_screen.dart';
 import '../features/messaging/messaging_state.dart';
 import '../features/peers/peers_state.dart';
 import '../features/files/files_state.dart';
@@ -278,6 +279,33 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
   }
 
   // ---------------------------------------------------------------------------
+  // _handle_onboarding_complete
+  //
+  // Called by the Done step (§22.42.7) after the backend has persisted the
+  // onboarding_complete flag.  Re-reading startup state swaps the home widget
+  // for the shell; because the MultiProvider key changes, the whole provider
+  // subtree — MaterialApp and its Navigator included — is rebuilt on the
+  // next frame.  "Add a contact" therefore pushes PairContactScreen through
+  // the navigator key *after* that frame, so it lands on top of the new
+  // shell rather than on a Navigator that is about to be disposed.
+  // "Go to Chat" needs nothing more: a fresh ShellState opens on Chat.
+  // ---------------------------------------------------------------------------
+  void _handle_onboarding_complete(OnboardingExit exit) {
+    setState(_refreshStartupState);
+    if (exit != OnboardingExit.addContact) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // currentState is null only if the app was torn down meanwhile.
+      _navigator_key.currentState?.push(
+        MaterialPageRoute<void>(builder: (_) => const PairContactScreen()),
+      );
+    });
+  }
+
+  /// Key of the MaterialApp's Navigator, so the Done step's "Add a contact"
+  /// can push on whichever Navigator instance exists after the rebuild.
+  final GlobalKey<NavigatorState> _navigator_key = GlobalKey<NavigatorState>();
+
+  // ---------------------------------------------------------------------------
   // dispose
   //
   // Shutdown order matters here because the background polling isolate calls
@@ -349,6 +377,8 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
       // user's choice stored in the backend.
       child: Consumer<SettingsState>(
         builder: (_, settings, _) => MaterialApp(
+          // See _handle_onboarding_complete for why the Navigator is keyed.
+          navigatorKey: _navigator_key,
           title: 'Mesh Infinity',
           theme: MeshTheme.light(),
           darkTheme: MeshTheme.dark(),
@@ -443,8 +473,9 @@ class _MeshInfinityAppState extends State<MeshInfinityApp> {
               ? OnboardingStep.identity
               : OnboardingStep.welcome,
           // The flag is already persisted when this fires; re-reading the
-          // startup state is what moves the app to the shell.
-          onComplete: () => setState(_refreshStartupState),
+          // startup state is what moves the app to the shell, and the exit
+          // decides whether PairContactScreen is pushed on top of it.
+          onComplete: _handle_onboarding_complete,
         );
 
       case StartupScreen.pin:

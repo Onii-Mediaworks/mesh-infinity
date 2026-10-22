@@ -51,7 +51,11 @@ Future<void> show_service_details_sheet({
                         color: MeshTheme.brand.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: Icon(icon, color: MeshTheme.brand),
+                      // Icon foreground: per-theme brand token (CMR-019).
+                      child: Icon(
+                        icon,
+                        color: MeshColors.of(sheetContext).brand_fg,
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(

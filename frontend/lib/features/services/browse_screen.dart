@@ -106,6 +106,9 @@ class _ServiceTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    // Per-theme brand foreground for the type icon and address chip
+    // (§22.1.1 "Brand as foreground", CMR-019).
+    final colors = MeshColors.of(context);
 
     final name = service['name'] as String? ?? 'Unknown';
     final type = service['type'] as String? ?? '';
@@ -136,7 +139,7 @@ class _ServiceTile extends StatelessWidget {
                   child: Icon(
                     _iconForType(type),
                     size: 20,
-                    color: MeshTheme.brand,
+                    color: colors.brand_fg,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -190,7 +193,7 @@ class _ServiceTile extends StatelessWidget {
                     _FactChip(
                       icon: Icons.link_outlined,
                       label: address.trim(),
-                      color: MeshTheme.brand,
+                      color: colors.brand_fg,
                       monospace: true,
                     ),
                 ],

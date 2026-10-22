@@ -272,7 +272,13 @@ class _ProfileSourceBadge extends StatelessWidget {
       // Peer is in contacts and has a name — it came from the paired profile.
       // TODO(backend): distinguish paired vs public profile when backend
       // exposes profile tier in PeerModel.
-      return (MeshTheme.brand, Icons.verified_outlined, 'Paired profile');
+      // Brand blue drawn as icon/text uses the contrast-safe foreground
+      // token rather than the seed colour (§22.1.1, CMR-019).
+      return (
+        MeshColors.of(context).brand_fg,
+        Icons.verified_outlined,
+        'Paired profile',
+      );
     }
 
     // In contacts but name is empty — no profile sent yet.

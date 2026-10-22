@@ -81,7 +81,11 @@ class MaskIntroCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Icon(Icons.theater_comedy_outlined, color: MeshTheme.brand),
+                // Icon foreground: per-theme brand token (§22.1.1, CMR-019).
+                Icon(
+                  Icons.theater_comedy_outlined,
+                  color: MeshColors.of(context).brand_fg,
+                ),
                 const SizedBox(width: 8),
                 Text(mask_intro_title, style: tt.titleSmall),
               ],

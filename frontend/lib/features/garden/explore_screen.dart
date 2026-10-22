@@ -287,7 +287,12 @@ class _GardenTileState extends State<_GardenTile> {
           width: 48,
           height: 48,
           color: MeshTheme.brand.withValues(alpha: 0.12),
-          child: const Icon(Icons.groups_outlined, color: MeshTheme.brand),
+          // Icon foreground reads the contrast-safe brand token (CMR-019);
+          // the 12% tint above keeps the seed colour.
+          child: Icon(
+            Icons.groups_outlined,
+            color: MeshColors.of(context).brand_fg,
+          ),
         ),
       ),
 

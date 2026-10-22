@@ -39,6 +39,9 @@ Map<String, Color> _tokens(MeshColors c) {
     'sec_amber': c.sec_amber,
     'sec_red': c.sec_red,
     'sec_purple': c.sec_purple,
+    // Brand blue as foreground (CMR-019): held to the same 4.5:1 text bar
+    // because it is drawn as icon and caption colour, never only as a fill.
+    'brand_fg': c.brand_fg,
     for (var i = 0; i < c.trust.length; i++) 'trust[$i]': c.trust[i],
   };
 }
@@ -62,9 +65,9 @@ void main() {
   void check_set(String name, MeshColors set, Map<String, Color> grounds) {
     test('$name semantic tokens reach $text_bar:1 on every ground', () {
       final tokens = _tokens(set);
-      // 4 security + 9 trust colours; bump this when adding a role so the
-      // new token cannot silently skip the contrast gate.
-      expect(tokens.length, 13);
+      // 4 security + 1 brand foreground + 9 trust colours; bump this when
+      // adding a role so the new token cannot silently skip the gate.
+      expect(tokens.length, 14);
       for (final token in tokens.entries) {
         for (final ground in grounds.entries) {
           final ratio = _contrast(token.value, ground.value);
@@ -120,6 +123,21 @@ void main() {
 
   check_set('light', MeshColors.light, light_grounds);
   check_set('dark', MeshColors.dark, dark_grounds);
+
+  test('brand_fg keeps the brand hue and only shifts lightness (CMR-019)', () {
+    // The seed itself is allowed to miss the text bar (it is a fill colour);
+    // brand_fg exists precisely because the seed measures 4.46:1 on bgLight.
+    // Both variants must still read as "the brand blue": same hue within a
+    // few degrees of the seed, so a colour means the same in both themes.
+    final seed_hue = HSLColor.fromColor(MeshTheme.brand).hue;
+    for (final set in [MeshColors.light, MeshColors.dark]) {
+      final hue = HSLColor.fromColor(set.brand_fg).hue;
+      expect((hue - seed_hue).abs(), lessThan(6.0));
+    }
+    // The seed is not reused as the foreground token in either theme.
+    expect(MeshColors.light.brand_fg, isNot(equals(MeshTheme.brand)));
+    expect(MeshColors.dark.brand_fg, isNot(equals(MeshTheme.brand)));
+  });
 
   test('both ThemeData register their MeshColors extension', () {
     expect(MeshTheme.light().extension<MeshColors>(), MeshColors.light);

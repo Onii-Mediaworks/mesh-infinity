@@ -41,8 +41,9 @@ import '../../backend/backend_bridge.dart';
 import '../../core/widgets/empty_state.dart';
 // EmptyState — shared zero-data placeholder widget.
 import '../../app/app_theme.dart';
-// MeshTheme.brand — the primary brand colour used for the storage bar and
-// the file icon tint in published file tiles.
+// MeshTheme.brand — the brand seed, used only as the 12% background tint
+// behind the file icon; MeshColors.brand_fg — the per-theme brand foreground
+// for the storage bar fill and the icon itself (§22.1.1, CMR-019).
 
 /// Screen that lists files this device is publishing to the mesh.
 ///
@@ -319,9 +320,10 @@ class _StorageCard extends StatelessWidget {
                   value: progress,
                   minHeight: 8,
                   backgroundColor: cs.surfaceContainerHighest,
-                  // Use the brand colour for the filled portion so it is
-                  // visually distinct from the system progress bar.
-                  color: MeshTheme.brand,
+                  // Use the brand foreground token for the filled portion so
+                  // it is visually distinct from the system progress bar and
+                  // still clears the §22.34 bar on the light ground.
+                  color: MeshColors.of(context).brand_fg,
                 ),
               ),
               const SizedBox(height: 8),
@@ -414,8 +416,9 @@ class _PublishedFileTile extends StatelessWidget {
             color: MeshTheme.brand.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(10),
           ),
-          child: const Icon(Icons.insert_drive_file_outlined,
-              size: 20, color: MeshTheme.brand),
+          // The icon is a foreground, so it reads the per-theme token.
+          child: Icon(Icons.insert_drive_file_outlined,
+              size: 20, color: MeshColors.of(context).brand_fg),
         ),
         title: Text(name,
           style: theme.textTheme.titleSmall,

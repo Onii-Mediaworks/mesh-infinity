@@ -451,8 +451,9 @@ class _HighlightedText extends StatelessWidget {
       spans.add(TextSpan(
         text: text.substring(matchIndex, matchIndex + query.length),
         style: (baseStyle ?? const TextStyle()).copyWith(
-          // MeshTheme.brand = 0xFF2C6EE2 — the primary brand colour.
-          color: MeshTheme.brand,
+          // Highlighted text is a brand foreground, so it reads the
+          // per-theme contrast-safe token (§22.1.1, CMR-019).
+          color: MeshColors.of(context).brand_fg,
           // Subtle background tint draws the eye to the match without
           // being visually aggressive.
           backgroundColor: MeshTheme.brand.withValues(alpha: 0.12),

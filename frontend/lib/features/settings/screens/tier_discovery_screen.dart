@@ -324,7 +324,7 @@ IconData _tierIcon(MeshTier t) => const [
 Color _tierColour(BuildContext context, MeshTier t) {
   final colors = MeshColors.of(context);
   return [
-    MeshTheme.brand, // Social     — brand blue
+    colors.brand_fg, // Social     — brand blue (foreground token, CMR-019)
     colors.sec_green, // Network    — green (VPN = go / active)
     colors.sec_amber, // Infinet    — amber (advanced, proceed with thought)
     colors.sec_purple, // Services   — purple (power-user territory)

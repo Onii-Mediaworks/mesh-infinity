@@ -319,7 +319,10 @@ class _ServiceTile extends StatelessWidget {
           child: Icon(
             icon,
             size: 20,
-            color: enabled ? MeshTheme.brand : cs.onSurfaceVariant,
+            // Enabled icon: brand foreground token (§22.1.1, CMR-019).
+            color: enabled
+                ? MeshColors.of(context).brand_fg
+                : cs.onSurfaceVariant,
           ),
         ),
         title: Text(title, style: theme.textTheme.titleSmall),
@@ -374,7 +377,11 @@ class _HostingExplainer extends StatelessWidget {
                 color: MeshTheme.brand.withValues(alpha: 0.12),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Icon(Icons.hub_outlined, color: MeshTheme.brand),
+              // Icon foreground: per-theme brand token (CMR-019).
+              child: Icon(
+                Icons.hub_outlined,
+                color: MeshColors.of(context).brand_fg,
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -457,7 +464,8 @@ class _ExplainerBullet extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: MeshTheme.brand),
+          // Bullet icon foreground: per-theme brand token (CMR-019).
+          Icon(icon, size: 18, color: MeshColors.of(context).brand_fg),
           const SizedBox(width: 10),
           Expanded(
             child: Text(

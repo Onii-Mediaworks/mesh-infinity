@@ -252,10 +252,12 @@ class _SelfCard extends StatelessWidget {
               backgroundColor: MeshTheme.brand.withValues(alpha: 0.15),
               child: Text(
                 displayName[0].toUpperCase(),
-                style: const TextStyle(
+                // Text on a light tint: contrast-safe brand foreground
+                // (§22.1.1 "Brand as foreground", CMR-019).
+                style: TextStyle(
                   fontSize: 36,
                   fontWeight: FontWeight.w700,
-                  color: MeshTheme.brand,
+                  color: MeshColors.of(context).brand_fg,
                 ),
               ),
             ),

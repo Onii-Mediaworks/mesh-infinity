@@ -289,7 +289,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
   Color _threatColor(BuildContext context, int level) {
     final colors = MeshColors.of(context);
     return switch (level) {
-      0 => MeshTheme.brand,    // Normal: brand blue — standard operating colour
+      0 => colors.brand_fg,    // Normal: brand blue (foreground token, CMR-019)
       1 => colors.sec_amber,   // Elevated: amber — caution
       2 => colors.sec_red,     // High: red — serious threat
       3 => colors.sec_purple,  // Critical: purple — beyond normal threat scale

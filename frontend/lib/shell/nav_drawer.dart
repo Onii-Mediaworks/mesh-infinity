@@ -488,10 +488,12 @@ class _DrawerHeader extends StatelessWidget {
               child: Text(
                 // Show '?' if the name is empty (should not normally happen).
                 displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
-                style: const TextStyle(
+                // Text on a light tint: contrast-safe brand foreground
+                // (§22.1.1 "Brand as foreground", CMR-019).
+                style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.w600,
-                  color: MeshTheme.brand,
+                  color: MeshColors.of(context).brand_fg,
                 ),
               ),
             ),
@@ -609,8 +611,10 @@ class _DrawerItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    // The brand colour is used for the active item highlight and active text.
-    final activeColor = MeshTheme.brand;
+    // Brand blue as the active icon and label colour goes through the
+    // per-theme foreground token (§22.1.1, CMR-019); the 12% highlight tint
+    // below keeps the seed colour, since a tint is not a foreground.
+    final activeColor = MeshColors.of(context).brand_fg;
 
     // FocusRing draws the shell focus ring when a key or pad lands on this
     // row (§22.36 rule 3); the radius matches the InkWell's 12 px corners.
@@ -629,7 +633,7 @@ class _DrawerItem extends StatelessWidget {
             // Active item gets a 12% opacity tinted background; inactive items
             // are transparent so the drawer background shows through.
             color: active
-                ? activeColor.withValues(alpha: 0.12)
+                ? MeshTheme.brand.withValues(alpha: 0.12)
                 : Colors.transparent,
             borderRadius: BorderRadius.circular(12),
           ),

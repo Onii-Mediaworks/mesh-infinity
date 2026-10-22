@@ -12,45 +12,59 @@
 // about the system (relay participation, cover traffic, key storage location,
 // etc.) that must be communicated before any message can be sent.
 //
-// THE 7-STEP ONBOARDING FLOW (§22.42, §22.23, §22.27)
-// -------------------------------------------------------
-// Step 0 — Welcome (OnboardingStep.welcome)
-//   App name, brand logo, tagline.  Offers "Create new identity" and
-//   "Import from backup."  This is the entry gate — the user hasn't touched
-//   any cryptographic material yet.
+// THE ONBOARDING FLOW (§22.42, §22.23, §22.27)
+// ----------------------------------------------
+// The §22.42 step list *is* the pipeline: [OnboardingStep] lists exactly
+// these eight screens, in this order, and nothing else in the app has its
+// own idea of what the steps are.  There is no "N of M" counter — the Import
+// branch would make the total move mid-flow — so progress is conveyed by the
+// back stack and each screen's title only.
 //
-// Step 1 — Create or Import (OnboardingStep.importBackup for import path)
-//   "Create new identity" generates a fresh keypair via bridge.createIdentity()
-//   and proceeds to step 2.  "Import" shows the import UI (passphrase + JSON).
+// 1. Welcome (OnboardingStep.welcome)
+//    App name, brand logo, tagline.  Offers "Create new identity" and
+//    "Import from backup."  This is the entry gate — the user hasn't touched
+//    any cryptographic material yet.
 //
-// Step 2 — Your Identity (OnboardingStep.identity)
-//   Sets the private identity name (the primary mask).  This is what trusted
-//   contacts will see.  The backend receives the name as part of setPrivateProfile().
-//   Do not use the word "mask" on this screen (§22.42.3 note).
+// 2. Import backup (OnboardingStep.importBackup)
+//    Branch, only when the user chose Import: passphrase + backup JSON.
+//    "Create new identity" instead generates a fresh keypair via
+//    bridge.createIdentity() and goes straight to step 3.
 //
-// Step 3 — Public Presence (OnboardingStep.publicProfile)
-//   Optionally set a public display name.  Entirely skippable — privacy-first.
-//   If left blank, setPublicProfile() is called with displayName: null,
-//   isPublic: false (§9.1 default).
+// 3. Your identity (OnboardingStep.identity)
+//    Sets the private identity name (the primary mask).  This is what trusted
+//    contacts will see; it is written through setPrivateProfile() at the end
+//    of step 4.  Do not use the word "mask" on this screen (§22.42.3 note).
+//    Next stays disabled until a name exists, and a helper line says so.
 //
-// Step 4 — Ambient Disclosures (OnboardingStep.disclosures)
-//   Mandatory.  Presents the §22.23 ambient state disclosures in clear,
-//   non-scary language.  The "I understand" button is DISABLED until the user
-//   scrolls to the bottom of the list — this prevents click-through without
-//   reading, which is the entire point of mandatory disclosure.  This step
-//   CANNOT be skipped.
+// 4. Public presence (OnboardingStep.publicProfile)
+//    Optionally set a public display name.  One forward button whose label is
+//    "Skip" while the field is empty and "Next" once it has text (§22.42.3b).
+//    If left blank, setPublicProfile() is called with displayName: null,
+//    isPublic: false (§9.1 default).
 //
-// Step 5 — PIN Setup (OnboardingStep.pinSetup)
-//   Strongly encouraged (§22.27.2) but skippable with an explicit warning.
-//   Shows the benefit of a PIN ("prevents anyone who unlocks your phone from
-//   reading your messages").  Offers inline PIN entry (not a push to PinScreen,
-//   which is a separate full-screen flow) so the user stays in the onboarding
-//   context.  A skip path shows an inline warning before allowing bypass.
+// 5. How Mesh Infinity works (OnboardingStep.disclosures)
+//    Mandatory.  Presents the §22.23 ambient state disclosures in clear,
+//    non-scary language.  The "I understand" button is DISABLED until the user
+//    has seen the whole list — this prevents click-through without reading,
+//    which is the entire point of mandatory disclosure.  Cannot be skipped.
 //
-// Step 6 — Done (OnboardingStep.done)
-//   "You're set up. Your node is now part of the mesh."  _finish_onboarding()
-//   persists the backend `onboarding_complete` flag and only then calls
-//   widget.onComplete(), which dismisses onboarding and shows AppShell.
+// 6. Privacy style (OnboardingStep.privacyStyle)
+//    The §22.27 item 3 preset choice: Everyday / More private / Lockdown,
+//    written through bridge.setThreatContext().  Placed right after the
+//    disclosures so the user has just read what the presets change.
+//
+// 7. PIN (OnboardingStep.pinSetup)
+//    Strongly encouraged (§22.27.2) but skippable with an explicit,
+//    double-confirmed warning.  Offers inline PIN entry (not a push to
+//    PinScreen, which is a separate full-screen flow) so the user stays in
+//    the onboarding context.  "4 to 16 digits" is always visible so the
+//    disabled Set PIN button is never the only signal.
+//
+// 8. Done (OnboardingStep.done)
+//    "What next": primary "Add a contact" (→ PairContactScreen on top of the
+//    shell, §22.8.3) and secondary "Go to Chat".  Both run
+//    _finish_onboarding(), which persists the backend `onboarding_complete`
+//    flag and only then calls widget.onComplete() with the chosen exit.
 //
 // WHAT IS A KEYPAIR?
 // -------------------
@@ -64,7 +78,8 @@
 // ---------------
 // Each step is a private _build* method.  The OnboardingStep enum value
 // _step drives which step is currently shown.  AnimatedSwitcher provides a
-// 250ms cross-fade between steps.  No PageView is needed: a PopScope maps the
+// 250ms cross-fade between steps (zero under reduced motion, §22.1.7).  No
+// PageView is needed: a PopScope maps the
 // system Back gesture onto _go_back(), which steps backwards inside the flow
 // instead of leaving the app (§22.42 "progress is conveyed by the back
 // stack").
@@ -72,7 +87,8 @@
 // Back navigation:
 //   - Welcome — lets the system pop (there is nothing before it).
 //   - Import → Welcome; Public presence → Identity; Disclosures → Public
-//     presence; PIN → Disclosures (after closing an open PIN sub-form).
+//     presence; Privacy style → Disclosures; PIN → Privacy style (after
+//     closing an open PIN sub-form).
 //   - Identity and Done stay put: once an identity exists, Welcome's
 //     "Create new identity" must not be reachable, and Done has nothing
 //     left to undo.
@@ -87,12 +103,14 @@
 // mid-setup lands back on "Your identity" (name pre-filled from the stored
 // profile) and still has to pass the disclosures and the PIN offer.
 //
-// FFI CALL GAPS DOCUMENTED BELOW:
-//   - bridge.setThreatContext() does NOT exist as a named bridge method for
-//     threat level selection during onboarding; instead bridge.setThreatContext(int)
-//     IS available (confirmed in backend_bridge.dart line 899).
-//   - bridge.createIdentity(name: ...) passes the name as part of creation (line 665).
-//   - Timeout/lock settings after PIN are written via bridge.setSecurityConfig().
+// BACKEND CALLS USED HERE
+// -----------------------
+//   - bridge.createIdentity() / importIdentity() — steps 1-2.
+//   - bridge.setPrivateProfile() / setPublicProfile() — end of step 4.
+//   - bridge.setThreatContext(int) — step 6; the backend persists the level
+//     in its settings vault, so no extra flag is needed.
+//   - bridge.setPin() + setSecurityConfig() — step 7.
+//   - bridge.setOnboardingComplete() — step 8.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -100,6 +118,7 @@ import 'package:provider/provider.dart';
 
 import '../app/app_theme.dart';
 import '../app/debug_logger.dart';
+import '../app/motion.dart';
 import '../backend/backend_bridge.dart';
 import '../widgets/mask_avatar.dart';
 
@@ -107,26 +126,44 @@ import '../widgets/mask_avatar.dart';
 // OnboardingStep — the wizard's named step sequence
 // ---------------------------------------------------------------------------
 
-/// Names each screen in the onboarding wizard (§22.42 step list).
+/// Names each screen in the onboarding wizard — the §22.42 step list, in
+/// the spec's order.  This enum is the single list of steps; the order of
+/// its values is the order of the screens.
 ///
 /// Public so app.dart can resume an interrupted run at [identity] and tests
 /// can pump a single step.  The sequence is strictly linear; see the
 /// file-level comment for how Back moves inside it.
 enum OnboardingStep {
-  // Step 0 — App name, tagline, Create / Import choice.
+  // 1 — App name, tagline, Create / Import choice.
   welcome,
-  // Step 1 — Passphrase + backup JSON for import path (only reached via Import).
+  // 2 — Passphrase + backup JSON (branch, only reached via Import).
   importBackup,
-  // Step 2 — Private identity name and avatar colour.
+  // 3 — Private identity name and avatar colour.
   identity,
-  // Step 3 — Optional public display name.
+  // 4 — Optional public display name.
   publicProfile,
-  // Step 4 — Mandatory §22.23 ambient state disclosures.
+  // 5 — Mandatory §22.23 ambient state disclosures ("How Mesh Infinity works").
   disclosures,
-  // Step 5 — §22.27 PIN setup offer.
+  // 6 — §22.27 item 3 privacy preset (Everyday / More private / Lockdown).
+  privacyStyle,
+  // 7 — §22.27 PIN setup offer.
   pinSetup,
-  // Step 6 — Done screen before calling onComplete().
+  // 8 — Done: "what next" before calling onComplete().
   done,
+}
+
+/// Which "what next" action the user chose on the Done step (§22.42.7).
+///
+/// app.dart receives it through [OnboardingScreen.onComplete] after the
+/// `onboarding_complete` flag is persisted, and either pushes
+/// `PairContactScreen` on top of the freshly built shell or simply lands on
+/// the Chat section.
+enum OnboardingExit {
+  /// Primary action "Add a contact" → `PairContactScreen` (§22.8.3).
+  addContact,
+
+  /// Secondary action "Go to Chat" → Chat section with its empty state.
+  chat,
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +174,8 @@ enum OnboardingStep {
 ///
 /// [onComplete] is called exactly once at the end of the flow, after the
 /// backend has persisted the `onboarding_complete` flag.  The parent
-/// (app.dart) uses it to re-read startup state and show AppShell.
+/// (app.dart) uses it to re-read startup state and show AppShell, and the
+/// [OnboardingExit] argument tells it which "what next" button was pressed.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({
     super.key,
@@ -145,8 +183,9 @@ class OnboardingScreen extends StatefulWidget {
     this.initial_step = OnboardingStep.welcome,
   });
 
-  /// Invoked once the Done step has persisted the onboarding flag.
-  final VoidCallback onComplete;
+  /// Invoked once the Done step has persisted the onboarding flag, with the
+  /// exit the user chose there (§22.42.7).
+  final void Function(OnboardingExit exit) onComplete;
 
   /// Step to open on.  [OnboardingStep.welcome] on a first run;
   /// [OnboardingStep.identity] when app.dart resumes an interrupted run
@@ -181,14 +220,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   String? _error;
 
   // -------------------------------------------------------------------------
-  // Step 1 — Import backup
+  // 2 — Import backup
   // -------------------------------------------------------------------------
 
   /// Multi-line import field: line 1 = passphrase, lines 2+ = backup JSON.
   final _phraseController = TextEditingController();
 
   // -------------------------------------------------------------------------
-  // Step 2 — Identity
+  // 3 — Identity
   // -------------------------------------------------------------------------
 
   /// Private identity name — shown to trusted contacts only.
@@ -199,7 +238,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   int _selectedColorIndex = 0;
 
   // -------------------------------------------------------------------------
-  // Step 3 — Public profile
+  // 4 — Public profile
   // -------------------------------------------------------------------------
 
   /// Optional public display name.  If empty on "Next", no public profile
@@ -207,7 +246,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _publicNameController = TextEditingController();
 
   // -------------------------------------------------------------------------
-  // Step 4 — Disclosures scroll gate
+  // 5 — Disclosures scroll gate
   // -------------------------------------------------------------------------
 
   /// Controls the disclosures scroll view.  We listen to this to track whether
@@ -265,7 +304,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // -------------------------------------------------------------------------
-  // Step 5 — PIN Setup
+  // 6 — Privacy style
+  // -------------------------------------------------------------------------
+
+  /// The §22.27 item 3 preset, as the backend `ThreatContext` level it maps
+  /// to: 0 Normal (Everyday), 1 Elevated (More private), 2 Critical
+  /// (Lockdown).  Everyday is the recommended default and is pre-selected.
+  int _privacy_level = 0;
+
+  // -------------------------------------------------------------------------
+  // 7 — PIN Setup
   // -------------------------------------------------------------------------
 
   /// PIN entry field (first entry — the one the user types initially).
@@ -358,9 +406,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         _goTo(OnboardingStep.identity);
       case OnboardingStep.disclosures:
         _goTo(OnboardingStep.publicProfile);
+      case OnboardingStep.privacyStyle:
+        _goTo(OnboardingStep.disclosures);
       case OnboardingStep.pinSetup:
         // An open PIN form or skip warning closes first; a second Back
-        // then returns to the disclosures.
+        // then returns to the privacy style step.
         if (_showPinForm || _showSkipWarning) {
           setState(() {
             _showPinForm = false;
@@ -368,25 +418,51 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             _pinMismatch = false;
           });
         } else {
-          _goTo(OnboardingStep.disclosures);
+          _goTo(OnboardingStep.privacyStyle);
         }
     }
   }
 
   /// Finish onboarding (§22.42.7): persist the `onboarding_complete` flag,
-  /// then hand control back to app.dart.
+  /// then hand control back to app.dart together with the chosen [exit].
   ///
   /// The order is deliberate.  The flag is what tells the next launch that
   /// setup finished; if it cannot be persisted the app must stay on this
   /// step and say so, because moving to the shell would make the flag and
   /// the shell transition diverge — the next launch would resume onboarding.
-  void _finish_onboarding() {
+  void _finish_onboarding(OnboardingExit exit) {
     final bridge = context.read<BackendBridge>();
     if (!bridge.setOnboardingComplete()) {
       setState(() => _error = "Couldn't finish setup. Try again.");
       return;
     }
-    widget.onComplete();
+    widget.onComplete(exit);
+  }
+
+  /// Persist the §22.27 privacy preset chosen on the Privacy style step and
+  /// move on to the PIN offer.
+  ///
+  /// The backend stores the level in its settings vault, so a later launch
+  /// starts in the chosen `ThreatContext` without any extra flag.  A failed
+  /// write keeps the user on this step with the reason shown, rather than
+  /// silently continuing in Everyday mode when they asked for Lockdown.
+  void _save_privacy_style() {
+    final bridge = context.read<BackendBridge>();
+    if (!bridge.setThreatContext(_privacy_level)) {
+      setState(
+        () => _error =
+            bridge.getLastError() ?? "Couldn't save your privacy style.",
+      );
+      return;
+    }
+    _goTo(OnboardingStep.pinSetup);
+  }
+
+  /// Forward action of the Your identity step: Next and the keyboard Done
+  /// key share it, and both are ignored while the name is empty (§22.42.3).
+  void _go_to_public_profile() {
+    if (_nameController.text.trim().isEmpty) return;
+    _goTo(OnboardingStep.publicProfile);
   }
 
   // -------------------------------------------------------------------------
@@ -488,6 +564,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// Save private and public profiles at the end of the public-profile step.
   ///
   /// Writes both profiles to disk, then advances to the disclosures step.
+  /// The single forward button ("Skip" or "Next") and the field's keyboard
+  /// Done key both call this (§22.42.3b).
   void _saveProfiles() {
     final bridge = context.read<BackendBridge>();
 
@@ -549,15 +627,29 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
     // Write the screen-lock security config (§3.6.4, §22.27).
     // Called immediately after PIN is set so the lock behaviour is active
-    // from the user's very first session.
-    bridge.setSecurityConfig({
+    // from the user's very first session.  A failed write is reported: the
+    // PIN is set, but the lock behaviour the user chose is not, and that
+    // must not look like success.
+    final config_ok = bridge.setSecurityConfig({
       'requirePinAfterLock': _requirePinAfterLock,
       'lockTimeoutSecs': _lockTimeoutSecs,
     });
+    if (!config_ok) {
+      setState(
+        () => _error =
+            bridge.getLastError() ?? "Couldn't save the lock settings.",
+      );
+      return;
+    }
 
     // PIN set successfully — proceed to Done.
     _goTo(OnboardingStep.done);
   }
+
+  /// Whether both PIN fields hold at least the 4-digit minimum (§22.42.5).
+  /// Drives the Set PIN button and the confirm field's keyboard Done key.
+  bool get _pin_ready =>
+      _pinController.text.length >= 4 && _pinConfirmController.text.length >= 4;
 
   // -------------------------------------------------------------------------
   // Build — top-level scaffold
@@ -595,7 +687,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   // AnimatedSwitcher cross-fades between its children when the
                   // key changes.  Each step widget has a ValueKey(_step) so
                   // Flutter detects the change and plays the transition.
-                  duration: const Duration(milliseconds: 250),
+                  // Reduced motion (§22.1.7): the fade is skipped entirely.
+                  duration: motion_duration(
+                    context,
+                    const Duration(milliseconds: 250),
+                  ),
                   transitionBuilder: (child, anim) =>
                       FadeTransition(opacity: anim, child: child),
                   child: _buildCurrentStep(),
@@ -616,13 +712,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       OnboardingStep.identity => _buildIdentity(),
       OnboardingStep.publicProfile => _buildPublicProfile(),
       OnboardingStep.disclosures => _buildDisclosures(),
+      OnboardingStep.privacyStyle => _buildPrivacyStyle(),
       OnboardingStep.pinSetup => _buildPinSetup(),
       OnboardingStep.done => _buildDone(),
     };
   }
 
   // =========================================================================
-  // Step 0 — Welcome
+  // 1 — Welcome
   // =========================================================================
 
   /// Builds the Welcome screen (§22.42.1).
@@ -713,7 +810,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // =========================================================================
-  // Step 1 — Import Backup
+  // 2 — Import Backup
   // =========================================================================
 
   /// Builds the Import Backup screen (§22.42.2).
@@ -798,7 +895,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // =========================================================================
-  // Step 2 — Your Identity
+  // 3 — Your Identity
   // =========================================================================
 
   /// Builds the Your Identity screen (§22.42.3).
@@ -812,11 +909,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// from the user's standpoint this IS them, not a persona layer.
   ///
   /// The "Next" button is disabled until the name field contains at least one
-  /// non-whitespace character.  This prevents advancing with no name.
+  /// non-whitespace character.  A disabled forward action says why (§22.42
+  /// design rule): while Next is disabled a helper line under it reads "Add a
+  /// name to continue", and the keyboard Done key is the same action as Next.
   Widget _buildIdentity() {
-    // Read the name text to drive button enable/disable state.  We use a
-    // ValueListenableBuilder so the button re-renders on every keystroke
-    // without calling setState() on the full State object.
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+    // Whether the forward action is available right now.
+    final has_name = _nameController.text.trim().isNotEmpty;
     return Column(
       key: const ValueKey(OnboardingStep.identity),
       mainAxisSize: MainAxisSize.min,
@@ -838,12 +938,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           controller: _nameController,
           autofocus: true,
           textCapitalization: TextCapitalization.words,
+          // The keyboard Done key is Next (§22.42.3); the handler ignores an
+          // empty name exactly like the disabled button does.
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _go_to_public_profile(),
           decoration: const InputDecoration(
             labelText: 'Your name',
             hintText: 'What trusted contacts will call you',
           ),
-          // Rebuild whenever the text changes so the Next button reflects the
-          // current state without a full setState().
+          // Rebuild whenever the text changes so the Next button and its
+          // helper line reflect the current state.
           onChanged: (_) => setState(() {}),
         ),
 
@@ -871,7 +975,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             return GestureDetector(
               onTap: () => setState(() => _selectedColorIndex = i),
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
+                // Reduced motion (§22.1.7): the border change is immediate.
+                duration: motion_duration(
+                  context,
+                  const Duration(milliseconds: 150),
+                ),
                 width: 36,
                 height: 36,
                 decoration: BoxDecoration(
@@ -900,9 +1008,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         // Clarifying note — keeps the "private" concept clear.
         Text(
           'Shared only with contacts you explicitly trust.',
-          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
+          style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
         ),
 
         const SizedBox(height: 28),
@@ -912,12 +1018,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           width: double.infinity,
           height: 52,
           child: FilledButton(
-            onPressed: _nameController.text.trim().isEmpty
-                ? null
-                : () => _goTo(OnboardingStep.publicProfile),
+            onPressed: has_name ? _go_to_public_profile : null,
             child: const Text('Next'),
           ),
         ),
+
+        // A disabled forward action says why (§22.42.3).  Shown only while
+        // Next is disabled, so the grey button is never the only signal;
+        // it disappears as soon as a name exists.
+        if (!has_name)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              'Add a name to continue',
+              style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+            ),
+          ),
 
         const SizedBox(height: 16),
       ],
@@ -925,7 +1041,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // =========================================================================
-  // Step 3 — Public Presence
+  // 4 — Public Presence
   // =========================================================================
 
   /// Builds the Public Presence screen (§22.42.3b).
@@ -933,13 +1049,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   /// This step is entirely optional.  The user can type a public display name
   /// that strangers on the mesh will see, or leave it blank to stay anonymous.
   ///
-  /// When the user taps Next or Skip, _saveProfiles() is called to write both
-  /// the private and public profiles, then the wizard moves to the disclosures
-  /// step.
-  ///
-  /// "Skip" and "Next" both call the same handler — the difference is only
-  /// visual ("Skip" is a TextButton, "Next" is a FilledButton).
+  /// One way forward per step (§22.42.3b): a single filled button whose label
+  /// tells the truth about what pressing it does — "Skip" while the field is
+  /// empty (no public profile is created) and "Next" once it has text (the
+  /// public name is saved).  Both states, and the field's keyboard Done key,
+  /// call _saveProfiles(), which writes both profiles and moves on to the
+  /// disclosures step.
   Widget _buildPublicProfile() {
+    // Label of the one forward button; it flips as the user types.
+    final has_public_name = _publicNameController.text.trim().isNotEmpty;
     return Column(
       key: const ValueKey(OnboardingStep.publicProfile),
       mainAxisSize: MainAxisSize.min,
@@ -958,10 +1076,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         TextField(
           controller: _publicNameController,
           textCapitalization: TextCapitalization.words,
+          // Keyboard Done is the same forward action as the button.
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _saveProfiles(),
           decoration: const InputDecoration(
             labelText: 'Public name (optional)',
             hintText: 'Visible to anyone on the mesh',
           ),
+          // Rebuild on every keystroke so the button label follows the field.
+          onChanged: (_) => setState(() {}),
         ),
 
         const SizedBox(height: 10),
@@ -976,20 +1099,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
         const SizedBox(height: 28),
 
-        // Next — saves profile then advances to disclosures.
+        // The one forward button.  "Skip" and "Next" are the same action
+        // with an honest label; no separate text Skip button is drawn.
         SizedBox(
           width: double.infinity,
           height: 52,
           child: FilledButton(
             onPressed: _saveProfiles,
-            child: const Text('Next'),
+            child: Text(has_public_name ? 'Next' : 'Skip'),
           ),
         ),
-
-        const SizedBox(height: 8),
-
-        // Skip — also saves (with empty public name) and advances.
-        TextButton(onPressed: _saveProfiles, child: const Text('Skip')),
 
         const SizedBox(height: 16),
       ],
@@ -997,7 +1116,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // =========================================================================
-  // Step 4 — Ambient Disclosures
+  // 5 — How Mesh Infinity works (ambient disclosures)
   // =========================================================================
 
   /// Builds the Ambient Disclosures screen (§22.23, §22.27.1).
@@ -1088,9 +1207,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 shrinkWrap: true,
                 padding: const EdgeInsets.all(16),
                 children: [
-                  const _DisclosureItem(
+                  // Brand blue as an icon foreground uses the per-theme
+                  // token (§22.1.1, CMR-019); the 12% tint behind it is
+                  // derived from the same colour inside _DisclosureItem.
+                  _DisclosureItem(
                     icon: Icons.lock_outline_rounded,
-                    iconColor: MeshTheme.brand,
+                    iconColor: colors.brand_fg,
                     title: 'Your messages are end-to-end encrypted.',
                     body:
                         'Nobody — not even us — can read your messages. '
@@ -1119,9 +1241,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         'and data.',
                   ),
                   const SizedBox(height: 16),
-                  const _DisclosureItem(
+                  _DisclosureItem(
                     icon: Icons.storage_outlined,
-                    iconColor: MeshTheme.brand,
+                    iconColor: colors.brand_fg,
                     title:
                         'Messages wait on trusted nodes for offline contacts.',
                     body:
@@ -1156,7 +1278,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         // impossible, so the hint fades out.
         AnimatedOpacity(
           opacity: _disclosures_scrollable && !_disclosuresRead ? 1.0 : 0.0,
-          duration: const Duration(milliseconds: 200),
+          // Reduced motion (§22.1.7): the hint appears and disappears at once.
+          duration: motion_duration(context, const Duration(milliseconds: 200)),
           child: Text(
             'Scroll to read all',
             style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
@@ -1179,7 +1302,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           height: 52,
           child: FilledButton(
             onPressed: _disclosuresRead
-                ? () => _goTo(OnboardingStep.pinSetup)
+                ? () => _goTo(OnboardingStep.privacyStyle)
                 : null,
             child: const Text('I understand'),
           ),
@@ -1191,15 +1314,105 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // =========================================================================
-  // Step 5 — PIN Setup
+  // 6 — Privacy style
+  // =========================================================================
+
+  /// Builds the Privacy style screen (§22.42.4a, §22.27 item 3).
+  ///
+  /// Three presets with the exact §22.27 titles and one-line descriptions,
+  /// Everyday pre-selected.  The wording rules of §22.27 apply verbatim: no
+  /// threat-model quiz and no examples that ask the user to self-identify as
+  /// endangered — those explanations live in help, not here.
+  ///
+  /// Next is always enabled because a preset is always selected; it writes
+  /// the matching `ThreatContext` through the bridge and moves to the PIN
+  /// offer.  Back returns to the disclosures.
+  Widget _buildPrivacyStyle() {
+    final cs = Theme.of(context).colorScheme;
+    final tt = Theme.of(context).textTheme;
+
+    return Column(
+      key: const ValueKey(OnboardingStep.privacyStyle),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(height: 24),
+
+        // Title verbatim from §22.42.4a; the rows and helper line below are
+        // the whole explanation, so no subtitle is drawn.
+        const _StepHeader(title: 'Choose your default privacy style'),
+
+        const SizedBox(height: 16),
+
+        if (_error != null) ...[
+          _ErrorBanner(message: _error!),
+          const SizedBox(height: 16),
+        ],
+
+        // RadioGroup owns the selected value; each row only names its own.
+        // The three rows map 1:1 onto the backend ThreatContext levels.
+        RadioGroup<int>(
+          groupValue: _privacy_level,
+          onChanged: (v) => setState(() => _privacy_level = v ?? 0),
+          child: const Column(
+            children: [
+              _PrivacyStyleRow(
+                level: 0,
+                title: 'Everyday',
+                description:
+                    'Fastest and most familiar; good for family, friends, '
+                    'school, work, and communities.',
+              ),
+              _PrivacyStyleRow(
+                level: 1,
+                title: 'More private',
+                description:
+                    'Uses quieter discovery and fewer activity signals.',
+              ),
+              _PrivacyStyleRow(
+                level: 2,
+                title: 'Lockdown',
+                description: 'Most private; slower and stricter.',
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 8),
+
+        // The choice is never final: say where it can be changed.
+        Text(
+          'You can change this any time in Settings → Privacy & Safety.',
+          style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+          textAlign: TextAlign.center,
+        ),
+
+        const SizedBox(height: 24),
+
+        // Always enabled: a preset is always selected.
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton(
+            onPressed: _save_privacy_style,
+            child: const Text('Next'),
+          ),
+        ),
+
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  // =========================================================================
+  // 7 — PIN Setup
   // =========================================================================
 
   /// Builds the PIN Setup screen (§22.42.5, §22.27.2).
   ///
   /// PIN setup is "strongly encouraged" but skippable with acknowledgment.
   /// Back from this step closes an open sub-form first, then returns to the
-  /// disclosures; Done never comes back here, so the PIN choice is final
-  /// once Done is reached (a PIN can still be changed in Settings).
+  /// privacy style step; Done never comes back here, so the PIN choice is
+  /// final once Done is reached (a PIN can still be changed in Settings).
   ///
   /// Three sub-states exist within this step:
   ///   1. Default: icon + explanation + "Set a PIN" / "Skip for now" buttons.
@@ -1218,8 +1431,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       children: [
         const SizedBox(height: 32),
 
-        // Brand icon for the PIN concept.
-        const Icon(Icons.pin_outlined, size: 48, color: MeshTheme.brand),
+        // Brand icon for the PIN concept — brand as a foreground reads the
+        // per-theme token (§22.1.1, CMR-019).
+        Icon(Icons.pin_outlined, size: 48, color: MeshColors.of(context).brand_fg),
 
         const SizedBox(height: 16),
 
@@ -1301,16 +1515,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   /// PIN form sub-state.
   ///
-  /// Inline PIN entry and confirmation.  Minimum 4 digits (§22.27 / §22.42.5).
-  /// "Set PIN" button is disabled until both fields are non-empty and at least
-  /// 4 characters long.  Mismatch is shown as error text on the confirm field.
+  /// Inline PIN entry and confirmation.  4 to 16 digits (§22.27 / §22.42.5).
+  /// "Set PIN" is disabled until both fields hold at least 4 digits, and the
+  /// length rule is always visible as helper text under the confirm field
+  /// (same wording as PinScreen, §22.10.10) so the disabled button says why.
+  /// Done on the confirm field is the keyboard's Set PIN.  Mismatch is shown
+  /// as error text on the confirm field.
   Widget _buildPinForm(ColorScheme cs, TextTheme tt) {
-    final pinLen = _pinController.text.length;
-    final confirmLen = _pinConfirmController.text.length;
-
-    // Enable the Set PIN button only when both fields have at least 4 digits.
-    final pinReady = pinLen >= 4 && confirmLen >= 4;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -1329,6 +1540,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           obscureText: true,
           maxLength: 16,
           autofocus: true,
+          // Next moves the keyboard focus to the confirm field.
+          textInputAction: TextInputAction.next,
           onChanged: (_) => setState(() => _pinMismatch = false),
           decoration: const InputDecoration(
             labelText: 'PIN',
@@ -1347,10 +1560,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           ),
           obscureText: true,
           maxLength: 16,
+          // Done on the confirm field is the keyboard's "Set PIN"; it does
+          // nothing while the form is invalid, exactly like the button.
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) {
+            if (_pin_ready) _confirmPin();
+          },
           onChanged: (_) => setState(() => _pinMismatch = false),
           decoration: InputDecoration(
             labelText: 'Confirm PIN',
             counterText: '',
+            // The disabled Set PIN button says why: the length rule is
+            // always visible (§22.42.5, same wording as PinScreen).
+            helperText: '4 to 16 digits',
             // Show error text only if the user has attempted a confirmation
             // and the values don't match.
             errorText: _pinMismatch ? 'PINs do not match' : null,
@@ -1400,7 +1622,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           width: double.infinity,
           height: 52,
           child: FilledButton(
-            onPressed: pinReady ? _confirmPin : null,
+            onPressed: _pin_ready ? _confirmPin : null,
             child: const Text('Set PIN'),
           ),
         ),
@@ -1492,16 +1714,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   // =========================================================================
-  // Step 6 — Done
+  // 8 — Done
   // =========================================================================
 
-  /// Builds the Done screen (final step of §22.42).
+  /// Builds the Done screen (§22.42.7) — "what next".
   ///
-  /// Confirms that setup is complete and the node is now participating in the
-  /// mesh.  "Get Started" runs _finish_onboarding(): the backend flag is
-  /// persisted first, then widget.onComplete() dismisses the onboarding
-  /// screen and shows AppShell.  If persisting fails the step stays, with
-  /// the error shown above the button (§22.42.7).
+  /// Two actions, both of which run _finish_onboarding(): the backend flag
+  /// is persisted first, then widget.onComplete() dismisses the onboarding
+  /// screen and shows AppShell.  The primary "Add a contact" additionally
+  /// has app.dart push PairContactScreen (§22.8.3) on top of the shell; the
+  /// secondary "Go to Chat" lands on the Chat section's empty state.  If
+  /// persisting fails the step stays, with the error shown above the buttons.
   Widget _buildDone() {
     final cs = Theme.of(context).colorScheme;
     final tt = Theme.of(context).textTheme;
@@ -1528,16 +1751,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         const SizedBox(height: 24),
 
         Text(
-          'You\'re set up.',
+          'You\'re set up',
           style: tt.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
           textAlign: TextAlign.center,
         ),
 
         const SizedBox(height: 12),
 
+        // One honest line: the app is ready, and nothing happens until the
+        // user has a contact — which is why the primary action adds one.
         Text(
-          'Your node is now part of the mesh.\n'
-          'You can start messaging and connecting with people.',
+          'Mesh Infinity is ready. Nothing works until you have someone to '
+          'talk to.',
           style: tt.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
           textAlign: TextAlign.center,
         ),
@@ -1551,19 +1776,64 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           const SizedBox(height: 16),
         ],
 
-        // Final CTA — persists the flag, then hands control to app.dart.
+        // Primary "what next": persists the flag, then app.dart opens
+        // PairContactScreen on top of the shell.
         SizedBox(
           width: double.infinity,
           height: 52,
           child: FilledButton.icon(
-            onPressed: _finish_onboarding,
-            icon: const Icon(Icons.arrow_forward_rounded),
-            label: const Text('Get Started'),
+            onPressed: () => _finish_onboarding(OnboardingExit.addContact),
+            icon: const Icon(Icons.person_add_rounded),
+            label: const Text('Add a contact'),
           ),
+        ),
+
+        const SizedBox(height: 8),
+
+        // Secondary: persists the flag and lands on Chat's empty state.
+        TextButton(
+          onPressed: () => _finish_onboarding(OnboardingExit.chat),
+          child: const Text('Go to Chat'),
         ),
 
         const SizedBox(height: 32),
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// _PrivacyStyleRow
+// ---------------------------------------------------------------------------
+
+/// One preset row of the Privacy style step: a RadioListTile whose value is
+/// the backend ThreatContext level the preset maps to.
+///
+/// The enclosing [RadioGroup] supplies the selected value and the change
+/// handler, so the row itself only carries its own level and copy.
+class _PrivacyStyleRow extends StatelessWidget {
+  const _PrivacyStyleRow({
+    required this.level,
+    required this.title,
+    required this.description,
+  });
+
+  /// Backend ThreatContext level: 0 Normal, 1 Elevated, 2 Critical.
+  final int level;
+
+  /// Preset title, verbatim from §22.27 item 3.
+  final String title;
+
+  /// One-line description, verbatim from §22.27 item 3.
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    return RadioListTile<int>(
+      value: level,
+      title: Text(title),
+      subtitle: Text(description),
+      contentPadding: EdgeInsets.zero,
     );
   }
 }
@@ -1592,8 +1862,12 @@ class _BrandLogo extends StatelessWidget {
       'assets/logo.png',
       width: size,
       height: size,
-      errorBuilder: (context, error, _) =>
-          Icon(Icons.hub_rounded, size: size, color: MeshTheme.brand),
+      // The fallback glyph is a brand foreground (§22.1.1, CMR-019).
+      errorBuilder: (context, error, _) => Icon(
+        Icons.hub_rounded,
+        size: size,
+        color: MeshColors.of(context).brand_fg,
+      ),
     );
   }
 }
@@ -1625,8 +1899,12 @@ class _StepHeader extends StatelessWidget {
           'assets/logo.png',
           width: 56,
           height: 56,
-          errorBuilder: (context, error, _) =>
-              const Icon(Icons.hub_rounded, size: 56, color: MeshTheme.brand),
+          // The fallback glyph is a brand foreground (§22.1.1, CMR-019).
+          errorBuilder: (context, error, _) => Icon(
+            Icons.hub_rounded,
+            size: 56,
+            color: MeshColors.of(context).brand_fg,
+          ),
         ),
 
         const SizedBox(height: 8),

@@ -411,7 +411,7 @@ class _SecurityBanner extends StatelessWidget {
             1 => colors.sec_amber,
             2 => colors.sec_red,
             3 => colors.sec_purple,
-            _ => MeshTheme.brand,
+            _ => colors.brand_fg,
           },
           Icons.shield_outlined,
           switch (settings.settings?.threatContext ?? 0) {

@@ -306,7 +306,8 @@ class _ExitNodeTile extends StatelessWidget {
         backgroundColor: MeshTheme.brand.withValues(alpha: 0.15),
         child: Text(
           _avatarLabel(peer),
-          style: theme.textTheme.titleSmall?.copyWith(color: MeshTheme.brand),
+          // Initials are text on a light tint: brand foreground token.
+          style: theme.textTheme.titleSmall?.copyWith(color: colors.brand_fg),
         ),
       ),
       title: Text(_displayName(peer)),

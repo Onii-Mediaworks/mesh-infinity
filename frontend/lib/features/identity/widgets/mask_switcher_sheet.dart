@@ -121,7 +121,12 @@ class _MaskSwitcherSheetState extends State<MaskSwitcherSheet> {
                     ),
                   )
                 : null,
-            trailing: const Icon(Icons.check_rounded, color: MeshTheme.brand),
+            // Selected-state glyph: brand as foreground goes through the
+            // per-theme token (§22.1.1, CMR-019).
+            trailing: Icon(
+              Icons.check_rounded,
+              color: MeshColors.of(context).brand_fg,
+            ),
             selected: true,
           ),
 

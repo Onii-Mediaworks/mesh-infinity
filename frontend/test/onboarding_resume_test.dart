@@ -40,7 +40,7 @@ Future<void> pump_onboarding(
       value: bridge,
       child: MaterialApp(
         theme: MeshTheme.light(),
-        home: OnboardingScreen(initial_step: step, onComplete: () {}),
+        home: OnboardingScreen(initial_step: step, onComplete: (_) {}),
       ),
     ),
   );

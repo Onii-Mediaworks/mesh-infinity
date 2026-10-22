@@ -34,7 +34,8 @@ import '../../backend/backend_bridge.dart';
 import '../../core/widgets/empty_state.dart';
 // EmptyState — shared zero-data placeholder widget.
 import '../../app/app_theme.dart';
-// MeshTheme.brand — brand colour used for the author avatar tint.
+// MeshTheme.brand — brand seed used for the author avatar tint;
+// MeshColors.brand_fg — the per-theme foreground for the initial letter.
 
 /// Aggregated post feed from all gardens the user has joined.
 ///
@@ -168,9 +169,11 @@ class _PostTile extends StatelessWidget {
               backgroundColor: MeshTheme.brand.withValues(alpha: 0.15),
               child: Text(
                 authorName.isNotEmpty ? authorName[0].toUpperCase() : '?',
-                style: const TextStyle(
+                // The initial is text on a light tint, so it uses the
+                // contrast-safe brand foreground (§22.1.1, CMR-019).
+                style: TextStyle(
                   fontSize: 13, fontWeight: FontWeight.w700,
-                  color: MeshTheme.brand,
+                  color: MeshColors.of(context).brand_fg,
                 ),
               ),
             ),

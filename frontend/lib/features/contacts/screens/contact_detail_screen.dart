@@ -294,7 +294,9 @@ void _confirm_promote(BuildContext context, PeerModel peer, TrustLevel level) {
   showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
-      icon: const Icon(Icons.lock_outlined, color: MeshTheme.brand),
+      // Brand blue as an icon foreground goes through the per-theme token
+      // (§22.1.1 "Brand as foreground", CMR-019), never the raw seed.
+      icon: Icon(Icons.lock_outlined, color: MeshColors.of(ctx).brand_fg),
       title: Text('Share your identity with $name?'),
       content: Text(
         'Trusting $name opens a private channel between you. Your private '

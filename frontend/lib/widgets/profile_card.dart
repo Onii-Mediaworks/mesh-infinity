@@ -114,7 +114,8 @@ class ProfileCard extends StatelessWidget {
   /// Resolved against [colors] so the green follows the active theme.
   Color _profile_tier_color(MeshColors colors) {
     if (contact.trustLevel.value >= 6) return colors.sec_green;
-    return MeshTheme.brand;
+    // Brand blue as a foreground reads the per-theme token (CMR-019).
+    return colors.brand_fg;
   }
 
   /// Derives a stable avatar background colour from the peer ID.
