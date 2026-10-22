@@ -72,8 +72,7 @@ fn kill_switch_partitions_all_links() {
         "no packets must arrive at c after the kill-switch"
     );
     assert_eq!(
-        sim.delivered_packets,
-        delivered_at_wipe,
+        sim.delivered_packets, delivered_at_wipe,
         "delivered counter must not increase after kill-switch"
     );
     assert!(
@@ -96,11 +95,11 @@ fn kill_switch_action_guards_subsequent_sends() {
         SimulatorAction::CreateNode,
         SimulatorAction::CreateNode,
         SimulatorAction::PairNodes,
-        SimulatorAction::SendMessage,      // pre-kill: should deliver
+        SimulatorAction::SendMessage,       // pre-kill: should deliver
         SimulatorAction::TriggerKillswitch, // partitions all links, sets `killed`
-        SimulatorAction::SendMessage,      // must be no-op (killed guard)
-        SimulatorAction::SendMessage,      // must be no-op (killed guard)
-        SimulatorAction::AdvanceTime,      // time still advances
+        SimulatorAction::SendMessage,       // must be no-op (killed guard)
+        SimulatorAction::SendMessage,       // must be no-op (killed guard)
+        SimulatorAction::AdvanceTime,       // time still advances
     ]);
 
     assert_eq!(report.executed_actions, 8);
@@ -125,9 +124,9 @@ fn kill_switch_after_key_rotation_is_effective() {
         SimulatorAction::PairNodes,
         SimulatorAction::SendMessage,
         SimulatorAction::RotateKey,
-        SimulatorAction::SendMessage,      // post-rotation delivery
+        SimulatorAction::SendMessage, // post-rotation delivery
         SimulatorAction::TriggerKillswitch,
-        SimulatorAction::SendMessage,      // post-kill: no-op
+        SimulatorAction::SendMessage, // post-kill: no-op
         SimulatorAction::AdvanceTime,
     ]);
 

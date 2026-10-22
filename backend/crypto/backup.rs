@@ -748,7 +748,10 @@ mod tests {
                 valid_seen += 1;
                 // Only the v1 and v2 seeds are structurally valid; anything
                 // else passing means the gate has a hole.
-                assert!(envelope.version == 1 || envelope.version == 2, "unexpected pass: {path:?}");
+                assert!(
+                    envelope.version == 1 || envelope.version == 2,
+                    "unexpected pass: {path:?}"
+                );
             }
         }
         // seed_01 (v2) and seed_02 (v1 legacy) are both structurally valid.

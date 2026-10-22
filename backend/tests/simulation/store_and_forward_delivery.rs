@@ -136,6 +136,10 @@ fn partition_then_restore_resumes_delivery() {
     sim.tick();
 
     let b = sim.node("b").expect("b must exist");
-    assert_eq!(b.inbox.len(), 1, "delivery must resume after partition is restored");
+    assert_eq!(
+        b.inbox.len(),
+        1,
+        "delivery must resume after partition is restored"
+    );
     assert_eq!(b.inbox[0], b"after-restore");
 }

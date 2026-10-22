@@ -717,10 +717,22 @@ mod tests {
         let rec_a = wrap_key_under(&[0xAAu8; 32], &key_a, &salt, KdfParams::SPEC).expect("wrap a");
         let rec_b = wrap_key_under(&[0xBBu8; 32], &key_b, &salt, KdfParams::SPEC).expect("wrap b");
 
-        assert_eq!(*open_wrapped_key(&rec_a, &key_a).expect("a opens a"), [0xAAu8; 32]);
-        assert!(matches!(open_wrapped_key(&rec_b, &key_a), Err(PinError::WrongPin)));
-        assert_eq!(*open_wrapped_key(&rec_b, &key_b).expect("b opens b"), [0xBBu8; 32]);
-        assert!(matches!(open_wrapped_key(&rec_a, &key_b), Err(PinError::WrongPin)));
+        assert_eq!(
+            *open_wrapped_key(&rec_a, &key_a).expect("a opens a"),
+            [0xAAu8; 32]
+        );
+        assert!(matches!(
+            open_wrapped_key(&rec_b, &key_a),
+            Err(PinError::WrongPin)
+        ));
+        assert_eq!(
+            *open_wrapped_key(&rec_b, &key_b).expect("b opens b"),
+            [0xBBu8; 32]
+        );
+        assert!(matches!(
+            open_wrapped_key(&rec_a, &key_b),
+            Err(PinError::WrongPin)
+        ));
     }
 
     #[test]
@@ -850,7 +862,10 @@ mod tests {
             let mut edited = sealed.clone();
             edited[idx] ^= 0x01;
             assert!(
-                matches!(open_attempt_state(&edited, &key), Err(PinError::CounterTampered)),
+                matches!(
+                    open_attempt_state(&edited, &key),
+                    Err(PinError::CounterTampered)
+                ),
                 "flipping byte {idx} must fail authentication"
             );
         }

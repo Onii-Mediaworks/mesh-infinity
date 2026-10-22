@@ -245,9 +245,9 @@ mod tests {
     /// Fixed inputs shared by the tunnel PSK tests.
     fn psk_inputs() -> ([u8; 32], [u8; 32], [u8; 32], PeerId, PeerId) {
         (
-            [0x11; 32],       // ecdh_ss
-            [0x22; 32],       // kem_ss
-            [0x33; 32],       // channel_key
+            [0x11; 32],         // ecdh_ss
+            [0x22; 32],         // kem_ss
+            [0x33; 32],         // channel_key
             PeerId([0x01; 32]), // peer a
             PeerId([0x02; 32]), // peer b
         )
@@ -323,6 +323,9 @@ mod tests {
     fn test_epoch_encoding() {
         assert_eq!(encode_tunnel_epoch(0), [0u8; 8]);
         assert_eq!(encode_tunnel_epoch(1), [0, 0, 0, 0, 0, 0, 0, 1]);
-        assert_eq!(encode_tunnel_epoch(0x0102030405060708), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            encode_tunnel_epoch(0x0102030405060708),
+            [1, 2, 3, 4, 5, 6, 7, 8]
+        );
     }
 }

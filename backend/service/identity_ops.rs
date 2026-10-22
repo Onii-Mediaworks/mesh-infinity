@@ -18,8 +18,7 @@
 
 use crate::crypto::backup::EncryptedBackup;
 use crate::identity::pin::{
-    self, KdfParams, PinAttemptState, PinError, PinWrappedKey, SALT_LEN,
-    UNLOCK_RESPONSE_DEADLINE,
+    self, KdfParams, PinAttemptState, PinError, PinWrappedKey, SALT_LEN, UNLOCK_RESPONSE_DEADLINE,
 };
 use crate::identity::self_identity::{
     derive_kem_keypair, encode_wrapped_key_file, read_master_key_record, write_atomic,
@@ -856,7 +855,10 @@ impl MeshRuntime {
     /// the plaintext `pin_attempts.json` (if any) is carried over, sealed,
     /// and the plaintext file removed. A mode 0x02 file is only ever written
     /// together with a sealed counter, so the bootstrap never applies to it.
-    fn load_pin_attempt_state(&self, legacy_record: bool) -> Result<Option<PinAttemptState>, String> {
+    fn load_pin_attempt_state(
+        &self,
+        legacy_record: bool,
+    ) -> Result<Option<PinAttemptState>, String> {
         let key = self.load_counter_key()?;
         let sealed = match std::fs::read(self.pin_attempt_state_path()) {
             Ok(bytes) => Some(bytes),
@@ -1127,14 +1129,22 @@ impl MeshRuntime {
 
         // Everything that touches disk runs off the response path.
         let work = move || {
-            finish_duress_rotation(&data_dir, &key_bytes, &dat_bytes, &counter_key, &sealed_counter)
+            finish_duress_rotation(
+                &data_dir,
+                &key_bytes,
+                &dat_bytes,
+                &counter_key,
+                &sealed_counter,
+            )
         };
         if let Err(err) = std::thread::Builder::new()
             .name("duress-rotation".to_string())
             .spawn(work.clone())
         {
             // No thread available: never skip the erase, run it here.
-            eprintln!("[identity] WARNING: duress rotation thread unavailable ({err}); running inline");
+            eprintln!(
+                "[identity] WARNING: duress rotation thread unavailable ({err}); running inline"
+            );
             work();
         }
         Ok(fresh)
@@ -1162,7 +1172,10 @@ impl MeshRuntime {
         // A legacy record cannot share its salt; unlock migrates it, so this
         // only happens if the record was swapped while unlocked.
         let Some(salt) = wrapped.shared_salt() else {
-            return Err("Unlock PIN format is outdated; unlock again before setting a duress PIN".to_string());
+            return Err(
+                "Unlock PIN format is outdated; unlock again before setting a duress PIN"
+                    .to_string(),
+            );
         };
         // One derivation under the shared salt.
         let wrapping_key = pin::derive_key_from_pin(pin.as_bytes(), &salt, wrapped.params)
@@ -1178,8 +1191,8 @@ impl MeshRuntime {
         };
         let blob = pin::wrap_key_under(&identity.master_key, &wrapping_key, &salt, wrapped.params)
             .map_err(|e| format!("Failed to set duress PIN: {e}"))?;
-        let encoded = serde_json::to_vec(&blob)
-            .map_err(|e| format!("Failed to encode duress PIN: {e}"))?;
+        let encoded =
+            serde_json::to_vec(&blob).map_err(|e| format!("Failed to encode duress PIN: {e}"))?;
         write_atomic(&self.duress_pin_path(), &encoded)
             .map_err(|e| format!("Failed to persist duress PIN: {e}"))?;
         Ok(())
@@ -3144,15 +3157,20 @@ mod tests {
         assert!(!rt.identity_unlocked);
 
         let started = Instant::now();
-        rt.unlock_identity(Some("1234".into())).expect("correct PIN unlocks");
+        rt.unlock_identity(Some("1234".into()))
+            .expect("correct PIN unlocks");
         let t_ok = started.elapsed();
         assert!(rt.identity_unlocked);
         rt.reset_identity();
 
         let started = Instant::now();
-        rt.unlock_identity(Some("9999".into())).expect("duress PIN looks like a normal unlock");
+        rt.unlock_identity(Some("9999".into()))
+            .expect("duress PIN looks like a normal unlock");
         let t_duress = started.elapsed();
-        assert!(rt.identity_unlocked, "duress unlock presents an unlocked app");
+        assert!(
+            rt.identity_unlocked,
+            "duress unlock presents an unlocked app"
+        );
 
         for (name, t) in [("wrong", t_wrong), ("correct", t_ok), ("duress", t_duress)] {
             assert!(
@@ -3256,8 +3274,15 @@ mod tests {
         let err = rt.unlock_identity(Some("1234".into())).unwrap_err();
         assert!(err.contains("locked"), "unexpected error: {err}");
         assert!(!rt.identity_unlocked);
-        assert_eq!(read_sealed_counter(&dir), seeded, "counter must not be rewritten");
-        assert!(dir.path().join("identity.dat").exists(), "a lock is not a wipe");
+        assert_eq!(
+            read_sealed_counter(&dir),
+            seeded,
+            "counter must not be rewritten"
+        );
+        assert!(
+            dir.path().join("identity.dat").exists(),
+            "a lock is not a wipe"
+        );
     }
 
     /// Backoff is enforced from the sealed counter across a lock/unlock
@@ -3274,10 +3299,16 @@ mod tests {
                 wipe_threshold: None,
             },
         );
-        assert_eq!(rt.unlock_identity(Some("0000".into())).unwrap_err(), "Wrong PIN");
+        assert_eq!(
+            rt.unlock_identity(Some("0000".into())).unwrap_err(),
+            "Wrong PIN"
+        );
         let state = read_sealed_counter(&dir);
         assert_eq!(state.failed_attempts, 6);
-        assert!(state.last_failed_at > 0, "a real timestamp is recorded, never zero");
+        assert!(
+            state.last_failed_at > 0,
+            "a real timestamp is recorded, never zero"
+        );
 
         let err = rt.unlock_identity(Some("1234".into())).unwrap_err();
         assert!(err.contains("locked"), "unexpected error: {err}");
@@ -3297,8 +3328,14 @@ mod tests {
         assert_eq!(read_sealed_counter(&dir).wipe_threshold, Some(3));
         rt.reset_identity();
 
-        assert_eq!(rt.unlock_identity(Some("0000".into())).unwrap_err(), "Wrong PIN");
-        assert_eq!(rt.unlock_identity(Some("0001".into())).unwrap_err(), "Wrong PIN");
+        assert_eq!(
+            rt.unlock_identity(Some("0000".into())).unwrap_err(),
+            "Wrong PIN"
+        );
+        assert_eq!(
+            rt.unlock_identity(Some("0001".into())).unwrap_err(),
+            "Wrong PIN"
+        );
         let err = rt.unlock_identity(Some("0002".into())).unwrap_err();
         assert!(err.contains("erased"), "unexpected error: {err}");
         assert!(!dir.path().join("identity.dat").exists());
@@ -3334,11 +3371,18 @@ mod tests {
         rt.reset_identity();
 
         // A wrong PIN is counted on top of the carried-over history.
-        assert_eq!(rt.unlock_identity(Some("0000".into())).unwrap_err(), "Wrong PIN");
-        assert!(!dir.path().join("pin_attempts.json").exists(), "plaintext counter removed");
+        assert_eq!(
+            rt.unlock_identity(Some("0000".into())).unwrap_err(),
+            "Wrong PIN"
+        );
+        assert!(
+            !dir.path().join("pin_attempts.json").exists(),
+            "plaintext counter removed"
+        );
         assert_eq!(read_sealed_counter(&dir).failed_attempts, 3);
 
-        rt.unlock_identity(Some("4321".into())).expect("legacy PIN unlocks");
+        rt.unlock_identity(Some("4321".into()))
+            .expect("legacy PIN unlocks");
         let bytes = std::fs::read(dir.path().join("identity.key")).expect("key");
         match parse_master_key_record(&bytes).expect("parse") {
             MasterKeyRecord::Wrapped(w) => {
@@ -3359,15 +3403,20 @@ mod tests {
     fn change_pin_preserves_duress_and_rejects_collision() {
         let (dir, mut rt, original_pub) = locked_pin_runtime("1234", Some("9999"));
         rt.unlock_identity(Some("1234".into())).expect("unlock");
-        rt.change_pin("1234".into(), "5555".into()).expect("change pin");
+        rt.change_pin("1234".into(), "5555".into())
+            .expect("change pin");
         assert_eq!(
             rt.change_pin("5555".into(), "9999".into()).unwrap_err(),
             "New PIN must differ from the duress PIN"
         );
-        assert!(dir.path().join("pin.dat").exists(), "duress blob kept across PIN change");
+        assert!(
+            dir.path().join("pin.dat").exists(),
+            "duress blob kept across PIN change"
+        );
         rt.reset_identity();
 
-        rt.unlock_identity(Some("9999".into())).expect("duress still works");
+        rt.unlock_identity(Some("9999".into()))
+            .expect("duress still works");
         let fresh = wait_for_duress_rotation(&dir, "9999");
         assert_ne!(fresh.ed25519_pub, original_pub);
     }
@@ -3392,12 +3441,21 @@ mod tests {
     #[test]
     fn pin_verification_flows_require_unlock() {
         let (_dir, mut rt, _) = locked_pin_runtime("1234", Some("9999"));
-        assert!(rt.change_pin("1234".into(), "5555".into()).unwrap_err().contains("unlocked"));
-        assert!(rt.remove_pin("1234".into()).unwrap_err().contains("unlocked"));
+        assert!(rt
+            .change_pin("1234".into(), "5555".into())
+            .unwrap_err()
+            .contains("unlocked"));
+        assert!(rt
+            .remove_pin("1234".into())
+            .unwrap_err()
+            .contains("unlocked"));
         assert!(rt
             .change_duress_pin("9999".into(), "8888".into())
             .unwrap_err()
             .contains("unlocked"));
-        assert!(rt.remove_duress_pin("9999".into()).unwrap_err().contains("unlocked"));
+        assert!(rt
+            .remove_duress_pin("9999".into())
+            .unwrap_err()
+            .contains("unlocked"));
     }
 }

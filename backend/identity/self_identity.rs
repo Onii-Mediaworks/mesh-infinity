@@ -668,13 +668,19 @@ pub fn parse_master_key_record(key_data: &[u8]) -> Result<MasterKeyRecord, Ident
             // Fixed-width big-endian parameters follow the mode byte.
             let params = KdfParams {
                 m_cost: u32::from_be_bytes(
-                    key_data[1..5].try_into().map_err(|_| IdentityError::Format)?,
+                    key_data[1..5]
+                        .try_into()
+                        .map_err(|_| IdentityError::Format)?,
                 ),
                 t_cost: u32::from_be_bytes(
-                    key_data[5..9].try_into().map_err(|_| IdentityError::Format)?,
+                    key_data[5..9]
+                        .try_into()
+                        .map_err(|_| IdentityError::Format)?,
                 ),
                 p_cost: u32::from_be_bytes(
-                    key_data[9..13].try_into().map_err(|_| IdentityError::Format)?,
+                    key_data[9..13]
+                        .try_into()
+                        .map_err(|_| IdentityError::Format)?,
                 ),
             };
             // Window check before anything can run the KDF on them.
@@ -1158,11 +1164,23 @@ mod tests {
         ));
         let mut longer = bytes.clone();
         longer.push(0);
-        assert!(matches!(parse_master_key_record(&longer), Err(IdentityError::Format)));
-        assert!(matches!(parse_master_key_record(&[]), Err(IdentityError::Format)));
-        assert!(matches!(parse_master_key_record(&[0x7F]), Err(IdentityError::Format)));
+        assert!(matches!(
+            parse_master_key_record(&longer),
+            Err(IdentityError::Format)
+        ));
+        assert!(matches!(
+            parse_master_key_record(&[]),
+            Err(IdentityError::Format)
+        ));
+        assert!(matches!(
+            parse_master_key_record(&[0x7F]),
+            Err(IdentityError::Format)
+        ));
         // Plain mode with the wrong length is also refused.
-        assert!(matches!(parse_master_key_record(&[0x00; 20]), Err(IdentityError::Format)));
+        assert!(matches!(
+            parse_master_key_record(&[0x00; 20]),
+            Err(IdentityError::Format)
+        ));
     }
 
     /// The legacy 0x01 layout stays readable with the correct PIN, and

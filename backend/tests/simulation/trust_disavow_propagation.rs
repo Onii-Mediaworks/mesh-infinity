@@ -74,10 +74,10 @@ fn disavow_via_action_runner_survives_restore() {
         SimulatorAction::CreateNode,
         SimulatorAction::CreateNode,
         SimulatorAction::PairNodes,
-        SimulatorAction::SendMessage,  // pre-disavowal: should deliver
-        SimulatorAction::DisavowPeer,  // record + partition, permanent
-        SimulatorAction::RestoreLink,  // must NOT lift the disavowal
-        SimulatorAction::SendMessage,  // post-disavowal: should be dropped
+        SimulatorAction::SendMessage, // pre-disavowal: should deliver
+        SimulatorAction::DisavowPeer, // record + partition, permanent
+        SimulatorAction::RestoreLink, // must NOT lift the disavowal
+        SimulatorAction::SendMessage, // post-disavowal: should be dropped
         SimulatorAction::AdvanceTime,
     ]);
 

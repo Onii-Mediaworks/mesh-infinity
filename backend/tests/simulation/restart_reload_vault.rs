@@ -139,10 +139,10 @@ fn restart_does_not_restore_disavowed_link() {
         SimulatorAction::CreateNode,
         SimulatorAction::CreateNode,
         SimulatorAction::PairNodes,
-        SimulatorAction::SendMessage,       // delivers
-        SimulatorAction::DisavowPeer,       // permanent trust revocation
-        SimulatorAction::RestartNode,       // must not lift disavowal
-        SimulatorAction::SendMessage,       // still dropped (disavowal intact)
+        SimulatorAction::SendMessage, // delivers
+        SimulatorAction::DisavowPeer, // permanent trust revocation
+        SimulatorAction::RestartNode, // must not lift disavowal
+        SimulatorAction::SendMessage, // still dropped (disavowal intact)
         SimulatorAction::AdvanceTime,
     ]);
 

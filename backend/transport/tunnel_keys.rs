@@ -64,7 +64,9 @@ use crate::crypto::channel_key::{derive_tunnel_psk, encode_tunnel_epoch, TunnelE
 use crate::crypto::signing::{self, DOMAIN_TUNNEL_KEY_BINDING, DOMAIN_TUNNEL_PSK};
 use crate::crypto::x3dh::{MlKem768Dk, MlKem768Ek, KEM_CT_SIZE, KEM_EK_SIZE};
 use crate::identity::peer_id::PeerId;
-use crate::transport::wireguard::{check_header, TunnelPsk, WireGuardError, LINK_HEADER, LINK_HEADER_LEN};
+use crate::transport::wireguard::{
+    check_header, TunnelPsk, WireGuardError, LINK_HEADER, LINK_HEADER_LEN,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -184,7 +186,9 @@ impl RotationSchedule {
     /// `now`.
     fn next_due(&self, now: u64, draw: u64) -> u64 {
         let jitter = draw % self.max_jitter_secs.saturating_add(1);
-        let effective = self.interval_secs.saturating_sub(jitter.min(self.interval_secs));
+        let effective = self
+            .interval_secs
+            .saturating_sub(jitter.min(self.interval_secs));
         now.saturating_add(effective)
     }
 }
@@ -466,7 +470,11 @@ impl TunnelKeyRing {
 
     /// Produce the signed binding of the current generation to the mask's
     /// identity key.
-    pub fn binding(&self, identity_signing_secret: &[u8; 32], identity_pub: [u8; 32]) -> TunnelKeyBinding {
+    pub fn binding(
+        &self,
+        identity_signing_secret: &[u8; 32],
+        identity_pub: [u8; 32],
+    ) -> TunnelKeyBinding {
         let mut binding = TunnelKeyBinding {
             identity_pub,
             tunnel_pub: self.current.x25519_public,
@@ -475,7 +483,11 @@ impl TunnelKeyRing {
             created_at: self.current.created_at,
             signature: Vec::new(),
         };
-        binding.signature = signing::sign(identity_signing_secret, DOMAIN_TUNNEL_KEY_BINDING, &binding.signed_message());
+        binding.signature = signing::sign(
+            identity_signing_secret,
+            DOMAIN_TUNNEL_KEY_BINDING,
+            &binding.signed_message(),
+        );
         binding
     }
 }
@@ -661,7 +673,11 @@ pub struct PskInitiator {
 /// Redacting `Debug`: the epoch only, never the ephemeral or KEM secrets.
 impl std::fmt::Debug for PskInitiator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PskInitiator {{ epoch: {}, secrets: <redacted> }}", self.epoch)
+        write!(
+            f,
+            "PskInitiator {{ epoch: {}, secrets: <redacted> }}",
+            self.epoch
+        )
     }
 }
 
@@ -699,7 +715,11 @@ pub fn psk_initiate(
         kem_ct: kem_ct.as_slice().to_vec(),
         signature: Vec::new(),
     };
-    init.signature = signing::sign(&ctx.our_signing_secret, DOMAIN_TUNNEL_PSK, &init.signed_message(ctx));
+    init.signature = signing::sign(
+        &ctx.our_signing_secret,
+        DOMAIN_TUNNEL_PSK,
+        &init.signed_message(ctx),
+    );
 
     let state = PskInitiator {
         eph_secret,
@@ -719,7 +739,11 @@ impl PskInitiator {
 
     /// Verify the response and derive the PSK.  Consumes the state so the
     /// ephemeral secret and KEM secret are dropped (zeroized) exactly once.
-    pub fn complete(self, response: &PskResponse, ctx: &PskPeerContext) -> Result<TunnelPsk, TunnelKeyError> {
+    pub fn complete(
+        self,
+        response: &PskResponse,
+        ctx: &PskPeerContext,
+    ) -> Result<TunnelPsk, TunnelKeyError> {
         if response.epoch != self.epoch {
             return Err(TunnelKeyError::EpochMismatch);
         }
@@ -732,7 +756,9 @@ impl PskInitiator {
             return Err(TunnelKeyError::BadSignature);
         }
         // ecdh_ss = X25519(my_ephemeral_secret, their_ephemeral_public).
-        let ecdh = self.eph_secret.diffie_hellman(&X25519Public::from(response.eph_pub));
+        let ecdh = self
+            .eph_secret
+            .diffie_hellman(&X25519Public::from(response.eph_pub));
         let ecdh_ss = Zeroizing::new(*ecdh.as_bytes());
         let key = derive_tunnel_psk(
             &ecdh_ss,
@@ -802,10 +828,11 @@ pub fn psk_respond(
     if init.kem_ct.len() != KEM_CT_SIZE {
         return Err(TunnelKeyError::Kem);
     }
-    let dk_encoded =
-        Encoded::<MlKem768Dk>::try_from(generation.kem_dk.as_slice()).map_err(|_| TunnelKeyError::Kem)?;
+    let dk_encoded = Encoded::<MlKem768Dk>::try_from(generation.kem_dk.as_slice())
+        .map_err(|_| TunnelKeyError::Kem)?;
     let dk: MlKem768Dk = EncodedSizeUser::from_bytes(&dk_encoded);
-    let ct = ml_kem::Ciphertext::<MlKem768>::try_from(init.kem_ct.as_slice()).map_err(|_| TunnelKeyError::Kem)?;
+    let ct = ml_kem::Ciphertext::<MlKem768>::try_from(init.kem_ct.as_slice())
+        .map_err(|_| TunnelKeyError::Kem)?;
     let kem_ss_raw = dk.decapsulate(&ct).map_err(|_| TunnelKeyError::Kem)?;
     let mut kem_ss = Zeroizing::new([0u8; 32]);
     kem_ss.copy_from_slice(kem_ss_raw.as_slice());
@@ -953,7 +980,9 @@ mod tests {
         for _ in 0..8 {
             let ring = TunnelKeyRing::new(50, schedule);
             assert!(ring.next_rotation_at() <= 50 + DEFAULT_ROTATION_SECS);
-            assert!(ring.next_rotation_at() >= 50 + DEFAULT_ROTATION_SECS - DEFAULT_MAX_JITTER_SECS);
+            assert!(
+                ring.next_rotation_at() >= 50 + DEFAULT_ROTATION_SECS - DEFAULT_MAX_JITTER_SECS
+            );
         }
     }
 
@@ -979,7 +1008,10 @@ mod tests {
         parsed.verify_for(&a_pub).unwrap();
         // Wrong expected identity.
         let (_, b_pub) = ed25519_pair(0x02);
-        assert_eq!(parsed.verify_for(&b_pub), Err(TunnelKeyError::IdentityMismatch));
+        assert_eq!(
+            parsed.verify_for(&b_pub),
+            Err(TunnelKeyError::IdentityMismatch)
+        );
         // Tampered tunnel key.
         let mut t = parsed.clone();
         t.tunnel_pub[0] ^= 1;
@@ -998,7 +1030,12 @@ mod tests {
     // -- PSK agreement ------------------------------------------------------
 
     /// Run one full agreement; returns both PSKs.
-    fn agree(epoch: u64, last_epoch: Option<u64>, now: u64, ring_b: &TunnelKeyRing) -> Result<(TunnelPsk, TunnelPsk), TunnelKeyError> {
+    fn agree(
+        epoch: u64,
+        last_epoch: Option<u64>,
+        now: u64,
+        ring_b: &TunnelKeyRing,
+    ) -> Result<(TunnelPsk, TunnelPsk), TunnelKeyError> {
         let (a, b) = peers();
         let binding_b = ring_b.binding(&b.our_signing_secret, a.their_signing_pub);
         let (state, init) = psk_initiate(&a, &binding_b, channel_key(), epoch)?;
@@ -1044,7 +1081,10 @@ mod tests {
             agree(1, Some(1), 0, &ring_b).unwrap_err(),
             TunnelKeyError::EpochReplay { epoch: 1, last: 1 }
         );
-        assert!(matches!(agree(3, Some(5), 0, &ring_b), Err(TunnelKeyError::EpochReplay { .. })));
+        assert!(matches!(
+            agree(3, Some(5), 0, &ring_b),
+            Err(TunnelKeyError::EpochReplay { .. })
+        ));
     }
 
     #[test]
@@ -1101,10 +1141,16 @@ mod tests {
         // Tampered init signature / fields.
         let mut bad_sig = init.clone();
         bad_sig.signature[0] ^= 1;
-        assert_eq!(psk_respond(&bad_sig, &b, inputs()).unwrap_err(), TunnelKeyError::BadSignature);
+        assert_eq!(
+            psk_respond(&bad_sig, &b, inputs()).unwrap_err(),
+            TunnelKeyError::BadSignature
+        );
         let mut bad_ct = init.clone();
         bad_ct.kem_ct[0] ^= 1;
-        assert_eq!(psk_respond(&bad_ct, &b, inputs()).unwrap_err(), TunnelKeyError::BadSignature);
+        assert_eq!(
+            psk_respond(&bad_ct, &b, inputs()).unwrap_err(),
+            TunnelKeyError::BadSignature
+        );
         // Init signed by a stranger.
         let (stranger_sec, _) = ed25519_pair(0x09);
         let stranger = PskPeerContext {
@@ -1117,17 +1163,26 @@ mod tests {
             }
         };
         let (_, forged_init) = psk_initiate(&stranger, &binding_b, channel_key(), 1).unwrap();
-        assert_eq!(psk_respond(&forged_init, &b, inputs()).unwrap_err(), TunnelKeyError::BadSignature);
+        assert_eq!(
+            psk_respond(&forged_init, &b, inputs()).unwrap_err(),
+            TunnelKeyError::BadSignature
+        );
         // Genuine response, then tamper it on the way back.
         let (_, response) = psk_respond(&init, &b, inputs()).unwrap();
         let mut bad_resp = response.clone();
         bad_resp.eph_pub[0] ^= 1;
-        assert_eq!(state.complete(&bad_resp, &a).unwrap_err(), TunnelKeyError::BadSignature);
+        assert_eq!(
+            state.complete(&bad_resp, &a).unwrap_err(),
+            TunnelKeyError::BadSignature
+        );
         let mut wrong_epoch = response.clone();
         wrong_epoch.epoch = 2;
         // Consume state at the end: use a fresh initiator for the epoch case.
         let (state2, _) = psk_initiate(&a, &binding_b, channel_key(), 1).unwrap();
-        assert_eq!(state2.complete(&wrong_epoch, &a).unwrap_err(), TunnelKeyError::EpochMismatch);
+        assert_eq!(
+            state2.complete(&wrong_epoch, &a).unwrap_err(),
+            TunnelKeyError::EpochMismatch
+        );
         // Binding from a different identity is refused before encapsulation.
         let (c_sec, c_pub) = ed25519_pair(0x07);
         let binding_c = ring_b.binding(&c_sec, c_pub);
@@ -1145,28 +1200,40 @@ mod tests {
         let (_, init) = psk_initiate(&a, &binding_b, channel_key(), 1).unwrap();
         let bytes = init.to_bytes();
         assert_eq!(bytes.len(), PSK_INIT_LEN);
-        assert!(matches!(PskInit::from_bytes(&bytes[..10]), Err(TunnelKeyError::Malformed { .. })));
+        assert!(matches!(
+            PskInit::from_bytes(&bytes[..10]),
+            Err(TunnelKeyError::Malformed { .. })
+        ));
         let mut foreign_suite = bytes.clone();
         foreign_suite[2] = 0x09;
         assert_eq!(
             PskInit::from_bytes(&foreign_suite),
-            Err(TunnelKeyError::Link(WireGuardError::UnsupportedSuite { declared: 0x09 }))
+            Err(TunnelKeyError::Link(WireGuardError::UnsupportedSuite {
+                declared: 0x09
+            }))
         );
         let mut wrong_type = bytes.clone();
         wrong_type[3] = PSK_MSG_RESPONSE;
         assert_eq!(
             PskInit::from_bytes(&wrong_type),
-            Err(TunnelKeyError::WrongMessageType { found: PSK_MSG_RESPONSE })
+            Err(TunnelKeyError::WrongMessageType {
+                found: PSK_MSG_RESPONSE
+            })
         );
         let mut resp_bytes = vec![0u8; PSK_RESPONSE_LEN];
         resp_bytes[..3].copy_from_slice(&LINK_HEADER);
         resp_bytes[3] = PSK_MSG_INIT;
         assert_eq!(
             PskResponse::from_bytes(&resp_bytes),
-            Err(TunnelKeyError::WrongMessageType { found: PSK_MSG_INIT })
+            Err(TunnelKeyError::WrongMessageType {
+                found: PSK_MSG_INIT
+            })
         );
         resp_bytes[3] = PSK_MSG_RESPONSE;
         assert!(PskResponse::from_bytes(&resp_bytes).is_ok());
-        assert!(matches!(PskResponse::from_bytes(&[]), Err(TunnelKeyError::Malformed { .. })));
+        assert!(matches!(
+            PskResponse::from_bytes(&[]),
+            Err(TunnelKeyError::Malformed { .. })
+        ));
     }
 }

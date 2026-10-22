@@ -69,8 +69,7 @@ fn in_flight_packets_survive_transport_disable() {
         "packet sent while transport is disabled must not be delivered"
     );
     assert_eq!(
-        sim.dropped_packets,
-        1,
+        sim.dropped_packets, 1,
         "send while transport is disabled must be counted as dropped"
     );
 }
@@ -104,7 +103,11 @@ fn re_enabling_transport_resumes_delivery() {
     sim.tick();
 
     let b = sim.node("b").expect("b must exist");
-    assert_eq!(b.inbox.len(), 1, "delivery must resume after transport is re-enabled");
+    assert_eq!(
+        b.inbox.len(),
+        1,
+        "delivery must resume after transport is re-enabled"
+    );
     assert_eq!(b.inbox[0], b"restored-delivery");
 }
 
@@ -121,11 +124,11 @@ fn toggle_transport_via_action_runner_is_stable() {
         SimulatorAction::CreateNode,
         SimulatorAction::CreateNode,
         SimulatorAction::PairNodes,
-        SimulatorAction::SendMessage,      // delivers (transport enabled)
-        SimulatorAction::ToggleTransport,  // transport off
-        SimulatorAction::SendMessage,      // dropped (transport off)
-        SimulatorAction::ToggleTransport,  // transport on
-        SimulatorAction::SendMessage,      // delivers (transport re-enabled)
+        SimulatorAction::SendMessage,     // delivers (transport enabled)
+        SimulatorAction::ToggleTransport, // transport off
+        SimulatorAction::SendMessage,     // dropped (transport off)
+        SimulatorAction::ToggleTransport, // transport on
+        SimulatorAction::SendMessage,     // delivers (transport re-enabled)
         SimulatorAction::AdvanceTime,
     ]);
 

@@ -511,7 +511,10 @@ impl MeshRuntime {
             .ok()
             .and_then(|b| <[u8; 32]>::try_from(b).ok())
             .map(PeerId)?;
-        let wg_ct = frame.get("wg_ct").and_then(|v| v.as_str()).map(str::to_string);
+        let wg_ct = frame
+            .get("wg_ct")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let sessions = self
             .wireguard_sessions
             .lock()

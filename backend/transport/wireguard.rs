@@ -238,7 +238,9 @@ impl std::fmt::Debug for TunnelPsk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::None => f.write_str("TunnelPsk::None"),
-            Self::Epoch { epoch, .. } => write!(f, "TunnelPsk::Epoch {{ epoch: {epoch}, key: <redacted> }}"),
+            Self::Epoch { epoch, .. } => {
+                write!(f, "TunnelPsk::Epoch {{ epoch: {epoch}, key: <redacted> }}")
+            }
         }
     }
 }
@@ -427,7 +429,12 @@ impl WireGuardSession {
     /// caller relaxes them with `set_endpoint_policy` / `set_key_source`
     /// when it knows better.  Fail-closed defaults mean a call site that
     /// forgets to configure the session gets the strictest behaviour.
-    fn new(keys: SessionKeys, peer_id: PeerId, is_initiator: bool, psk_epoch: Option<TunnelEpoch>) -> Self {
+    fn new(
+        keys: SessionKeys,
+        peer_id: PeerId,
+        is_initiator: bool,
+        psk_epoch: Option<TunnelEpoch>,
+    ) -> Self {
         let (send_key, recv_key) = if is_initiator {
             (keys.i_to_r, keys.r_to_i)
         } else {
@@ -904,7 +911,9 @@ impl PendingInitiatorHandshake {
 
         // The four Noise_IK DH outputs, initiator view.
         let dh_es = self.eph.secret.diffie_hellman(&self.responder_static_pub);
-        let dh_ss = self.static_secret.diffie_hellman(&self.responder_static_pub);
+        let dh_ss = self
+            .static_secret
+            .diffie_hellman(&self.responder_static_pub);
         let dh_ee = self.eph.secret.diffie_hellman(&eph_r_pub);
         let dh_se = self.static_secret.diffie_hellman(&eph_r_pub);
 
@@ -970,8 +979,8 @@ pub fn respond_to_handshake(
 
     // es = DH(static_r, eph_i): decrypt the initiator's static key.
     let dh_es = our_static_secret.diffie_hellman(&eph_i_pub);
-    let init_static_bytes =
-        decrypt_static_key(&init.enc_static, dh_es.as_bytes()).ok_or(WireGuardError::InvalidPeerKey)?;
+    let init_static_bytes = decrypt_static_key(&init.enc_static, dh_es.as_bytes())
+        .ok_or(WireGuardError::InvalidPeerKey)?;
     // The decrypted key must be the key we know for this peer.  Anyone can
     // encrypt arbitrary 32 bytes under es, so this comparison (and the
     // confirmation below) is what actually authenticates the initiator.
@@ -1196,7 +1205,11 @@ fn timestamp_aad(eph_i_pub: &[u8; 32], enc_static: &[u8; 48], psk: &TunnelPsk) -
 }
 
 /// Key for the initiator's confirmation AEAD: HKDF over es || ss || psk.
-fn confirm_key(dh_es: &[u8], dh_ss: &[u8], psk: &TunnelPsk) -> Result<Zeroizing<[u8; 32]>, WireGuardError> {
+fn confirm_key(
+    dh_es: &[u8],
+    dh_ss: &[u8],
+    psk: &TunnelPsk,
+) -> Result<Zeroizing<[u8; 32]>, WireGuardError> {
     let mut ikm = Zeroizing::new(Vec::with_capacity(96));
     ikm.extend_from_slice(dh_es);
     ikm.extend_from_slice(dh_ss);
@@ -1242,7 +1255,12 @@ fn decrypt_timestamp(
     let mut buf = enc[..8].to_vec();
     let tag = GenericArray::from_slice(&enc[8..]);
     cipher
-        .decrypt_in_place_detached(nonce, &timestamp_aad(eph_i_pub, enc_static, psk), &mut buf, tag)
+        .decrypt_in_place_detached(
+            nonce,
+            &timestamp_aad(eph_i_pub, enc_static, psk),
+            &mut buf,
+            tag,
+        )
         .ok()?;
     let mut ts = [0u8; 8];
     ts.copy_from_slice(&buf);
@@ -1264,7 +1282,11 @@ fn make_confirm_tag(key: &[u8; 32], transcript: &[u8]) -> Result<[u8; 16], WireG
 }
 
 /// Verify the responder's confirmation tag.
-fn verify_confirm_tag(key: &[u8; 32], transcript: &[u8], tag: &[u8; 16]) -> Result<(), WireGuardError> {
+fn verify_confirm_tag(
+    key: &[u8; 32],
+    transcript: &[u8],
+    tag: &[u8; 16],
+) -> Result<(), WireGuardError> {
     let cipher = ChaCha20Poly1305::new(GenericArray::from_slice(key));
     let nonce = GenericArray::from_slice(&[0u8; 12]);
     let mut empty = Vec::new();
@@ -1387,7 +1409,10 @@ mod tests {
         make_pair_with_psk(psk(), psk())
     }
 
-    fn make_pair_with_psk(init_psk: TunnelPsk, resp_psk: TunnelPsk) -> (WireGuardSession, WireGuardSession) {
+    fn make_pair_with_psk(
+        init_psk: TunnelPsk,
+        resp_psk: TunnelPsk,
+    ) -> (WireGuardSession, WireGuardSession) {
         let init_static = gen_static();
         let init_static_pub = X25519Public::from(&init_static);
         let resp_static = gen_static();
@@ -1476,12 +1501,18 @@ mod tests {
         let mut forged = Vec::new();
         forged.extend_from_slice(&(u64::MAX - 1).to_le_bytes());
         forged.extend_from_slice(&[0x5Au8; 40]);
-        assert_eq!(resp_session.decrypt(&forged), Err(WireGuardError::DecryptionFailed));
+        assert_eq!(
+            resp_session.decrypt(&forged),
+            Err(WireGuardError::DecryptionFailed)
+        );
         // Forged packet with the *next genuine* nonce (0) and a bad tag.
         let mut forged_next = Vec::new();
         forged_next.extend_from_slice(&0u64.to_le_bytes());
         forged_next.extend_from_slice(&[0x00u8; 40]);
-        assert_eq!(resp_session.decrypt(&forged_next), Err(WireGuardError::DecryptionFailed));
+        assert_eq!(
+            resp_session.decrypt(&forged_next),
+            Err(WireGuardError::DecryptionFailed)
+        );
         // Window untouched: genuine nonce 0 and later nonces decrypt.
         for i in 0..5u8 {
             let enc = init_session.encrypt(&[i; 8]).unwrap();
@@ -1501,11 +1532,17 @@ mod tests {
         // Deliver the newest first to push the high-water mark.
         resp_session.decrypt(packets.last().unwrap()).unwrap();
         // Nonce 0 is now older than high - WINDOW: rejected.
-        assert_eq!(resp_session.decrypt(&packets[0]), Err(WireGuardError::ReplayDetected));
+        assert_eq!(
+            resp_session.decrypt(&packets[0]),
+            Err(WireGuardError::ReplayDetected)
+        );
         // A packet inside the window arrives late: accepted once.
         let inside = &packets[REPLAY_WINDOW as usize];
         resp_session.decrypt(inside).unwrap();
-        assert_eq!(resp_session.decrypt(inside), Err(WireGuardError::ReplayDetected));
+        assert_eq!(
+            resp_session.decrypt(inside),
+            Err(WireGuardError::ReplayDetected)
+        );
     }
 
     #[test]
@@ -1683,8 +1720,16 @@ mod tests {
         let (_, forged) =
             PendingInitiatorHandshake::new(gen_static(), resp_pub, TunnelPsk::None, 1).unwrap();
         assert_eq!(
-            respond_to_handshake(&forged, &resp_static, &victim_pub, &TunnelPsk::None, peer(2), peer(1), None)
-                .unwrap_err(),
+            respond_to_handshake(
+                &forged,
+                &resp_static,
+                &victim_pub,
+                &TunnelPsk::None,
+                peer(2),
+                peer(1),
+                None
+            )
+            .unwrap_err(),
             WireGuardError::InvalidPeerKey
         );
 
@@ -1701,8 +1746,16 @@ mod tests {
             enc_timestamp: genuine.enc_timestamp, // copied from a real Init
         };
         assert_eq!(
-            respond_to_handshake(&spliced, &resp_static, &victim_pub, &TunnelPsk::None, peer(2), peer(1), None)
-                .unwrap_err(),
+            respond_to_handshake(
+                &spliced,
+                &resp_static,
+                &victim_pub,
+                &TunnelPsk::None,
+                peer(2),
+                peer(1),
+                None
+            )
+            .unwrap_err(),
             WireGuardError::InitiatorUnconfirmed
         );
     }
@@ -1722,8 +1775,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            respond_to_handshake(&init_msg, &resp_static, &init_pub, &psk(), peer(2), peer(1), None)
-                .unwrap_err(),
+            respond_to_handshake(
+                &init_msg,
+                &resp_static,
+                &init_pub,
+                &psk(),
+                peer(2),
+                peer(1),
+                None
+            )
+            .unwrap_err(),
             WireGuardError::InitiatorUnconfirmed
         );
     }
@@ -1781,11 +1842,21 @@ mod tests {
         let init_pub = X25519Public::from(&init_static);
         let resp_static = gen_static();
         let resp_pub = X25519Public::from(&resp_static);
-        let (_, first) =
-            PendingInitiatorHandshake::new(X25519Secret::from(init_static.to_bytes()), resp_pub, TunnelPsk::None, 100).unwrap();
+        let (_, first) = PendingInitiatorHandshake::new(
+            X25519Secret::from(init_static.to_bytes()),
+            resp_pub,
+            TunnelPsk::None,
+            100,
+        )
+        .unwrap();
         let mut store = WireGuardSessionStore::new();
         let (session, _, ts) = respond_to_handshake(
-            &first, &resp_static, &init_pub, &TunnelPsk::None, peer(2), peer(1),
+            &first,
+            &resp_static,
+            &init_pub,
+            &TunnelPsk::None,
+            peer(2),
+            peer(1),
             store.last_init_timestamp(&peer(1)),
         )
         .unwrap();
@@ -1794,18 +1865,36 @@ mod tests {
         // Exact replay.
         assert_eq!(
             respond_to_handshake(
-                &first, &resp_static, &init_pub, &TunnelPsk::None, peer(2), peer(1),
+                &first,
+                &resp_static,
+                &init_pub,
+                &TunnelPsk::None,
+                peer(2),
+                peer(1),
                 store.last_init_timestamp(&peer(1)),
             )
             .unwrap_err(),
-            WireGuardError::HandshakeReplay { timestamp: 100, last_accepted: 100 }
+            WireGuardError::HandshakeReplay {
+                timestamp: 100,
+                last_accepted: 100
+            }
         );
         // Older timestamp from the genuine initiator.
-        let (_, older) =
-            PendingInitiatorHandshake::new(X25519Secret::from(init_static.to_bytes()), resp_pub, TunnelPsk::None, 99).unwrap();
+        let (_, older) = PendingInitiatorHandshake::new(
+            X25519Secret::from(init_static.to_bytes()),
+            resp_pub,
+            TunnelPsk::None,
+            99,
+        )
+        .unwrap();
         assert!(matches!(
             respond_to_handshake(
-                &older, &resp_static, &init_pub, &TunnelPsk::None, peer(2), peer(1),
+                &older,
+                &resp_static,
+                &init_pub,
+                &TunnelPsk::None,
+                peer(2),
+                peer(1),
                 store.last_init_timestamp(&peer(1)),
             ),
             Err(WireGuardError::HandshakeReplay { .. })
@@ -1814,7 +1903,12 @@ mod tests {
         let (_, newer) =
             PendingInitiatorHandshake::new(init_static, resp_pub, TunnelPsk::None, 101).unwrap();
         assert!(respond_to_handshake(
-            &newer, &resp_static, &init_pub, &TunnelPsk::None, peer(2), peer(1),
+            &newer,
+            &resp_static,
+            &init_pub,
+            &TunnelPsk::None,
+            peer(2),
+            peer(1),
             store.last_init_timestamp(&peer(1)),
         )
         .is_ok());
@@ -1851,8 +1945,14 @@ mod tests {
             EndpointPolicy::for_context(n, ConnectionMode::Standard, 25),
             EndpointPolicy::Roaming { keepalive_secs: 25 }
         );
-        assert_eq!(EndpointPolicy::for_context(n, ConnectionMode::LoSec, 25), EndpointPolicy::Pinned);
-        assert_eq!(EndpointPolicy::for_context(n, ConnectionMode::Direct, 25), EndpointPolicy::Pinned);
+        assert_eq!(
+            EndpointPolicy::for_context(n, ConnectionMode::LoSec, 25),
+            EndpointPolicy::Pinned
+        );
+        assert_eq!(
+            EndpointPolicy::for_context(n, ConnectionMode::Direct, 25),
+            EndpointPolicy::Pinned
+        );
         assert_eq!(
             EndpointPolicy::for_context(ThreatContext::Elevated, ConnectionMode::Standard, 25),
             EndpointPolicy::Pinned
@@ -1869,8 +1969,14 @@ mod tests {
     fn test_pinned_endpoint_rejects_move() {
         let (s, _) = make_session_pair();
         assert_eq!(s.endpoint_policy(), EndpointPolicy::Pinned);
-        assert_eq!(s.observe_endpoint("tcp:10.0.0.1:1", 1), EndpointVerdict::Accepted);
-        assert_eq!(s.observe_endpoint("tcp:10.0.0.1:1", 2), EndpointVerdict::Accepted);
+        assert_eq!(
+            s.observe_endpoint("tcp:10.0.0.1:1", 1),
+            EndpointVerdict::Accepted
+        );
+        assert_eq!(
+            s.observe_endpoint("tcp:10.0.0.1:1", 2),
+            EndpointVerdict::Accepted
+        );
         assert_eq!(
             s.observe_endpoint("tcp:10.0.0.9:1", 3),
             EndpointVerdict::Rejected {
@@ -1891,7 +1997,9 @@ mod tests {
         assert_eq!(s.observe_endpoint("a", 100), EndpointVerdict::Accepted);
         assert_eq!(
             s.observe_endpoint("b", 110),
-            EndpointVerdict::Moved { rehandshake_by: 135 }
+            EndpointVerdict::Moved {
+                rehandshake_by: 135
+            }
         );
         assert_eq!(s.endpoint().as_deref(), Some("b"));
         assert!(s.rehandshake_pending());
@@ -1969,6 +2077,9 @@ mod tests {
     /// deliberate wire-format change.  Run with `--nocapture` to read them.
     #[test]
     fn test_print_corpus_valid_init() {
-        println!("seed_01_valid_init = {}", hex::encode(corpus_valid_init().to_bytes()));
+        println!(
+            "seed_01_valid_init = {}",
+            hex::encode(corpus_valid_init().to_bytes())
+        );
     }
 }

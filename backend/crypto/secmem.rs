@@ -89,9 +89,9 @@ unsafe fn lock_pages(ptr: *mut u8, size: usize) -> Result<bool, SecureMemoryErro
             warn_unlocked_once();
             return Ok(false);
         }
-        Err(SecureMemoryError::LockFailed(std::io::Error::from_raw_os_error(
-            code as i32,
-        )))
+        Err(SecureMemoryError::LockFailed(
+            std::io::Error::from_raw_os_error(code as i32),
+        ))
     }
     #[cfg(not(any(unix, windows)))]
     {
