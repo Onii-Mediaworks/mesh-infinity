@@ -14,9 +14,10 @@ Fibrewall is pinned at v0.6.1 as the `vendor/fibrewall` submodule.
 
 ## S1 at a glance
 
-The app has two processes:
-- The **main process** is a stand-in for the core. It writes a "secret" into `filesDir`, runs the Fibrewall broker under the UI policy (`UiPolicy.kt`), and answers the UI over a socket (`CoreStub.kt`).
-- The **`:ui` process** starts in `Application.onCreate`. It creates the broker and protocol socket pairs and hands one end of each to the core. Then, depending on the run's mode, it locks itself down (`UiSession.kt`). Next it tries to escape: it reads the core's secret, opens the core's `/proc` memory files, opens a network socket, uses `ptrace`, sends a signal and runs `execve`. It reports the results to the core.
+The app has three processes, the worker model from plan §3.0:
+- The **main process** is a stand-in for the core. It writes a "secret" into `filesDir`, answers the UI over a socket (`CoreStub.kt`), and grants the UI's policy (`UiPolicy.kt`) when the warden asks for it. No Fibrewall code runs in the main process.
+- The **`:warden` process** runs the Fibrewall broker under the policy the core granted (`WardenProvider.kt`). It holds no secrets.
+- The **`:ui` process** starts in `Application.onCreate`. It hands its protocol socket to the core and its broker socket to the warden. Then, depending on the run's mode, it locks itself down (`UiSession.kt`). Next it tries to escape: it reads the core's secret, opens the core's and the warden's `/proc` memory files, opens a network socket, uses `ptrace` on both, sends a signal and runs `execve`. It reports the results to the core.
 
 The instrumented test (`UiIsolationSpikeTest.kt`) starts the UI three times:
 1. **off:** the unconfined baseline;

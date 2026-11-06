@@ -98,3 +98,56 @@ jobs:
             spikes/ui-isolation/android/spike-log.txt
             spikes/ui-isolation/android/app/build/reports/androidTests/
           retention-days: 30
+
+  # S5: one schema, three languages, byte-identical encodings; strict decoding; fuzzing.
+  s5-protocol:
+    name: s5-protocol
+    runs-on: ubuntu-24.04
+    env:
+      SPIKE_FIXTURES: ${{ github.workspace }}/spike-fixtures
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+      - uses: dart-lang/setup-dart@v1
+      - name: Rust writes the fixtures and runs the strictness tests
+        working-directory: spikes/ui-isolation/protocol/rust
+        run: cargo test -- --nocapture
+      - name: Kotlin (Wire) decodes and re-encodes
+        working-directory: spikes/ui-isolation/protocol/kotlin
+        run: gradle --no-daemon run --args="$SPIKE_FIXTURES/rust.bin $SPIKE_FIXTURES/kotlin.bin"
+      - name: Dart (protoc_plugin) decodes and re-encodes
+        working-directory: spikes/ui-isolation/protocol/dart
+        run: |
+          dart pub global activate protoc_plugin 21.1.2
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          mkdir -p lib/gen
+          protoc --proto_path=../proto --dart_out=lib/gen ../proto/mesh/ui/v1/spike.proto
+          dart pub get
+          dart run bin/round_trip.dart "$SPIKE_FIXTURES/rust.bin" "$SPIKE_FIXTURES/dart.bin"
+      - name: Rust requires both outputs byte-identical and strictly valid
+        working-directory: spikes/ui-isolation/protocol/rust
+        run: SPIKE_VERIFY=1 cargo test peers_match -- --nocapture
+      - name: Fuzz the decoder for two minutes
+        working-directory: spikes/ui-isolation/protocol/rust
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+          mkdir -p fuzz/corpus/decode_stream && cp "$SPIKE_FIXTURES/rust.bin" fuzz/corpus/decode_stream/
+          cargo +nightly fuzz run decode_stream -- -max_total_time=120
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s5-protocol
+          path: |
+            spike-fixtures/
+            spikes/ui-isolation/protocol/rust/fuzz/artifacts/
+          retention-days: 30

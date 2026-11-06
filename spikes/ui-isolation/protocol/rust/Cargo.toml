@@ -1,0 +1,19 @@
+[package]
+name = "mesh_ui_protocol_spike"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "Phase 0 spike S5: the UI protocol sample in Rust (prost), its framing and strict decoding"
+
+# A workspace of its own: the spike is not part of the mesh-infinity crate.
+[workspace]
+members = ["."]
+exclude = ["fuzz"]
+
+[dependencies]
+prost = "0.13"
+sha2 = "0.10"
+
+[build-dependencies]
+prost-build = "0.13"
