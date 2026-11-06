@@ -40,6 +40,20 @@ fn init_panic_handler() {
     });
 }
 
+/// Marker for secret types whose bytes live inline in the value itself.
+///
+/// `SecureMemory::new` locks exactly `size_of::<T>()` bytes at the Box
+/// address, so `T` must not own heap memory: a `Vec<u8>` would have only
+/// its 24-byte header pinned while the key bytes stayed swappable. The
+/// trait is sealed so only the fixed-size key wrappers in this module can
+/// be placed in `SecureMemory` (SPEC §15.1 memory locking).
+pub trait InlineSecret: sealed::Sealed {}
+
+/// Private supertrait that keeps `InlineSecret` closed to this module.
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// Secure memory container that:
 /// 1. Locks memory to prevent swapping (mlock)
 /// 2. Zeroizes on drop
@@ -49,7 +63,7 @@ fn init_panic_handler() {
 // Invariants are enforced at construction time.
 // SecureMemory — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
-pub struct SecureMemory<T: Zeroize> {
+pub struct SecureMemory<T: Zeroize + InlineSecret> {
     data: Box<T>,
     /// Whether the pages are currently pinned (mlock / VirtualLock).
     locked: bool,
@@ -132,7 +146,7 @@ fn warn_unlocked_once() {
 // Securely erase key material to prevent forensic recovery.
 // SecureMemory implementation — core protocol logic.
 // SecureMemory implementation — core protocol logic.
-impl<T: Zeroize> SecureMemory<T> {
+impl<T: Zeroize + InlineSecret> SecureMemory<T> {
     /// Create new secure memory region
     pub fn new(value: T) -> Result<Self, SecureMemoryError> {
         init_panic_handler();
@@ -171,7 +185,7 @@ impl<T: Zeroize> SecureMemory<T> {
 // Securely erase key material to prevent forensic recovery.
 // Trait implementation.
 // Trait implementation.
-impl<T: Zeroize> AsRef<T> for SecureMemory<T> {
+impl<T: Zeroize + InlineSecret> AsRef<T> for SecureMemory<T> {
     /// As ref.
     fn as_ref(&self) -> &T {
         // Chain the operation on the intermediate result.
@@ -182,7 +196,7 @@ impl<T: Zeroize> AsRef<T> for SecureMemory<T> {
 // Securely erase key material to prevent forensic recovery.
 // Trait implementation.
 // Trait implementation.
-impl<T: Zeroize> AsMut<T> for SecureMemory<T> {
+impl<T: Zeroize + InlineSecret> AsMut<T> for SecureMemory<T> {
     /// As mut.
     fn as_mut(&mut self) -> &mut T {
         // Chain the operation on the intermediate result.
@@ -193,7 +207,7 @@ impl<T: Zeroize> AsMut<T> for SecureMemory<T> {
 // Securely erase key material to prevent forensic recovery.
 // Implement Drop for SecureMemory.
 // Implement Drop for SecureMemory.
-impl<T: Zeroize> Drop for SecureMemory<T> {
+impl<T: Zeroize + InlineSecret> Drop for SecureMemory<T> {
     /// Drop.
     fn drop(&mut self) {
         // Zeroize the data
@@ -215,7 +229,7 @@ impl<T: Zeroize> Drop for SecureMemory<T> {
 // Securely erase key material to prevent forensic recovery.
 // Implement Deref for SecureMemory.
 // Implement Deref for SecureMemory.
-impl<T: Zeroize> Deref for SecureMemory<T> {
+impl<T: Zeroize + InlineSecret> Deref for SecureMemory<T> {
     // Type alias for readability.
     // Type alias for protocol readability.
     // Type alias for protocol readability.
@@ -231,7 +245,7 @@ impl<T: Zeroize> Deref for SecureMemory<T> {
 // Securely erase key material to prevent forensic recovery.
 // Implement DerefMut for SecureMemory.
 // Implement DerefMut for SecureMemory.
-impl<T: Zeroize> DerefMut for SecureMemory<T> {
+impl<T: Zeroize + InlineSecret> DerefMut for SecureMemory<T> {
     /// Deref mut.
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Chain the operation on the intermediate result.
@@ -239,24 +253,12 @@ impl<T: Zeroize> DerefMut for SecureMemory<T> {
     }
 }
 
-/// Secure byte array specifically for cryptographic keys
-// Type alias for protocol readability.
-// Type alias for protocol readability.
-pub type SecureBytes = SecureMemory<Vec<u8>>;
-
-// SecureBytes implementation — core protocol logic.
-// SecureBytes implementation — core protocol logic.
-impl SecureBytes {
-    /// Create from a slice, copying the data into secure memory
-    pub fn from_slice(slice: &[u8]) -> Result<Self, SecureMemoryError> {
-        Self::new(slice.to_vec())
-    }
-
-    /// Create with specific size, filled with zeros
-    pub fn zeros(size: usize) -> Result<Self, SecureMemoryError> {
-        Self::new(vec![0u8; size])
-    }
-}
+// There is deliberately no `SecureMemory<Vec<u8>>` alias. `new` locks
+// `size_of::<T>()` bytes at the Box address, which for a heap-owning `T`
+// such as `Vec<u8>` would pin only the 24-byte Vec header while the key
+// bytes on the heap stayed swappable with `locked == true`. Variable-length
+// secrets must use a fixed-size wrapper (`SecureKey32`, `SecureKey64`) so
+// the locked range is the key itself (SPEC §15.1 memory locking).
 
 /// Secure storage for a 32-byte key
 #[derive(Zeroize)]
@@ -265,6 +267,9 @@ impl SecureBytes {
 // SecureKey32 — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct SecureKey32(pub [u8; 32]);
+
+impl sealed::Sealed for SecureKey32 {}
+impl InlineSecret for SecureKey32 {}
 
 // SecureKey32 implementation — core protocol logic.
 // SecureKey32 implementation — core protocol logic.
@@ -297,6 +302,9 @@ impl SecureKey32 {
 // SecureKey64 — protocol data structure (see field-level docs).
 // Invariants are enforced at construction time.
 pub struct SecureKey64(pub [u8; 64]);
+
+impl sealed::Sealed for SecureKey64 {}
+impl InlineSecret for SecureKey64 {}
 
 // SecureKey64 implementation — core protocol logic.
 // SecureKey64 implementation — core protocol logic.
@@ -395,14 +403,6 @@ mod tests {
 
         // Verify data is zeroed
         assert_eq!(secure.as_bytes(), &[0u8; 32]);
-    }
-
-    /// Test case: secure bytes.
-    #[test]
-    fn test_secure_bytes() {
-        let data = b"sensitive data";
-        let secure = SecureBytes::from_slice(data).unwrap();
-        assert_eq!(&**secure, data);
     }
 
     /// Test case: random key.
