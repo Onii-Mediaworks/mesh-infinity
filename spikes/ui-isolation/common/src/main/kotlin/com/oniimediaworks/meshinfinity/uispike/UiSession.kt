@@ -50,7 +50,7 @@ object UiSession {
         // 1. The app channel to the core, which answers the run's mode.
         val reply = try {
             context.contentResolver.call(
-                Uri.parse("content://" + UiHostProvider.AUTHORITY), UiHostProvider.METHOD_ATTACH, null,
+                Uri.parse("content://" + UiHostProvider.authority(context)), UiHostProvider.METHOD_ATTACH, null,
                 Bundle().apply { putParcelable(UiHostProvider.KEY_PROTOCOL, protocol[0]) },
             )
         } finally {
@@ -59,7 +59,7 @@ object UiSession {
         // 2. The broker channel to the warden, which gets this worker's policy from the core.
         val warden = try {
             if (reply == null) null else context.contentResolver.call(
-                Uri.parse("content://" + WardenProvider.AUTHORITY), WardenProvider.METHOD_BROKER, null,
+                Uri.parse("content://" + WardenProvider.authority(context)), WardenProvider.METHOD_BROKER, null,
                 Bundle().apply { putParcelable(WardenProvider.KEY_BROKER, broker[0]) },
             )
         } finally {

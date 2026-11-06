@@ -28,3 +28,6 @@ rootProject.name = "mesh_ui_spike"
 // One application module: the core stand-in and the UI live in one APK, as
 // they will in Mesh Infinity, and differ only by process.
 include(":app")
+// The confinement half, shared with the Flutter host.
+include(":common")
+project(":common").projectDir = file("../common")

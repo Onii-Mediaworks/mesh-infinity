@@ -36,7 +36,7 @@ class WardenProvider : ContentProvider() {
 
         // The core decides the worker's mode and rules; the warden only enforces them.
         val grant = context.contentResolver.call(
-            Uri.parse("content://" + UiHostProvider.AUTHORITY), UiHostProvider.METHOD_GRANT, worker.toString(), null,
+            Uri.parse("content://" + UiHostProvider.authority(context)), UiHostProvider.METHOD_GRANT, worker.toString(), null,
         )
         val mode = grant?.getString(UiHostProvider.KEY_MODE)
         if (grant == null || mode == null) {
@@ -78,7 +78,8 @@ class WardenProvider : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
     companion object {
-        const val AUTHORITY = "com.oniimediaworks.meshinfinity.uispike.warden"
+        /** The authority, from the app's id (the manifest uses ${applicationId}.warden). */
+        fun authority(context: Context) = context.packageName + ".warden"
         const val METHOD_BROKER = "broker"
         const val KEY_BROKER = "broker"
         const val KEY_WARDEN_PID = "warden_pid"

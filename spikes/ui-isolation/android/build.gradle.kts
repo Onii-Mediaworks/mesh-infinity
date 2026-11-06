@@ -3,6 +3,7 @@
 // (the same Fibrewall-on-Android pattern this spike follows).
 plugins {
     id("com.android.application") version "8.13.1" apply false
+    id("com.android.library") version "8.13.1" apply false
     id("org.jetbrains.kotlin.android") version "2.2.21" apply false
     // The Compose compiler ships with Kotlin since 2.0; its plugin version
     // must equal the Kotlin version.

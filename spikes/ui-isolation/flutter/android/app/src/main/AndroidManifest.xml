@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Flutter host. The core stand-in and warden providers come from the
+  common module's manifest; this app adds only its confined Flutter
+  Activity in the ":ui" process. The app asks for no permissions.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:name="com.oniimediaworks.meshinfinity.uispike.SpikeApplication"
+        android:label="Mesh UI spike (Flutter)">
+
+        <activity
+            android:name=".MainActivity"
+            android:process=":ui"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:windowSoftInputMode="adjustResize"
+            android:hardwareAccelerated="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Flutter's embedding version, required by the Flutter tool. -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+</manifest>

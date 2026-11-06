@@ -88,7 +88,8 @@ class UiHostProvider : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
     companion object {
-        const val AUTHORITY = "com.oniimediaworks.meshinfinity.uispike.host"
+        /** The authority, from the app's id (the manifest uses ${applicationId}.host). */
+        fun authority(context: Context) = context.packageName + ".host"
         const val METHOD_ATTACH = "attach"
         const val METHOD_GRANT = "grant"
         const val KEY_PROTOCOL = "protocol"

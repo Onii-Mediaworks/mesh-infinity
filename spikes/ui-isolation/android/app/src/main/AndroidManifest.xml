@@ -1,32 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Three processes from one APK:
-  - the main process (the stand-in core): UiHostProvider, which serves the
-    protocol socket and grants the UI's policy; no Fibrewall code runs here;
-  - ":warden": WardenProvider, which runs the Fibrewall broker;
-  - ":ui": UiActivity, confined by Fibrewall from Application.onCreate.
-  The app asks for no permissions; the escape probes check what the
-  confined process can reach regardless.
+  The Compose host. The core stand-in and warden providers come from the
+  common module's manifest; this app adds only its confined UI Activity in
+  the ":ui" process. The app asks for no permissions.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
-        android:name=".SpikeApplication"
+        android:name="com.oniimediaworks.meshinfinity.uispike.SpikeApplication"
         android:label="Mesh UI spike"
         android:theme="@android:style/Theme.Material.NoActionBar">
-
-        <!-- Not exported: only this app's own processes can call it. -->
-        <provider
-            android:name=".UiHostProvider"
-            android:authorities="com.oniimediaworks.meshinfinity.uispike.host"
-            android:exported="false" />
-
-        <!-- The warden: Fibrewall brokers, no secrets. Its own process. -->
-        <provider
-            android:name=".WardenProvider"
-            android:authorities="com.oniimediaworks.meshinfinity.uispike.warden"
-            android:process=":warden"
-            android:exported="false" />
 
         <activity
             android:name=".UiActivity"

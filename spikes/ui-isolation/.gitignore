@@ -11,3 +11,11 @@ android/test-output.txt
 android/test-exit.txt
 android/logcat.txt
 android/spike-log.txt
+flutter/pubspec.lock
+flutter/.metadata
+flutter/android/local.properties
+flutter/android/app/src/main/java/
+flutter/android/test-output.txt
+flutter/android/test-exit.txt
+flutter/android/logcat.txt
+flutter/android/spike-log.txt

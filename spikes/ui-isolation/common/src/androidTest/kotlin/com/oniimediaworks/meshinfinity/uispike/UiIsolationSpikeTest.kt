@@ -20,8 +20,9 @@ import org.junit.runner.RunWith
 import java.util.concurrent.TimeUnit
 
 /**
- * Spike S1's measurements and gates. Runs in the app's main process (the
- * stand-in core), launches the confined UI three times — baseline, learning,
+ * Spike S1's measurements and gates, shared by the Compose and the Flutter
+ * host. Runs in the app's main process (the stand-in core), launches the
+ * confined UI three times — baseline, learning,
  * enforcing — and drives it the way a person would.
  *
  * Every run logs one `MeshUiSpike RESULT <json>` line; the CI job collects
@@ -66,10 +67,9 @@ class UiIsolationSpikeTest {
         kill_ui()
         CoreStub.reports.clear()
         SpikeMode.write(context, mode)
-        context.startActivity(
-            Intent(context, UiActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
-        )
+        // The host app's own UI (Compose or Flutter), through its launcher intent.
+        val launch = context.packageManager.getLaunchIntentForPackage(pkg) ?: error("no launcher activity")
+        context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         // The UI process reports its probes from Application.onCreate.
         val report = CoreStub.reports.poll(60, TimeUnit.SECONDS)
         assertNotNull("no report from the UI process in $mode", report)

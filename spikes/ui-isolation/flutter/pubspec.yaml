@@ -1,0 +1,15 @@
+name: mesh_ui_spike_flutter
+description: Phase 0 spike S1, Flutter host. Today's UI toolkit in the Fibrewall-confined `:ui` process.
+publish_to: none
+version: 0.0.1+1
+
+environment:
+  # The same floor as frontend/pubspec.yaml.
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

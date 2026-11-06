@@ -1,6 +1,6 @@
-// The spike app: a stand-in core and its Fibrewall broker in the main
-// process, and a Compose UI in the `:ui` process that locks itself down
-// before it draws anything.
+// The Compose host for spike S1: the confinement half comes from :common
+// (core stand-in, warden, UI session, probes); this app adds the Compose UI
+// in the `:ui` process.
 
 plugins {
     id("com.android.application")
@@ -25,20 +25,10 @@ android {
             // arm64-v8a for real devices.
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
-        externalNativeBuild {
-            cmake {
-                // Fibrewall's own end-to-end test is not part of the app.
-                arguments += listOf("-DSBX_TESTS=OFF", "-DANDROID_PLATFORM=android-26")
-            }
-        }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
+    // The shared instrumented test, which drives whichever UI the host ships.
+    sourceSets["androidTest"].java.srcDir("../../common/src/androidTest/kotlin")
 
     buildFeatures {
         compose = true
@@ -63,6 +53,8 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":common"))
+
     // Compose, pinned through one bill of materials.
     val compose_bom = platform("androidx.compose:compose-bom:2025.01.01")
     implementation(compose_bom)
