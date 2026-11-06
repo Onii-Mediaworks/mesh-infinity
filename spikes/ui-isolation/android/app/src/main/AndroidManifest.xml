@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Two processes from one APK:
+  - the main process (the stand-in core): UiHostProvider, which serves the
+    Fibrewall broker and the protocol socket;
+  - ":ui": UiActivity, confined by Fibrewall from Application.onCreate.
+  The app asks for no permissions; the escape probes check what the
+  confined process can reach regardless.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:name=".SpikeApplication"
+        android:label="Mesh UI spike"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- Not exported: only this app's own processes can call it. -->
+        <provider
+            android:name=".UiHostProvider"
+            android:authorities="com.oniimediaworks.meshinfinity.uispike.host"
+            android:exported="false" />
+
+        <activity
+            android:name=".UiActivity"
+            android:process=":ui"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
