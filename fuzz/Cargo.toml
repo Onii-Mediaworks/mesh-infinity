@@ -236,3 +236,13 @@ path = "fuzz_targets/fuzz_link_auth_frame.rs"
 [[bin]]
 name = "fuzz_admin_command"
 path = "fuzz_targets/fuzz_admin_command.rs"
+
+# --- Target 18: Tunnel fragment reassembly (§12.3) ---------------------------
+#
+# Drives `services::tunnel::drive_fragment_input`: JSON `TunnelData` decode
+# plus a bounded sequence of fragment / gc / clock steps against a
+# `TunnelManager`. Hostile headers must never panic, never size an
+# allocation, and never push a session past its in-flight cap or budget.
+[[bin]]
+name = "fuzz_tunnel_fragment"
+path = "fuzz_targets/fuzz_tunnel_fragment.rs"

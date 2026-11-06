@@ -159,6 +159,13 @@ threat = "forged or malformed AdminCommand killswitch payloads panicking the han
 required_by_spec = true
 
 [[target]]
+name = "fuzz_tunnel_fragment"
+status = "active"
+owner_module = "backend/services/tunnel.rs"
+threat = "hostile TunnelFragment headers or payloads panicking the reassembler, sizing an allocation from total_size, or holding unbounded fragment sets past the per-session in-flight, byte-budget, and timeout limits"
+required_by_spec = true
+
+[[target]]
 name = "fuzz_identity_key_record"
 status = "blocked-design-pending"
 owner_module = "backend/identity/self_identity.rs"
