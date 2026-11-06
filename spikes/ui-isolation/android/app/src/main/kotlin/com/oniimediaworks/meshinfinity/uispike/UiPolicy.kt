@@ -46,6 +46,10 @@ object UiPolicy {
 
         // The code cache: ART and the renderer's shader cache. Holds no core data.
         rules[context.codeCacheDir.absolutePath] = SBX_READ or SBX_WRITE
+        // ART's profile of this app's hot code, which profile-guided compilation
+        // uses to make later starts faster (S1 learning run, API 34). It is
+        // the system's file about this app and holds no app data.
+        rules["/data/misc/profiles/cur/0/${context.packageName}"] = SBX_READ or SBX_WRITE
         return rules
     }
 }

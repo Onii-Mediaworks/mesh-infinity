@@ -102,13 +102,16 @@ class UiIsolationSpikeTest {
         device.findObject(By.res("send")).click()
         result.put("echo_round_trip", device.wait(Until.hasObject(By.text("echo: hello core")), 10_000))
 
-        // Scrolling and frame timing, read from the graphics stats of this package.
+        // Scrolling and frame timing, read from the UI process's graphics stats.
+        // gfxinfo matches a package name only against the process of exactly
+        // that name (the core here), so the `:ui` process is named by pid.
         device.pressBack()
-        device.executeShellCommand("dumpsys gfxinfo $pkg reset")
+        val ui = ui_pid()
+        device.executeShellCommand("dumpsys gfxinfo $ui reset")
         val list = device.findObject(By.res("list"))
         repeat(5) { list?.fling(Direction.DOWN) }
         repeat(5) { list?.fling(Direction.UP) }
-        result.put("gfxinfo", frame_stats(device.executeShellCommand("dumpsys gfxinfo $pkg")))
+        result.put("gfxinfo", frame_stats(device.executeShellCommand("dumpsys gfxinfo $ui")))
 
         // Rotation recreates the Activity in the same, still confined, process.
         val pid = ui_pid()
@@ -119,7 +122,7 @@ class UiIsolationSpikeTest {
         result.put("survived_rotation", rotated && ui_pid() == pid)
     }
 
-    /** The headline numbers from `dumpsys gfxinfo` (all processes of the package). */
+    /** The headline numbers from `dumpsys gfxinfo <pid>`. */
     private fun frame_stats(dump: String): JSONObject {
         val stats = JSONObject()
         Regex("""(Total frames rendered|Janky frames|50th percentile|90th percentile|95th percentile|99th percentile): ([^\n]+)""")
