@@ -1,0 +1,220 @@
+name: spike-ui-isolation
+
+# Phase 0 spikes for plans/ui-isolation-and-compose.md. Runs only on spike
+# branches; nothing here gates or ships the app.
+on:
+  push:
+    branches: ["spike/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # S1: the APK for both ABIs, so a real arm64 device can install it.
+  s1-android-build:
+    name: s1-android-build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+      - name: Install Android CMake
+        run: echo "y" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
+      - name: Build the app and its test APK
+        working-directory: spikes/ui-isolation/android
+        run: gradle --no-daemon assembleDebug assembleDebugAndroidTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s1-android-apks
+          path: spikes/ui-isolation/android/app/build/outputs/apk/**/*.apk
+          retention-days: 30
+
+  # S1: the confined Compose UI on emulators, baseline vs learning vs enforcing.
+  s1-android-emulator:
+    name: s1-android-emulator (API ${{ matrix.api }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 28, 30, 34]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+      - name: Install Android CMake
+        run: echo "y" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build the APKs before the emulator starts
+        working-directory: spikes/ui-isolation/android
+        run: gradle --no-daemon assembleDebug assembleDebugAndroidTest
+      - name: Run the spike on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: default
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          working-directory: spikes/ui-isolation/android
+          # The test's verdict is the step's; the logs are kept either way.
+          script: |
+            adb logcat -c || true
+            gradle --no-daemon connectedDebugAndroidTest > test-output.txt 2>&1; echo "test_exit=$?" > test-exit.txt
+            adb logcat -d > logcat.txt || true
+            grep -E 'MeshUiSpike|MeshUiBroker|F DEBUG|F libc|type=1326|avc: denied' logcat.txt > spike-log.txt || true
+            tail -80 test-output.txt
+            grep -E 'RESULT|lockdown|REFUSED' spike-log.txt | tail -80 || true
+            grep -q 'test_exit=0' test-exit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s1-android-api${{ matrix.api }}
+          path: |
+            spikes/ui-isolation/android/test-output.txt
+            spikes/ui-isolation/android/logcat.txt
+            spikes/ui-isolation/android/spike-log.txt
+            spikes/ui-isolation/android/app/build/reports/androidTests/
+          retention-days: 30
+
+  # S1, Flutter host: today's UI toolkit in the same confined :ui process.
+  s1-flutter-emulator:
+    name: s1-flutter-emulator (API ${{ matrix.api }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 30, 34]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install Android CMake
+        run: echo "y" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
+      - name: Point Gradle at the Flutter SDK
+        working-directory: spikes/ui-isolation/flutter
+        run: |
+          printf "sdk.dir=%s
+flutter.sdk=%s
+" "$ANDROID_SDK_ROOT" "$(flutter --version --machine | jq -r .flutterRoot)" > android/local.properties
+          flutter pub get
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build the APKs before the emulator starts
+        working-directory: spikes/ui-isolation/flutter/android
+        run: gradle --no-daemon assembleRelease assembleReleaseAndroidTest
+      - name: Run the spike on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          target: default
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          working-directory: spikes/ui-isolation/flutter/android
+          script: |
+            adb logcat -c || true
+            gradle --no-daemon connectedAndroidTest > test-output.txt 2>&1; echo "test_exit=$?" > test-exit.txt
+            adb logcat -d > logcat.txt || true
+            grep -E 'MeshUiSpike|MeshUiBroker|flutter|F DEBUG|F libc|type=1326|avc: denied' logcat.txt > spike-log.txt || true
+            tail -80 test-output.txt
+            grep -E 'RESULT|lockdown|REFUSED|LEARNED' spike-log.txt | tail -80 || true
+            grep -q 'test_exit=0' test-exit.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s1-flutter-api${{ matrix.api }}
+          path: |
+            spikes/ui-isolation/flutter/android/test-output.txt
+            spikes/ui-isolation/flutter/android/logcat.txt
+            spikes/ui-isolation/flutter/android/spike-log.txt
+            spikes/ui-isolation/flutter/android/app/build/reports/androidTests/
+          retention-days: 30
+
+  # S5: one schema, three languages, byte-identical encodings; strict decoding; fuzzing.
+  s5-protocol:
+    name: s5-protocol
+    runs-on: ubuntu-24.04
+    env:
+      SPIKE_FIXTURES: ${{ github.workspace }}/spike-fixtures
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler && protoc --version
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+      - uses: dart-lang/setup-dart@v1
+      - name: Rust writes the fixtures and runs the strictness tests
+        working-directory: spikes/ui-isolation/protocol/rust
+        run: cargo test -- --nocapture
+      - name: Kotlin (Wire) decodes and re-encodes
+        working-directory: spikes/ui-isolation/protocol/kotlin
+        run: gradle --no-daemon run --args="$SPIKE_FIXTURES/rust.bin $SPIKE_FIXTURES/kotlin.bin"
+      - name: Dart (protoc_plugin) decodes and re-encodes
+        working-directory: spikes/ui-isolation/protocol/dart
+        run: |
+          dart pub global activate protoc_plugin 21.1.2
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          mkdir -p lib/gen
+          protoc --proto_path=../proto --dart_out=lib/gen ../proto/mesh/ui/v1/spike.proto
+          dart pub get
+          dart run bin/round_trip.dart "$SPIKE_FIXTURES/rust.bin" "$SPIKE_FIXTURES/dart.bin"
+      - name: Rust requires both outputs byte-identical and strictly valid
+        working-directory: spikes/ui-isolation/protocol/rust
+        run: SPIKE_VERIFY=1 cargo test peers_match -- --nocapture
+      - name: Fuzz the decoder for two minutes
+        working-directory: spikes/ui-isolation/protocol/rust
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+          mkdir -p fuzz/corpus/decode_stream && cp "$SPIKE_FIXTURES/rust.bin" fuzz/corpus/decode_stream/
+          cargo +nightly fuzz run decode_stream -- -max_total_time=120
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s5-protocol
+          path: |
+            spike-fixtures/
+            spikes/ui-isolation/protocol/rust/fuzz/artifacts/
+          retention-days: 30

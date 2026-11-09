@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Compose host. The core stand-in and warden providers come from the
+  common module's manifest; this app adds only its confined UI Activity in
+  the ":ui" process. The app asks for no permissions.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:name="com.oniimediaworks.meshinfinity.uispike.SpikeApplication"
+        android:label="Mesh UI spike"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".UiActivity"
+            android:process=":ui"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

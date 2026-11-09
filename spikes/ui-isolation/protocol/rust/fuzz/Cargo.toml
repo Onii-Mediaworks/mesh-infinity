@@ -1,0 +1,23 @@
+[package]
+name = "mesh_ui_protocol_spike_fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mesh_ui_protocol_spike = { path = ".." }
+
+[[bin]]
+name = "decode_stream"
+path = "fuzz_targets/decode_stream.rs"
+test = false
+doc = false
+bench = false

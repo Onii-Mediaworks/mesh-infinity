@@ -1,0 +1,197 @@
+// Spike S5: a sample of the UI protocol (plans/ui-isolation-and-compose.md
+// §3.2), large enough to prove one schema generates matching Rust (prost),
+// Kotlin (Wire) and Dart (protoc_plugin) code. Ten methods, five events,
+// the four reply outcomes (named Success/Unavailable/Failure/Pending so no
+// generated name collides with a language prelude), the handshake and the blob channel.
+syntax = "proto3";
+
+package mesh.ui.v1;
+
+option java_package = "com.oniimediaworks.meshinfinity.protocol.v1";
+
+// One frame on the socket, after its u32 big-endian length.
+message Envelope {
+  oneof kind {
+    Hello hello = 1;
+    Request request = 2;
+    Reply reply = 3;
+    Event event = 4;
+    Cancel cancel = 5;
+    BlobChunk blob_chunk = 6;
+  }
+}
+
+// The UI's first frame. Any mismatch closes the session.
+message Hello {
+  uint32 protocol_major = 1;
+  bytes schema_hash = 2;   // SHA-256 of the descriptor set, exactly 32 bytes
+  bytes launch_nonce = 3;  // the 32 bytes the core gave this UI process
+}
+
+message Request {
+  uint64 id = 1;
+  oneof method {
+    GetRoomList get_room_list = 10;
+    GetMessages get_messages = 11;
+    SendMessage send_message = 12;
+    CreateRoom create_room = 13;
+    SetTrustLevel set_trust_level = 14;
+    GetPeerList get_peer_list = 15;
+    GetSettings get_settings = 16;
+    ToggleTransport toggle_transport = 17;
+    RequestUnlock request_unlock = 18;
+    RequestPickFile request_pick_file = 19;
+  }
+}
+
+message GetRoomList {}
+message GetMessages {
+  string room_id = 1;
+  optional uint64 before_ts = 2;
+  uint32 limit = 3;
+}
+message SendMessage {
+  string room_id = 1;
+  string mask_id = 2;
+  string text = 3;
+}
+message CreateRoom { string peer_id = 1; }
+message SetTrustLevel {
+  string peer_id = 1;
+  TrustLevel level = 2;
+}
+message GetPeerList {}
+message GetSettings {}
+message ToggleTransport {
+  string transport = 1;
+  bool enabled = 2;
+}
+// A trusted-surface request: the shell shows the native PIN entry; the
+// UI only ever learns the outcome (UnlockOutcome).
+message RequestUnlock {}
+// A trusted-surface request: the shell runs the picker; the UI gets a handle.
+message RequestPickFile { FilePurpose purpose = 1; }
+
+enum TrustLevel {
+  TRUST_LEVEL_UNSPECIFIED = 0;
+  TRUST_LEVEL_UNTRUSTED = 1;
+  TRUST_LEVEL_ACQUAINTANCE = 2;
+  TRUST_LEVEL_TRUSTED = 3;
+  TRUST_LEVEL_HIGHLY_TRUSTED = 4;
+}
+
+enum FilePurpose {
+  FILE_PURPOSE_UNSPECIFIED = 0;
+  FILE_PURPOSE_SEND = 1;
+  FILE_PURPOSE_PUBLISH = 2;
+}
+
+message Reply {
+  uint64 id = 1;
+  oneof outcome {
+    Success ok = 2;
+    Unavailable unavailable = 3;
+    Failure error = 4;
+    Pending pending = 5;
+  }
+}
+
+message Success {
+  oneof value {
+    RoomList room_list = 10;
+    MessageList message_list = 11;
+    Sent sent = 12;
+    RoomCreated room_created = 13;
+    PeerList peer_list = 15;
+    Settings settings = 16;
+    Done done = 17;
+    FilePicked file_picked = 19;
+  }
+}
+message Unavailable { string reason = 1; }
+message Failure {
+  uint32 code = 1;
+  string message = 2;
+}
+message Pending { string request_token = 1; }
+
+message Done {}
+message RoomList { repeated Room rooms = 1; }
+message Room {
+  string room_id = 1;
+  string name = 2;
+  uint32 unread = 3;
+  optional string last_preview = 4;
+}
+message MessageList { repeated ChatMessage messages = 1; }
+message ChatMessage {
+  string message_id = 1;
+  string room_id = 2;
+  string sender_name = 3;
+  string text = 4;
+  uint64 timestamp_ms = 5;
+  repeated string blob_refs = 6;
+}
+message Sent { string message_id = 1; }
+message RoomCreated { string room_id = 1; }
+message PeerList { repeated Peer peers = 1; }
+message Peer {
+  string peer_id = 1;
+  string display_name = 2;
+  TrustLevel trust = 3;
+  bool online = 4;
+}
+message Settings {
+  repeated TransportState transports = 1;
+  uint32 threat_level = 2;
+}
+message TransportState {
+  string transport = 1;
+  bool enabled = 2;
+  Availability availability = 3;
+}
+enum Availability {
+  AVAILABILITY_UNSPECIFIED = 0;
+  AVAILABILITY_AVAILABLE = 1;
+  AVAILABILITY_UNSUPPORTED = 2;
+  AVAILABILITY_PERMISSION_DENIED = 3;
+  AVAILABILITY_UNHEALTHY = 4;
+}
+message FilePicked {
+  string handle_id = 1;
+  string display_name = 2;
+  uint64 size = 3;
+}
+
+message Event {
+  uint64 seq = 1;
+  oneof body {
+    MessageReceived message_received = 10;
+    PeerUpdated peer_updated = 11;
+    TransportStatus transport_status = 12;
+    ResyncRequired resync_required = 13;
+    UnlockOutcome unlock_outcome = 14;
+  }
+}
+message MessageReceived { ChatMessage message = 1; }
+message PeerUpdated { Peer peer = 1; }
+message TransportStatus { TransportState state = 1; }
+message ResyncRequired {}
+message UnlockOutcome {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_UNLOCKED = 1;
+    OUTCOME_CANCELLED = 2;
+    OUTCOME_LOCKED_OUT = 3;
+  }
+  Outcome outcome = 1;
+}
+
+message Cancel { uint64 id = 1; }
+
+message BlobChunk {
+  string blob_ref = 1;
+  uint64 offset = 2;
+  bytes data = 3;   // at most 256 KiB
+  bool last = 4;
+}
